@@ -1,0 +1,6 @@
+openai
+pydantic
+prompt_toolkit
+python-dotenv
+rich
+tqdm
