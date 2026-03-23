@@ -13,7 +13,7 @@ def get_absolute_env_path():
 
 
 env_path = get_absolute_env_path()
-load_dotenv(dotenv_path=env_path, override=True)
+load_dotenv(dotenv_path=env_path)
 
 from pathlib import Path
 
