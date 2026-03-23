@@ -3,10 +3,6 @@ import json
 import time
 from typing import Any
 
-from dotenv import load_dotenv
-
-load_dotenv(override=True)
-
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.key_binding import KeyBindings

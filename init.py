@@ -1,5 +1,9 @@
+from dotenv import load_dotenv
+
+load_dotenv(".env")
 import os
 from pathlib import Path
+
 from openai import OpenAI
 
 # 尝试导入 prompt_toolkit 用于构建高级交互菜单
