@@ -1,17 +1,17 @@
-# 🤖 Agent Project Documentation
+# 🚀 MakeCode · Project Documentation
 
 🌐 Language: [简体中文](README.md) | **English**
 
 > ✅ Currently supports the **OpenAI Response API**.
 
-A **multi-agent command-line assistant** built on the **OpenAI Responses API**.  
+A **MakeCode-powered multi-agent command-line assistant** built on the **OpenAI Responses API**.  
 This project supports task topology management, concurrent sub-agent delegation, dynamic skill loading, file/terminal tools, and conversation compaction for complex engineering workflows.
 
 ---
 
 ## 📌 1. Project Positioning
 
-The project follows an **Orchestrator + Teammates** model:
+MakeCode follows an **Orchestrator + Teammates** model:
 
 - 🧠 The orchestrator understands requests, plans execution, calls tools, and coordinates flow.
 - 👥 Sub-agents execute independent tasks in parallel and submit structured reports.
