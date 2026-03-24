@@ -1,7 +1,8 @@
 import os
 import sys
+from pathlib import Path
 
-from dotenv import load_dotenv
+from openai import OpenAI
 
 
 def get_absolute_env_path():
@@ -13,11 +14,16 @@ def get_absolute_env_path():
 
 
 env_path = get_absolute_env_path()
-load_dotenv(dotenv_path=env_path)
-
-from pathlib import Path
-
-from openai import OpenAI
+try:
+    with open(env_path, encoding="utf-8", mode="r") as f:
+        lines = f.readlines()
+        for line in lines:
+            if line.strip() and not line.strip().startswith("#"):
+                key, value = line.strip().split("=", 1)
+                if key not in os.environ:
+                    os.environ[key] = value
+except FileNotFoundError:
+    pass  # .env 文件不存在，继续执行，依赖环境变量的代码会处理缺失的情况
 
 # 尝试导入 prompt_toolkit 用于构建高级交互菜单
 try:
@@ -145,7 +151,7 @@ try:
     BASE_ULR = os.environ["OPENAI_BASE_URL"]
     MODEL = os.environ["MODEL_ID"]
 except KeyError:
-    exit("❌ 错误: 请确保 .env 文件中包含 OPENAI_API_KEY, OPENAI_BASE_URL 和 MODEL_ID 这三个环境变量。")
+    exit(0)
 client = OpenAI(
     base_url=BASE_ULR,
     api_key=API_KEY,
