@@ -1,4 +1,3 @@
-import fnmatch
 import locale
 import os
 import re
@@ -249,9 +248,9 @@ class RunGrep(BaseModel):
         default=".",
         description="Directory to search in, relative to workspace. Pinpoint specific source folders (e.g., 'src', 'app') to avoid scanning dependency directories."
     )
-    filename_pattern: str = Field(
-        default="*",
-        description="File name pattern to filter files (e.g., '*.py', '*.ts'). Defaults to '*' (all text files)."
+    filename_pattern: str | list[str] = Field(
+        default=["*"],
+        description="File name pattern(s) to filter files. Can be a string or a list of strings (e.g., ['*.py', '*.ts'], '*.js'). Defaults to ['*'] (all text files)."
     )
 
 
@@ -267,47 +266,49 @@ def _is_binary_file(filepath: Path) -> bool:
         return True
 
 
-def run_grep(keyword_pattern: str, target_dir: str = ".", filename_pattern: str = "*") -> str:
+def run_grep(
+        keyword_pattern: str,
+        target_dir: str = ".",
+        filename_pattern: str | list[str] = ["*"]
+) -> str:
     try:
         regex = re.compile(keyword_pattern)
     except re.error as e:
         return f"Error: Invalid regex pattern '{keyword_pattern}': {e}"
 
+    if isinstance(filename_pattern, str):
+        patterns = [filename_pattern]
+    else:
+        patterns = filename_pattern
+
+    clean_patterns = [p.replace("**/", "") for p in patterns]
+
     results = {}
     total_matches = 0
-    MAX_MATCHES = 500  # 限制最大返回条目，防止撑爆大模型上下文
+    MAX_MATCHES = 500
 
     try:
-        # 解析并验证目标目录
         base_dir = safe_path(target_dir)
         if not base_dir.is_dir():
             return f"Error: Target directory '{target_dir}' not found or is not a directory."
     except Exception as e:
         return f"Error resolving target directory: {e}"
 
-    # 清理历史遗留：防止大模型习惯性传入 "**/*.py"
-    clean_file_pattern = filename_pattern.replace("**/", "")
-
     try:
-        # 使用 os.walk 进行高性能的文件树遍历
         for root, dirs, files in os.walk(base_dir):
-            # 如果你有特定的依赖文件夹名也想硬编码排除，可以直接加在这里，例如：
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__')]
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
 
             for file in files:
-                # 文件名过滤
-                if clean_file_pattern != "*" and not fnmatch.fnmatch(file, clean_file_pattern):
-                    continue
-
                 filepath = Path(root) / file
+                if clean_patterns != ["*"] and clean_patterns != [""]:
+                    if not any(filepath.match(p) for p in clean_patterns):
+                        continue
 
-                # 安全获取相对于 WORKDIR 的路径格式
                 try:
                     rel_path_str = filepath.relative_to(WORKDIR).as_posix()
                 except ValueError:
                     continue
 
-                # 二进制阻断器
                 if _is_binary_file(filepath):
                     continue
 
@@ -336,14 +337,13 @@ def run_grep(keyword_pattern: str, target_dir: str = ".", filename_pattern: str 
         return f"Error during grep search: {e}"
 
     if not results:
-        return f"No matches found for '{keyword_pattern}' in dir '{target_dir}' matching '{filename_pattern}'."
+        return f"No matches found for '{keyword_pattern}' in dir '{target_dir}' matching {patterns}."
 
-    # 格式化为大模型友好的结构
     output_blocks = []
     for file_path, lines in results.items():
         output_blocks.append(f"File: {file_path}")
         output_blocks.extend(lines)
-        output_blocks.append("")  # 空行分隔
+        output_blocks.append("")
 
     if total_matches >= MAX_MATCHES:
         output_blocks.append(
