@@ -51,7 +51,7 @@ from utils.common import COMMON_TOOLS, COMMON_TOOLS_HANDLERS, STARTUP_TERMINAL_T
 from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS
 from utils.teams import TEAM_TOOLS_HANDLERS, TEAM_TOOLS
-from utils.memory import micro_compact, MEMORY_TOOLS, MEMORY_TOOLS_HANDLERS
+from utils.memory import micro_compact, MEMORY_TOOLS, MEMORY_TOOLS_HANDLERS, THRESHOLD, estimate_tokens
 
 from init import client, MODEL, WORKDIR
 
@@ -310,7 +310,7 @@ def agent_loop(messages: list):
                     arguments = _parse_arguments(item.arguments)
                     handler = SUPER_TOOLS_HANDLERS.get(item.name)
                     if handler:
-                        output = handler(messages) if item.name == "Compact" else handler(**arguments)
+                        output = handler(messages, **arguments) if item.name == "Compact" else handler(**arguments)
                     else:
                         output = f"Unknown tool: {item.name}"
                 except Exception as e:
@@ -327,7 +327,20 @@ def agent_loop(messages: list):
         if not has_tool_call:
             break
 
-
+    if estimate_tokens(messages) > THRESHOLD:
+        compact_reason = (
+            f"Post agent_loop auto compact triggered: estimated tokens "
+            f"{estimate_tokens(messages)} exceeded threshold {THRESHOLD}."
+        )
+        try:
+            output = SUPER_TOOLS_HANDLERS["Compact"](messages, reason=compact_reason)
+            _render_tool_output("Compact", output)
+        except Exception as e:
+            error_msg = f"Error executing Compact: {e}"
+            if RICH_AVAILABLE:
+                console.print(f"[bold red]⚠️ {error_msg}[/bold red]")
+            else:
+                print(f"\033[31m⚠️ {error_msg}\033[0m")
 if __name__ == '__main__':
     _render_startup_banner()
     history = [{"role": "system", "content": SYSTEM}]
