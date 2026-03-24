@@ -1,5 +1,7 @@
+import fnmatch
 import locale
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -234,10 +236,127 @@ def run_edit(path: str, start: int, end: int, new_content: str) -> str:
         return f"Error: {e}"
 
 
+class RunGrep(BaseModel):
+    """
+    Search for a regex pattern in text files within a specific directory.
+    Automatically ignores binary files and hidden directories (starting with '.').
+    """
+    keyword_pattern: str = Field(
+        ...,
+        description="The Regex pattern or string to search for in the file contents."
+    )
+    target_dir: str = Field(
+        default=".",
+        description="Directory to search in, relative to workspace. Pinpoint specific source folders (e.g., 'src', 'app') to avoid scanning dependency directories."
+    )
+    filename_pattern: str = Field(
+        default="*",
+        description="File name pattern to filter files (e.g., '*.py', '*.ts'). Defaults to '*' (all text files)."
+    )
+
+
+def _is_binary_file(filepath: Path) -> bool:
+    """Check if a file is likely binary by inspecting its first 1024 bytes for a null byte."""
+    try:
+        with open(filepath, 'rb') as f:
+            chunk = f.read(1024)
+            if b'\0' in chunk:
+                return True
+        return False
+    except Exception:
+        return True
+
+
+def run_grep(keyword_pattern: str, target_dir: str = ".", filename_pattern: str = "*") -> str:
+    try:
+        regex = re.compile(keyword_pattern)
+    except re.error as e:
+        return f"Error: Invalid regex pattern '{keyword_pattern}': {e}"
+
+    results = {}
+    total_matches = 0
+    MAX_MATCHES = 500  # 限制最大返回条目，防止撑爆大模型上下文
+
+    try:
+        # 解析并验证目标目录
+        base_dir = safe_path(target_dir)
+        if not base_dir.is_dir():
+            return f"Error: Target directory '{target_dir}' not found or is not a directory."
+    except Exception as e:
+        return f"Error resolving target directory: {e}"
+
+    # 清理历史遗留：防止大模型习惯性传入 "**/*.py"
+    clean_file_pattern = filename_pattern.replace("**/", "")
+
+    try:
+        # 使用 os.walk 进行高性能的文件树遍历
+        for root, dirs, files in os.walk(base_dir):
+            # 如果你有特定的依赖文件夹名也想硬编码排除，可以直接加在这里，例如：
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__')]
+
+            for file in files:
+                # 文件名过滤
+                if clean_file_pattern != "*" and not fnmatch.fnmatch(file, clean_file_pattern):
+                    continue
+
+                filepath = Path(root) / file
+
+                # 安全获取相对于 WORKDIR 的路径格式
+                try:
+                    rel_path_str = filepath.relative_to(WORKDIR).as_posix()
+                except ValueError:
+                    continue
+
+                # 二进制阻断器
+                if _is_binary_file(filepath):
+                    continue
+
+                matched_lines = []
+                try:
+                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                        for i, line in enumerate(f, 1):
+                            if regex.search(line):
+                                matched_lines.append(f"{i}: {line.rstrip('\n')}")
+                                total_matches += 1
+                                if total_matches >= MAX_MATCHES:
+                                    break
+                except Exception:
+                    continue
+
+                if matched_lines:
+                    results[rel_path_str] = matched_lines
+
+                if total_matches >= MAX_MATCHES:
+                    break
+
+            if total_matches >= MAX_MATCHES:
+                break
+
+    except Exception as e:
+        return f"Error during grep search: {e}"
+
+    if not results:
+        return f"No matches found for '{keyword_pattern}' in dir '{target_dir}' matching '{filename_pattern}'."
+
+    # 格式化为大模型友好的结构
+    output_blocks = []
+    for file_path, lines in results.items():
+        output_blocks.append(f"File: {file_path}")
+        output_blocks.extend(lines)
+        output_blocks.append("")  # 空行分隔
+
+    if total_matches >= MAX_MATCHES:
+        output_blocks.append(
+            f"\n[!] Notice: Output truncated to first {MAX_MATCHES} matched lines to prevent context overflow.")
+
+    return "\n".join(output_blocks).strip()
+
+
 TOOLS = [
     make_response_tool(pydantic_function_tool(RunRead)),
     make_response_tool(pydantic_function_tool(RunWrite)),
     make_response_tool(pydantic_function_tool(RunEdit)),
+    make_response_tool(pydantic_function_tool(RunGrep)),
 ]
 
 FILE_NAMESPACE = {
@@ -245,7 +364,7 @@ FILE_NAMESPACE = {
     "name": "File",
     "description": (
         "Primary file operation tools for workspace files. Always prefer this namespace for file reads, "
-        "writes, and edits instead of shell commands."
+        "writes, edits, and text searches instead of shell commands."
     ),
     "tools": TOOLS,
 }
@@ -260,5 +379,5 @@ COMMON_TOOLS_HANDLERS = {
     "RunTerminalCommand": run_terminal_command,
     "RunRead": run_read,
     "RunWrite": run_write,
-    "RunEdit": run_edit,
+    "RunGrep": run_grep,
 }
