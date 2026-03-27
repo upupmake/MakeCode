@@ -320,9 +320,55 @@ class TeammateManager:
             "TodoUpdate": lambda items, **kwargs: local_todo.update(items)
         }
 
-        final_report = "Error: Sub-agent terminated without submitting a report."
+        def _build_incomplete_report(stop_reason: str, executed_steps: int) -> str:
+            todo_snapshot = local_todo.render()
+            messages_text = json.dumps(messages, ensure_ascii=False, default=str, indent=2)
+            summary_prompt = (
+                "The sub-agent stopped before formal completion. "
+                "You must now produce a final detailed report for the Orchestrator. "
+                "Requirements:\n"
+                "1) Very detailed summary of what has been completed so far.\n"
+                "2) Explicitly state it is NOT fully completed.\n"
+                "3) Clearly list what remains and what should be done next.\n"
+                "4) Include evidence from tool results and decisions if available.\n"
+                "5) Be honest and avoid claiming completion.\n\n"
+                f"Stop reason: {stop_reason}\n"
+                f"Executed steps: {executed_steps}/30\n\n"
+                f"Current todo snapshot:\n{todo_snapshot}\n\n"
+                f"Conversation transcript (stringified JSON):\n{messages_text}"
+            )
+            fallback_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a reporting assistant. Produce an accurate progress report only. "
+                        "Never claim the task is fully completed unless explicit evidence proves it. "
+                        "Your report must include: completed work details, incomplete work, and next steps."
+                    ),
+                },
+                {"role": "user", "content": summary_prompt},
+            ]
+            try:
+                fallback_response = llm_client.generate(messages=fallback_messages, tools=[])
+                summary_text, _, _ = llm_client.parse_response(fallback_response)
+                summary_text = (summary_text or "").strip()
+                if summary_text:
+                    return summary_text
+            except Exception as exc:
+                log_error_traceback(f"Sub-agent fallback summary generation error (Role: {role})", exc)
 
-        for step in range(30):  # 最大 30 步限制
+            return (
+                "Sub-agent stopped before formal completion and fallback summary generation failed.\n\n"
+                f"Stop reason: {stop_reason}\n"
+                f"Executed steps: {executed_steps}/30\n\n"
+                "The task is not complete. Continue from existing todo states and submit a final report."
+            )
+
+        final_report = "Error: Sub-agent terminated without submitting a report."
+        stop_reason = "step_limit_exhausted_without_submit"
+        max_steps = 30
+
+        for step in range(max_steps):  # 最大 30 步限制
             try:
                 response = llm_client.generate(
                     messages=messages,
@@ -387,9 +433,13 @@ class TeammateManager:
                 messages.append(llm_client.format_tool_result(tool_id, tool_name, output))
 
             if task_completed or not has_tool_call:
+                if not task_completed and not has_tool_call:
+                    stop_reason = "model_returned_no_tool_call_before_submit"
                 break
 
         if final_report.startswith("Error:"):
+            final_report = _build_incomplete_report(stop_reason=stop_reason, executed_steps=max_steps)
+            append_trace("task_incomplete", final_report)
             return {"status": "failed", "report": final_report}
         return {"status": "completed", "report": final_report}
 
