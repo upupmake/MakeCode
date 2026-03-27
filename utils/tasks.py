@@ -9,7 +9,6 @@ from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
 from init import WORKDIR
-from utils.common import make_response_tool
 
 TASKS_DIR = WORKDIR / ".tasks"
 
@@ -315,12 +314,12 @@ class TaskManager:
 TASK_MANAGER = TaskManager()
 
 TOOLS = [
-    make_response_tool(pydantic_function_tool(CreateTask)),
-    make_response_tool(pydantic_function_tool(UpdateTaskStatus)),
-    make_response_tool(pydantic_function_tool(UpdateTaskDependencies)),
-    make_response_tool(pydantic_function_tool(GetTask)),
-    make_response_tool(pydantic_function_tool(GetRunnableTasks)),
-    make_response_tool(pydantic_function_tool(GetTaskTable)),
+    pydantic_function_tool(CreateTask),
+    pydantic_function_tool(UpdateTaskStatus),
+    pydantic_function_tool(UpdateTaskDependencies),
+    pydantic_function_tool(GetTask),
+    pydantic_function_tool(GetRunnableTasks),
+    pydantic_function_tool(GetTaskTable),
 ]
 
 TASK_MANAGER_NAMESPACE = {

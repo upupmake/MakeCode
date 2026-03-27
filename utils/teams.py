@@ -8,14 +8,13 @@ from pathlib import Path
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
-from init import WORKDIR, client, MODEL
+from init import WORKDIR, llm_client
 from tools.todo import TodoManager, TODO_TOOLS
 from utils.common import (
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
     STARTUP_TERMINAL_SOURCE,
     STARTUP_TERMINAL_TYPE,
-    make_response_tool,
 )
 from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 from utils.tasks import TASK_MANAGER
@@ -75,7 +74,7 @@ class TeammateManager:
         self.history_path = self.dir / "task_history.json"
         self.history = self._load_history()
 
-        # [核心新增]：多线程修改统一配置文件时，必须加锁防冲突
+        # 多线程修改统一配置文件时，必须加锁防冲突
         self._db_lock = threading.Lock()
 
     def _load_history(self) -> list:
@@ -281,9 +280,9 @@ class TeammateManager:
 
         local_todo = TodoManager()
 
-        sub_agent_tools = COMMON_TOOLS + SKILL_TOOLS + TODO_TOOLS + [
-            make_response_tool(pydantic_function_tool(SubmitTaskReport))
-        ]
+        sub_agent_tools = llm_client.format_tools(COMMON_TOOLS + SKILL_TOOLS + TODO_TOOLS + [
+            pydantic_function_tool(SubmitTaskReport)
+        ])
         sub_handlers = {
             **COMMON_TOOLS_HANDLERS,
             **SKILL_TOOLS_HANDLERS,
@@ -294,59 +293,65 @@ class TeammateManager:
 
         for step in range(30):  # 最大 30 步限制
             try:
-                response = client.responses.create(
-                    model=MODEL,
-                    input=messages,
+                response = llm_client.generate(
+                    messages=messages,
                     tools=sub_agent_tools,
                 )
             except Exception as e:
                 append_trace("api_error", str(e))
                 return {"status": "failed", "report": f"API Error in sub-agent: {e}"}
 
-            new_msgs = [
-                item.model_dump(exclude_none=True) if hasattr(item, 'model_dump') else dict(item)
-                for item in response.output
-            ]
-            messages.extend(new_msgs)
+            text_content, tool_calls, raw_message = llm_client.parse_response(response)
+            
+            # append assistant message to history
+            llm_client.append_assistant_message(messages, raw_message)
+            
+            append_trace(f"step_{step}_llm_output", {
+                "text": text_content,
+                "tool_calls": [tc["name"] for tc in tool_calls]
+            })
 
-            # 记录大模型的直接输出内容（包括思考和打算调用的工具）
-            append_trace(f"step_{step}_llm_output", new_msgs)
-
-            has_tool_call = False
+            has_tool_call = len(tool_calls) > 0
             task_completed = False
 
-            for item in response.output:
-                if item.type == "function_call":
-                    has_tool_call = True
-                    if item.name == "SubmitTaskReport":
-                        args = json.loads(item.arguments) if isinstance(item.arguments, str) else item.arguments
-                        final_report = args.get("report", "No report provided.")
-                        append_trace("task_completed", final_report)
-                        task_completed = True
-                        break
+            for tc in tool_calls:
+                tool_name = tc["name"]
+                tool_id = tc["id"]
+                tool_args = tc["arguments"]
 
-                    try:
-                        handler = sub_handlers.get(item.name)
-                        if handler:
-                            args = json.loads(item.arguments) if isinstance(item.arguments, str) else item.arguments
-                            output = handler(**args)
+                if tool_name == "SubmitTaskReport":
+                    if isinstance(tool_args, str):
+                        args = json.loads(tool_args) if tool_args.strip() else {}
+                    else:
+                        args = tool_args or {}
+                    final_report = args.get("report", "No report provided.")
+                    append_trace("task_completed", final_report)
+                    task_completed = True
+                    # Need to append the tool result to close the tool call loop even if breaking
+                    messages.append(llm_client.format_tool_result(tool_id, tool_name, "Task submitted"))
+                    break
+
+                try:
+                    handler = sub_handlers.get(tool_name)
+                    if handler:
+                        if isinstance(tool_args, str):
+                            args = json.loads(tool_args) if tool_args.strip() else {}
                         else:
-                            output = f"Unknown tool: {item.name}"
-                    except Exception as e:
-                        output = f"Error: {e}"
+                            args = tool_args or {}
+                        output = handler(**args)
+                    else:
+                        output = f"Unknown tool: {tool_name}"
+                except Exception as e:
+                    output = f"Error: {e}"
 
-                    # 记录工具调用的详细结果
-                    append_trace(f"step_{step}_tool_execution", {
-                        "tool_name": item.name,
-                        "arguments": args if 'args' in locals() else item.arguments,
-                        "output": output
-                    })
+                # 记录工具调用的详细结果
+                append_trace(f"step_{step}_tool_execution", {
+                    "tool_name": tool_name,
+                    "arguments": args if 'args' in locals() else tool_args,
+                    "output": output
+                })
 
-                    messages.append({
-                        "type": "function_call_output",
-                        "call_id": item.call_id,
-                        "output": json.dumps(output) if not isinstance(output, str) else str(output)
-                    })
+                messages.append(llm_client.format_tool_result(tool_id, tool_name, output))
 
             if task_completed or not has_tool_call:
                 break
@@ -359,7 +364,7 @@ class TeammateManager:
 TEAM = TeammateManager(TEAM_DIR)
 
 TEAM_NAMESPACE_TOOLS = [
-    make_response_tool(pydantic_function_tool(DelegateTasks))
+    pydantic_function_tool(DelegateTasks)
 ]
 
 TEAM_NAMESPACE = {
@@ -374,7 +379,7 @@ TEAM_NAMESPACE = {
 }
 
 TEAM_TOOLS = [
-    TEAM_NAMESPACE
+    pydantic_function_tool(DelegateTasks)
 ]
 
 TEAM_TOOLS_HANDLERS = {

@@ -2,7 +2,7 @@
 
 🌐 Language: [简体中文](README.md) | **English** | [📦 Releases](https://github.com/cockmake/MakeCode/releases)
 
-> A multi-agent command-line orchestrator built on the OpenAI Responses API.
+> A multi-agent command-line orchestrator.
 >
 > It supports task topology planning, concurrent sub-agent delegation, skill loading, file/terminal tools, and long-session compaction.
 
@@ -40,9 +40,10 @@ The goal is not just to answer questions, but to provide an agent workflow that 
 ### 2.2 Workspace and Environment Init (`init.py`)
 
 - Automatically reads `.env` from the project root at startup.
-- Supports interactive workspace selection:
-  - current directory
-  - custom directory
+- Supports interactive workspace selection (current directory or custom directory).
+- **New** Supports interactive API Standard selection:
+  - `Chat Completions API` (Standard format, suitable for DeepSeek, Ollama, vLLM, and standard OpenAI endpoints)
+  - `Responses API` (Legacy/Custom Beta format)
 - Initializes the OpenAI client from:
   - `OPENAI_API_KEY`
   - `OPENAI_BASE_URL`
@@ -139,6 +140,7 @@ Agent/
 ├─ tools/
 │  └─ todo.py               # internal todo manager for sub-agents
 ├─ utils/
+│  ├─ llm_client.py         # LLM standard adapter (Chat vs Response API)
 │  ├─ common.py             # file / terminal / grep primitives
 │  ├─ tasks.py              # TaskManager topology and status logic
 │  ├─ teams.py              # concurrent delegation and execution logs
@@ -179,7 +181,7 @@ A typical flow looks like this:
 
 - Python 3.10+
 - Access to an OpenAI-compatible endpoint
-- A model that supports the Responses API
+- A model that supports the Chat Completions API or Responses API
 
 Dependencies currently declared in `requirements.txt`:
 
@@ -210,7 +212,7 @@ OPENAI_API_KEY=your_api_key
 MODEL_ID=your_model_id
 ```
 
-- The model behind `MODEL_ID` must support the Responses API.
+- The model behind `MODEL_ID` must support the Chat Completions API or Responses API.
 - Existing environment variables are preserved; values from `.env` only fill missing keys.
 
 ### 6.3 Start

@@ -12,20 +12,6 @@ from pydantic import BaseModel, Field
 from init import WORKDIR
 
 
-def make_response_tool(tool_dict):
-    """Flatten pydantic_function_tool output for Responses API"""
-    if "function" in tool_dict:
-        func = tool_dict["function"]
-        return {
-            "type": "function",
-            "name": func.get("name"),
-            "description": func.get("description", ""),
-            "parameters": func.get("parameters", {}),
-            "strict": func.get("strict", False)
-        }
-    return tool_dict
-
-
 def safe_path(p: str) -> Path:
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
@@ -155,8 +141,15 @@ def run_read(path: str, start: int | None = None, end: int | None = None) -> str
         lines = text.splitlines()
         total_lines = len(lines)
 
-        s = start if start is not None else 1
-        e = end if end is not None else total_lines
+        try:
+            s = int(start) if (start is not None and str(start).strip() != "") else 1
+        except ValueError:
+            s = 1
+
+        try:
+            e = int(end) if (end is not None and str(end).strip() != "") else total_lines
+        except ValueError:
+            e = total_lines
 
         s = max(1, s)
         e = min(total_lines, e)
@@ -212,6 +205,12 @@ def run_edit(path: str, start: int, end: int, new_content: str) -> str:
         text = fp.read_text(encoding='utf-8', errors='replace')
         lines = text.splitlines()
         total_lines = len(lines)
+
+        try:
+            start = int(start)
+            end = int(end)
+        except ValueError:
+            return "Error: start and end must be integers."
 
         if start < 1 or end > total_lines or start > end:
             return f"Error: Invalid line range [{start}, {end}]. File has {total_lines} lines."
@@ -353,10 +352,10 @@ def run_grep(
 
 
 TOOLS = [
-    make_response_tool(pydantic_function_tool(RunRead)),
-    make_response_tool(pydantic_function_tool(RunWrite)),
-    make_response_tool(pydantic_function_tool(RunEdit)),
-    make_response_tool(pydantic_function_tool(RunGrep)),
+    pydantic_function_tool(RunRead),
+    pydantic_function_tool(RunWrite),
+    pydantic_function_tool(RunEdit),
+    pydantic_function_tool(RunGrep),
 ]
 
 FILE_NAMESPACE = {
@@ -369,10 +368,18 @@ FILE_NAMESPACE = {
     "tools": TOOLS,
 }
 
+TERMINAL_NAMESPACE = {
+    "type": "namespace",
+    "name": "Terminal",
+    "description": "Tools for executing terminal commands.",
+    "tools": [
+        pydantic_function_tool(RunTerminalCommand),
+    ]
+}
+
 COMMON_TOOLS = [
-    make_response_tool(pydantic_function_tool(RunTerminalCommand)),
     FILE_NAMESPACE,
-    {"type": "web_search"},
+    TERMINAL_NAMESPACE,
 ]
 
 COMMON_TOOLS_HANDLERS = {

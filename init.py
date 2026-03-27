@@ -146,7 +146,83 @@ def _init_workdir() -> Path:
         return cwd
 
 
+def _interactive_choose_api_standard() -> str:
+    """使用 prompt_toolkit 构建内联的 ↑/↓ 选择菜单"""
+    options = [
+        ("chat", "Chat Completions API"),
+        ("response", "Responses API")
+    ]
+    selected_index = [0]
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    def _(event):
+        selected_index[0] = max(0, selected_index[0] - 1)
+
+    @kb.add("down")
+    def _(event):
+        selected_index[0] = min(len(options) - 1, selected_index[0] + 1)
+
+    @kb.add("enter")
+    def _(event):
+        event.app.exit(result=options[selected_index[0]][0])
+
+    @kb.add("c-c")
+    def _(event):
+        event.app.exit(result="abort")
+
+    def get_formatted_text():
+        result = [("class:title", "\n⚙️  Select LLM API Standard (Use ↑/↓ arrows, Enter to confirm):\n")]
+        for i, (key, text) in enumerate(options):
+            if i == selected_index[0]:
+                result.append(("class:selected", f"  ❯ {text}\n"))
+            else:
+                result.append(("class:unselected", f"    {text}\n"))
+        return result
+
+    control = FormattedTextControl(get_formatted_text)
+    window = Window(content=control, height=len(options) + 2)
+    layout = Layout(window)
+    style = Style([
+        ("title", "fg:ansicyan bold"),
+        ("selected", "fg:ansigreen bold"),
+        ("unselected", "fg:ansigray"),
+    ])
+    app = Application(layout=layout, key_bindings=kb, style=style, erase_when_done=True)
+    return app.run()
+
+
+def _init_api_standard() -> str:
+    if not PROMPT_TOOLKIT_AVAILABLE:
+        try:
+            print(f"\n\033[36m⚙️  LLM API Standard Setup\033[0m")
+            print("1. Chat Completions API")
+            print("2. Responses API")
+            user_input = input("\033[90mSelect standard (1 or 2) [Default: 1]:\033[0m\n\033[1;32m❯ \033[0m").strip()
+            if user_input == "2":
+                print(f"\033[32m✅ API Standard set to: Responses API\033[0m\n")
+                return "response"
+            print(f"\033[32m✅ API Standard set to: Chat Completions API\033[0m\n")
+            return "chat"
+        except (EOFError, KeyboardInterrupt):
+            return "chat"
+
+    try:
+        choice = _interactive_choose_api_standard()
+    except Exception:
+        choice = "abort"
+
+    if choice in ("abort", "chat"):
+        print(f"\033[32m✅ API Standard set to: Chat Completions API\033[0m\n")
+        return "chat"
+    else:
+        print(f"\033[32m✅ API Standard set to: Responses API\033[0m\n")
+        return "response"
+
+
 WORKDIR = _init_workdir()
+API_STANDARD = _init_api_standard()
 
 try:
     API_KEY = os.environ["OPENAI_API_KEY"]
@@ -162,3 +238,10 @@ client = OpenAI(
     api_key=API_KEY,
     max_retries=2
 )
+
+from utils.llm_client import ChatAPIClient, ResponseAPIClient
+
+if API_STANDARD == "chat":
+    llm_client = ChatAPIClient(client, MODEL)
+else:
+    llm_client = ResponseAPIClient(client, MODEL)

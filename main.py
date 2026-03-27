@@ -55,7 +55,7 @@ from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS
 from utils.teams import TEAM_TOOLS_HANDLERS, TEAM_TOOLS
 from utils.memory import micro_compact, MEMORY_TOOLS, MEMORY_TOOLS_HANDLERS, THRESHOLD, estimate_tokens
 
-from init import client, MODEL, WORKDIR
+from init import MODEL, WORKDIR, llm_client
 
 console = Console() if RICH_AVAILABLE else None
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
@@ -89,7 +89,7 @@ Execution guidance:
 - Final answers should summarize: completed tasks, remaining tasks, and next runnable tasks.
 """
 
-SUPER_TOOLS = COMMON_TOOLS + SKILL_TOOLS + MEMORY_TOOLS + TASK_MANAGER_TOOLS + TEAM_TOOLS
+SUPER_TOOLS = llm_client.format_tools(COMMON_TOOLS + SKILL_TOOLS + MEMORY_TOOLS + TASK_MANAGER_TOOLS + TEAM_TOOLS)
 
 SUPER_TOOLS_HANDLERS = {
     **COMMON_TOOLS_HANDLERS,
@@ -111,7 +111,10 @@ def _extract_message_text(msg: dict) -> str:
 
 
 def _parse_arguments(arguments: Any) -> Any:
-    if not isinstance(arguments, str): return arguments
+    if not isinstance(arguments, str): 
+        return arguments or {}
+    if not arguments.strip():
+        return {}
     try:
         return json.loads(arguments)
     except json.JSONDecodeError:
@@ -169,9 +172,8 @@ def _render_tool_output(name: str, output: Any):
 def _request_with_progress(messages: list):
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
-            client.responses.create,
-            model=MODEL,
-            input=messages,
+            llm_client.generate,
+            messages=messages,
             tools=SUPER_TOOLS,
         )
 
@@ -299,39 +301,35 @@ def agent_loop(messages: list):
             else:
                 print(f"\033[31m⚠️ {error_msg}\033[0m")
             break
-        new_msgs = [
-            item.model_dump(exclude_none=True)
-            if hasattr(item, 'model_dump') else dict(item) for item in response.output
-        ]
-        messages.extend(new_msgs)
 
-        has_tool_call = False
-        for msg in new_msgs:
-            if msg.get("type") == "function_call":
-                has_tool_call = True
-                _render_tool_call(msg.get("name"), _parse_arguments(msg.get("arguments")))
-            else:
-                _render_orchestrator_message(_extract_message_text(msg))
+        text_content, tool_calls, raw_message = llm_client.parse_response(response)
+        llm_client.append_assistant_message(messages, raw_message)
 
-        for item in response.output:
-            if item.type == "function_call":
-                try:
-                    arguments = _parse_arguments(item.arguments)
-                    handler = SUPER_TOOLS_HANDLERS.get(item.name)
-                    if handler:
-                        output = handler(messages, **arguments) if item.name == "Compact" else handler(**arguments)
-                    else:
-                        output = f"Unknown tool: {item.name}"
-                except Exception as e:
-                    output = f"Error executing {item.name}: {e}"
+        has_tool_call = len(tool_calls) > 0
+        
+        if text_content:
+            _render_orchestrator_message(text_content)
+            
+        for tc in tool_calls:
+            tool_name = tc["name"]
+            tool_id = tc["id"]
+            tool_args = tc["arguments"]
+            
+            _render_tool_call(tool_name, _parse_arguments(tool_args))
+            
+            try:
+                arguments = _parse_arguments(tool_args)
+                handler = SUPER_TOOLS_HANDLERS.get(tool_name)
+                if handler:
+                    output = handler(messages, **arguments) if tool_name == "Compact" else handler(**arguments)
+                else:
+                    output = f"Unknown tool: {tool_name}"
+            except Exception as e:
+                output = f"Error executing {tool_name}: {e}"
 
-                _render_tool_output(item.name, output)
+            _render_tool_output(tool_name, output)
 
-                messages.append({
-                    "type": "function_call_output",
-                    "call_id": item.call_id,
-                    "output": json.dumps(output, ensure_ascii=False) if not isinstance(output, str) else output
-                })
+            messages.append(llm_client.format_tool_result(tool_id, tool_name, output))
 
         if not has_tool_call:
             break

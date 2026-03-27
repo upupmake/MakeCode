@@ -2,7 +2,7 @@
 
 🌐 语言切换：**简体中文** | [English](README_en.md) | [📦 Releases](https://github.com/cockmake/MakeCode/releases)
 
-> 一个基于 OpenAI Responses API 的多代理命令行编排器。
+> 一个多代理命令行编排器。
 > 
 > 支持任务拓扑规划、并发子代理委派、技能加载、文件/终端工具调用，以及长会话压缩。
 
@@ -40,9 +40,10 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用“编排器（Orch
 ### 2.2 工作目录与环境初始化（`init.py`）
 
 - 启动时自动读取项目根目录 `.env`。
-- 支持交互式选择工作区目录：
-  - 当前目录
-  - 自定义目录
+- 支持交互式选择工作区目录（支持当前目录/自定义目录）。
+- **新增** 支持交互式选择底层的接口规范标准：
+  - `Chat Completions API`（标准格式，适用于接入大多数开源模型如 DeepSeek、Ollama 等）。
+  - `Responses API`（内测定制格式，原生兼容）。
 - 初始化 OpenAI 客户端，读取：
   - `OPENAI_API_KEY`
   - `OPENAI_BASE_URL`
@@ -140,6 +141,7 @@ Agent/
 ├─ tools/
 │  └─ todo.py               # 子代理内部 Todo 管理工具
 ├─ utils/
+│  ├─ llm_client.py         # LLM 标准适配器 (Chat vs Response) 
 │  ├─ common.py             # 文件/终端/搜索等基础工具
 │  ├─ tasks.py              # TaskManager 任务拓扑与状态管理
 │  ├─ teams.py              # 子代理并发委派与执行日志
@@ -164,7 +166,8 @@ Agent/
 ```mermaid
 flowchart TD
     U[用户 / CLI Input] --> O[Orchestrator<br/>main.py]
-    O --> M[OpenAI Responses API]
+    O --> AC[llm_client.py<br/>Adapter]
+    AC --> M[OpenAI 标准 / Responses API]
     O --> I[初始化与环境<br/>init.py]
 
     O --> C[File / Terminal Tools<br/>utils/common.py]
@@ -234,7 +237,7 @@ flowchart TD
 
 - Python 3.10+
 - 可用的 OpenAI 兼容接口
-- 模型需支持 Responses API
+- 模型支持 Chat Completions API 或 Responses API
 
 当前 `requirements.txt` 中声明的依赖：
 
@@ -265,7 +268,7 @@ OPENAI_API_KEY=your_api_key
 MODEL_ID=your_model_id
 ```
 
-- `MODEL_ID` 对应的模型必须支持 Responses API。
+- `MODEL_ID` 对应的模型必须支持 Chat Completions API 或 Responses API。
 - 程序会优先使用环境变量中已有值；`.env` 中缺失的项不会覆盖现有环境变量。
 
 ### 6.3 启动
@@ -274,7 +277,7 @@ MODEL_ID=your_model_id
 python main.py
 ```
 
-启动后会先选择工作区目录，然后进入交互式 CLI。
+启动后会提供菜单，**首先交互式选择工作区目录**，**其次交互式选择底层的接口规范标准**（Chat/Response），最后进入交互式 CLI。
 
 ---
 
@@ -305,15 +308,15 @@ python main.py
 
 ### 8.2 新增工具
 
-当前工具注册方式基于 `openai.pydantic_function_tool(...)` 与 `make_response_tool(...)`。
+当前工具注册方式统一基于 `openai.pydantic_function_tool(...)`。系统在底层（`utils/llm_client.py`）会自动将其格式化处理为适配不同大模型 API 标准的格式。
 
 新增工具的一般步骤：
 
-1. 定义 Pydantic 模型
-2. 实现处理函数
-3. 注册到对应工具集合
-4. 将 handler 合并到对应 `*_HANDLERS`
-5. 在主循环的工具聚合中接入
+1. 定义 Pydantic 模型作为工具入参描述
+2. 实现具体的 Python 函数处理逻辑
+3. 通过 `pydantic_function_tool` 注册到对应工具集合列表
+4. 将该工具的方法名与对应的函数绑定到 `*_HANDLERS` 字典中
+5. 在主循环或子代理循环的工具聚合列表中接入
 
 ---
 

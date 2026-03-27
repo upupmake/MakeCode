@@ -3,8 +3,6 @@ from typing import Literal
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
-from utils.common import make_response_tool
-
 
 class TaskItem(BaseModel):
     """A single task item with text and status."""
@@ -66,5 +64,5 @@ class TodoManager:
 
 
 TODO_TOOLS = [
-    make_response_tool(pydantic_function_tool(TodoUpdate))
+    pydantic_function_tool(TodoUpdate)
 ]

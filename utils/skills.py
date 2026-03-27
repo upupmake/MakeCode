@@ -5,7 +5,6 @@ from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
 from init import WORKDIR
-from utils.common import make_response_tool
 
 SKILLS_DIR = WORKDIR / "skills"
 
@@ -79,8 +78,8 @@ class SkillLoader:
 SKILL_LOADER = SkillLoader(SKILLS_DIR)
 
 TOOLS = [
-    make_response_tool(pydantic_function_tool(LoadSkill)),
-    make_response_tool(pydantic_function_tool(ListSkills)),
+    pydantic_function_tool(LoadSkill),
+    pydantic_function_tool(ListSkills),
 ]
 
 SKILL_NAMESPACE = {
