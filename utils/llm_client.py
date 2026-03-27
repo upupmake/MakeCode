@@ -1,6 +1,8 @@
 import json
 from abc import ABC, abstractmethod
 
+from openai import OpenAI
+
 
 def _make_response_tool(tool_dict):
     """Flatten pydantic_function_tool output for Responses API"""
@@ -17,7 +19,7 @@ def _make_response_tool(tool_dict):
 
 
 class BaseLLMClient(ABC):
-    def __init__(self, client, model: str):
+    def __init__(self, client: OpenAI, model: str):
         self.client = client
         self.model = model
 

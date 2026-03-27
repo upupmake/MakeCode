@@ -7,7 +7,7 @@ __pycache__/
 .venv/
 venv/
 env/
-
+nul
 # Environment variables
 .env
 *.exe
