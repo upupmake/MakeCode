@@ -97,7 +97,7 @@ Team 模块支持：
 
 运行过程会生成：
 
-- `.makecode/team/task_history.json`
+- `.makecode/team/task_history_{session_id}.json`
 - `.makecode/team/runs/<run_id>/..._trace.jsonl`
 
 ### 2.6 技能系统（`utils/skills.py`）

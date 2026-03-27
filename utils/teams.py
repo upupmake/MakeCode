@@ -2,6 +2,7 @@ import concurrent.futures
 import json
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -72,7 +73,8 @@ class TeammateManager:
         self.dir.mkdir(parents=True, exist_ok=True)
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.history_path = self.dir / "task_history.json"
+        self.session_id = uuid.uuid4().hex[:8]
+        self.history_path = self.dir / f"task_history_{self.session_id}.json"
         self.history = self._load_history()
 
         # 多线程修改统一配置文件时，必须加锁防冲突
@@ -160,7 +162,7 @@ class TeammateManager:
             role = task_info["role_name"]
             prompt = task_info["context_prompt"]
 
-            runtime_task_id = f"{role}_{int(time.time() * 1000)}"
+            runtime_task_id = f"task_{plan_task_id}_{uuid.uuid4().hex[:6]}"
             start_time = datetime.now().isoformat()
 
             # 为该 Sub-Agent 分配专属的行动日志文件

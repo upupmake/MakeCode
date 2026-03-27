@@ -98,7 +98,7 @@ The Team module supports:
 
 Runtime artifacts include:
 
-- `.makecode/team/task_history.json`
+- `.makecode/team/task_history_{session_id}.json`
 - `.makecode/team/runs/<run_id>/..._trace.jsonl`
 
 ### 2.6 Skill System (`utils/skills.py`)
