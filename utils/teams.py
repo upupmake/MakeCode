@@ -294,6 +294,8 @@ class TeammateManager:
             f"Use available tools to complete the task. "
             f"Your task is independent from sibling sub-agents in this run; do not assume ordering from them. "
             f"For workspace file operations (reading, writing, editing, or text searching), strictly use the File namespace tools (RunRead, RunWrite, RunEdit, RunGrep). Do NOT use terminal commands for these tasks. "
+            f"RunWrite is only for creating and writing NEW files. "
+            f"For editing existing files, you MUST call RunRead first to confirm current content, then use RunEdit. "
             f"For CLI/build/test tasks, use RunTerminalCommand directly. "
             f"Runtime terminal is fixed at startup: {STARTUP_TERMINAL_LABEL} (source={STARTUP_TERMINAL_SOURCE}). "
             f"Before execution, call 'TodoUpdate' to create a short actionable plan (2-6 items) and keep it updated. "

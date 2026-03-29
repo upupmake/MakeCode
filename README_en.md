@@ -54,8 +54,8 @@ The goal is not just to answer questions, but to provide an agent workflow that 
 Provides the following execution primitives:
 
 - `RunRead`: read file contents, optionally by line range
-- `RunWrite`: overwrite a file and auto-create parent directories
-- `RunEdit`: replace a specific line range
+- `RunWrite`: only for creating and writing a NEW file (when target file does not exist)
+- `RunEdit`: modify an existing file by replacing a specific line range (must call `RunRead` first)
 - `RunGrep`: search text files in a target directory with a regex pattern
 - `RunTerminalCommand`: run a non-interactive terminal command
 

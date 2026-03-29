@@ -54,8 +54,8 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用“编排器（Orch
 提供以下基础执行能力：
 
 - `RunRead`：读取文件，可指定行号范围。
-- `RunWrite`：覆盖写入文件，自动创建父目录。
-- `RunEdit`：按指定行范围替换内容。
+- `RunWrite`：仅用于新建并写入文件（目标文件不存在时）。
+- `RunEdit`：用于修改已存在文件的指定行范围（调用前必须先 `RunRead` 确认内容）。
 - `RunGrep`：按正则在目标目录内搜索文本文件。
 - `RunTerminalCommand`：执行非交互式终端命令。
 

@@ -173,7 +173,12 @@ def run_read(path: str, start: int | None = None, end: int | None = None) -> str
 
 
 class RunWrite(BaseModel):
-    """Write content to a file, directly overwriting it and creating parent directories if needed."""
+    """
+    Create and write a NEW file.
+    CRITICAL REQUIREMENTS:
+    1. Use this tool only when the target file does NOT exist yet.
+    2. If the file already exists and you need modifications, use RunRead first, then RunEdit.
+    """
     path: str = Field(..., description="Path to the file to write, relative to workspace.")
     content: str = Field(..., description="The content to write to the file.")
 
@@ -181,6 +186,12 @@ class RunWrite(BaseModel):
 def run_write(path: str, content: str) -> str:
     try:
         fp = safe_path(path)
+        if fp.exists():
+            return (
+                f"Error: File {path} already exists. "
+                "RunWrite is only for creating new files. "
+                "For modifications, call RunRead first, then RunEdit."
+            )
         fp.parent.mkdir(parents=True, exist_ok=True)
         # 强制使用 utf-8 写入，保持跨平台一致性
         fp.write_text(content, encoding='utf-8')
@@ -195,6 +206,7 @@ class RunEdit(BaseModel):
     Replace a specific line range in a file with new content.
     CRITICAL REQUIREMENTS:
     1. You MUST call `RunRead` first.
+    1.1 You MUST use this tool for modifying an existing file (do NOT use RunWrite to modify existing files).
     2. `new_content` MUST contain the EXACT absolute indentation (spaces) required. The tool does NOT auto-indent.
     3. Carefully check the `start` and `end` line numbers to avoid leaving orphaned code or duplicate signatures.
     """
@@ -379,7 +391,9 @@ FILE_NAMESPACE = {
     "name": "File",
     "description": (
         "Primary file operation tools for workspace files. Always prefer this namespace for file reads, "
-        "writes, edits, and text searches instead of shell commands."
+        "writes, edits, and text searches instead of shell commands. "
+        "IMPORTANT: Use RunWrite only to create/write new files. For existing-file changes, you must call "
+        "RunRead first and then use RunEdit."
     ),
     "tools": TOOLS,
 }

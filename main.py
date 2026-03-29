@@ -86,6 +86,8 @@ Execution guidance:
 - Prefer parallel delegation for independent runnable tasks.
 - Keep tool calls explicit and deterministic; avoid speculative actions.
 - For workspace file operations (reading, writing, editing, or text searching), strictly use the File namespace tools (RunRead, RunWrite, RunEdit, RunGrep). Do NOT use terminal commands for these tasks.
+- RunWrite is only for creating and writing NEW files.
+- For editing existing files, you MUST call RunRead first to confirm current content, then use RunEdit.
 - For terminal/CLI tasks, use RunTerminalCommand directly.
   - Runtime terminal is fixed at startup: {STARTUP_TERMINAL_LABEL} (source={STARTUP_TERMINAL_SOURCE}).
 - Final answers should summarize: completed tasks, remaining tasks, and next runnable tasks.
