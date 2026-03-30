@@ -149,6 +149,57 @@ class TaskManager:
             raise ValueError(f"Tasks not found: {missing}")
         return ids
 
+    @staticmethod
+    def _normalize_dep_ids(dep_input: list[str | int] | str | None, arg_name: str) -> list[str]:
+        """Defensive parsing for LLM hallucinated nested dependency payloads."""
+        if dep_input is None:
+            return []
+        current = dep_input
+        if isinstance(current, str):
+            payload = current.strip()
+            if not payload:
+                return []
+            try:
+                current = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{arg_name} JSON parse error: {exc}") from exc
+        if not isinstance(current, list):
+            raise ValueError(f"{arg_name} must be a list after parsing, got {type(current).__name__}.")
+
+        result: list[str] = []
+        for idx, item in enumerate(current):
+            item_obj = item
+            for _ in range(5):
+                if isinstance(item_obj, str):
+                    payload = item_obj.strip()
+                    if not payload:
+                        break
+                    try:
+                        parsed = json.loads(payload)
+                    except json.JSONDecodeError:
+                        break
+                    item_obj = parsed
+                    continue
+                break
+
+            if isinstance(item_obj, dict):
+                if "task_id" in item_obj:
+                    item_obj = item_obj["task_id"]
+                elif "id" in item_obj:
+                    item_obj = item_obj["id"]
+                else:
+                    raise ValueError(
+                        f"{arg_name}[{idx}] object must contain 'task_id' or 'id'."
+                    )
+
+            if item_obj is None:
+                continue
+
+            item_str = str(item_obj).strip()
+            if item_str:
+                result.append(item_str)
+        return result
+
     def _task(self, task_id: str | int) -> dict[str, Any]:
         return self._data["tasks"][self._ensure_task_exists(task_id)]
 
@@ -206,7 +257,8 @@ class TaskManager:
             raise ValueError("subject is required")
         self._validate_status(status)
 
-        dep_ids = self._ensure_tasks_exist(depend_on or [])
+        dep_input = self._normalize_dep_ids(depend_on, "CreateTask.depend_on")
+        dep_ids = self._ensure_tasks_exist(dep_input)
 
         task_id = str(self._data["next_id"])
         if task_id in dep_ids:
@@ -240,7 +292,8 @@ class TaskManager:
 
     def update_task_dependencies(self, task_id: str | int, depend_on: list[str | int], **kwargs) -> dict[str, Any]:
         tid = self._ensure_task_exists(task_id)
-        dep_ids = self._ensure_tasks_exist(depend_on)
+        dep_input = self._normalize_dep_ids(depend_on, "UpdateTaskDependencies.depend_on")
+        dep_ids = self._ensure_tasks_exist(dep_input)
         if tid in dep_ids:
             raise ValueError("Task cannot depend on itself")
         task = self._data["tasks"][tid]

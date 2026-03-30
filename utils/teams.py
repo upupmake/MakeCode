@@ -98,19 +98,48 @@ class TeammateManager:
             TASK_MANAGER.update_task_status(task_id=task_id, status=status)
 
     def _validate_delegation_tasks(self, tasks: list[dict]) -> list[dict]:
+        if isinstance(tasks, str):
+            payload = tasks.strip()
+            if not payload:
+                raise ValueError("DelegateTasks.tasks is an empty string; expected a list of task objects.")
+            try:
+                tasks = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"DelegateTasks.tasks JSON parse error: {exc}") from exc
+
+        if not isinstance(tasks, list):
+            raise ValueError(
+                f"DelegateTasks.tasks must be a list after parsing, got {type(tasks).__name__}."
+            )
+
         required_fields = ("task_id", "role_name", "context_prompt")
         normalized: list[dict] = []
         seen_ids: set[str] = set()
         unknown_ids: list[str] = []
 
         for idx, raw in enumerate(tasks):
-            if not isinstance(raw, dict):
+            item_obj = raw
+            for depth in range(5):
+                if isinstance(item_obj, str):
+                    nested_payload = item_obj.strip()
+                    if not nested_payload:
+                        raise ValueError(f"DelegateTasks.tasks[{idx}] is an empty string.")
+                    try:
+                        item_obj = json.loads(nested_payload)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(f"DelegateTasks.tasks[{idx}] JSON parse error: {exc}") from exc
+                    continue
+                break
+            else:
+                raise ValueError(f"DelegateTasks.tasks[{idx}] exceeded max nested JSON depth.")
+
+            if not isinstance(item_obj, dict):
                 raise ValueError(
                     f"DelegateTasks.tasks[{idx}] must be an object (dict). "
                     f"Missing required parameters: {list(required_fields)}."
                 )
 
-            item = dict(raw)
+            item = dict(item_obj)
             missing = [
                 field for field in required_fields
                 if field not in item or str(item.get(field, "")).strip() == ""
