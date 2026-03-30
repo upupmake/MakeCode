@@ -47,6 +47,7 @@ class DelegateTasks(BaseModel):
        - no inter-task ordering dependency
        - no shared mutable file/state requiring serialization
        - each task can complete end-to-end without waiting on sibling tasks
+       - avoid batching tasks that may write the same file concurrently
     6) Sub-agents are stateless. Each context_prompt must be complete and self-contained.
     """
     tasks: list[TaskSpec] = Field(
@@ -54,6 +55,7 @@ class DelegateTasks(BaseModel):
         description=(
             "Runnable tasks to delegate concurrently. "
             "Use only for fully independent, parallel-safe tasks. "
+            "Avoid putting tasks that may write the same file into the same runnable batch. "
             "Sub-agents are stateless, so each item must include complete context. "
             "Each item must include task_id, role_name, and context_prompt."
         )
@@ -323,6 +325,8 @@ class TeammateManager:
             f"You have been assigned a specific task by the Orchestrator. "
             f"Use available tools to complete the task. "
             f"Your task is independent from sibling sub-agents in this run; do not assume ordering from them. "
+            f"Do not modify files owned by sibling sub-agents in this same run. "
+            f"If overlap is suspected, proceed conservatively and report it. "
             f"For workspace file operations (reading, writing, editing, or text searching), strictly use the File namespace tools (RunRead, RunWrite, RunEdit, RunGrep). Do NOT use terminal commands for these tasks. "
             f"RunWrite is only for creating and writing NEW files. "
             f"For editing existing files, you MUST call RunRead first to confirm current content, then use RunEdit. "
@@ -491,6 +495,7 @@ TEAM_NAMESPACE = {
         "Sub-agent delegation tools. DelegateTasks must be called only after TaskManager topology planning "
         "and a fresh GetRunnableTasks query. Each delegated item must include a runnable task_id. "
         "Only delegate when tasks are fully independent and safe to run in parallel. "
+        "Do not delegate tasks that may write the same file in the same batch; enforce topology order first. "
         "Sub-agents are stateless across runs, so each delegated item's context_prompt must be complete and self-contained."
     ),
     "tools": TEAM_NAMESPACE_TOOLS,

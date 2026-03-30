@@ -28,6 +28,7 @@ class CreateTask(BaseModel):
     Constraints:
     - `subject` is required and cannot be empty.
     - `depend_on` can only contain existing task IDs.
+    - For tasks that may modify the same file, encode explicit topology order via `depend_on`.
     - Task will be topology-validated after insertion.
     """
     subject: str = Field(..., min_length=1, description="Task title, concise and action-oriented.")
@@ -381,7 +382,8 @@ TASK_MANAGER_NAMESPACE = {
     "description": (
         "Task topology planning and execution state tools. "
         "Recommended flow: CreateTask -> UpdateTaskDependencies -> GetRunnableTasks -> DelegateTasks "
-        "(DelegateTasks lives in Team tools and should only receive runnable task IDs)."
+        "(DelegateTasks lives in Team tools and should only receive runnable task IDs). "
+        "For tasks that may write the same file, add dependencies to enforce topological order before delegation."
     ),
     "tools": TOOLS,
 }
