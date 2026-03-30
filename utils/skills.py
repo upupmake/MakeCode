@@ -4,7 +4,9 @@ from pathlib import Path
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
-SKILLS_DIR = "skills"
+from init import BASEDIR
+
+SKILLS_DIR = Path(BASEDIR) / "skills"
 
 
 class LoadSkill(BaseModel):

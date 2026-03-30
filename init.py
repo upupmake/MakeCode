@@ -1,10 +1,12 @@
 import os
 import sys
-from pathlib import Path
 import traceback
 from datetime import datetime
+from pathlib import Path
 
 from openai import OpenAI
+
+BASEDIR = ""
 
 
 def get_absolute_env_path():
@@ -12,6 +14,8 @@ def get_absolute_env_path():
         base_dir = os.path.dirname(sys.executable)
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
+    global BASEDIR
+    BASEDIR = base_dir
     return os.path.join(base_dir, '.env')
 
 
