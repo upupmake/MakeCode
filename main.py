@@ -240,6 +240,33 @@ def _render_startup_banner():
         print(f"\033[90m{subtitle}\033[0m")
 
 
+def _render_env_customization_hint():
+    hint_text = (
+        "💡 下次启动前可通过环境变量自定义模型：\n"
+        "MODEL_ID=xxx\nOPENAI_BASE_URL=xxx\nOPENAI_API_KEY=xxx"
+    )
+    if RICH_AVAILABLE:
+        console.print(
+            Panel(
+                Text(hint_text, style="bold yellow"),
+                title="[bold yellow]环境变量提示[/bold yellow]",
+                border_style="yellow",
+                box=box.ROUNDED,
+                padding=(1, 2),
+            )
+        )
+    else:
+        lines = [
+            "┌─────────────────────────────────────────────────────────────┐",
+            "│💡下次启动前可通过环境变量自定义模型：                           │",
+            "│  MODEL_ID=xxx                                               │",
+            "│  OPENAI_BASE_URL=xxx                                        │",
+            "│  OPENAI_API_KEY=xxx                                         │",
+            "└─────────────────────────────────────────────────────────────┘",
+        ]
+        print("\n" + "\n".join(lines) + "\n")
+
+
 def _disable_prompt_toolkit(reason: str):
     global USER_SESSION, PROMPT_TOOLKIT_DISABLED
     USER_SESSION = None
@@ -373,6 +400,7 @@ def agent_loop(messages: list):
 
 if __name__ == '__main__':
     _render_startup_banner()
+    _render_env_customization_hint()
     history = [{"role": "system", "content": SYSTEM}]
     while True:
         try:
