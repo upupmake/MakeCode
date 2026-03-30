@@ -242,7 +242,7 @@ def _render_startup_banner():
 
 def _render_env_customization_hint():
     hint_text = (
-        "💡 下次启动前可通过环境变量自定义模型：\n"
+        "💡下次启动前可通过环境变量自定义模型：\n"
         "MODEL_ID=xxx\nOPENAI_BASE_URL=xxx\nOPENAI_API_KEY=xxx"
     )
     if RICH_AVAILABLE:
