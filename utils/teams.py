@@ -1,7 +1,6 @@
 import concurrent.futures
 import json
 import threading
-import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -48,12 +47,14 @@ class DelegateTasks(BaseModel):
        - no inter-task ordering dependency
        - no shared mutable file/state requiring serialization
        - each task can complete end-to-end without waiting on sibling tasks
+    6) Sub-agents are stateless. Each context_prompt must be complete and self-contained.
     """
     tasks: list[TaskSpec] = Field(
         ...,
         description=(
             "Runnable tasks to delegate concurrently. "
             "Use only for fully independent, parallel-safe tasks. "
+            "Sub-agents are stateless, so each item must include complete context. "
             "Each item must include task_id, role_name, and context_prompt."
         )
     )
@@ -356,14 +357,14 @@ class TeammateManager:
             messages_text = json.dumps(messages, ensure_ascii=False, default=str, indent=2)
             summary_prompt = (
                 "The sub-agent stopped before formal completion. "
-                "You must now produce a final detailed report for the Orchestrator. "
+                "You must now produce an extremely detailed final report for the Orchestrator. "
                 "Requirements:\n"
-                "1) Very detailed summary of what has been completed so far.\n"
-                "2) Explicitly state it is NOT fully completed.\n"
-                "3) Clearly list what remains and what should be done next.\n"
-                "4) Include evidence from tool results and decisions if available.\n"
-                "5) Be honest and avoid claiming completion.\n\n"
-                f"Stop reason: {stop_reason}\n"
+                "1) Extremely detailed summary of what has been completed so far.\n"
+                "2) Explicitly state the current completion status: completed / partially completed / not completed.\n"
+                "3) If status is not completed, clearly list remaining work and exact next steps.\n"
+                "4) Include concrete evidence: tools used, important outputs, file paths, key decisions, and blockers.\n"
+                "5) If completion is uncertain because SubmitTaskReport was not called, state this uncertainty explicitly.\n"
+                "6) Use sections: Overview, Completed Work (Detailed), Current Completion Status, Remaining Work, Next Steps, Risks/Blockers.\n\n"
                 f"Executed steps: {executed_steps}/30\n\n"
                 f"Current todo snapshot:\n{todo_snapshot}\n\n"
                 f"Conversation transcript (stringified JSON):\n{messages_text}"
@@ -372,9 +373,10 @@ class TeammateManager:
                 {
                     "role": "system",
                     "content": (
-                        "You are a reporting assistant. Produce an accurate progress report only. "
-                        "Never claim the task is fully completed unless explicit evidence proves it. "
-                        "Your report must include: completed work details, incomplete work, and next steps."
+                        "You are a rigorous reporting assistant. "
+                        "Produce an extremely detailed, evidence-based progress report only. "
+                        "Never fabricate completion; if uncertain, explicitly say uncertain. "
+                        "Clearly distinguish completed, partially completed, and not completed work."
                     ),
                 },
                 {"role": "user", "content": summary_prompt},
@@ -408,13 +410,14 @@ class TeammateManager:
             except Exception as e:
                 log_error_traceback(f"Sub-agent API generation error (Role: {role})", e)
                 append_trace("api_error", str(e))
-                return {"status": "failed", "report": f"API Error in sub-agent: {e}. Check .makecode/error.log for details."}
+                return {"status": "failed",
+                        "report": f"API Error in sub-agent: {e}. Check .makecode/error.log for details."}
 
             text_content, tool_calls, raw_message = llm_client.parse_response(response)
-            
+
             # append assistant message to history
             llm_client.append_assistant_message(messages, raw_message)
-            
+
             append_trace(f"step_{step}_llm_output", {
                 "text": text_content,
                 "tool_calls": [tc["name"] for tc in tool_calls]
@@ -487,7 +490,8 @@ TEAM_NAMESPACE = {
     "description": (
         "Sub-agent delegation tools. DelegateTasks must be called only after TaskManager topology planning "
         "and a fresh GetRunnableTasks query. Each delegated item must include a runnable task_id. "
-        "Only delegate when tasks are fully independent and safe to run in parallel."
+        "Only delegate when tasks are fully independent and safe to run in parallel. "
+        "Sub-agents are stateless across runs, so each delegated item's context_prompt must be complete and self-contained."
     ),
     "tools": TEAM_NAMESPACE_TOOLS,
 }
