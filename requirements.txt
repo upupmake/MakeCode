@@ -1,6 +1,5 @@
 openai
-pydantic
 prompt_toolkit
-python-dotenv
+pydantic
 rich
 tqdm
