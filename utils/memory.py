@@ -16,12 +16,13 @@ CHECKPOINT_DIR = MAKECODE_DIR / "checkpoint"
 KEEP_RECENT = 24
 
 
-def save_checkpoint(messages: list) -> Path:
+def save_checkpoint(messages: list, filepath: Path = None) -> Path:
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    uid = uuid.uuid4().hex[:8]
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"ckpt_{timestamp}_{uid}.json"
-    filepath = CHECKPOINT_DIR / filename
+    if filepath is None:
+        uid = uuid.uuid4().hex[:8]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"ckpt_{timestamp}_{uid}.json"
+        filepath = CHECKPOINT_DIR / filename
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(messages, f, ensure_ascii=False, indent=2)
     return filepath

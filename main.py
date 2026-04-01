@@ -271,7 +271,7 @@ def _render_env_customization_hint():
 
 
 COMMAND_DESCRIPTIONS = {
-    "/save": "手动保存当前所有对话到checkpoint",
+    "/cmds": "列出所有的可用命令和功能描述",
     "/load": "列出历史checkpoint并选择加载",
     "/skills": "列出当前可用的skills",
     "/compact": "压缩当前对话上下文",
@@ -446,14 +446,15 @@ def _interactive_choose_checkpoint(checkpoints: list) -> str:
     
     options = []
     for cp in checkpoints:
-        # cp is a Path object, format is ckpt_YYYYMMDD_HHMMSS_uid.json
+        # cp is a Path object
         parts = cp.stem.split("_")
-        if len(parts) >= 4:
-            date_str = f"{parts[1]} {parts[2][:2]}:{parts[2][2:4]}:{parts[2][4:]}"
-            uid = parts[-1]
-            desc = f"Checkpoint {uid} ({date_str})"
-        else:
-            desc = cp.name
+        uid = parts[-1] if len(parts) >= 4 else cp.name
+        
+        # 使用文件的最后修改时间
+        mtime = cp.stat().st_mtime
+        date_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
+        
+        desc = f"Checkpoint {uid} (Last updated: {date_str})"
         options.append((str(cp), desc))
         
     options.append(("abort", "取消 (Cancel)"))
@@ -499,6 +500,8 @@ def _interactive_choose_checkpoint(checkpoints: list) -> str:
     app = Application(layout=layout, key_bindings=kb, style=style, erase_when_done=True)
     return app.run()
 
+CURRENT_CHECKPOINT = None
+
 if __name__ == '__main__':
     _render_startup_banner()
     _render_env_customization_hint()
@@ -525,20 +528,29 @@ if __name__ == '__main__':
                 print("\n\033[33m👋 Exiting MakeCode Agent. Goodbye!\033[0m")
             break
 
+        if query == "/cmds":
+            if RICH_AVAILABLE:
+                from rich.table import Table
+                table = Table(title="[bold cyan]🛠️ 可用内置命令列表[/bold cyan]", box=box.ROUNDED, expand=True)
+                table.add_column("命令 (Command)", style="bold green", justify="left")
+                table.add_column("描述 (Description)", style="white")
+                for cmd, desc in COMMAND_DESCRIPTIONS.items():
+                    table.add_row(cmd, desc)
+                console.print(table)
+            else:
+                print("\n\033[36m🛠️ 可用内置命令列表:\033[0m")
+                for cmd, desc in COMMAND_DESCRIPTIONS.items():
+                    print(f"  \033[32m{cmd:<12}\033[0m - {desc}")
+                print()
+            continue
+
         if query in ["/clear", "/reset"]:
             history = [{"role": "system", "content": SYSTEM}]
+            CURRENT_CHECKPOINT = None
             if RICH_AVAILABLE:
                 console.print("\n[bold green]✨ 对话历史已清空，开启全新会话！[/bold green]")
             else:
                 print("\n\033[32m✨ 对话历史已清空，开启全新会话！\033[0m")
-            continue
-
-        if query == "/save":
-            filepath = save_checkpoint(history)
-            if RICH_AVAILABLE:
-                console.print(f"\n[bold green]💾 对话已保存至: {filepath.name}[/bold green]")
-            else:
-                print(f"\n\033[32m💾 对话已保存至: {filepath.name}\033[0m")
             continue
 
         if query == "/load":
@@ -550,14 +562,10 @@ if __name__ == '__main__':
                     print("\n\033[33m📂 没有找到任何历史对话记录 (No checkpoints found).\033[0m")
                 continue
 
-            # 如果已经在对话中(除去system prompt之外有其他内容)，自动保存一次
-            if len(history) > 1:
-                auto_save_path = save_checkpoint(history)
-                if RICH_AVAILABLE:
-                    console.print(f"\n[bold dim]⏳ 已自动保存当前对话至: {auto_save_path.name}[/bold dim]")
-                else:
-                    print(f"\n\033[90m⏳ 已自动保存当前对话至: {auto_save_path.name}\033[0m")
-
+            # 如果已经在对话中(除去system prompt之外有其他内容)，并且当前还没有绑定任何 checkpoint，确保它被保存
+            if len(history) > 1 and CURRENT_CHECKPOINT is None:
+                CURRENT_CHECKPOINT = save_checkpoint(history)
+            
             try:
                 selected_path = _interactive_choose_checkpoint(checkpoints)
             except Exception as exc:
@@ -573,6 +581,7 @@ if __name__ == '__main__':
 
             try:
                 history = load_checkpoint(Path(selected_path))
+                CURRENT_CHECKPOINT = Path(selected_path)
                 if RICH_AVAILABLE:
                     console.print(f"\n[bold green]🚀 成功加载对话记录！当前上下文包含 {len(history)} 条消息。[/bold green]")
                 else:
@@ -590,3 +599,4 @@ if __name__ == '__main__':
             query = f"{query} {COMMAND_DESCRIPTIONS[query]}"
         history.append({"role": "user", "content": query})
         agent_loop(history)
+        CURRENT_CHECKPOINT = save_checkpoint(history, CURRENT_CHECKPOINT)
