@@ -13,6 +13,7 @@ try:
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
     from prompt_toolkit.styles import Style
+    from prompt_toolkit.completion import Completer, Completion
 
     PROMPT_TOOLKIT_AVAILABLE = True
 except ImportError as exc:
@@ -264,6 +265,33 @@ def _render_env_customization_hint():
         print("\n" + "\n".join(lines) + "\n")
 
 
+COMMAND_DESCRIPTIONS = {
+    "/skills": "列出当前可用的skills",
+    "/compact": "压缩当前对话上下文",
+    "/tools": "列出当前可用工具详细信息",
+    "/tasks": "查看任务看板和当前执行进度",
+    "/plan": "查看任务看板和当前执行进度",
+    "/status": "汇报系统状态、已完成任务和下一步计划",
+    "/help": "显示使用帮助和自我介绍",
+    "/workspace": "查看当前工作区目录结构",
+    "/ls": "查看当前工作区目录结构",
+    "/clear": "清空当前对话历史",
+    "/reset": "清空当前对话历史",
+    "/quit": "退出程序",
+    "/exit": "退出程序"
+}
+
+class SlashCommandCompleter(Completer):
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if text.startswith('/'):
+            for cmd, desc in COMMAND_DESCRIPTIONS.items():
+                if cmd.startswith(text):
+                    # display_meta 可以在补全菜单右侧漂亮地显示中文描述
+                    yield Completion(cmd, start_position=-len(text), display_meta=desc)
+
+command_completer = SlashCommandCompleter()
+
 def _init_user_session():
     global USER_SESSION
     if USER_SESSION is not None:
@@ -273,7 +301,28 @@ def _init_user_session():
 
         @user_kb.add(Keys.Enter)
         def _submit_query(event):
-            event.current_buffer.validate_and_handle()
+            buffer = event.current_buffer
+            text = buffer.text.strip()
+            
+            # 处理斜杠命令的自动补全逻辑
+            if text.startswith('/'):
+                # 如果当前输入的已经是完整的内置命令，直接提交
+                if text in COMMAND_DESCRIPTIONS:
+                    buffer.validate_and_handle()
+                    return
+                
+                # 如果命令不完整，但补全菜单中有匹配项
+                if buffer.complete_state and buffer.complete_state.completions:
+                    if buffer.complete_state.current_completion:
+                        # 场景1：用户用上下键明确选中了某一项
+                        buffer.apply_completion(buffer.complete_state.current_completion)
+                    else:
+                        # 场景2：用户只敲了 /sk 就按回车，自动帮他补全成第一项 (/skills)
+                        buffer.apply_completion(buffer.complete_state.completions[0])
+                    return
+
+            # 常规对话输入或完整命令，直接提交给大模型
+            buffer.validate_and_handle()
 
         @user_kb.add('c-n')
         def _insert_newline(event):
@@ -291,7 +340,10 @@ def _init_user_session():
             multiline=True,
             key_bindings=user_kb,
             prompt_continuation=prompt_continuation,
-            style=custom_style
+            style=custom_style,
+            completer=command_completer,
+            reserve_space_for_menu=5,
+            complete_while_typing=True
         )
     except Exception as exc:
         log_error_traceback("main init user session", exc)
@@ -399,6 +451,24 @@ if __name__ == '__main__':
         query = query.strip()
         if not query:
             continue
+            
+        if query in ["/quit", "/exit"]:
+            if RICH_AVAILABLE:
+                console.print("\n[bold yellow]👋 Exiting MakeCode Agent. Goodbye![/bold yellow]")
+            else:
+                print("\n\033[33m👋 Exiting MakeCode Agent. Goodbye!\033[0m")
+            break
 
+        if query in ["/clear", "/reset"]:
+            history = [{"role": "system", "content": SYSTEM}]
+            if RICH_AVAILABLE:
+                console.print("\n[bold green]✨ 对话历史已清空，开启全新会话！[/bold green]")
+            else:
+                print("\n\033[32m✨ 对话历史已清空，开启全新会话！\033[0m")
+            continue
+
+        # 核心逻辑：如果大模型需要处理软命令，把它和描述拼接在一起作为上下文
+        if query in COMMAND_DESCRIPTIONS:
+            query = f"{query} {COMMAND_DESCRIPTIONS[query]}"
         history.append({"role": "user", "content": query})
         agent_loop(history)

@@ -1,5 +1,13 @@
+matplotlib
+numpy
 openai
+openpyxl
+pandas
 prompt_toolkit
 pydantic
+python_frontmatter
+PyYAML
+Requests
 rich
 tqdm
+xlrd

@@ -1,4 +1,5 @@
 import re
+import frontmatter
 from pathlib import Path
 
 from openai import pydantic_function_tool
@@ -38,16 +39,13 @@ class SkillLoader:
 
     @staticmethod
     def _parse_frontmatter(text: str) -> tuple:
-        """Parse YAML frontmatter between --- delimiters."""
-        match = re.match(r"^---\n(.*?)\n---\n(.*)", text, re.DOTALL)
-        if not match:
+        """Parse YAML frontmatter using python-frontmatter."""
+        try:
+            post = frontmatter.loads(text)
+            return post.metadata, post.content
+        except Exception as e:
+            print(f"Warning: Failed to parse frontmatter: {e}")
             return {}, text
-        meta = {}
-        for line in match.group(1).strip().splitlines():
-            if ":" in line:
-                key, val = line.split(":", 1)
-                meta[key.strip()] = val.strip()
-        return meta, match.group(2).strip()
 
     def get_descriptions(self) -> str:
         """Layer 1: short descriptions for the system prompt."""
@@ -57,7 +55,7 @@ class SkillLoader:
         for name, skill in self.skills.items():
             desc = skill["meta"].get("description", "No description")
             tags = skill["meta"].get("tags", "")
-            line = f"  - {name}: {desc}"
+            line = f"  **{name}**: {desc}"
             if tags:
                 line += f" [{tags}]"
             lines.append(line)
