@@ -238,7 +238,7 @@ def _load_env_files():
                                 print(f"\033[90m ⏭️  Skipped {key}\033[0m")
                     else:
                         os.environ[key] = value
-        print(f"\033[34m ℹ️  Loaded environment variables from Workspace: {workdir_env}\033[0m")
+        print(f"\033[34m ℹ️ Loaded environment variables from Workspace: {workdir_env}\033[0m")
     except FileNotFoundError:
         pass
 

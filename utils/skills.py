@@ -52,11 +52,11 @@ class SkillLoader:
         if not self.skills:
             return "(no skills available)"
         lines = []
-        for name, skill in self.skills.items():
+        for i, (name, skill) in enumerate(self.skills.items(), 1):
             desc = skill["meta"].get("description", "No description")
             desc = str(desc).strip().replace('\n', ' ').replace('\r', '')
             tags = skill["meta"].get("tags", "")
-            line = f"  **{name}**: {desc}"
+            line = f"{i}. **{name}**: {desc}"
             if tags:
                 line += f" [{tags}]"
             lines.append(line)
