@@ -250,7 +250,7 @@ python main.py
 ```
 
 After startup, you will enter a wizard flow:
-1. **Interactive Workspace Selection (WORKDIR)**: Enter the absolute path of the directory where you just prepared your `.env` and `skills`, or press Enter to use the current directory.
+1. **Interactive Workspace Selection (WORKDIR)**: Enter the directory (absolute path) where you just prepared your `.env` and `skills`, or press Enter to use the current directory.
 2. **Resolve Environment Variable Conflicts**: If there are conflicts between your `.env` file and system variables, follow the prompt to confirm overrides.
 3. **Select API Standard**: Choose your underlying API protocol (Chat Completions API or Responses API).
 4. **Enter Interactive Terminal**: Begin your conversation with the main agent.
