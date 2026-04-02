@@ -12,9 +12,6 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from openai import OpenAI
 
-BASEDIR = ""
-
-
 def get_absolute_env_path():
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(sys.executable)
@@ -24,14 +21,12 @@ def get_absolute_env_path():
     BASEDIR = base_dir
     return os.path.join(base_dir, '.env')
 
-
 def _get_error_log_path() -> Path:
     workdir = globals().get("WORKDIR")
     base_dir = workdir if isinstance(workdir, Path) else Path.cwd()
     log_path = base_dir / ".makecode" / "error.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     return log_path
-
 
 def log_error_traceback(context: str, exc: Exception):
     try:
@@ -40,7 +35,6 @@ def log_error_traceback(context: str, exc: Exception):
             f.write(f"\n[{datetime.now().isoformat()}] [{context}] {type(exc).__name__}: {str(exc)}\n")
             traceback.print_exc(file=f)
     except Exception as logging_exc:
-        # Avoid recursive logging if logger itself fails.
         try:
             with open("makecode_init_fallback_error.log", "a", encoding="utf-8") as f:
                 f.write(
@@ -48,24 +42,7 @@ def log_error_traceback(context: str, exc: Exception):
                     f"{type(logging_exc).__name__}: {logging_exc}\n"
                 )
         except Exception:
-            # Last-resort fallback should remain silent to avoid recursive failures.
             pass
-
-
-env_path = get_absolute_env_path()
-try:
-    with open(env_path, encoding="utf-8", mode="r") as f:
-        lines = f.readlines()
-        for line in lines:
-            if line.strip() and not line.strip().startswith("#"):
-                key, value = line.strip().split("=", 1)
-                if key not in os.environ:
-                    # 注意字符串类型的环境变量值可能包含引号，去除它们
-                    value = value.strip('\'"')
-                    os.environ[key] = value
-except FileNotFoundError as exc:
-    log_error_traceback("init .env load", exc)
-    pass  # .env 文件不存在，继续执行，依赖环境变量的代码会处理缺失的情况
 
 try:
     from prompt_toolkit.application import Application
@@ -236,10 +213,40 @@ def _init_api_standard() -> str:
         print("\033[32m✅ API Standard set to: Responses API\033[0m\n")
         return "response"
 
+def _load_env_files():
+    """双重路径加载 .env 策略：先尝试 WORKDIR，再兜底 BASEDIR"""
+    def _parse_and_set_env(env_file_path: str):
+        try:
+            with open(env_file_path, encoding="utf-8", mode="r") as f:
+                lines = f.readlines()
+                for line in lines:
+                    if line.strip() and not line.strip().startswith("#"):
+                        if "=" in line:
+                            key, value = line.strip().split("=", 1)
+                            if key not in os.environ:
+                                value = value.strip('\'"')
+                                os.environ[key] = value
+            return True
+        except FileNotFoundError:
+            return False
+
+    # 1. 优先尝试从当前选择的 WORKDIR 工作目录加载 .env
+    workdir_env = str(WORKDIR / ".env")
+    if _parse_and_set_env(workdir_env):
+        print(f"\033[34mℹ️  Loaded environment variables from Workspace: {workdir_env}\033[0m")
+
+    # 2. 兜底尝试从 BASEDIR 软件安装目录加载 .env (不会覆盖已存在的)
+    basedir_env = get_absolute_env_path()
+    if basedir_env != workdir_env:
+        if _parse_and_set_env(basedir_env):
+            print(f"\033[34mℹ️  Loaded fallback environment variables from Agent Base: {basedir_env}\033[0m")
 
 WORKDIR = _init_workdir()
 MAKECODE_DIR = WORKDIR / ".makecode"
 MAKECODE_DIR.mkdir(parents=True, exist_ok=True)
+
+# 确保在 WORKDIR 初始化后调用双重 .env 加载
+_load_env_files()
 
 API_STANDARD = _init_api_standard()
 

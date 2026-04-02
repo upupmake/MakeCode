@@ -1,13 +1,12 @@
-import re
-import frontmatter
 from pathlib import Path
 
+import frontmatter
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
-from init import BASEDIR
+from init import WORKDIR
 
-SKILLS_DIR = Path(BASEDIR) / "skills"
+SKILLS_DIR = WORKDIR / "skills"
 
 
 class LoadSkill(BaseModel):
