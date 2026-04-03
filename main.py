@@ -8,6 +8,7 @@ from typing import Any
 from rich.progress import Progress, TextColumn, BarColumn
 
 from init import WORKDIR, llm_client, log_error_traceback
+from prompts import get_orchestrator_system_prompt
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
@@ -65,28 +66,7 @@ MAKECODE_ASCII = r"""
 
 USER_SESSION = None
 
-SYSTEM = f"""You are the Orchestrator (Super-Agent) at {WORKDIR}.
-
-Core operating policy:
-1) Always plan work with TaskManager first.
-2) Before any delegation, call GetRunnableTasks to obtain the current runnable frontier.
-3) DelegateTasks is ONLY for runnable tasks from the latest GetRunnableTasks result.
-4) After each delegation batch, critically evaluate and verify the feedback (tool results/status) returned by sub-agents. Ensure the task was genuinely completed successfully, re-plan or retry if failures occurred.
-5) Continuously re-check task state (GetTaskTable/GetRunnableTasks) and iterate until the entire plan is done.
-
-Execution guidance:
-- Prefer parallel delegation for independent runnable tasks.
-- Keep tool calls explicit and deterministic; avoid speculative actions.
-- Sub-agents are stateless across delegated runs. Every DelegateTasks item must include complete, self-contained context_prompt (goal, constraints, relevant files/context, expected output/evidence).
-- During topology planning and delegation, avoid assigning tasks that may write the same file into the same runnable batch.
-- For tasks touching the same file, enforce dependency order in TaskManager (topological sequence) before delegation.
-- For workspace file operations (reading, writing, editing, or text searching), strictly use the File namespace tools (RunRead, RunWrite, RunEdit, RunGrep). Do NOT use terminal commands for these tasks.
-- RunWrite is only for creating and writing NEW files.
-- For editing existing files, you MUST call RunRead first to confirm current content, then use RunEdit.
-- For terminal/CLI tasks, use RunTerminalCommand directly.
-  - Runtime terminal is fixed at startup: {STARTUP_TERMINAL_LABEL} (source={STARTUP_TERMINAL_SOURCE}).
-- Final answers should summarize: completed tasks, remaining tasks, and next runnable tasks.
-"""
+SYSTEM = get_orchestrator_system_prompt(WORKDIR, STARTUP_TERMINAL_LABEL, STARTUP_TERMINAL_SOURCE)
 
 SUPER_TOOLS = llm_client.format_tools(
     COMMON_TOOLS + SKILL_TOOLS + MEMORY_TOOLS + TASK_MANAGER_TOOLS + TEAM_TOOLS

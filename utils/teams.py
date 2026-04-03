@@ -18,7 +18,11 @@ from utils.common import (
 )
 from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 from utils.tasks import TASK_MANAGER
-
+from prompts import (
+    get_sub_agent_system_prompt,
+    get_sub_agent_summary_prompt,
+    get_report_assistant_system_prompt,
+)
 MAKECODE_DIR = WORKDIR / ".makecode"
 TEAM_DIR = MAKECODE_DIR / "team"
 RUNS_DIR = TEAM_DIR / "runs"  # 新增：存放每次并发调用的文件夹
@@ -434,22 +438,7 @@ class TeammateManager:
                 }
                 f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
-        sys_prompt = (
-            f"You are a '{role}', working at {WORKDIR}. "
-            f"You have been assigned a specific task by the Orchestrator. "
-            f"Use available tools to complete the task. "
-            f"Your task is independent from sibling sub-agents in this run; do not assume ordering from them. "
-            f"Do not modify files owned by sibling sub-agents in this same run. "
-            f"If overlap is suspected, proceed conservatively and report it. "
-            f"For workspace file operations (reading, writing, editing, or text searching), strictly use the File namespace tools (RunRead, RunWrite, RunEdit, RunGrep). Do NOT use terminal commands for these tasks. "
-            f"RunWrite is only for creating and writing NEW files. "
-            f"For editing existing files, you MUST call RunRead first to confirm current content, then use RunEdit. "
-            f"For CLI/build/test tasks, use RunTerminalCommand directly. "
-            f"Runtime terminal is fixed at startup: {STARTUP_TERMINAL_LABEL} (source={STARTUP_TERMINAL_SOURCE}). "
-            f"Before execution, call 'TodoUpdate' to create a short actionable plan (2-6 items) and keep it updated. "
-            f"Use skills tools when domain-specific methods are needed. "
-            f"CRITICAL: Once the task is fully completed, you MUST call 'SubmitTaskReport' with outcomes, evidence, and blockers."
-        )
+        sys_prompt = get_sub_agent_system_prompt(role, WORKDIR, STARTUP_TERMINAL_LABEL, STARTUP_TERMINAL_SOURCE)
 
         # 记录初始启动状态
         append_trace(
@@ -482,29 +471,11 @@ class TeammateManager:
             messages_text = json.dumps(
                 messages, ensure_ascii=False, default=str, indent=2
             )
-            summary_prompt = (
-                "The sub-agent stopped before formal completion. "
-                "You must now produce an extremely detailed final report for the Orchestrator. "
-                "Requirements:\n"
-                "1) Extremely detailed summary of what has been completed so far.\n"
-                "2) Explicitly state the current completion status: completed / partially completed / not completed.\n"
-                "3) If status is not completed, clearly list remaining work and exact next steps.\n"
-                "4) Include concrete evidence: tools used, important outputs, file paths, key decisions, and blockers.\n"
-                "5) If completion is uncertain because SubmitTaskReport was not called, state this uncertainty explicitly.\n"
-                "6) Use sections: Overview, Completed Work (Detailed), Current Completion Status, Remaining Work, Next Steps, Risks/Blockers.\n\n"
-                f"Executed steps: {executed_steps}/{max_steps}\n\n"
-                f"Current todo snapshot:\n{todo_snapshot}\n\n"
-                f"Conversation transcript (stringified JSON):\n{messages_text}"
-            )
+            summary_prompt = get_sub_agent_summary_prompt(executed_steps, max_steps, todo_snapshot, messages_text)
             fallback_messages = [
                 {
                     "role": "system",
-                    "content": (
-                        "You are a rigorous reporting assistant. "
-                        "Produce an extremely detailed, evidence-based progress report only. "
-                        "Never fabricate completion; if uncertain, explicitly say uncertain. "
-                        "Clearly distinguish completed, partially completed, and not completed work."
-                    ),
+                    "content": get_report_assistant_system_prompt(),
                 },
                 {"role": "user", "content": summary_prompt},
             ]
