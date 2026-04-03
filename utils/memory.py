@@ -43,6 +43,19 @@ def load_checkpoint(filepath: Path) -> list:
 
 try:
     import tiktoken
+    import os
+    import sys
+
+    # Determine base path for the bundled executable or normal execution
+    if getattr(sys, 'frozen', False):
+        _base_path = Path(sys._MEIPASS)
+    else:
+        _base_path = Path(__file__).parent.parent
+        
+    # Use local cache if it exists (for offline/packaged environments)
+    _local_cache = _base_path / "tiktoken_cache"
+    if _local_cache.exists():
+        os.environ["TIKTOKEN_CACHE_DIR"] = str(_local_cache)
 
     _ENCODER = tiktoken.get_encoding("cl100k_base")
 except ImportError:
