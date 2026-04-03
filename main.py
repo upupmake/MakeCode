@@ -2,8 +2,8 @@ import concurrent.futures
 import json
 import sys
 import time
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from rich.progress import Progress, TextColumn, BarColumn
 
@@ -59,7 +59,8 @@ from utils.common import COMMON_TOOLS, COMMON_TOOLS_HANDLERS, STARTUP_TERMINAL_T
 from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS
 from utils.teams import TEAM_TOOLS_HANDLERS, TEAM_TOOLS
-from utils.memory import micro_compact, MEMORY_TOOLS, MEMORY_TOOLS_HANDLERS, THRESHOLD, estimate_tokens, save_checkpoint, list_checkpoints, load_checkpoint
+from utils.memory import micro_compact, MEMORY_TOOLS, MEMORY_TOOLS_HANDLERS, THRESHOLD, estimate_tokens, \
+    save_checkpoint, list_checkpoints, load_checkpoint
 
 console = Console() if RICH_AVAILABLE else None
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
@@ -299,6 +300,7 @@ COMMAND_DESCRIPTIONS = {
     "/exit": "退出程序"
 }
 
+
 class SlashCommandCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -308,7 +310,9 @@ class SlashCommandCompleter(Completer):
                     # display_meta 可以在补全菜单右侧漂亮地显示中文描述
                     yield Completion(cmd, start_position=-len(text), display_meta=desc)
 
+
 command_completer = SlashCommandCompleter()
+
 
 def _init_user_session():
     global USER_SESSION
@@ -321,14 +325,14 @@ def _init_user_session():
         def _submit_query(event):
             buffer = event.current_buffer
             text = buffer.text.strip()
-            
+
             # 处理斜杠命令的自动补全逻辑
             if text.startswith('/'):
                 # 如果当前输入的已经是完整的内置命令，直接提交
                 if text in COMMAND_DESCRIPTIONS:
                     buffer.validate_and_handle()
                     return
-                
+
                 # 如果命令不完整，但补全菜单中有匹配项
                 if buffer.complete_state and buffer.complete_state.completions:
                     if buffer.complete_state.current_completion:
@@ -398,10 +402,10 @@ def _read_user_query(messages: list = None) -> str:
 
 
 def agent_loop(messages: list):
+    # 对话开始前尝试压缩工具调用
+    micro_compact(messages)
     while True:
-        micro_compact(messages)
         _render_token_usage(messages)
-
         try:
             response = _request_with_progress(messages)
         except Exception as e:
@@ -445,7 +449,7 @@ def agent_loop(messages: list):
 
         if not has_tool_call:
             break
-
+    # 对话结束后尝试压缩上下文
     if estimate_tokens(messages) > THRESHOLD:
         compact_reason = (
             f"Post agent_loop auto compact triggered: estimated tokens "
@@ -466,20 +470,20 @@ def agent_loop(messages: list):
 def _interactive_choose_checkpoint(checkpoints: list) -> str:
     if not checkpoints:
         return "abort"
-    
+
     options = []
     for cp in checkpoints:
         # cp is a Path object
         parts = cp.stem.split("_")
         uid = parts[-1] if len(parts) >= 4 else cp.name
-        
+
         # 使用文件的最后修改时间
         mtime = cp.stat().st_mtime
         date_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
-        
+
         desc = f"Checkpoint {uid} (Last updated: {date_str})"
         options.append((str(cp), desc))
-        
+
     options.append(("abort", "取消 (Cancel)"))
 
     selected_index = [0]
@@ -523,6 +527,7 @@ def _interactive_choose_checkpoint(checkpoints: list) -> str:
     app = Application(layout=layout, key_bindings=kb, style=style, erase_when_done=True)
     return app.run()
 
+
 CURRENT_CHECKPOINT = None
 
 if __name__ == '__main__':
@@ -543,7 +548,7 @@ if __name__ == '__main__':
         query = query.strip()
         if not query:
             continue
-            
+
         if query in ["/quit", "/exit"]:
             if RICH_AVAILABLE:
                 console.print("\n[bold yellow]👋 Exiting MakeCode Agent. Goodbye![/bold yellow]")
@@ -554,6 +559,7 @@ if __name__ == '__main__':
         if query == "/cmds":
             if RICH_AVAILABLE:
                 from rich.table import Table
+
                 table = Table(title="[bold cyan]🛠️ 可用内置命令列表[/bold cyan]", box=box.ROUNDED, expand=True)
                 table.add_column("命令 (Command)", style="bold green", justify="left")
                 table.add_column("描述 (Description)", style="white")
@@ -588,7 +594,7 @@ if __name__ == '__main__':
             # 如果已经在对话中(除去system prompt之外有其他内容)，并且当前还没有绑定任何 checkpoint，确保它被保存
             if len(history) > 1 and CURRENT_CHECKPOINT is None:
                 CURRENT_CHECKPOINT = save_checkpoint(history)
-            
+
             try:
                 selected_path = _interactive_choose_checkpoint(checkpoints)
             except Exception as exc:
@@ -606,7 +612,8 @@ if __name__ == '__main__':
                 history = load_checkpoint(Path(selected_path))
                 CURRENT_CHECKPOINT = Path(selected_path)
                 if RICH_AVAILABLE:
-                    console.print(f"\n[bold green]🚀 成功加载对话记录！当前上下文包含 {len(history)} 条消息。[/bold green]")
+                    console.print(
+                        f"\n[bold green]🚀 成功加载对话记录！当前上下文包含 {len(history)} 条消息。[/bold green]")
                 else:
                     print(f"\n\033[32m🚀 成功加载对话记录！当前上下文包含 {len(history)} 条消息。\033[0m")
             except Exception as exc:

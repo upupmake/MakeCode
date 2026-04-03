@@ -9,11 +9,11 @@ from pydantic import BaseModel, Field
 
 from init import WORKDIR, llm_client
 
-THRESHOLD = 10240 * 24
+THRESHOLD = 10240 * 15
 MAKECODE_DIR = WORKDIR / ".makecode"
 TRANSCRIPT_DIR = MAKECODE_DIR / "transcripts"
 CHECKPOINT_DIR = MAKECODE_DIR / "checkpoint"
-KEEP_RECENT = 28
+KEEP_RECENT_TOOL_CALL = 42
 
 
 def save_checkpoint(messages: list, filepath: Path = None) -> Path:
@@ -51,7 +51,7 @@ try:
         _base_path = Path(sys._MEIPASS)
     else:
         _base_path = Path(__file__).parent.parent
-        
+
     # Use local cache if it exists (for offline/packaged environments)
     _local_cache = _base_path / "tiktoken_cache"
     if _local_cache.exists():
@@ -76,7 +76,7 @@ def micro_compact(input_list: list) -> list:
         if msg.get("type") == "function_call_output" or msg.get("role") == "tool":
             tool_results.append(msg)
 
-    if len(tool_results) <= KEEP_RECENT:
+    if len(tool_results) <= KEEP_RECENT_TOOL_CALL:
         return input_list
 
     tool_call_info_map = {}
@@ -100,7 +100,7 @@ def micro_compact(input_list: list) -> list:
                             "arguments": tc_args
                         }
 
-    to_clear = tool_results[:-KEEP_RECENT]
+    to_clear = tool_results[:-KEEP_RECENT_TOOL_CALL]
     for result in to_clear:
         call_id = result.get("call_id") or result.get("tool_call_id")
         info = tool_call_info_map.get(call_id, {})
