@@ -626,6 +626,22 @@ class TeammateManager:
 
 TEAM = TeammateManager(TEAM_DIR)
 
+def list_team_histories() -> list[Path]:
+    if not TEAM_DIR.exists():
+        return []
+    files = list(TEAM_DIR.glob("task_history_*.json"))
+    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    return files
+
+def load_team_history(filepath: Path) -> list:
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    TEAM.history_path = filepath
+    TEAM.session_id = filepath.stem.split("_")[-1]
+    TEAM.history = data
+    return data
+
+
 TEAM_NAMESPACE_TOOLS = [pydantic_function_tool(DelegateTasks)]
 
 TEAM_NAMESPACE = {
