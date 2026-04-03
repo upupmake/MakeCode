@@ -81,7 +81,8 @@ Core operating policy:
 1) Always plan work with TaskManager first.
 2) Before any delegation, call GetRunnableTasks to obtain the current runnable frontier.
 3) DelegateTasks is ONLY for runnable tasks from the latest GetRunnableTasks result.
-4) After each delegation batch, re-check task state (GetTaskTable/GetRunnableTasks) and continue until done.
+4) After each delegation batch, critically evaluate and verify the feedback (tool results/status) returned by sub-agents. Ensure the task was genuinely completed successfully, re-plan or retry if failures occurred.
+5) Continuously re-check task state (GetTaskTable/GetRunnableTasks) and iterate until the entire plan is done.
 
 Execution guidance:
 - Prefer parallel delegation for independent runnable tasks.
