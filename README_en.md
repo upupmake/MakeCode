@@ -1,6 +1,6 @@
 # 🚀 MakeCode · Project Documentation
 
-🌐 Language: [简体中文](README.md) | **English** | [📦 Releases](https://github.com/cockmake/MakeCode/releases)
+ 🌐 Language: [简体中文](README.md) | **English** | [ 📦 Releases](https://github.com/cockmake/MakeCode/releases)
 
 > A multi-agent command-line orchestrator.
 >

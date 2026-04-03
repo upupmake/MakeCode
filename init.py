@@ -80,7 +80,7 @@ def _interactive_choose_mode(cwd: Path) -> str:
         event.app.exit(result="abort")
 
     def get_formatted_text():
-        result = [("class:title", "\n📂 Select Workspace Directory (Use ↑/↓ arrows, Enter to confirm):\n")]
+        result = [("class:title", "\n 📂 Select Workspace Directory (Use ↑/↓ arrows, Enter to confirm):\n")]
         for i, (key, text) in enumerate(options):
             if i == selected_index[0]:
                 result.append(("class:selected", f"  ❯ {text}\n"))
@@ -114,7 +114,7 @@ def _init_workdir() -> Path:
         choice = "abort"
 
     if choice == "abort":
-        print(f"\n\033[33m⚠️  Setup cancelled. Defaulting to: {cwd}\033[0m\n")
+        print(f"\n\033[33m ⚠️ Setup cancelled. Defaulting to: {cwd}\033[0m\n")
         return cwd
 
     if choice == "default":
@@ -123,12 +123,12 @@ def _init_workdir() -> Path:
 
     # 3. 用户选择了自定义输入路径
     try:
-        print("\n✏️  Enter custom workspace path:")
-        user_input = prompt([('class:prompt', '📂 Target Directory ❯❯ ')],
+        print("\n ✏️ Enter custom workspace path:")
+        user_input = prompt([('class:prompt', ' 📂 Target Directory ❯❯ ')],
                             style=Style.from_dict({'prompt': 'bold #00ffff'}))
     except (EOFError, KeyboardInterrupt) as exc:
         log_error_traceback("init custom workdir input interrupted", exc)
-        print(f"\n\033[33m⚠️  Input cancelled. Defaulting to: {cwd}\033[0m\n")
+        print(f"\n\033[33m ⚠️ Input cancelled. Defaulting to: {cwd}\033[0m\n")
         return cwd
 
     if not user_input.strip():
@@ -141,7 +141,7 @@ def _init_workdir() -> Path:
         print(f"\033[32m ✅ Workspace set to: {target_path}\033[0m\n")
         return target_path
     else:
-        print(f"\033[33m⚠️  Warning: Path '{target_path}' does not exist or is not a directory.\n"
+        print(f"\033[33m ⚠️ Warning: Path '{target_path}' does not exist or is not a directory.\n"
               f"   Falling back to default: {cwd}\033[0m\n")
         return cwd
 
@@ -173,7 +173,7 @@ def _interactive_choose_api_standard() -> str:
         event.app.exit(result="abort")
 
     def get_formatted_text():
-        result = [("class:title", "\n⚙️  Select LLM API Standard (Use ↑/↓ arrows, Enter to confirm):\n")]
+        result = [("class:title", "\n ⚙️ Select LLM API Standard (Use ↑/↓ arrows, Enter to confirm):\n")]
         for i, (key, text) in enumerate(options):
             if i == selected_index[0]:
                 result.append(("class:selected", f"  ❯ {text}\n"))
@@ -235,7 +235,7 @@ def _load_env_files():
                                 os.environ[key] = value
                                 print(f"\033[32m ✅ Overridden {key}\033[0m")
                             else:
-                                print(f"\033[90m ⏭️  Skipped {key}\033[0m")
+                                print(f"\033[90m ⏭️ Skipped {key}\033[0m")
                     else:
                         os.environ[key] = value
         print(f"\033[34m ℹ️ Loaded environment variables from Workspace: {workdir_env}\033[0m")
@@ -259,7 +259,7 @@ try:
 except KeyError as exc:
     log_error_traceback("init missing required env", exc)
     print(
-        "\n\033[31m⚠️ Error: Missing required environment variables.\033[0m\n"
+        "\n\033[31m ⚠️ Error: Missing required environment variables.\033[0m\n"
         "\033[33mPlease ensure OPENAI_API_KEY, OPENAI_BASE_URL, and MODEL_ID are set in your .env file or system environment.\033[0m"
     )
     input("\nPress Enter to exit... (按回车键退出...)")

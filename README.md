@@ -1,6 +1,6 @@
 # 🚀 MakeCode · 项目说明
 
-🌐 语言切换：**简体中文** | [English](README_en.md) | [📦 Releases](https://github.com/cockmake/MakeCode/releases)
+ 🌐 语言切换：**简体中文** | [English](README_en.md) | [ 📦 Releases](https://github.com/cockmake/MakeCode/releases)
 
 > 一个多代理命令行编排器。
 > 
