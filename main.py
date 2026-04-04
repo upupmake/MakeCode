@@ -5,28 +5,25 @@ import time
 from pathlib import Path
 from typing import Any
 
-from rich.progress import Progress, TextColumn, BarColumn
-
-from init import WORKDIR, llm_client, log_error_traceback
-from prompts import get_orchestrator_system_prompt
-
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.styles import Style
-from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.application import Application
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.layout import Layout
-
+from prompt_toolkit.styles import Style
+from rich import box
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.progress import Progress, TextColumn, BarColumn
 from rich.syntax import Syntax
 from rich.text import Text
-from rich import box
 
+from init import WORKDIR, llm_client, log_error_traceback
+from prompts import get_orchestrator_system_prompt
 from utils.common import (
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
@@ -37,14 +34,6 @@ from utils.common import (
     run_edit,
 )
 from utils.file_access import AgentFileAccess
-from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
-from utils.tasks import (
-    TASK_MANAGER_TOOLS,
-    TASK_MANAGER_TOOLS_HANDLERS,
-    list_task_plans,
-    load_task_plan,
-)
-from utils.teams import TEAM_TOOLS_HANDLERS, TEAM_TOOLS
 from utils.memory import (
     micro_compact,
     MEMORY_TOOLS,
@@ -55,6 +44,14 @@ from utils.memory import (
     list_checkpoints,
     load_checkpoint,
 )
+from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
+from utils.tasks import (
+    TASK_MANAGER_TOOLS,
+    TASK_MANAGER_TOOLS_HANDLERS,
+    list_task_plans,
+    load_task_plan,
+)
+from utils.teams import TEAM_TOOLS_HANDLERS, TEAM_TOOLS
 
 console = Console()
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
@@ -70,14 +67,15 @@ MAKECODE_ASCII = r"""
 
 USER_SESSION = None
 
-SYSTEM = get_orchestrator_system_prompt(WORKDIR, STARTUP_TERMINAL_LABEL, STARTUP_TERMINAL_SOURCE)
+SYSTEM = get_orchestrator_system_prompt(
+    WORKDIR, STARTUP_TERMINAL_LABEL, STARTUP_TERMINAL_SOURCE
+)
 
 SUPER_TOOLS = llm_client.format_tools(
     COMMON_TOOLS + SKILL_TOOLS + MEMORY_TOOLS + TASK_MANAGER_TOOLS + TEAM_TOOLS
 )
 
-
-orchestrator_access = AgentFileAccess("Orchestrator")
+orchestrator_access = AgentFileAccess()
 
 SUPER_TOOLS_HANDLERS = {
     **COMMON_TOOLS_HANDLERS,
@@ -85,11 +83,16 @@ SUPER_TOOLS_HANDLERS = {
     **MEMORY_TOOLS_HANDLERS,
     **TASK_MANAGER_TOOLS_HANDLERS,
     **TEAM_TOOLS_HANDLERS,
+    "RunRead": lambda path, start=None, end=None, **kwargs: run_read(
+        path, start, end, orchestrator_access
+    ),
+    "RunWrite": lambda path, content, **kwargs: run_write(
+        path, content, orchestrator_access
+    ),
+    "RunEdit": lambda path, start, end, new_content, **kwargs: (
+        run_edit(path, start, end, new_content, orchestrator_access)
+    )
 }
-
-SUPER_TOOLS_HANDLERS["RunRead"] = lambda path, start=None, end=None, **kwargs: run_read(path, start, end, orchestrator_access)
-SUPER_TOOLS_HANDLERS["RunWrite"] = lambda path, content, **kwargs: run_write(path, content, orchestrator_access)
-SUPER_TOOLS_HANDLERS["RunEdit"] = lambda path, start, end, new_content, **kwargs: run_edit(path, start, end, new_content, orchestrator_access)
 
 
 def _extract_message_text(msg: dict) -> str:
@@ -208,10 +211,10 @@ def _request_with_progress(messages: list):
 
         # 颜值升级 1: 使用 rich 的优雅 status 动画
         with Progress(
-            BarColumn(bar_width=30),  # 在这里修改你想要的宽度！
-            TextColumn("[bold cyan] ✨ Orchestrator is thinking..."),
-            transient=True,  # 任务完成后自动隐藏加载条，类似 console.status
-            console=console,
+                BarColumn(bar_width=30),  # 在这里修改你想要的宽度！
+                TextColumn("[bold cyan] ✨ Orchestrator is thinking..."),
+                transient=True,  # 任务完成后自动隐藏加载条，类似 console.status
+                console=console,
         ) as progress:
             # total=None 表示进度未知，会触发左右来回弹跳的动画
             progress.add_task("", total=None)
@@ -441,8 +444,8 @@ def agent_loop(messages: list):
 
 
 def _interactive_choose_checkpoint(
-    checkpoints: list,
-    title: str = "\n 📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm):\n",
+        checkpoints: list,
+        title: str = "\n 📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm):\n",
 ) -> str:
     if not checkpoints:
         return "abort"

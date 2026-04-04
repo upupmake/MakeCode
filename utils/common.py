@@ -10,6 +10,7 @@ from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
 from init import WORKDIR, log_error_traceback
+from utils.file_access import GLOBAL_FILE_CONTROLLER
 
 
 def safe_path(p: str) -> Path:
@@ -71,6 +72,7 @@ class RunTerminalCommand(BaseModel):
     - For workspace file operations (read/write/edit), prefer File tools (RunRead/RunWrite/RunEdit).
       Do NOT use this tool for routine file manipulation when File tools can handle the task.
     """
+
     command: str = Field(
         ...,
         description=(
@@ -79,7 +81,7 @@ class RunTerminalCommand(BaseModel):
             f"(source={STARTUP_TERMINAL_SOURCE}). "
             "This tool only accepts command; terminal type is not configurable per call. "
             "Do not use this tool for normal workspace file read/write/edit operations."
-        )
+        ),
     )
 
 
@@ -102,19 +104,23 @@ def run_terminal_command(command: str) -> str:
             _build_terminal_argv(resolved_terminal, command),
             cwd=WORKDIR,
             capture_output=True,
-            timeout=120
+            timeout=120,
         )
         raw_output = r.stdout + r.stderr
 
         # 动态解码策略：优先 UTF-8，失败则回退到系统默认编码 (Windows 下通常是 GBK)
         try:
-            out = raw_output.decode('utf-8').strip()
+            out = raw_output.decode("utf-8").strip()
         except UnicodeDecodeError as exc:
             log_error_traceback("RunTerminalCommand utf8 decode fallback", exc)
             sys_encoding = locale.getpreferredencoding()
-            out = raw_output.decode(sys_encoding, errors='replace').strip()
+            out = raw_output.decode(sys_encoding, errors="replace").strip()
         terminal_meta = f"{resolved_terminal}, source={STARTUP_TERMINAL_SOURCE}"
-        return out if out else f"Command executed successfully with no output. (terminal: {terminal_meta})"
+        return (
+            out
+            if out
+            else f"Command executed successfully with no output. (terminal: {terminal_meta})"
+        )
 
     except subprocess.TimeoutExpired as exc:
         log_error_traceback("RunTerminalCommand timeout", exc)
@@ -133,26 +139,33 @@ def run_terminal_command(command: str) -> str:
 
 class RunRead(BaseModel):
     """Read contents of a file. Supports reading a specific line range."""
-    path: str = Field(..., description="Path to the file to read, relative to workspace.")
-    start: int | None = Field(None, description="Start line number (1-indexed). Optional.")
+
+    path: str = Field(
+        ..., description="Path to the file to read, relative to workspace."
+    )
+    start: int | None = Field(
+        None, description="Start line number (1-indexed). Optional."
+    )
     end: int | None = Field(None, description="End line number (1-indexed). Optional.")
 
 
-def run_read(path: str, start: int | None = None, end: int | None = None, agent_access=None) -> str:
-    from utils.file_access import GLOBAL_FILE_CONTROLLER
+def run_read(
+    path: str, start: int | None = None, end: int | None = None, agent_access=None
+) -> str:
     try:
-        with GLOBAL_FILE_CONTROLLER.global_lock:
-            fp = safe_path(path)
+        fp = safe_path(path)
+        file_lock = GLOBAL_FILE_CONTROLLER.get_lock(fp)
+        with file_lock:
             if not fp.exists():
                 return f"Error: File {path} not found."
-                
+
             # 显式指定 utf-8 编码，并使用 replace 处理无法解码的字节，防止读取崩溃
-            text = fp.read_text(encoding='utf-8', errors='replace')
-            
+            text = fp.read_text(encoding="utf-8", errors="replace")
+
             mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
             if agent_access:
-                agent_access.record_access(path, mtime)
-                
+                agent_access.record_access(str(fp.resolve()), mtime)
+
             lines = text.splitlines()
             total_lines = len(lines)
 
@@ -163,7 +176,11 @@ def run_read(path: str, start: int | None = None, end: int | None = None, agent_
             s = 1
 
         try:
-            e = int(end) if (end is not None and str(end).strip() != "") else total_lines
+            e = (
+                int(end)
+                if (end is not None and str(end).strip() != "")
+                else total_lines
+            )
         except ValueError as exc:
             log_error_traceback("RunRead invalid end line", exc)
             e = total_lines
@@ -174,7 +191,7 @@ def run_read(path: str, start: int | None = None, end: int | None = None, agent_
         if s > e or s > total_lines:
             return f"Total lines: {total_lines}\n(Empty range or out of bounds)"
 
-        sliced_lines = lines[s - 1:e]
+        sliced_lines = lines[s - 1 : e]
         formatted_lines = [f"{i + s}: {line}" for i, line in enumerate(sliced_lines)]
 
         return f"Total lines: {total_lines}\n" + "\n".join(formatted_lines)
@@ -190,15 +207,18 @@ class RunWrite(BaseModel):
     1. Use this tool only when the target file does NOT exist yet.
     2. If the file already exists and you need modifications, use RunRead first, then RunEdit.
     """
-    path: str = Field(..., description="Path to the file to write, relative to workspace.")
+
+    path: str = Field(
+        ..., description="Path to the file to write, relative to workspace."
+    )
     content: str = Field(..., description="The content to write to the file.")
 
 
 def run_write(path: str, content: str, agent_access=None) -> str:
-    from utils.file_access import GLOBAL_FILE_CONTROLLER
     try:
-        with GLOBAL_FILE_CONTROLLER.global_lock:
-            fp = safe_path(path)
+        fp = safe_path(path)
+        file_lock = GLOBAL_FILE_CONTROLLER.get_lock(fp)
+        with file_lock:
             if fp.exists():
                 return (
                     f"Error: File {path} already exists. "
@@ -207,12 +227,12 @@ def run_write(path: str, content: str, agent_access=None) -> str:
                 )
             fp.parent.mkdir(parents=True, exist_ok=True)
             # 强制使用 utf-8 写入，保持跨平台一致性
-            fp.write_text(content, encoding='utf-8')
-            
+            fp.write_text(content, encoding="utf-8")
+
             mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
             if agent_access:
-                agent_access.record_access(path, mtime)
-                
+                agent_access.record_access(str(fp.resolve()), mtime)
+
             return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
         log_error_traceback("RunWrite execution", e)
@@ -228,27 +248,34 @@ class RunEdit(BaseModel):
     2. `new_content` MUST contain the EXACT absolute indentation (spaces) required. The tool does NOT auto-indent.
     3. Carefully check the `start` and `end` line numbers to avoid leaving orphaned code or duplicate signatures.
     """
-    path: str = Field(..., description="Path to the file to edit, relative to workspace.")
+
+    path: str = Field(
+        ..., description="Path to the file to edit, relative to workspace."
+    )
     start: int = Field(..., description="Start line number (1-indexed) to replace.")
     end: int = Field(..., description="End line number (1-indexed) to replace.")
-    new_content: str = Field(..., description="The new content to insert in the specified line range.")
+    new_content: str = Field(
+        ..., description="The new content to insert in the specified line range."
+    )
 
 
-def run_edit(path: str, start: int, end: int, new_content: str, agent_access=None) -> str:
-    from utils.file_access import GLOBAL_FILE_CONTROLLER
+def run_edit(
+    path: str, start: int, end: int, new_content: str, agent_access=None
+) -> str:
     try:
-        with GLOBAL_FILE_CONTROLLER.global_lock:
-            fp = safe_path(path)
+        fp = safe_path(path)
+        file_lock = GLOBAL_FILE_CONTROLLER.get_lock(fp)
+        with file_lock:
             if not fp.exists():
                 return f"Error: File {path} not found."
-                
+
             current_mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
             if agent_access:
-                allowed, msg = agent_access.can_edit(path, current_mtime)
+                allowed, msg = agent_access.can_edit(str(fp.resolve()), current_mtime)
                 if not allowed:
                     return msg
 
-            text = fp.read_text(encoding='utf-8', errors='replace')
+            text = fp.read_text(encoding="utf-8", errors="replace")
             lines = text.splitlines()
             total_lines = len(lines)
 
@@ -263,7 +290,7 @@ def run_edit(path: str, start: int, end: int, new_content: str, agent_access=Non
             return f"Error: Invalid line range [{start}, {end}]. File has {total_lines} lines."
 
         # Extract surrounding context
-        prefix = lines[:start - 1]
+        prefix = lines[: start - 1]
         suffix = lines[end:]
 
         # Insert new content (could be multiple lines)
@@ -272,9 +299,9 @@ def run_edit(path: str, start: int, end: int, new_content: str, agent_access=Non
         final_lines = prefix + new_lines + suffix
         # Ensure trailing newline matches original behavior (splitlines drops trailing newline)
         if text.endswith("\n") or not text:
-            fp.write_text("\n".join(final_lines) + "\n", encoding='utf-8')
+            fp.write_text("\n".join(final_lines) + "\n", encoding="utf-8")
         else:
-            fp.write_text("\n".join(final_lines), encoding='utf-8')
+            fp.write_text("\n".join(final_lines), encoding="utf-8")
 
         return f"Edited {path}: Replaced lines {start} to {end}."
     except Exception as e:
@@ -287,26 +314,27 @@ class RunGrep(BaseModel):
     Search for a regex pattern in text files within a specific directory.
     Automatically ignores binary files and hidden directories (starting with '.').
     """
+
     keyword_pattern: str = Field(
         ...,
-        description="The Regex pattern or string to search for in the file contents."
+        description="The Regex pattern or string to search for in the file contents.",
     )
     target_dir: str = Field(
         default=".",
-        description="Directory to search in, relative to workspace. Pinpoint specific source folders (e.g., 'src', 'app') to avoid scanning dependency directories."
+        description="Directory to search in, relative to workspace. Pinpoint specific source folders (e.g., 'src', 'app') to avoid scanning dependency directories.",
     )
     filename_pattern: str | list[str] = Field(
         default=["*"],
-        description="File name pattern(s) to filter files. Can be a string or a list of strings (e.g., ['*.py', '*.ts'], '*.js'). Defaults to ['*'] (all text files)."
+        description="File name pattern(s) to filter files. Can be a string or a list of strings (e.g., ['*.py', '*.ts'], '*.js'). Defaults to ['*'] (all text files).",
     )
 
 
 def _is_binary_file(filepath: Path) -> bool:
     """Check if a file is likely binary by inspecting its first 1024 bytes for a null byte."""
     try:
-        with open(filepath, 'rb') as f:
+        with open(filepath, "rb") as f:
             chunk = f.read(1024)
-            if b'\0' in chunk:
+            if b"\0" in chunk:
                 return True
         return False
     except Exception as exc:
@@ -315,9 +343,9 @@ def _is_binary_file(filepath: Path) -> bool:
 
 
 def run_grep(
-        keyword_pattern: str,
-        target_dir: str = ".",
-        filename_pattern: str | list[str] = ["*"]
+    keyword_pattern: str,
+    target_dir: str = ".",
+    filename_pattern: str | list[str] = ["*"],
 ) -> str:
     try:
         regex = re.compile(keyword_pattern)
@@ -346,7 +374,7 @@ def run_grep(
 
     try:
         for root, dirs, files in os.walk(base_dir):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
 
             for file in files:
                 filepath = Path(root) / file
@@ -357,7 +385,9 @@ def run_grep(
                 try:
                     rel_path_str = filepath.relative_to(WORKDIR).as_posix()
                 except ValueError as exc:
-                    log_error_traceback(f"RunGrep path outside workspace: {filepath}", exc)
+                    log_error_traceback(
+                        f"RunGrep path outside workspace: {filepath}", exc
+                    )
                     continue
 
                 if _is_binary_file(filepath):
@@ -365,7 +395,7 @@ def run_grep(
 
                 matched_lines = []
                 try:
-                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                         for i, line in enumerate(f, 1):
                             if regex.search(line):
                                 matched_lines.append(f"{i}: {line.rstrip('\n')}")
@@ -400,7 +430,8 @@ def run_grep(
 
     if total_matches >= MAX_MATCHES:
         output_blocks.append(
-            f"\n[!] Notice: Output truncated to first {MAX_MATCHES} matched lines to prevent context overflow.")
+            f"\n[!] Notice: Output truncated to first {MAX_MATCHES} matched lines to prevent context overflow."
+        )
 
     return "\n".join(output_blocks).strip()
 
@@ -430,7 +461,7 @@ TERMINAL_NAMESPACE = {
     "description": "Tools for executing terminal commands.",
     "tools": [
         pydantic_function_tool(RunTerminalCommand),
-    ]
+    ],
 }
 
 COMMON_TOOLS = [

@@ -9,6 +9,11 @@ from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, ValidationError
 
 from init import WORKDIR, llm_client, log_error_traceback
+from prompts import (
+    get_sub_agent_system_prompt,
+    get_sub_agent_summary_prompt,
+    get_report_assistant_system_prompt,
+)
 from tools.todo import TodoManager, TODO_TOOLS
 from utils.common import (
     COMMON_TOOLS,
@@ -22,11 +27,7 @@ from utils.common import (
 from utils.file_access import AgentFileAccess
 from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 from utils.tasks import TASK_MANAGER
-from prompts import (
-    get_sub_agent_system_prompt,
-    get_sub_agent_summary_prompt,
-    get_report_assistant_system_prompt,
-)
+
 MAKECODE_DIR = WORKDIR / ".makecode"
 TEAM_DIR = MAKECODE_DIR / "team"
 RUNS_DIR = TEAM_DIR / "runs"  # 新增：存放每次并发调用的文件夹
@@ -242,10 +243,10 @@ class TeammateManager:
         if not trace_log_path.exists():
             return ""
 
-        formatted_log = [f"\n### PREVIOUS ATTEMPT LOG (Task #{plan_task_id}) ###"]
-        formatted_log.append(
+        formatted_log = [
+            f"\n### PREVIOUS ATTEMPT LOG (Task #{plan_task_id}) ###",
             "A previous agent attempted this task but did not finish successfully. Below is the complete trace of their actions:\n"
-        )
+        ]
 
         try:
             with open(trace_log_path, "r", encoding="utf-8") as f:
@@ -442,7 +443,9 @@ class TeammateManager:
                 }
                 f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
-        sys_prompt = get_sub_agent_system_prompt(role, WORKDIR, STARTUP_TERMINAL_LABEL, STARTUP_TERMINAL_SOURCE)
+        sys_prompt = get_sub_agent_system_prompt(
+            role, WORKDIR, STARTUP_TERMINAL_LABEL, STARTUP_TERMINAL_SOURCE
+        )
 
         # 记录初始启动状态
         append_trace(
@@ -463,15 +466,21 @@ class TeammateManager:
             + TODO_TOOLS
             + [pydantic_function_tool(SubmitTaskReport)]
         )
-        agent_access = AgentFileAccess(role)
+        agent_access = AgentFileAccess()
 
         sub_handlers = {
             **COMMON_TOOLS_HANDLERS,
             **SKILL_TOOLS_HANDLERS,
             "TodoUpdate": lambda items, **kwargs: local_todo.update(items),
-            "RunRead": lambda path, start=None, end=None, **kwargs: run_read(path, start, end, agent_access),
-            "RunWrite": lambda path, content, **kwargs: run_write(path, content, agent_access),
-            "RunEdit": lambda path, start, end, new_content, **kwargs: run_edit(path, start, end, new_content, agent_access),
+            "RunRead": lambda path, start=None, end=None, **kwargs: run_read(
+                path, start, end, agent_access
+            ),
+            "RunWrite": lambda path, content, **kwargs: run_write(
+                path, content, agent_access
+            ),
+            "RunEdit": lambda path, start, end, new_content, **kwargs: run_edit(
+                path, start, end, new_content, agent_access
+            ),
         }
         max_steps = 40
 
@@ -480,7 +489,9 @@ class TeammateManager:
             messages_text = json.dumps(
                 messages, ensure_ascii=False, default=str, indent=2
             )
-            summary_prompt = get_sub_agent_summary_prompt(executed_steps, max_steps, todo_snapshot, messages_text)
+            summary_prompt = get_sub_agent_summary_prompt(
+                executed_steps, max_steps, todo_snapshot, messages_text
+            )
             fallback_messages = [
                 {
                     "role": "system",
@@ -606,12 +617,14 @@ class TeammateManager:
 
 TEAM = TeammateManager(TEAM_DIR)
 
+
 def list_team_histories() -> list[Path]:
     if not TEAM_DIR.exists():
         return []
     files = list(TEAM_DIR.glob("task_history_*.json"))
     files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     return files
+
 
 def load_team_history(filepath: Path) -> list:
     with open(filepath, "r", encoding="utf-8") as f:
