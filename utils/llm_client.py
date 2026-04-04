@@ -127,12 +127,12 @@ class ResponseAPIClient(BaseLLMClient):
 
     def get_summary(self, conversation_text: str, reason: str) -> str:
         summary_request = [
+            {"role": "system", "content": get_summary_system_prompt()},
             {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(conversation_text, reason)}
+            {"role": "user", "content": get_summary_user_prompt(reason)}
         ]
         res = self.client.responses.create(
             model=self.model,
-            instructions=get_summary_system_prompt(),
             input=summary_request
         )
         for item in res.output:
@@ -212,7 +212,7 @@ class ChatAPIClient(BaseLLMClient):
         messages = [
             {"role": "system", "content": get_summary_system_prompt()},
             {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(conversation_text, reason)}
+            {"role": "user", "content": get_summary_user_prompt(reason)}
         ]
         res = self.client.chat.completions.create(
             model=self.model,
