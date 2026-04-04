@@ -38,7 +38,7 @@ class AgentFileAccess:
         if path not in self.visited_files:
             return (
                 False,
-                f"🔴 拦截: 智能体 [{self.agent_name}] 试图编辑未读取的文件 '{path}'。请务必先使用 RunRead 读取该文件以获取最新内容！",
+                f"🔴 拦截: 试图编辑未读取的文件 '{path}'。请务必先使用 RunRead 读取该文件以获取最新内容！",
             )
 
         recorded_mtime = self.visited_files[path]
