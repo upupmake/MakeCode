@@ -46,14 +46,14 @@ class AgentFileAccess:
         if path not in self.visited_files:
             return (
                 False,
-                f"🔴 拦截: 试图编辑未读取的文件 '{path}'。请务必先使用 RunRead 读取该文件以获取最新内容。",
+                f" 🔴 拦截: 试图编辑未读取的文件 '{path}'。请务必先使用 RunRead 读取该文件以获取最新内容。",
             )
 
         recorded_mtime = self.visited_files[path]
         if recorded_mtime != current_mtime:
             return (
                 False,
-                f"🔴 拦截: 文件 '{path}' 在你上次读取后已被其他程序或智能体修改（或你刚修改过但未重新读取）。必须重新使用 RunRead 读取最新内容后再进行 RunEdit 。",
+                f" 🔴 拦截: 文件 '{path}' 在你上次读取后已被其他程序或智能体修改（或你刚修改过但未重新读取）。必须重新使用 RunRead 读取最新内容后再进行 RunEdit 。",
             )
 
         return True, ""
