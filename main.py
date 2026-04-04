@@ -32,7 +32,11 @@ from utils.common import (
     COMMON_TOOLS_HANDLERS,
     STARTUP_TERMINAL_TYPE,
     STARTUP_TERMINAL_SOURCE,
+    run_read,
+    run_write,
+    run_edit,
 )
+from utils.file_access import AgentFileAccess
 from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 from utils.tasks import (
     TASK_MANAGER_TOOLS,
@@ -72,6 +76,9 @@ SUPER_TOOLS = llm_client.format_tools(
     COMMON_TOOLS + SKILL_TOOLS + MEMORY_TOOLS + TASK_MANAGER_TOOLS + TEAM_TOOLS
 )
 
+
+orchestrator_access = AgentFileAccess("Orchestrator")
+
 SUPER_TOOLS_HANDLERS = {
     **COMMON_TOOLS_HANDLERS,
     **SKILL_TOOLS_HANDLERS,
@@ -79,6 +86,10 @@ SUPER_TOOLS_HANDLERS = {
     **TASK_MANAGER_TOOLS_HANDLERS,
     **TEAM_TOOLS_HANDLERS,
 }
+
+SUPER_TOOLS_HANDLERS["RunRead"] = lambda path, start=None, end=None, **kwargs: run_read(path, start, end, orchestrator_access)
+SUPER_TOOLS_HANDLERS["RunWrite"] = lambda path, content, **kwargs: run_write(path, content, orchestrator_access)
+SUPER_TOOLS_HANDLERS["RunEdit"] = lambda path, start, end, new_content, **kwargs: run_edit(path, start, end, new_content, orchestrator_access)
 
 
 def _extract_message_text(msg: dict) -> str:

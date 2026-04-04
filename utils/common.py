@@ -138,12 +138,23 @@ class RunRead(BaseModel):
     end: int | None = Field(None, description="End line number (1-indexed). Optional.")
 
 
-def run_read(path: str, start: int | None = None, end: int | None = None) -> str:
+def run_read(path: str, start: int | None = None, end: int | None = None, agent_access=None) -> str:
+    from utils.file_access import GLOBAL_FILE_CONTROLLER
     try:
-        # 显式指定 utf-8 编码，并使用 replace 处理无法解码的字节，防止读取崩溃
-        text = safe_path(path).read_text(encoding='utf-8', errors='replace')
-        lines = text.splitlines()
-        total_lines = len(lines)
+        with GLOBAL_FILE_CONTROLLER.global_lock:
+            fp = safe_path(path)
+            if not fp.exists():
+                return f"Error: File {path} not found."
+                
+            # 显式指定 utf-8 编码，并使用 replace 处理无法解码的字节，防止读取崩溃
+            text = fp.read_text(encoding='utf-8', errors='replace')
+            
+            mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
+            if agent_access:
+                agent_access.record_access(path, mtime)
+                
+            lines = text.splitlines()
+            total_lines = len(lines)
 
         try:
             s = int(start) if (start is not None and str(start).strip() != "") else 1
@@ -183,19 +194,26 @@ class RunWrite(BaseModel):
     content: str = Field(..., description="The content to write to the file.")
 
 
-def run_write(path: str, content: str) -> str:
+def run_write(path: str, content: str, agent_access=None) -> str:
+    from utils.file_access import GLOBAL_FILE_CONTROLLER
     try:
-        fp = safe_path(path)
-        if fp.exists():
-            return (
-                f"Error: File {path} already exists. "
-                "RunWrite is only for creating new files. "
-                "For modifications, call RunRead first, then RunEdit."
-            )
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        # 强制使用 utf-8 写入，保持跨平台一致性
-        fp.write_text(content, encoding='utf-8')
-        return f"Wrote {len(content)} bytes to {path}"
+        with GLOBAL_FILE_CONTROLLER.global_lock:
+            fp = safe_path(path)
+            if fp.exists():
+                return (
+                    f"Error: File {path} already exists. "
+                    "RunWrite is only for creating new files. "
+                    "For modifications, call RunRead first, then RunEdit."
+                )
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            # 强制使用 utf-8 写入，保持跨平台一致性
+            fp.write_text(content, encoding='utf-8')
+            
+            mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
+            if agent_access:
+                agent_access.record_access(path, mtime)
+                
+            return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
         log_error_traceback("RunWrite execution", e)
         return f"Error: {e}"
@@ -216,15 +234,23 @@ class RunEdit(BaseModel):
     new_content: str = Field(..., description="The new content to insert in the specified line range.")
 
 
-def run_edit(path: str, start: int, end: int, new_content: str) -> str:
+def run_edit(path: str, start: int, end: int, new_content: str, agent_access=None) -> str:
+    from utils.file_access import GLOBAL_FILE_CONTROLLER
     try:
-        fp = safe_path(path)
-        if not fp.exists():
-            return f"Error: File {path} not found."
+        with GLOBAL_FILE_CONTROLLER.global_lock:
+            fp = safe_path(path)
+            if not fp.exists():
+                return f"Error: File {path} not found."
+                
+            current_mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
+            if agent_access:
+                allowed, msg = agent_access.can_edit(path, current_mtime)
+                if not allowed:
+                    return msg
 
-        text = fp.read_text(encoding='utf-8', errors='replace')
-        lines = text.splitlines()
-        total_lines = len(lines)
+            text = fp.read_text(encoding='utf-8', errors='replace')
+            lines = text.splitlines()
+            total_lines = len(lines)
 
         try:
             start = int(start)

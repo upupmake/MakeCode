@@ -15,7 +15,11 @@ from utils.common import (
     COMMON_TOOLS_HANDLERS,
     STARTUP_TERMINAL_SOURCE,
     STARTUP_TERMINAL_TYPE,
+    run_read,
+    run_write,
+    run_edit,
 )
+from utils.file_access import AgentFileAccess
 from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 from utils.tasks import TASK_MANAGER
 from prompts import (
@@ -459,10 +463,15 @@ class TeammateManager:
             + TODO_TOOLS
             + [pydantic_function_tool(SubmitTaskReport)]
         )
+        agent_access = AgentFileAccess(role)
+
         sub_handlers = {
             **COMMON_TOOLS_HANDLERS,
             **SKILL_TOOLS_HANDLERS,
             "TodoUpdate": lambda items, **kwargs: local_todo.update(items),
+            "RunRead": lambda path, start=None, end=None, **kwargs: run_read(path, start, end, agent_access),
+            "RunWrite": lambda path, content, **kwargs: run_write(path, content, agent_access),
+            "RunEdit": lambda path, start, end, new_content, **kwargs: run_edit(path, start, end, new_content, agent_access),
         }
         max_steps = 40
 
