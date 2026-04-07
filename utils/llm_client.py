@@ -15,7 +15,7 @@ def _make_response_tool(tool_dict):
             "name": func.get("name"),
             "description": func.get("description", ""),
             "parameters": func.get("parameters", {}),
-            "strict": func.get("strict", False)
+            "strict": func.get("strict", False),
         }
     return tool_dict
 
@@ -40,7 +40,9 @@ class BaseLLMClient(ABC):
         pass
 
     @abstractmethod
-    def format_tool_result(self, tool_call_id: str, tool_name: str, output: any) -> dict:
+    def format_tool_result(
+        self, tool_call_id: str, tool_name: str, output: any
+    ) -> dict:
         """Formats the result of a tool execution to be appended to messages."""
         pass
 
@@ -65,9 +67,7 @@ class ResponseAPIClient(BaseLLMClient):
 
     def generate(self, messages: list, tools: list = None):
         return self.client.responses.create(
-            model=self.model,
-            input=messages,
-            tools=tools or []
+            model=self.model, input=messages, tools=tools or []
         )
 
     def parse_response(self, response) -> tuple[str, list, any]:
@@ -75,29 +75,41 @@ class ResponseAPIClient(BaseLLMClient):
         tool_calls = []
         for item in response.output:
             if item.type == "message":
-                text_content += next((c.text for c in item.content if c.type == "output_text"), "")
+                text_content += next(
+                    (c.text for c in item.content if c.type == "output_text"), ""
+                )
             elif item.type == "function_call":
-                tool_calls.append({
-                    "id": item.call_id,
-                    "name": item.name,
-                    "arguments": item.arguments,
-                    "raw": item
-                })
+                tool_calls.append(
+                    {
+                        "id": item.call_id,
+                        "name": item.name,
+                        "arguments": item.arguments,
+                        "raw": item,
+                    }
+                )
         # The raw message in this case is the list of outputs, but we append them differently
         return text_content, tool_calls, response.output
 
-    def format_tool_result(self, tool_call_id: str, tool_name: str, output: any) -> dict:
+    def format_tool_result(
+        self, tool_call_id: str, tool_name: str, output: any
+    ) -> dict:
         return {
             "type": "function_call_output",
             "call_id": tool_call_id,
-            "output": json.dumps(output, ensure_ascii=False) if not isinstance(output, str) else output
+            "output": json.dumps(output, ensure_ascii=False)
+            if not isinstance(output, str)
+            else output,
         }
 
     def append_assistant_message(self, messages: list, raw_message: any):
         # Response API expects each output item to be appended directly
         for item in raw_message:
-            msg_dict = item.model_dump(exclude_none=True) if hasattr(item, 'model_dump') else dict(item)
-            
+            msg_dict = (
+                item.model_dump(exclude_none=True)
+                if hasattr(item, "model_dump")
+                else dict(item)
+            )
+
             # Defend against LLM generating malformed JSON arguments
             if msg_dict.get("type") == "function_call" and "arguments" in msg_dict:
                 args = msg_dict["arguments"]
@@ -105,18 +117,20 @@ class ResponseAPIClient(BaseLLMClient):
                     try:
                         json.loads(args)
                     except json.JSONDecodeError as exc:
-                        log_error_traceback("ResponseAPI malformed function arguments", exc)
+                        log_error_traceback(
+                            "ResponseAPI malformed function arguments", exc
+                        )
                         msg_dict["arguments"] = "{}"
-                        
+
             messages.append(msg_dict)
 
     def format_tools(self, pydantic_tools: list) -> list:
         result = []
         for t in pydantic_tools:
             if isinstance(t, dict) and t.get("type") == "namespace":
-                new_t = t.copy()
-                new_t["tools"] = [_make_response_tool(inner_t) for inner_t in t.get("tools", [])]
-                result.append(new_t)
+                # Flatten the namespace by extracting and converting its inner tools
+                for inner_t in t.get("tools", []):
+                    result.append(_make_response_tool(inner_t))
             else:
                 result.append(_make_response_tool(t))
 
@@ -129,15 +143,14 @@ class ResponseAPIClient(BaseLLMClient):
         summary_request = [
             {"role": "system", "content": get_summary_system_prompt()},
             {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(reason)}
+            {"role": "user", "content": get_summary_user_prompt(reason)},
         ]
-        res = self.client.responses.create(
-            model=self.model,
-            input=summary_request
-        )
+        res = self.client.responses.create(model=self.model, input=summary_request)
         for item in res.output:
             if item.type == "message":
-                return next((c.text for c in item.content if c.type == "output_text"), "")
+                return next(
+                    (c.text for c in item.content if c.type == "output_text"), ""
+                )
         return ""
 
 
@@ -145,10 +158,7 @@ class ChatAPIClient(BaseLLMClient):
     """Implementation for the standard OpenAI Chat Completions API standard."""
 
     def generate(self, messages: list, tools: list = None):
-        kwargs = {
-            "model": self.model,
-            "messages": messages
-        }
+        kwargs = {"model": self.model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
         return self.client.chat.completions.create(**kwargs)
@@ -160,26 +170,36 @@ class ChatAPIClient(BaseLLMClient):
         if message.tool_calls:
             for tc in message.tool_calls:
                 # Chat standard returns arguments as a JSON string
-                tool_calls.append({
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                    "raw": tc
-                })
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                        "raw": tc,
+                    }
+                )
         return text_content, tool_calls, message
 
-    def format_tool_result(self, tool_call_id: str, tool_name: str, output: any) -> dict:
+    def format_tool_result(
+        self, tool_call_id: str, tool_name: str, output: any
+    ) -> dict:
         return {
             "role": "tool",
             "tool_call_id": tool_call_id,
             "name": tool_name,
-            "content": json.dumps(output, ensure_ascii=False) if not isinstance(output, str) else output
+            "content": json.dumps(output, ensure_ascii=False)
+            if not isinstance(output, str)
+            else output,
         }
 
     def append_assistant_message(self, messages: list, raw_message: any):
         # Standard Chat API requires the assistant message to be appended exactly as it is (including tool_calls)
-        msg_dict = raw_message.model_dump(exclude_none=True) if hasattr(raw_message, 'model_dump') else dict(raw_message)
-        
+        msg_dict = (
+            raw_message.model_dump(exclude_none=True)
+            if hasattr(raw_message, "model_dump")
+            else dict(raw_message)
+        )
+
         # Defend against LLM generating malformed JSON in tool call arguments.
         # If we send malformed JSON back in the history, many backends (e.g. vLLM, Ollama) will crash with a 400 Bad Request ("Extra data").
         if msg_dict.get("tool_calls"):
@@ -190,7 +210,9 @@ class ChatAPIClient(BaseLLMClient):
                         try:
                             json.loads(args)
                         except json.JSONDecodeError as exc:
-                            log_error_traceback("ChatAPI malformed function arguments", exc)
+                            log_error_traceback(
+                                "ChatAPI malformed function arguments", exc
+                            )
                             # Replace malformed arguments with empty JSON to prevent backend crash on next turn
                             tc["function"]["arguments"] = "{}"
 
@@ -212,10 +234,7 @@ class ChatAPIClient(BaseLLMClient):
         messages = [
             {"role": "system", "content": get_summary_system_prompt()},
             {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(reason)}
+            {"role": "user", "content": get_summary_user_prompt(reason)},
         ]
-        res = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages
-        )
+        res = self.client.chat.completions.create(model=self.model, messages=messages)
         return res.choices[0].message.content or ""
