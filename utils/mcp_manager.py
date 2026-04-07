@@ -207,7 +207,7 @@ class GlobalMCPManager:
             self.config_path = config_path
 
         if self.console:
-            self.console.print("[dim]🔄 重载 MCP 配置并启动后台连接...[/dim]")
+            self.console.print("[dim] 🔄 重载 MCP 配置并启动后台连接...[/dim]")
 
         self.start_background()
 

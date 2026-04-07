@@ -17,7 +17,7 @@ nul
 .ruff_cache/
 .coverage
 htmlcov/
-t.py
+cc.py
 # Build artifacts
 build/
 dist/
