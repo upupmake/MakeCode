@@ -2,22 +2,39 @@ import json
 from abc import ABC, abstractmethod
 
 from openai import OpenAI
+
 from init import log_error_traceback
 from prompts import get_summary_system_prompt, get_summary_user_prompt
 
 
+def _extract_tool_info(raw_tool):
+    """
+    统一提取器：兼容 pydantic_function_tool 和 MCP 原生 Tool
+    返回: (name, description, parameters)
+    """
+    if "function" in raw_tool:
+        func = raw_tool["function"]
+        name = func.get("name")
+        desc = func.get("description", "")
+        params = func.get("parameters", {})
+    else:
+        name = raw_tool.get("name")
+        desc = raw_tool.get("description", "")
+        params = raw_tool.get("inputSchema", {})
+
+    return name, desc, params
+
+
 def _make_response_tool(tool_dict):
     """Flatten pydantic_function_tool output for Responses API"""
-    if "function" in tool_dict:
-        func = tool_dict["function"]
-        return {
-            "type": "function",
-            "name": func.get("name"),
-            "description": func.get("description", ""),
-            "parameters": func.get("parameters", {}),
-            "strict": func.get("strict", False),
-        }
-    return tool_dict
+    name, desc, params = _extract_tool_info(tool_dict)
+    return {
+        "type": "function",
+        "name": name,
+        "description": desc,
+        "parameters": params,
+        "strict": True,
+    }
 
 
 class BaseLLMClient(ABC):
@@ -41,7 +58,7 @@ class BaseLLMClient(ABC):
 
     @abstractmethod
     def format_tool_result(
-        self, tool_call_id: str, tool_name: str, output: any
+            self, tool_call_id: str, tool_name: str, output: any
     ) -> dict:
         """Formats the result of a tool execution to be appended to messages."""
         pass
@@ -91,7 +108,7 @@ class ResponseAPIClient(BaseLLMClient):
         return text_content, tool_calls, response.output
 
     def format_tool_result(
-        self, tool_call_id: str, tool_name: str, output: any
+            self, tool_call_id: str, tool_name: str, output: any
     ) -> dict:
         return {
             "type": "function_call_output",
@@ -181,7 +198,7 @@ class ChatAPIClient(BaseLLMClient):
         return text_content, tool_calls, message
 
     def format_tool_result(
-        self, tool_call_id: str, tool_name: str, output: any
+            self, tool_call_id: str, tool_name: str, output: any
     ) -> dict:
         return {
             "role": "tool",
@@ -225,9 +242,31 @@ class ChatAPIClient(BaseLLMClient):
         for t in pydantic_tools:
             if isinstance(t, dict) and t.get("type") == "namespace":
                 for inner_t in t.get("tools", []):
-                    result.append(inner_t)
+                    name, desc, params = _extract_tool_info(inner_t)
+                    result.append(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "description": desc,
+                                "parameters": params,
+                                "strict": True,
+                            },
+                        }
+                    )
             else:
-                result.append(t)
+                name, desc, params = _extract_tool_info(t)
+                result.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "description": desc,
+                            "parameters": params,
+                            "strict": True,
+                        },
+                    }
+                )
         return result
 
     def get_summary(self, conversation_text: str, reason: str) -> str:

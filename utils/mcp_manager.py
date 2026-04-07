@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import threading
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -31,6 +32,8 @@ class GlobalMCPManager:
         self.console = console
 
     def start_background(self):
+        if self._is_running:
+            return
         if not self.config_path or not self.config_path.exists():
             return
 
@@ -72,6 +75,11 @@ class GlobalMCPManager:
                 )
         finally:
             self._is_running = False
+            try:
+                if self.loop and not self.loop.is_closed():
+                    self.loop.close()
+            except Exception:
+                pass
 
     async def _async_lifecycle(self):
         mcp_raw_schemas = []
@@ -92,23 +100,31 @@ class GlobalMCPManager:
                         loaded_servers.append(server_name)
 
                         for t in raw_tools:
-                            tool_name = f"{server_name}_{t.name}"
+                            raw_tool_name = f"{server_name}_{t.name}"
+                            tool_name = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_tool_name)[
+                                :64
+                            ]
+
+                            t_dict = (
+                                t.model_dump(exclude_none=True)
+                                if hasattr(t, "model_dump")
+                                else dict(t)
+                            )
+                            t_dict["name"] = tool_name
+
+                            if not t_dict.get("inputSchema"):
+                                t_dict["inputSchema"] = {
+                                    "type": "object",
+                                    "properties": {},
+                                    "required": [],
+                                }
+
+                            mcp_raw_schemas.append(t_dict)
+
                             desc = (
-                                t.description
+                                t_dict.get("description")
                                 or f"MCP Tool: {t.name} from {server_name}"
                             )
-
-                            mcp_raw_schemas.append(
-                                {
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_name,
-                                        "description": desc,
-                                        "parameters": t.inputSchema or {},
-                                    },
-                                }
-                            )
-
                             status_tools.append(
                                 {
                                     "name": tool_name,
