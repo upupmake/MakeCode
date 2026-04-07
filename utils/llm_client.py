@@ -28,13 +28,15 @@ def _extract_tool_info(raw_tool):
 def _make_response_tool(tool_dict):
     """Flatten pydantic_function_tool output for Responses API"""
     name, desc, params = _extract_tool_info(tool_dict)
-    return {
+    tool_def = {
         "type": "function",
         "name": name,
         "description": desc,
         "parameters": params,
-        "strict": True,
     }
+    if "function" in tool_dict:
+        tool_def["strict"] = True
+    return tool_def
 
 
 class BaseLLMClient(ABC):
@@ -243,30 +245,24 @@ class ChatAPIClient(BaseLLMClient):
             if isinstance(t, dict) and t.get("type") == "namespace":
                 for inner_t in t.get("tools", []):
                     name, desc, params = _extract_tool_info(inner_t)
-                    result.append(
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "description": desc,
-                                "parameters": params,
-                                "strict": True,
-                            },
-                        }
-                    )
+                    func_def = {
+                        "name": name,
+                        "description": desc,
+                        "parameters": params,
+                    }
+                    if "function" in inner_t:
+                        func_def["strict"] = True
+                    result.append({"type": "function", "function": func_def})
             else:
                 name, desc, params = _extract_tool_info(t)
-                result.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "description": desc,
-                            "parameters": params,
-                            "strict": True,
-                        },
-                    }
-                )
+                func_def = {
+                    "name": name,
+                    "description": desc,
+                    "parameters": params,
+                }
+                if "function" in t:
+                    func_def["strict"] = True
+                result.append({"type": "function", "function": func_def})
         return result
 
     def get_summary(self, conversation_text: str, reason: str) -> str:

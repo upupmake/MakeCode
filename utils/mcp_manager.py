@@ -6,6 +6,9 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 
 from fastmcp import Client
+from prompt_toolkit import print_formatted_text
+from prompt_toolkit.formatted_text import HTML
+
 from init import log_error_traceback, llm_client
 
 
@@ -64,9 +67,10 @@ class GlobalMCPManager:
         self.thread.start()
 
     def _run_loop(self):
-        asyncio.set_event_loop(self.loop)
+        current_loop = self.loop
+        asyncio.set_event_loop(current_loop)
         try:
-            self.loop.run_until_complete(self._async_lifecycle())
+            current_loop.run_until_complete(self._async_lifecycle())
         except Exception as e:
             log_error_traceback("MCP Background Loop Error", e)
             if self.console:
@@ -76,8 +80,13 @@ class GlobalMCPManager:
         finally:
             self._is_running = False
             try:
-                if self.loop and not self.loop.is_closed():
-                    self.loop.close()
+                if current_loop and not current_loop.is_closed():
+                    import gc
+
+                    gc.collect()
+                    # 给剩余的任务和 transport 留一点时间清理
+                    current_loop.run_until_complete(asyncio.sleep(0.1))
+                    current_loop.close()
             except Exception:
                 pass
 
@@ -98,6 +107,13 @@ class GlobalMCPManager:
 
                         raw_tools = await client.list_tools()
                         loaded_servers.append(server_name)
+
+                        if self.console:
+                            print_formatted_text(
+                                HTML(
+                                    f"<ansigreen> ✅ 成功连接 MCP 服务: <b>'{server_name}'</b> (已加载 {len(raw_tools)} 个工具)</ansigreen>"
+                                )
+                            )
 
                         for t in raw_tools:
                             raw_tool_name = f"{server_name}_{t.name}"
@@ -142,7 +158,7 @@ class GlobalMCPManager:
                                             c.call_tool(original_name, kwargs),
                                             self.loop,
                                         )
-                                        result = future.result()
+                                        result = future.result(timeout=120)
 
                                         # 处理 FastMCP 默认返回结构，提取纯文本
                                         if hasattr(result, "content") and isinstance(
@@ -189,6 +205,10 @@ class GlobalMCPManager:
                 if self.clients:
                     await self._stop_event.wait()
 
+            # 优雅退出: 清空客户端引用，触发 transport 关闭
+            with self._db_lock:
+                self.clients.clear()
+
         except Exception as e:
             log_error_traceback("MCP Async Lifecycle Stack Error", e)
             if self.console:
@@ -205,17 +225,19 @@ class GlobalMCPManager:
             return dict(self._mcp_handlers)
 
     def stop(self):
+        # 先清理全局引用，以便后续的 gc.collect 能够顺利销毁底层 client 和 transport
+        with self._db_lock:
+            self._mcp_tools = []
+            self._mcp_handlers = {}
+            self._status_tools = []
+            self.clients.clear()
+
         if self._is_running and self.loop:
             self.loop.call_soon_threadsafe(self._stop_event.set)
             if self.thread and self.thread.is_alive():
                 self.thread.join(timeout=5)
 
-        with self._db_lock:
-            self._mcp_tools = []
-            self._mcp_handlers = {}
-            self._status_tools = []
-            self.clients = {}
-            self._is_running = False
+        self._is_running = False
 
     def restart(self, config_path: Path = None):
         self.stop()

@@ -13,6 +13,7 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.layout import Layout
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich import box
 from rich.console import Console
@@ -35,6 +36,7 @@ from utils.common import (
     run_edit,
 )
 from utils.file_access import AgentFileAccess
+from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils.memory import (
     micro_compact,
     auto_compact,
@@ -52,9 +54,8 @@ from utils.tasks import (
     load_task_plan,
 )
 from utils.teams import TEAM_TOOLS_HANDLERS, TEAM_TOOLS
-from utils.mcp_manager import GLOBAL_MCP_MANAGER
 
-console = Console()
+console = Console(force_terminal=True)
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 
 MAKECODE_ASCII = r"""
@@ -211,10 +212,10 @@ def _request_with_progress(messages: list, current_tools: list):
 
         # 颜值升级 1: 使用 rich 的优雅 status 动画
         with Progress(
-            BarColumn(bar_width=30),  # 在这里修改你想要的宽度！
-            TextColumn("[bold cyan] ✨ Orchestrator is thinking..."),
-            transient=True,  # 任务完成后自动隐藏加载条，类似 console.status
-            console=console,
+                BarColumn(bar_width=30),  # 在这里修改你想要的宽度！
+                TextColumn("[bold cyan] ✨ Orchestrator is thinking..."),
+                transient=True,  # 任务完成后自动隐藏加载条，类似 console.status
+                console=console,
         ) as progress:
             # total=None 表示进度未知，会触发左右来回弹跳的动画
             progress.add_task("", total=None)
@@ -363,13 +364,14 @@ def _read_user_query(messages: list = None) -> str:
         rprompt = [(f"fg:{color}", f" 📈 Tokens: {tokens}/{THRESHOLD} ({pct:.1f}%) ")]
 
     try:
-        return USER_SESSION.prompt(
-            [
-                ("class:prompt", " 🤖 User "),
-                ("class:arrow", "❯❯ "),
-            ],
-            rprompt=rprompt,
-        )
+        with patch_stdout():
+            return USER_SESSION.prompt(
+                [
+                    ("class:prompt", " 🤖 User "),
+                    ("class:arrow", "❯❯ "),
+                ],
+                rprompt=rprompt,
+            )
     except Exception as exc:
         log_error_traceback("main user input prompt failure", exc)
         raise
@@ -453,8 +455,8 @@ def agent_loop(messages: list):
 
 
 def _interactive_choose_checkpoint(
-    checkpoints: list,
-    title: str = "\n 📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm):\n",
+        checkpoints: list,
+        title: str = "\n 📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm):\n",
 ) -> str:
     if not checkpoints:
         return "abort"
