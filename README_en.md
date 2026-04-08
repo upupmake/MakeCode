@@ -405,6 +405,9 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | Command | Description |
 | --- | --- |
 | `/cmds` | List all available commands and their descriptions |
+| `/mcp` | Manage dynamically loaded MCP servers and tools |
+| `/mcp view` | View the list of currently loaded MCP tools |
+| `/mcp restart` | Restart MCP service and reload configuration |
 | `/load` | List historical checkpoints and select one to load |
 | `/skills` | List available skills in the current workspace |
 | `/compact` | Compact the current conversation context |
@@ -416,6 +419,9 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/clear` / `/reset` | Clear current conversation history |
 | `/quit` / `/exit` | Exit the program |
 
+> 💡 **Tip**: The `/mcp` command supports two subcommands:
+> - `/mcp view`: Display a table of currently connected MCP service nodes with their tool names and descriptions
+> - `/mcp restart`: Force restart the MCP background manager, re-read `.makecode/mcp_config.json` and reinitialize all services
 ---
 
 ## 7. Operational Constraints
