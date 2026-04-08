@@ -262,6 +262,69 @@ Runtime-generated directories:
 - `.makecode/team/`: sub-agent history and run logs
 - `.makecode/transcripts/`: transcripts saved before compaction
 
+### 3.2 Architecture Diagram (Mermaid)
+
+```mermaid
+flowchart TD
+    U[User / CLI Input] --> O[Orchestrator<br/>main.py]
+    O --> AC[llm_client.py<br/>Adapter]
+    AC --> M[OpenAI Standard / Responses API]
+    O --> I[Initialization & Environment<br/>init.py]
+
+    O --> C[File / Terminal Tools<br/>utils/common.py]
+    O --> TM[TaskManager<br/>utils/tasks.py]
+    O --> S[Skills<br/>utils/skills.py]
+    O --> MM[Memory<br/>utils/memory.py]
+    O --> T[Team Delegation<br/>utils/teams.py]
+    O --> MCP[MCP Manager<br/>utils/mcp_manager.py] 🆕
+
+    C --> W[Workspace Files]
+    C --> X[Terminal Command Execution]
+
+    S --> SK[skills/*/SKILL.md]
+    MM --> TR[.makecode/transcripts/]
+    TM --> TP[.makecode/tasks/]
+    T --> TH[.makecode/team/]
+    MCP --> MC[mcp_config.json<br/>.makecode/] 🆕
+    MCP --> MT[MCP Services<br/>External Tools] 🆕
+
+    TM --> RQ[GetRunnableTasks<br/>Runnable Frontier]
+    RQ --> T
+
+    T --> A1[Sub-Agent 1]
+    T --> A2[Sub-Agent 2]
+    T --> AN[Sub-Agent N]
+
+    A1 --> TD[TodoUpdate<br/>tools/todo.py]
+    A2 --> TD
+    AN --> TD
+
+    A1 --> RP[Task Reports]
+    A2 --> RP
+    AN --> RP
+
+    RP --> T
+    T --> TM
+    T --> O
+    MCP -.-> AC[Tool Registration] 🆕
+    O --> F[Final Response]
+```
+
+### 3.3 Architecture Overview
+
+- `main.py` is the main orchestrator, handling model conversations, tool calls, and the main loop.
+- `init.py` provides workspace selection, environment variable loading, and OpenAI client initialization.
+- `prompts.py` centrally manages all LLM prompts for easier maintenance and parameterization.
+- `utils/common.py` provides file read/write, line-based editing, text search, and terminal command execution.
+- `utils/file_access.py` implements file access control: mandatory read-before-edit, mtime-lock validation, and fine-grained file-level concurrency locks.
+- `utils/tasks.py` maintains task DAG, state transitions, and runnable frontier.
+- `utils/teams.py` delegates the latest runnable tasks to sub-agents concurrently, collects results, and supports failure context recovery.
+- `utils/skills.py` provides skill discovery and content loading.
+- `utils/memory.py` handles long-session compaction and transcript saving.
+- `utils/mcp_manager.py` 🆕 manages MCP service configuration loading, client lifecycle, tool extraction and registration, with support for dynamic enable/disable.
+- `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
+
+---
 ---
 
 ## 4. Execution Flow

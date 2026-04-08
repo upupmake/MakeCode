@@ -271,6 +271,7 @@ flowchart TD
     O --> S[Skills<br/>utils/skills.py]
     O --> MM[Memory<br/>utils/memory.py]
     O --> T[Team Delegation<br/>utils/teams.py]
+    O --> MCP[MCP Manager<br/>utils/mcp_manager.py] 🆕
 
     C --> W[工作区文件]
     C --> X[终端命令执行]
@@ -279,6 +280,8 @@ flowchart TD
     MM --> TR[.makecode/transcripts/]
     TM --> TP[.makecode/tasks/]
     T --> TH[.makecode/team/]
+    MCP --> MC[mcp_config.json<br/>.makecode/] 🆕
+    MCP --> MT[MCP Services<br/>External Tools] 🆕
 
     TM --> RQ[GetRunnableTasks<br/>Runnable Frontier]
     RQ --> T
@@ -298,6 +301,7 @@ flowchart TD
     RP --> T
     T --> TM
     T --> O
+    MCP -.-> AC[工具注册] 🆕
     O --> F[最终响应]
 ```
 
@@ -312,8 +316,8 @@ flowchart TD
 - `utils/teams.py` 负责把最新可执行任务并发委派给子智能体，回收结果，并支持失败上下文恢复。
 - `utils/skills.py` 提供技能发现和技能内容加载。
 - `utils/memory.py` 负责长会话压缩与转录保存。
+- `utils/mcp_manager.py` 🆕 负责 MCP 服务配置加载、客户端生命周期管理、工具提取与注册，支持动态启用/禁用服务。
 - `tools/todo.py` 供子智能体在多步骤任务中维护内部待办。
-
 ---
 
 ## 4. 执行流程
