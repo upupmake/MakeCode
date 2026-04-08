@@ -326,7 +326,7 @@ class TeammateManager:
             if previous_context:
                 prompt = f"{prompt}\n\n{previous_context}"
                 print_formatted_text(HTML(
-                        f"<ansimagenta>  -> [Recovery] 发现子节点 '{role}' (Task #{plan_task_id}) 之前的失败记录，已加载并注入到新任务的上下文中。</ansimagenta>"
+                        f"<ansimagenta>  [Recovery] 发现子节点 '{role}' (Task #{plan_task_id}) 之前的失败记录，已加载并注入到新任务的上下文中。</ansimagenta>"
                     ))
 
             runtime_task_id = f"task_{plan_task_id}_{uuid.uuid4().hex[:6]}"
@@ -356,7 +356,7 @@ class TeammateManager:
             self._save_history()
 
             print_formatted_text(HTML(
-                    f"<ansiblue>  -> [Spawn] 子节点 '{role}' 开始工作... (TaskManager #{plan_task_id})</ansiblue>"
+                    f"<ansiblue>  [Spawn] 子节点 '{role}' 开始工作... (TaskManager #{plan_task_id})</ansiblue>"
                 ))
 
             try:
@@ -384,7 +384,7 @@ class TeammateManager:
                         record["end_time"] = datetime.now().isoformat()
             self._save_history()
 
-            print_formatted_text(HTML(f"<ansigreen>  <- [Done] 子节点 '{role}' 任务结束。</ansigreen>"))
+            print_formatted_text(HTML(f"<ansigreen>  [Done] 子节点 '{role}' 任务结束。</ansigreen>"))
             return {
                 "task_id": plan_task_id,
                 "role": role,
