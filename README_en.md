@@ -243,6 +243,7 @@ Agent/
 │  ├─ llm_client.py         # LLM standard adapter (Chat vs Response API)
 │  ├─ common.py             # file / terminal / grep primitives
 │  ├─ file_access.py        # file access control and fine-grained concurrency locks
+│  ├─ mcp_manager.py        # MCP service manager, config loading & tool registration 🆕
 │  ├─ tasks.py              # TaskManager topology and status logic
 │  ├─ teams.py              # concurrent delegation and execution logs
 │  ├─ skills.py             # skill discovery and loading

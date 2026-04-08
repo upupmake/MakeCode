@@ -239,6 +239,7 @@ Agent/
 │  ├─ llm_client.py         # LLM 标准适配器 (Chat vs Response) 
 │  ├─ common.py             # 文件/终端/搜索等基础工具
 │  ├─ file_access.py        # 文件访问控制与细粒度并发锁
+│  ├─ mcp_manager.py        # MCP 服务管理器，配置加载与工具注册 🆕
 │  ├─ tasks.py              # TaskManager 任务拓扑与状态管理
 │  ├─ teams.py              # 子智能体并发委派与执行日志
 │  ├─ skills.py             # 技能发现与加载
