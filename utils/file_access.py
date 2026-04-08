@@ -1,6 +1,6 @@
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 
@@ -54,7 +54,7 @@ class AgentFileAccess:
         if recorded_mtime != current_mtime:
             # 格式化时间戳为毫秒级 UTC 时间，例如：2026-04-04T07:41:58.823Z
             def _fmt(ts: float) -> str:
-                return datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
             error_msg = (
                 f" 🔴 拦截: 文件 '{path}' 在你上次读取后已被其他程序或智能体修改（或你刚修改过但未重新读取）。\n"
