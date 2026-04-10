@@ -371,7 +371,7 @@ class TeammateManager:
                 log_error_traceback(
                     f"Sub-agent crash: {role} (Task #{plan_task_id})", exc
                 )
-                report = f"Error: Sub-agent crashed - {exc}. Check .makecode/error.log for details."
+                report = f"Error: Sub-agent crashed - {exc}."
                 succeeded = False
                 history_status = "failed"
                 self._set_plan_task_status(plan_task_id, "pending")
@@ -410,7 +410,7 @@ class TeammateManager:
                         {
                             "task_id": plan_task_id,
                             "role": "unknown",
-                            "report": f"Error: Sub-agent crashed - {exc}. Check .makecode/error.log for details.",
+                            "report": f"Error: Sub-agent crashed - {exc}.",
                             "status": "failed",
                         }
                     )
@@ -539,7 +539,7 @@ class TeammateManager:
                 append_trace("api_error", str(e))
                 return {
                     "status": "failed",
-                    "report": f"API Error in sub-agent: {e}. Check .makecode/error.log for details.",
+                    "report": f"API Error in sub-agent: {e}.",
                 }
 
             text_content, tool_calls, raw_message = llm_client.parse_response(response)
@@ -591,7 +591,7 @@ class TeammateManager:
                         f"Sub-agent tool execution error (Role: {role}, Tool: {tool_name})",
                         e,
                     )
-                    output = f"Error: {e}. Check .makecode/error.log for details."
+                    output = f"Error: {e}."
 
                 # 记录工具调用的详细结果
                 append_trace(

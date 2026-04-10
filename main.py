@@ -409,7 +409,7 @@ def agent_loop(messages: list):
             response = _request_with_progress(messages, current_super_tools)
         except Exception as e:
             log_error_traceback("Orchestrator generation error", e)
-            error_msg = f"Error during agent execution: {e}. Check .makecode/error.log for details."
+            error_msg = f"Error during agent execution: {e}."
             console.print(f"[bold red] ⚠️ {error_msg}[/bold red]")
             break
 
@@ -438,7 +438,7 @@ def agent_loop(messages: list):
                 log_error_traceback(
                     f"Orchestrator tool execution error: {tool_name}", e
                 )
-                output = f"Error executing {tool_name}: {e}. Check .makecode/error.log for details."
+                output = f"Error executing {tool_name}: {e}."
 
             _render_tool_output(tool_name, output)
 
@@ -463,7 +463,7 @@ def agent_loop(messages: list):
             )
         except Exception as e:
             log_error_traceback("Orchestrator auto-compact error", e)
-            error_msg = f"Error executing auto_compact: {e}. Check .makecode/error.log for details."
+            error_msg = f"Error executing auto_compact: {e}."
             console.print(f"[bold red] ⚠️ {error_msg}[/bold red]")
 
 def _interactive_choose_checkpoint(
