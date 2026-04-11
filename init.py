@@ -52,9 +52,11 @@ try:
     from prompt_toolkit import prompt
 except ImportError as exc:
     log_error_traceback("init prompt_toolkit import", exc)
-    print_formatted_text(HTML(
+    print_formatted_text(
+        HTML(
             "\n<ansired>Error: prompt_toolkit is required but not installed. Please install it using `pip install prompt_toolkit`.</ansired>"
-        ))
+        )
+    )
     sys.exit(1)
 
 
@@ -126,11 +128,17 @@ def _init_workdir() -> Path:
         choice = "abort"
 
     if choice == "abort":
-        print_formatted_text(HTML(f"\n<ansiyellow> ⚠️ Setup cancelled. Defaulting to: {cwd}</ansiyellow>\n"))
+        print_formatted_text(
+            HTML(
+                f"\n<ansiyellow> ⚠️ Setup cancelled. Defaulting to: {cwd}</ansiyellow>\n"
+            )
+        )
         return cwd
 
     if choice == "default":
-        print_formatted_text(HTML(f"<ansigreen> ✅ Workspace set to: {cwd}</ansigreen>\n"))
+        print_formatted_text(
+            HTML(f"<ansigreen> ✅ Workspace set to: {cwd}</ansigreen>\n")
+        )
         return cwd
 
     # 3. 用户选择了自定义输入路径
@@ -142,23 +150,33 @@ def _init_workdir() -> Path:
         )
     except (EOFError, KeyboardInterrupt) as exc:
         log_error_traceback("init custom workdir input interrupted", exc)
-        print_formatted_text(HTML(f"\n<ansiyellow> ⚠️ Input cancelled. Defaulting to: {cwd}</ansiyellow>\n"))
+        print_formatted_text(
+            HTML(
+                f"\n<ansiyellow> ⚠️ Input cancelled. Defaulting to: {cwd}</ansiyellow>\n"
+            )
+        )
         return cwd
 
     if not user_input.strip():
-        print_formatted_text(HTML(f"<ansigreen> ✅ Using default directory: {cwd}</ansigreen>\n"))
+        print_formatted_text(
+            HTML(f"<ansigreen> ✅ Using default directory: {cwd}</ansigreen>\n")
+        )
         return cwd
 
     target_path = Path(user_input.strip()).expanduser().resolve()
 
     if target_path.exists() and target_path.is_dir():
-        print_formatted_text(HTML(f"<ansigreen> ✅ Workspace set to: {target_path}</ansigreen>\n"))
+        print_formatted_text(
+            HTML(f"<ansigreen> ✅ Workspace set to: {target_path}</ansigreen>\n")
+        )
         return target_path
     else:
-        print_formatted_text(HTML(
+        print_formatted_text(
+            HTML(
                 f"<ansiyellow> ⚠️ Warning: Path '{target_path}' does not exist or is not a directory.\n"
                 f"   Falling back to default: {cwd}</ansiyellow>\n"
-            ))
+            )
+        )
         return cwd
 
 
@@ -221,10 +239,16 @@ def _init_api_standard() -> str:
         choice = "abort"
 
     if choice in ("abort", "chat"):
-        print_formatted_text(HTML("<ansigreen> ✅ API Standard set to: Chat Completions API</ansigreen>\n"))
+        print_formatted_text(
+            HTML(
+                "<ansigreen> ✅ API Standard set to: Chat Completions API</ansigreen>\n"
+            )
+        )
         return "chat"
     else:
-        print_formatted_text(HTML("<ansigreen> ✅ API Standard set to: Responses API</ansigreen>\n"))
+        print_formatted_text(
+            HTML("<ansigreen> ✅ API Standard set to: Responses API</ansigreen>\n")
+        )
         return "response"
 
 
@@ -241,9 +265,11 @@ def _load_env_files():
 
                     if key in os.environ:
                         if os.environ[key] != value:
-                            print_formatted_text(HTML(
+                            print_formatted_text(
+                                HTML(
                                     f"\n<ansiyellow> ⚠️ Conflict detected for environment variable: {key}</ansiyellow>"
-                                ))
+                                )
+                            )
                             print_formatted_text(f"  Current value : {os.environ[key]}")
                             print_formatted_text(f"  Value in .env : {value}")
                             try:
@@ -262,14 +288,20 @@ def _load_env_files():
 
                             if choice.strip().lower() == "y":
                                 os.environ[key] = value
-                                print_formatted_text(HTML(f"<ansigreen> ✅ Overridden {key}</ansigreen>"))
+                                print_formatted_text(
+                                    HTML(f"<ansigreen> ✅ Overridden {key}</ansigreen>")
+                                )
                             else:
-                                print_formatted_text(HTML(f"<ansigray> ⏭️ Skipped {key}</ansigray>"))
+                                print_formatted_text(
+                                    HTML(f"<ansigray> ⏭️ Skipped {key}</ansigray>")
+                                )
                     else:
                         os.environ[key] = value
-        print_formatted_text(HTML(
+        print_formatted_text(
+            HTML(
                 f"<ansiblue> ℹ️ Loaded environment variables from Workspace: {workdir_env}</ansiblue>"
-            ))
+            )
+        )
     except FileNotFoundError:
         pass
 
@@ -285,19 +317,24 @@ API_STANDARD = _init_api_standard()
 
 try:
     API_KEY = os.environ["OPENAI_API_KEY"]
-    BASE_ULR = os.environ["OPENAI_BASE_URL"]
+    BASE_URL = os.environ["OPENAI_BASE_URL"]
     MODEL = os.environ["MODEL_ID"]
 except KeyError as exc:
     log_error_traceback("init missing required env", exc)
-    print_formatted_text(HTML(
+    print_formatted_text(
+        HTML(
             "\n<ansired> ⚠️ Error: Missing required environment variables.</ansired>\n"
             "<ansiyellow>Please ensure OPENAI_API_KEY, OPENAI_BASE_URL, and MODEL_ID are set in your .env file or system environment.</ansiyellow>"
-        ))
+        )
+    )
     input("\nPress Enter to exit... (按回车键退出...)")
     sys.exit(1)
-client = OpenAI(base_url=BASE_ULR, api_key=API_KEY, max_retries=2)
+client = OpenAI(base_url=BASE_URL, api_key=API_KEY, max_retries=2)
 
-from utils.llm_client import ChatAPIClient, ResponseAPIClient
+from utils.llm_client import (
+    ChatAPIClient,
+    ResponseAPIClient,
+)
 
 if API_STANDARD == "chat":
     llm_client = ChatAPIClient(client, MODEL)

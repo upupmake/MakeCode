@@ -1,7 +1,8 @@
 import json
 from abc import ABC, abstractmethod
+from typing import Union
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from init import log_error_traceback
 from prompts import get_summary_system_prompt, get_summary_user_prompt
@@ -40,7 +41,7 @@ def _make_response_tool(tool_dict):
 
 
 class BaseLLMClient(ABC):
-    def __init__(self, client: OpenAI, model: str):
+    def __init__(self, client: Union[OpenAI, AsyncOpenAI], model: str):
         self.client = client
         self.model = model
 
@@ -78,6 +79,34 @@ class BaseLLMClient(ABC):
     @abstractmethod
     def get_summary(self, conversation_text: str, reason: str) -> str:
         """Generates a summary of the conversation."""
+        pass
+
+
+class AsyncBaseLLMClient(ABC):
+    @abstractmethod
+    async def generate(self, messages: list, tools: list = None):
+        pass
+
+    @abstractmethod
+    def parse_response(self, response) -> tuple[str, list, any]:
+        pass
+
+    @abstractmethod
+    def format_tool_result(
+            self, tool_call_id: str, tool_name: str, output: any
+    ) -> dict:
+        pass
+
+    @abstractmethod
+    def append_assistant_message(self, messages: list, raw_message: any):
+        pass
+
+    @abstractmethod
+    def format_tools(self, pydantic_tools: list) -> list:
+        pass
+
+    @abstractmethod
+    async def get_summary(self, conversation_text: str, reason: str) -> str:
         pass
 
 
@@ -272,4 +301,46 @@ class ChatAPIClient(BaseLLMClient):
             {"role": "user", "content": get_summary_user_prompt(reason)},
         ]
         res = self.client.chat.completions.create(model=self.model, messages=messages)
+        return res.choices[0].message.content or ""
+
+
+class AsyncResponseAPIClient(ResponseAPIClient, AsyncBaseLLMClient):
+    async def generate(self, messages: list, tools: list = None):
+        return await self.client.responses.create(
+            model=self.model, input=messages, tools=tools or []
+        )
+
+    async def get_summary(self, conversation_text: str, reason: str) -> str:
+        summary_request = [
+            {"role": "system", "content": get_summary_system_prompt()},
+            {"role": "user", "content": conversation_text},
+            {"role": "user", "content": get_summary_user_prompt(reason)},
+        ]
+        res = await self.client.responses.create(
+            model=self.model, input=summary_request
+        )
+        for item in res.output:
+            if item.type == "message":
+                return next(
+                    (c.text for c in item.content if c.type == "output_text"), ""
+                )
+        return ""
+
+
+class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
+    async def generate(self, messages: list, tools: list = None):
+        kwargs = {"model": self.model, "messages": messages}
+        if tools:
+            kwargs["tools"] = tools
+        return await self.client.chat.completions.create(**kwargs)
+
+    async def get_summary(self, conversation_text: str, reason: str) -> str:
+        messages = [
+            {"role": "system", "content": get_summary_system_prompt()},
+            {"role": "user", "content": conversation_text},
+            {"role": "user", "content": get_summary_user_prompt(reason)},
+        ]
+        res = await self.client.chat.completions.create(
+            model=self.model, messages=messages
+        )
         return res.choices[0].message.content or ""

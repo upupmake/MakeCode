@@ -7,3 +7,4 @@ PyYAML
 Requests
 rich
 tiktoken
+aiofiles

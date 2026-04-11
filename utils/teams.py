@@ -1,17 +1,23 @@
-import concurrent.futures
+import asyncio
 import json
-import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
 
+import aiofiles
+from openai import AsyncOpenAI, pydantic_function_tool
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import HTML
-
-from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, ValidationError
 
-from init import WORKDIR, llm_client, log_error_traceback
+from init import (
+    WORKDIR,
+    log_error_traceback,
+    API_KEY,
+    BASE_URL,
+    MODEL,
+    API_STANDARD,
+)
 from prompts import (
     get_sub_agent_system_prompt,
     get_sub_agent_summary_prompt,
@@ -28,9 +34,10 @@ from utils.common import (
     run_edit,
 )
 from utils.file_access import AgentFileAccess
+from utils.llm_client import AsyncChatAPIClient, AsyncResponseAPIClient
+from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils.skills import SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 from utils.tasks import TASK_MANAGER
-from utils.mcp_manager import GLOBAL_MCP_MANAGER
 
 MAKECODE_DIR = WORKDIR / ".makecode"
 TEAM_DIR = MAKECODE_DIR / "team"
@@ -100,23 +107,21 @@ class TeammateManager:
         self.history_path = self.dir / f"task_history_{self.session_id}.json"
         self.history = self._load_history()
 
-        # 多线程修改统一配置文件时，必须加锁防冲突
-        self._db_lock = threading.Lock()
-
     def _load_history(self) -> list:
         if self.history_path.exists():
             return json.loads(self.history_path.read_text(encoding="utf-8"))
         return []
 
-    def _save_history(self):
+    async def _save_history(self, lock: asyncio.Lock):
         """写入时加锁，保证多子节点并发完成时不会写坏文件"""
-        with self._db_lock:
-            self.history_path.write_text(
-                json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+        async with lock:
+            async with aiofiles.open(self.history_path, "w", encoding="utf-8") as f:
+                await f.write(json.dumps(self.history, ensure_ascii=False, indent=2))
 
-    def _set_plan_task_status(self, task_id: str, status: str):
-        with self._db_lock:
+    async def _set_plan_task_status(
+        self, task_id: str, status: str, lock: asyncio.Lock
+    ):
+        async with lock:
             TASK_MANAGER.update_task_status(task_id=task_id, status=status)
 
     def _validate_delegation_tasks(self, tasks: list[dict]) -> list[dict]:
@@ -232,9 +237,11 @@ class TeammateManager:
 
         return normalized
 
-    def _get_last_failed_context(self, plan_task_id: str) -> str:
+    async def _get_last_failed_context(
+        self, plan_task_id: str, lock: asyncio.Lock
+    ) -> str:
         last_record = None
-        with self._db_lock:
+        async with lock:
             for record in reversed(self.history):
                 if record.get("plan_task_id") == plan_task_id:
                     last_record = record
@@ -253,8 +260,8 @@ class TeammateManager:
         ]
 
         try:
-            with open(trace_log_path, "r", encoding="utf-8") as f:
-                for line in f:
+            async with aiofiles.open(trace_log_path, "r", encoding="utf-8") as f:
+                async for line in f:
                     if not line.strip():
                         continue
                     event = json.loads(line)
@@ -311,112 +318,140 @@ class TeammateManager:
         current_run_dir = RUNS_DIR / run_id
         current_run_dir.mkdir(exist_ok=True)
 
-        print_formatted_text(HTML(
+        print_formatted_text(
+            HTML(
                 f"\n<ansiyellow>[Orchestrator] 正在并发唤醒 {len(tasks)} 个子节点... 日志目录: {run_id}</ansiyellow>\n"
-            ))
+            )
+        )
 
-        results: list[dict] = []
+        async def _run_all():
+            async_client = AsyncOpenAI(
+                base_url=BASE_URL, api_key=API_KEY, max_retries=2
+            )
+            if API_STANDARD == "chat":
+                local_async_llm_client = AsyncChatAPIClient(async_client, MODEL)
+            else:
+                local_async_llm_client = AsyncResponseAPIClient(async_client, MODEL)
 
-        def worker(task_info: dict):
-            plan_task_id = task_info["task_id"]
-            role = task_info["role_name"]
-            prompt = task_info["context_prompt"]
+            lock = asyncio.Lock()
 
-            previous_context = self._get_last_failed_context(plan_task_id)
-            if previous_context:
-                prompt = f"{prompt}\n\n{previous_context}"
-                print_formatted_text(HTML(
-                        f"<ansimagenta>  [Recovery] 发现子节点 '{role}' (Task #{plan_task_id}) 之前的失败记录，已加载并注入到新任务的上下文中。</ansimagenta>"
-                    ))
+            async def worker(task_info: dict):
+                plan_task_id = task_info["task_id"]
+                role = task_info["role_name"]
+                prompt = task_info["context_prompt"]
 
-            runtime_task_id = f"task_{plan_task_id}_{uuid.uuid4().hex[:6]}"
-            start_time = datetime.now().isoformat()
-
-            # 为该 Sub-Agent 分配专属的行动日志文件
-            log_file_path = current_run_dir / f"{runtime_task_id}_trace.jsonl"
-
-            # 记录初始信息到总的 history
-            task_record = {
-                "run_id": run_id,
-                "task_id": runtime_task_id,
-                "plan_task_id": plan_task_id,
-                "role": role,
-                "status": "running",
-                "start_time": start_time,
-                "prompt": prompt,
-                "trace_log": str(
-                    log_file_path.relative_to(WORKDIR)
-                ),  # 保存相对路径方便查看
-            }
-
-            self._set_plan_task_status(plan_task_id, "in_progress")
-
-            with self._db_lock:
-                self.history.append(task_record)
-            self._save_history()
-
-            print_formatted_text(HTML(
-                    f"<ansiblue>  [Spawn] 子节点 '{role}' 开始工作... (TaskManager #{plan_task_id})</ansiblue>"
-                ))
-
-            try:
-                # 将日志文件路径传入执行沙盒
-                sub_result = self._sub_agent_loop(role, prompt, log_file_path)
-                report = sub_result["report"]
-                succeeded = sub_result["status"] == "completed"
-                final_plan_status = "completed" if succeeded else "pending"
-                self._set_plan_task_status(plan_task_id, final_plan_status)
-                history_status = "completed" if succeeded else "failed"
-            except Exception as exc:
-                log_error_traceback(
-                    f"Sub-agent crash: {role} (Task #{plan_task_id})", exc
+                previous_context = await self._get_last_failed_context(
+                    plan_task_id, lock
                 )
-                report = f"Error: Sub-agent crashed - {exc}."
-                succeeded = False
-                history_status = "failed"
-                self._set_plan_task_status(plan_task_id, "pending")
+                if previous_context:
+                    prompt = f"{prompt}\n\n{previous_context}"
+                    print_formatted_text(
+                        HTML(
+                            f"<ansimagenta>  [Recovery] 发现子节点 '{role}' (Task #{plan_task_id}) 之前的失败记录，已加载并注入到新任务的上下文中。</ansimagenta>"
+                        )
+                    )
 
-            # 任务完成，更新总 history 状态
-            with self._db_lock:
-                for record in self.history:
-                    if record["task_id"] == runtime_task_id:
-                        record["status"] = history_status
-                        record["end_time"] = datetime.now().isoformat()
-            self._save_history()
+                runtime_task_id = f"task_{plan_task_id}_{uuid.uuid4().hex[:6]}"
+                start_time = datetime.now().isoformat()
 
-            print_formatted_text(HTML(f"<ansigreen>  [Done] 子节点 '{role}' 任务结束。</ansigreen>"))
-            return {
-                "task_id": plan_task_id,
-                "role": role,
-                "report": report,
-                "status": "completed" if succeeded else "failed",
-            }
+                # 为该 Sub-Agent 分配专属的行动日志文件
+                log_file_path = current_run_dir / f"{runtime_task_id}_trace.jsonl"
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(len(tasks), 5)
-        ) as executor:
-            future_to_task_id = {
-                executor.submit(worker, t): t["task_id"] for t in tasks
-            }
-            for future in concurrent.futures.as_completed(future_to_task_id):
-                plan_task_id = future_to_task_id[future]
+                # 记录初始信息到总的 history
+                task_record = {
+                    "run_id": run_id,
+                    "task_id": runtime_task_id,
+                    "plan_task_id": plan_task_id,
+                    "role": role,
+                    "status": "running",
+                    "start_time": start_time,
+                    "prompt": prompt,
+                    "trace_log": str(
+                        log_file_path.relative_to(WORKDIR)
+                    ),  # 保存相对路径方便查看
+                }
+
+                await self._set_plan_task_status(plan_task_id, "in_progress", lock)
+
+                async with lock:
+                    self.history.append(task_record)
+                await self._save_history(lock)
+
+                print_formatted_text(
+                    HTML(
+                        f"<ansiblue>  [Spawn] 子节点 '{role}' 开始工作... (TaskManager #{plan_task_id})</ansiblue>"
+                    )
+                )
+
                 try:
-                    results.append(future.result())
+                    # 将日志文件路径传入执行沙盒
+                    sub_result = await self._sub_agent_loop(
+                        role, prompt, log_file_path, local_async_llm_client
+                    )
+                    report = sub_result["report"]
+                    succeeded = sub_result["status"] == "completed"
+                    final_plan_status = "completed" if succeeded else "pending"
+                    await self._set_plan_task_status(
+                        plan_task_id, final_plan_status, lock
+                    )
+                    history_status = "completed" if succeeded else "failed"
                 except Exception as exc:
                     log_error_traceback(
-                        f"Thread pool execution error for Task #{plan_task_id}", exc
+                        f"Sub-agent crash: {role} (Task #{plan_task_id})", exc
                     )
-                    results.append(
-                        {
-                            "task_id": plan_task_id,
-                            "role": "unknown",
-                            "report": f"Error: Sub-agent crashed - {exc}.",
-                            "status": "failed",
-                        }
-                    )
-                    self._set_plan_task_status(plan_task_id, "pending")
+                    report = f"Error: Sub-agent crashed - {exc}."
+                    succeeded = False
+                    history_status = "failed"
+                    await self._set_plan_task_status(plan_task_id, "pending", lock)
 
-        print_formatted_text(HTML(f"\n<ansiyellow>[Orchestrator] 所有任务已完成，汇总报告已生成。</ansiyellow>\n"))
+                # 任务完成，更新总 history 状态
+                async with lock:
+                    for record in self.history:
+                        if record["task_id"] == runtime_task_id:
+                            record["status"] = history_status
+                            record["end_time"] = datetime.now().isoformat()
+                await self._save_history(lock)
+
+                print_formatted_text(
+                    HTML(f"<ansigreen>  [Done] 子节点 '{role}' 任务结束。</ansigreen>")
+                )
+                return {
+                    "task_id": plan_task_id,
+                    "role": role,
+                    "report": report,
+                    "status": "completed" if succeeded else "failed",
+                }
+
+            try:
+                coroutines = [worker(t) for t in tasks]
+                return await asyncio.gather(*coroutines, return_exceptions=True)
+            finally:
+                await async_client.close()
+
+        raw_results = asyncio.run(_run_all())
+        results = []
+        for idx, res in enumerate(raw_results):
+            if isinstance(res, Exception):
+                task_id = tasks[idx]["task_id"]
+                log_error_traceback(
+                    f"Asyncio gather exception for Task #{task_id}", res
+                )
+                results.append(
+                    {
+                        "task_id": task_id,
+                        "role": tasks[idx]["role_name"],
+                        "report": f"Error: Sub-agent unhandled exception - {res}.",
+                        "status": "failed",
+                    }
+                )
+            else:
+                results.append(res)
+
+        print_formatted_text(
+            HTML(
+                f"\n<ansiyellow>[Orchestrator] 所有任务已完成，汇总报告已生成。</ansiyellow>\n"
+            )
+        )
 
         final_combined_report = (
             f"### Run ID: {run_id} | Sub-Agents Execution Reports ###\n\n"
@@ -434,25 +469,27 @@ class TeammateManager:
 
         return final_combined_report
 
-    def _sub_agent_loop(self, role: str, prompt: str, log_file: Path) -> dict:
+    async def _sub_agent_loop(
+        self, role: str, prompt: str, log_file: Path, local_async_llm_client
+    ) -> dict:
         """子节点独立的运行沙盒，将每一步决策实时写入 JSONL"""
 
         # 辅助函数：实时追加日志
-        def append_trace(event_type: str, data: any):
-            with open(log_file, "a", encoding="utf-8") as f:
+        async def append_trace(event_type: str, data: any):
+            async with aiofiles.open(log_file, "a", encoding="utf-8") as f:
                 log_entry = {
                     "timestamp": datetime.now().isoformat(),
                     "event": event_type,
                     "data": data,
                 }
-                f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+                await f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
         sys_prompt = get_sub_agent_system_prompt(
             role, WORKDIR, STARTUP_TERMINAL_LABEL, STARTUP_TERMINAL_SOURCE
         )
 
         # 记录初始启动状态
-        append_trace(
+        await append_trace(
             "agent_spawned",
             {"role": role, "sys_prompt": sys_prompt, "user_prompt": prompt},
         )
@@ -464,7 +501,7 @@ class TeammateManager:
 
         local_todo = TodoManager()
 
-        sub_agent_tools = llm_client.format_tools(
+        sub_agent_tools = local_async_llm_client.format_tools(
             COMMON_TOOLS
             + SKILL_TOOLS
             + TODO_TOOLS
@@ -490,7 +527,9 @@ class TeammateManager:
         }
         max_steps = 40
 
-        def _build_incomplete_report(stop_reason: str, executed_steps: int) -> str:
+        async def _build_incomplete_report(
+            stop_reason: str, executed_steps: int
+        ) -> str:
             todo_snapshot = local_todo.render()
             messages_text = json.dumps(
                 messages, ensure_ascii=False, default=str, indent=2
@@ -506,10 +545,12 @@ class TeammateManager:
                 {"role": "user", "content": summary_prompt},
             ]
             try:
-                fallback_response = llm_client.generate(
+                fallback_response = await local_async_llm_client.generate(
                     messages=fallback_messages, tools=[]
                 )
-                summary_text, _, _ = llm_client.parse_response(fallback_response)
+                summary_text, _, _ = local_async_llm_client.parse_response(
+                    fallback_response
+                )
                 summary_text = (summary_text or "").strip()
                 if summary_text:
                     return summary_text
@@ -530,24 +571,26 @@ class TeammateManager:
 
         for step in range(max_steps):  # 最大 max_steps 步限制
             try:
-                response = llm_client.generate(
+                response = await local_async_llm_client.generate(
                     messages=messages,
                     tools=sub_agent_tools,
                 )
             except Exception as e:
                 log_error_traceback(f"Sub-agent API generation error (Role: {role})", e)
-                append_trace("api_error", str(e))
+                await append_trace("api_error", str(e))
                 return {
                     "status": "failed",
                     "report": f"API Error in sub-agent: {e}.",
                 }
 
-            text_content, tool_calls, raw_message = llm_client.parse_response(response)
+            text_content, tool_calls, raw_message = (
+                local_async_llm_client.parse_response(response)
+            )
 
             # append assistant message to history
-            llm_client.append_assistant_message(messages, raw_message)
+            local_async_llm_client.append_assistant_message(messages, raw_message)
 
-            append_trace(
+            await append_trace(
                 f"step_{step}_llm_output",
                 {"text": text_content, "tool_calls": [tc["name"] for tc in tool_calls]},
             )
@@ -566,11 +609,11 @@ class TeammateManager:
                     else:
                         args = tool_args or {}
                     final_report = args.get("report", "No report provided.")
-                    append_trace("task_completed", final_report)
+                    await append_trace("task_completed", final_report)
                     task_completed = True
                     # Need to append the tool result to close the tool call loop even if breaking
                     messages.append(
-                        llm_client.format_tool_result(
+                        local_async_llm_client.format_tool_result(
                             tool_id, tool_name, "Task submitted"
                         )
                     )
@@ -583,7 +626,8 @@ class TeammateManager:
                             args = json.loads(tool_args) if tool_args.strip() else {}
                         else:
                             args = tool_args or {}
-                        output = handler(**args)
+
+                        output = await asyncio.to_thread(handler, **args)
                     else:
                         output = f"Unknown tool: {tool_name}"
                 except Exception as e:
@@ -594,7 +638,7 @@ class TeammateManager:
                     output = f"Error: {e}."
 
                 # 记录工具调用的详细结果
-                append_trace(
+                await append_trace(
                     f"step_{step}_tool_execution",
                     {
                         "tool_name": tool_name,
@@ -604,7 +648,9 @@ class TeammateManager:
                 )
 
                 messages.append(
-                    llm_client.format_tool_result(tool_id, tool_name, output)
+                    local_async_llm_client.format_tool_result(
+                        tool_id, tool_name, output
+                    )
                 )
 
             if task_completed or not has_tool_call:
@@ -613,10 +659,10 @@ class TeammateManager:
                 break
 
         if final_report.startswith("Error:"):
-            final_report = _build_incomplete_report(
+            final_report = await _build_incomplete_report(
                 stop_reason=stop_reason, executed_steps=max_steps
             )
-            append_trace("task_incomplete", final_report)
+            await append_trace("task_incomplete", final_report)
             return {"status": "failed", "report": final_report}
         return {"status": "completed", "report": final_report}
 

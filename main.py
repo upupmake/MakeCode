@@ -25,7 +25,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from init import WORKDIR, llm_client, log_error_traceback, BASE_ULR
+from init import WORKDIR, llm_client, log_error_traceback
 from prompts import get_orchestrator_system_prompt
 from utils.common import (
     COMMON_TOOLS,
@@ -208,7 +208,9 @@ def _render_tool_output(name: str, output: Any):
 
 
 def _render_token_usage(messages: list):
-    tokens = estimate_tokens(messages, tools_definition=get_current_tools_definition(), system_prompt=SYSTEM)
+    tokens = estimate_tokens(
+        messages, tools_definition=get_current_tools_definition(), system_prompt=SYSTEM
+    )
     pct = (tokens / THRESHOLD) * 100
     color = "green" if pct < 70 else "yellow" if pct < 90 else "red"
     console.print(
@@ -374,7 +376,11 @@ def _read_user_query(messages: list = None) -> str:
 
     rprompt = []
     if messages is not None:
-        tokens = estimate_tokens(messages, tools_definition=get_current_tools_definition(), system_prompt=SYSTEM)
+        tokens = estimate_tokens(
+            messages,
+            tools_definition=get_current_tools_definition(),
+            system_prompt=SYSTEM,
+        )
         pct = (tokens / THRESHOLD) * 100
         color = "ansigreen" if pct < 70 else "ansiyellow" if pct < 90 else "ansired"
         rprompt = [(f"fg:{color}", f" 📈 Tokens: {tokens}/{THRESHOLD} ({pct:.1f}%) ")]
@@ -399,10 +405,12 @@ def agent_loop(messages: list):
     micro_compact(messages)
     # 动态组装当前的全局工具和执行器
     current_super_tools = get_current_tools_definition()
-    current_handlers = {**BASE_SUPER_TOOLS_HANDLERS, **GLOBAL_MCP_MANAGER.get_handlers()}
+    current_handlers = {
+        **BASE_SUPER_TOOLS_HANDLERS,
+        **GLOBAL_MCP_MANAGER.get_handlers(),
+    }
 
     while True:
-
         _render_token_usage(messages)
 
         try:
@@ -443,14 +451,16 @@ def agent_loop(messages: list):
             _render_tool_output(tool_name, output)
 
             messages.append(llm_client.format_tool_result(tool_id, tool_name, output))
-        
+
         # 保存当前对话状态，更新 CURRENT_CHECKPOINT 指向最新文件
         CURRENT_CHECKPOINT = save_checkpoint(messages, CURRENT_CHECKPOINT)
 
         if not has_tool_call:
             break
     # 对话结束后尝试压缩上下文
-    current_context_tokens = estimate_tokens(messages, tools_definition=current_super_tools, system_prompt=SYSTEM)
+    current_context_tokens = estimate_tokens(
+        messages, tools_definition=current_super_tools, system_prompt=SYSTEM
+    )
     if current_context_tokens > THRESHOLD:
         compact_reason = (
             f"Post agent_loop auto compact triggered: estimated tokens "
@@ -465,6 +475,7 @@ def agent_loop(messages: list):
             log_error_traceback("Orchestrator auto-compact error", e)
             error_msg = f"Error executing auto_compact: {e}."
             console.print(f"[bold red] ⚠️ {error_msg}[/bold red]")
+
 
 def _interactive_choose_checkpoint(
         checkpoints: list,
