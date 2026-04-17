@@ -7,10 +7,8 @@ from pathlib import Path
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import HTML
 
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field
-
-from init import WORKDIR, llm_client
+from init import WORKDIR
+from utils.llm_client import llm_client
 
 THRESHOLD = 1024 * 128
 MAKECODE_DIR = WORKDIR / ".makecode"
@@ -62,13 +60,15 @@ try:
 
     _ENCODER = tiktoken.get_encoding("cl100k_base")
 except ImportError:
-    print_formatted_text(HTML(
-        f"\n<ansiyellow> ⚠️ tiktoken加载失败, token将使用估算模式 </ansiyellow>\n"
-    ))
+    print_formatted_text(
+        HTML(f"\n<ansiyellow> ⚠️ tiktoken加载失败, token将使用估算模式 </ansiyellow>\n")
+    )
     _ENCODER = None
 
 
-def estimate_tokens(messages: list, tools_definition: list = None, system_prompt: str = None):
+def estimate_tokens(
+        messages: list, tools_definition: list = None, system_prompt: str = None
+):
     # 计算基础文本的 token 数
     text = json.dumps(messages, ensure_ascii=False)
     if _ENCODER:
@@ -166,10 +166,16 @@ def auto_compact(messages: list, reason: str = "User triggered compact") -> str:
     with open(transcript_path, "w", encoding="utf-8") as f:
         for msg in messages:
             f.write(json.dumps(msg, default=str, ensure_ascii=False) + "\n")
-    print_formatted_text(HTML(f"<ansiyellow>[Transcript saved to: {transcript_path}]</ansiyellow>"))
+    print_formatted_text(
+        HTML(f"<ansiyellow>[Transcript saved to: {transcript_path}]</ansiyellow>")
+    )
 
     # Ask LLM to summarize via Responses API
-    print_formatted_text(HTML(f"<ansiyellow>[Compacting conversation context... reason: {reason}]</ansiyellow>"))
+    print_formatted_text(
+        HTML(
+            f"<ansiyellow>[Compacting conversation context... reason: {reason}]</ansiyellow>"
+        )
+    )
 
     # Filter out original system messages to prevent system instructions clash
     filtered_messages = [m for m in messages if m.get("role") != "system"]

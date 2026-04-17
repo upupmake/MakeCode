@@ -61,7 +61,7 @@ class BaseLLMClient(ABC):
 
     @abstractmethod
     def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: any
+        self, tool_call_id: str, tool_name: str, output: any
     ) -> dict:
         """Formats the result of a tool execution to be appended to messages."""
         pass
@@ -93,7 +93,7 @@ class AsyncBaseLLMClient(ABC):
 
     @abstractmethod
     def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: any
+        self, tool_call_id: str, tool_name: str, output: any
     ) -> dict:
         pass
 
@@ -139,7 +139,7 @@ class ResponseAPIClient(BaseLLMClient):
         return text_content, tool_calls, response.output
 
     def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: any
+        self, tool_call_id: str, tool_name: str, output: any
     ) -> dict:
         return {
             "type": "function_call_output",
@@ -229,7 +229,7 @@ class ChatAPIClient(BaseLLMClient):
         return text_content, tool_calls, message
 
     def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: any
+        self, tool_call_id: str, tool_name: str, output: any
     ) -> dict:
         return {
             "role": "tool",
@@ -344,3 +344,13 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
             model=self.model, messages=messages
         )
         return res.choices[0].message.content or ""
+
+
+from init import API_KEY, BASE_URL, MODEL, API_STANDARD
+
+_openai_client = OpenAI(base_url=BASE_URL, api_key=API_KEY, max_retries=2)
+
+if API_STANDARD == "chat":
+    llm_client = ChatAPIClient(_openai_client, MODEL)
+else:
+    llm_client = ResponseAPIClient(_openai_client, MODEL)

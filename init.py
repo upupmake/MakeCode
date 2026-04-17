@@ -12,7 +12,6 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import HTML
-from openai import OpenAI
 
 
 def _get_error_log_path() -> Path:
@@ -329,14 +328,3 @@ except KeyError as exc:
     )
     input("\nPress Enter to exit... (按回车键退出...)")
     sys.exit(1)
-client = OpenAI(base_url=BASE_URL, api_key=API_KEY, max_retries=2)
-
-from utils.llm_client import (
-    ChatAPIClient,
-    ResponseAPIClient,
-)
-
-if API_STANDARD == "chat":
-    llm_client = ChatAPIClient(client, MODEL)
-else:
-    llm_client = ResponseAPIClient(client, MODEL)

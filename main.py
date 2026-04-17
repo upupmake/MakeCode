@@ -25,7 +25,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from init import WORKDIR, llm_client, log_error_traceback
+from init import WORKDIR, log_error_traceback
 from prompts import get_orchestrator_system_prompt
 from utils.common import (
     COMMON_TOOLS,
@@ -37,6 +37,7 @@ from utils.common import (
     run_edit,
 )
 from utils.file_access import AgentFileAccess
+from utils.llm_client import llm_client
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils.memory import (
     micro_compact,
@@ -83,7 +84,6 @@ def build_system_prompt() -> str:
     )
 
 
-
 def refresh_system_prompt() -> str:
     global SYSTEM
     SYSTEM = build_system_prompt()
@@ -106,7 +106,6 @@ SYSTEM = build_system_prompt()
 BASE_SUPER_TOOLS = llm_client.format_tools(
     COMMON_TOOLS + SKILL_TOOLS + TASK_MANAGER_TOOLS + TEAM_TOOLS
 )
-
 
 orchestrator_access = AgentFileAccess()
 
@@ -613,8 +612,16 @@ def _interactive_switch_mcp_servers(server_switches: list) -> str | dict:
             )
 
         lines.append(("class:title", "\n"))
-        confirm_style = "class:selected" if selected_index[0] == len(server_switches) else "class:unselected"
-        cancel_style = "class:selected" if selected_index[0] == len(server_switches) + 1 else "class:unselected"
+        confirm_style = (
+            "class:selected"
+            if selected_index[0] == len(server_switches)
+            else "class:unselected"
+        )
+        cancel_style = (
+            "class:selected"
+            if selected_index[0] == len(server_switches) + 1
+            else "class:unselected"
+        )
         lines.append((confirm_style, "  [确认保存并应用变更]\n"))
         lines.append((cancel_style, "  [取消，不保存本次修改]\n"))
         return lines
@@ -678,7 +685,9 @@ if __name__ == "__main__":
                 )
                 summary_table.add_column("项目", style="bold green", justify="left")
                 summary_table.add_column("内容", style="white")
-                summary_table.add_row("配置文件", status.get("config_path", "Not configured"))
+                summary_table.add_row(
+                    "配置文件", status.get("config_path", "Not configured")
+                )
                 summary_table.add_row(
                     "后台状态",
                     "运行中" if status.get("is_running") else "未运行",
@@ -689,7 +698,9 @@ if __name__ == "__main__":
                 )
                 summary_table.add_row(
                     "配置中已启用",
-                    ", ".join(enabled_config_servers) if enabled_config_servers else "(无)",
+                    ", ".join(enabled_config_servers)
+                    if enabled_config_servers
+                    else "(无)",
                 )
                 summary_table.add_row(
                     "配置中已禁用",
@@ -699,7 +710,9 @@ if __name__ == "__main__":
                     "当前已加载服务",
                     ", ".join(loaded_servers) if loaded_servers else "(无)",
                 )
-                summary_table.add_row("当前已加载工具数", str(status.get("tool_count", 0)))
+                summary_table.add_row(
+                    "当前已加载工具数", str(status.get("tool_count", 0))
+                )
                 console.print(summary_table)
 
                 if not status.get("is_running"):
@@ -766,7 +779,9 @@ if __name__ == "__main__":
                     switch_result = _interactive_switch_mcp_servers(server_switches)
                 except Exception as exc:
                     log_error_traceback("main interactive mcp switch", exc)
-                    console.print(f"\n[bold red]❌ 打开 MCP 开关面板失败: {exc}[/bold red]")
+                    console.print(
+                        f"\n[bold red]❌ 打开 MCP 开关面板失败: {exc}[/bold red]"
+                    )
                     continue
 
                 if switch_result == "empty" or switch_result.get("action") == "cancel":
@@ -781,7 +796,9 @@ if __name__ == "__main__":
                     )
                 except Exception as exc:
                     log_error_traceback("main apply mcp switches", exc)
-                    console.print(f"\n[bold red]❌ 应用 MCP 开关变更失败: {exc}[/bold red]")
+                    console.print(
+                        f"\n[bold red]❌ 应用 MCP 开关变更失败: {exc}[/bold red]"
+                    )
                     continue
 
                 if not apply_result.get("saved"):
@@ -800,17 +817,25 @@ if __name__ == "__main__":
                     f"[dim]配置文件: {GLOBAL_MCP_MANAGER.get_status_info().get('config_path')}[/dim]",
                 ]
                 if changed:
-                    summary_lines.append(f"[green]已变更服务:[/green] {', '.join(changed)}")
+                    summary_lines.append(
+                        f"[green]已变更服务:[/green] {', '.join(changed)}"
+                    )
                 if enabled:
-                    summary_lines.append(f"[green]本次启用:[/green] {', '.join(enabled)}")
+                    summary_lines.append(
+                        f"[green]本次启用:[/green] {', '.join(enabled)}"
+                    )
                 if disabled:
-                    summary_lines.append(f"[yellow]本次停用:[/yellow] {', '.join(disabled)}")
+                    summary_lines.append(
+                        f"[yellow]本次停用:[/yellow] {', '.join(disabled)}"
+                    )
                 if failed:
                     failure_text = "; ".join(
                         f"{item['server']} ({item['action']} 失败: {item['error']})"
                         for item in failed
                     )
-                    summary_lines.append(f"[bold red]部分服务切换失败:[/bold red] {failure_text}")
+                    summary_lines.append(
+                        f"[bold red]部分服务切换失败:[/bold red] {failure_text}"
+                    )
                 console.print("\n".join(summary_lines))
                 continue
 
