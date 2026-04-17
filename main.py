@@ -169,7 +169,7 @@ def _render_orchestrator_message(text: str):
     console.print(
         Panel(
             Markdown(text),
-            title="[bold magenta] 🧠 Orchestrator[/bold magenta]",
+            title="[bold magenta]🧠 Orchestrator[/bold magenta]",
             border_style="magenta",
             box=box.ROUNDED,
             padding=(1, 2),
@@ -191,7 +191,7 @@ def _render_tool_call(name: str, arguments: Any):
     console.print(
         Panel(
             body,
-            title=f"[bold cyan] 🛠️ Action: {name}[/bold cyan]",
+            title=f"[bold cyan]🛠️ Action: {name}[/bold cyan]",
             border_style="cyan",
             box=box.ROUNDED,
         )
@@ -217,7 +217,7 @@ def _render_tool_output(name: str, output: Any):
     console.print(
         Panel(
             body,
-            title=f"[bold green] ✅ Result: {name}[/bold green]",
+            title=f"[bold green]✅ Result: {name}[/bold green]",
             border_style="green",
             box=box.ROUNDED,
         )
@@ -230,7 +230,7 @@ def _render_user_message(text: str):
     console.print(
         Panel(
             Text(text),
-            title="[bold green] 👤 User[/bold green]",
+            title="[bold green]👤 User[/bold green]",
             border_style="green",
             box=box.ROUNDED,
             padding=(0, 1),
@@ -284,7 +284,7 @@ def _render_token_usage(messages: list):
     pct = (tokens / THRESHOLD) * 100
     color = "green" if pct < 70 else "yellow" if pct < 90 else "red"
     console.print(
-        f"[{color} dim] 📈 Context: {tokens}/{THRESHOLD} Tokens ({pct:.1f}%)[/]"
+        f"[{color} dim]📈 Context: {tokens}/{THRESHOLD} Tokens ({pct:.1f}%)[/]"
     )
 
 
@@ -298,7 +298,7 @@ def _request_with_progress(messages: list, current_tools: list):
 
         with Progress(
             BarColumn(bar_width=30),
-            TextColumn("[bold cyan] ✨ Orchestrator is thinking..."),
+            TextColumn("[bold cyan]✨ Orchestrator is thinking..."),
             transient=True,
             console=console,
         ) as progress:
@@ -323,7 +323,7 @@ def _render_startup_banner():
 
 def _render_env_customization_hint():
     hint_text = (
-        " 💡 下次启动前可通过环境变量自定义模型：\n"
+        "💡 下次启动前可通过环境变量自定义模型：\n"
         "MODEL_ID=xxx\nOPENAI_BASE_URL=xxx\nOPENAI_API_KEY=xxx"
     )
     console.print(
@@ -435,7 +435,7 @@ def _read_user_query(messages: list = None) -> str:
     _init_user_session()
 
     console.print(
-        "\n[dim] 💡 Tip: Press [bold]Enter[/bold] to send, [bold]Ctrl+N[/bold] for newline.[/dim]"
+        "\n[dim]💡 Tip: Press [bold]Enter[/bold] to send, [bold]Ctrl+N[/bold] for newline.[/dim]"
     )
 
     rprompt = []
@@ -447,13 +447,13 @@ def _read_user_query(messages: list = None) -> str:
         )
         pct = (tokens / THRESHOLD) * 100
         color = "ansigreen" if pct < 70 else "ansiyellow" if pct < 90 else "ansired"
-        rprompt = [(f"fg:{color}", f" 📈 Tokens: {tokens}/{THRESHOLD} ({pct:.1f}%) ")]
+        rprompt = [(f"fg:{color}", f"📈 Tokens: {tokens}/{THRESHOLD} ({pct:.1f}%) ")]
 
     try:
         with patch_stdout():
             return USER_SESSION.prompt(
                 [
-                    ("class:prompt", " 🤖 User "),
+                    ("class:prompt", "🤖 User "),
                     ("class:arrow", "❯❯ "),
                 ],
                 rprompt=rprompt,
@@ -480,7 +480,7 @@ def agent_loop(messages: list):
         except Exception as e:
             log_error_traceback("Orchestrator generation error", e)
             error_msg = f"Error during agent execution: {e}."
-            console.print(f"[bold red] ⚠️ {error_msg}[/bold red]")
+            console.print(f"[bold red]⚠️ {error_msg}[/bold red]")
             break
 
         text_content, tool_calls, raw_message = llm_client.parse_response(response)
@@ -529,12 +529,12 @@ def agent_loop(messages: list):
         try:
             auto_compact(messages, reason=compact_reason)
             console.print(
-                "\n[bold green] ✨ 当前对话上下文已成功压缩并保存！[/bold green]"
+                "\n[bold green]✨ 当前对话上下文已成功压缩并保存！[/bold green]"
             )
         except Exception as e:
             log_error_traceback("Orchestrator auto-compact error", e)
             error_msg = f"Error executing auto_compact: {e}."
-            console.print(f"[bold red] ⚠️ {error_msg}[/bold red]")
+            console.print(f"[bold red]⚠️ {error_msg}[/bold red]")
 
 
 def _interactive_choose_checkpoint(
@@ -578,7 +578,7 @@ def _interactive_choose_checkpoint(
         result = [("class:title", title)]
         for i, (key, text) in enumerate(options):
             if i == selected_index[0]:
-                result.append(("class:selected", f" 👉 {text}\n"))
+                result.append(("class:selected", f"👉 {text}\n"))
             else:
                 result.append(("class:unselected", f"     {text}\n"))
         return result
@@ -652,7 +652,7 @@ def _interactive_switch_mcp_servers(server_switches: list) -> str | dict:
             disabled = draft_states[name]
             enabled = not disabled
             loaded = item.get("loaded", False)
-            marker = " 👉 " if i == selected_index[0] else "  "
+            marker = "👉" if i == selected_index[0] else "  "
             switch_box = "[x]" if enabled else "[ ]"
             runtime_txt = "已加载" if loaded else "未加载"
             status_txt = "启用" if enabled else "禁用"
@@ -710,7 +710,7 @@ if __name__ == "__main__":
             except (EOFError, KeyboardInterrupt) as exc:
                 log_error_traceback("main user input interrupted", exc)
                 console.print(
-                    "\n[bold yellow] 👋 Exiting MakeCode Agent. Goodbye![/bold yellow]"
+                    "\n[bold yellow]👋 Exiting MakeCode Agent. Goodbye![/bold yellow]"
                 )
                 break
 
@@ -720,7 +720,7 @@ if __name__ == "__main__":
 
             if query in ["/quit", "/exit"]:
                 console.print(
-                    "\n[bold yellow] 👋 Exiting MakeCode Agent. Goodbye![/bold yellow]"
+                    "\n[bold yellow]👋 Exiting MakeCode Agent. Goodbye![/bold yellow]"
                 )
                 break
 
@@ -732,7 +732,7 @@ if __name__ == "__main__":
                 loaded_servers = status.get("loaded_servers", [])
 
                 summary_table = Table(
-                    title="[bold cyan] 🔌 MCP 状态总览[/bold cyan]",
+                    title="[bold cyan]🔌 MCP 状态总览[/bold cyan]",
                     box=box.ROUNDED,
                     expand=True,
                 )
@@ -770,18 +770,18 @@ if __name__ == "__main__":
 
                 if not status.get("is_running"):
                     console.print(
-                        "\n[bold yellow] ⚠️ MCP 后台管理器当前未运行。若配置已准备好，可执行 /mcp-restart 或使用 /mcp-switch 保存启用状态后触发加载。[/bold yellow]"
+                        "\n[bold yellow]⚠️ MCP 后台管理器当前未运行。若配置已准备好，可执行 /mcp-restart 或使用 /mcp-switch 保存启用状态后触发加载。[/bold yellow]"
                     )
                     continue
 
                 if status.get("tool_count", 0) == 0:
                     console.print(
-                        "\n[bold yellow] ⚠️ 当前没有已加载的 MCP 工具。请检查配置中的启用状态、服务连通性，或尝试 /mcp-restart。[/bold yellow]"
+                        "\n[bold yellow]⚠️ 当前没有已加载的 MCP 工具。请检查配置中的启用状态、服务连通性，或尝试 /mcp-restart。[/bold yellow]"
                     )
                     continue
 
                 table = Table(
-                    title=f"[bold cyan] 🛠️ 已加载的 MCP 工具明细 (共 {status['tool_count']} 个)[/bold cyan]",
+                    title=f"[bold cyan]🛠️ 已加载的 MCP 工具明细 (共 {status['tool_count']} 个)[/bold cyan]",
                     box=box.ROUNDED,
                     expand=True,
                 )
@@ -809,22 +809,22 @@ if __name__ == "__main__":
 
             if query == "/mcp-switch":
                 console.print(
-                    "\n[bold cyan] 🔧 正在打开 MCP 开关面板...[/bold cyan]\n"
+                    "\n[bold cyan]🔧 正在打开 MCP 开关面板...[/bold cyan]\n"
                     "[dim]操作说明：用 ↑/↓ 选择服务，按 Space 切换状态，移动到底部后按 Enter 选择确认或取消。[/dim]"
                 )
                 try:
                     server_switches = GLOBAL_MCP_MANAGER.list_server_switches()
                 except FileNotFoundError as exc:
-                    console.print(f"\n[bold yellow] ⚠️ {exc}[/bold yellow]")
+                    console.print(f"\n[bold yellow]⚠️ {exc}[/bold yellow]")
                     continue
                 except Exception as exc:
                     log_error_traceback("main list mcp switches", exc)
-                    console.print(f"\n[bold red] ❌ 读取 MCP 配置失败: {exc}[/bold red]")
+                    console.print(f"\n[bold red]❌ 读取 MCP 配置失败: {exc}[/bold red]")
                     continue
 
                 if not server_switches:
                     console.print(
-                        "\n[bold yellow] ⚠️ mcp_config.json 中没有可切换的 mcpServers。[/bold yellow]"
+                        "\n[bold yellow]⚠️ mcp_config.json 中没有可切换的 mcpServers。[/bold yellow]"
                     )
                     continue
 
@@ -833,13 +833,13 @@ if __name__ == "__main__":
                 except Exception as exc:
                     log_error_traceback("main interactive mcp switch", exc)
                     console.print(
-                        f"\n[bold red] ❌ 打开 MCP 开关面板失败: {exc}[/bold red]"
+                        f"\n[bold red]❌ 打开 MCP 开关面板失败: {exc}[/bold red]"
                     )
                     continue
 
                 if switch_result == "empty" or switch_result.get("action") == "cancel":
                     console.print(
-                        "\n[bold yellow] ↩️ 已取消本次 MCP 开关修改，配置文件未保存，运行中的服务状态保持不变。[/bold yellow]"
+                        "\n[bold yellow]↩️ 已取消本次 MCP 开关修改，配置文件未保存，运行中的服务状态保持不变。[/bold yellow]"
                     )
                     continue
 
@@ -850,13 +850,13 @@ if __name__ == "__main__":
                 except Exception as exc:
                     log_error_traceback("main apply mcp switches", exc)
                     console.print(
-                        f"\n[bold red] ❌ 应用 MCP 开关变更失败: {exc}[/bold red]"
+                        f"\n[bold red]❌ 应用 MCP 开关变更失败: {exc}[/bold red]"
                     )
                     continue
 
                 if not apply_result.get("saved"):
                     console.print(
-                        f"\n[bold yellow] ℹ️ {apply_result.get('message', '没有检测到变更。')}[/bold yellow]"
+                        f"\n[bold yellow]ℹ️ {apply_result.get('message', '没有检测到变更。')}[/bold yellow]"
                     )
                     continue
 
@@ -866,7 +866,7 @@ if __name__ == "__main__":
                 failed = apply_result.get("failed", [])
 
                 summary_lines = [
-                    "\n[bold green] ✅ MCP 开关修改已保存到配置文件，并已尝试按变更增量启停服务。[/bold green]",
+                    "\n[bold green]✅ MCP 开关修改已保存到配置文件，并已尝试按变更增量启停服务。[/bold green]",
                     f"[dim]配置文件: {GLOBAL_MCP_MANAGER.get_status_info().get('config_path')}[/dim]",
                 ]
                 if changed:
@@ -894,7 +894,7 @@ if __name__ == "__main__":
 
             if query == "/cmds":
                 table = Table(
-                    title="[bold cyan] 🛠️ 可用内置命令列表[/bold cyan]",
+                    title="[bold cyan]🛠️ 可用内置命令列表[/bold cyan]",
                     box=box.ROUNDED,
                     expand=True,
                 )
@@ -911,7 +911,7 @@ if __name__ == "__main__":
                 history[0] = {"role": "system", "content": SYSTEM}
                 status_style = "green" if SKILL_LOADER.is_enabled else "yellow"
                 console.print(
-                    f"\n[bold {status_style}] ✨ Skills prompt catalog 状态已切换：{status_text}。[/bold {status_style}]"
+                    f"\n[bold {status_style}]✨ Skills prompt catalog 状态已切换：{status_text}。[/bold {status_style}]"
                 )
                 console.print(
                     Panel(
@@ -931,7 +931,7 @@ if __name__ == "__main__":
                 console.print(
                     Panel(
                         Markdown(f"### 当前可用技能列表\n\n{skills_list_text}"),
-                        title="[bold cyan] 📚 Skills List[/bold cyan]",
+                        title="[bold cyan]📚 Skills List[/bold cyan]",
                         border_style="cyan",
                         box=box.ROUNDED,
                     )
@@ -942,14 +942,14 @@ if __name__ == "__main__":
                 history = [{"role": "system", "content": SYSTEM}]
                 CURRENT_CHECKPOINT = None
                 console.print(
-                    "\n[bold green] ✨ 对话历史已清空，开启全新会话！[/bold green]"
+                    "\n[bold green]✨ 对话历史已清空，开启全新会话！[/bold green]"
                 )
                 continue
 
             if query == "/compact":
                 auto_compact(history, reason="User triggered compact")
                 console.print(
-                    "\n[bold green] ✨ 当前对话上下文已成功压缩并保存！[/bold green]"
+                    "\n[bold green]✨ 当前对话上下文已成功压缩并保存！[/bold green]"
                 )
                 CURRENT_CHECKPOINT = save_checkpoint(history, CURRENT_CHECKPOINT)
                 continue
@@ -958,7 +958,7 @@ if __name__ == "__main__":
                 checkpoints = list_checkpoints()
                 if not checkpoints:
                     console.print(
-                        "\n[bold yellow] 📂 没有找到任何历史对话记录 (No checkpoints found).[/bold yellow]"
+                        "\n[bold yellow]📂 没有找到任何历史对话记录 (No checkpoints found).[/bold yellow]"
                     )
                     continue
 
@@ -987,17 +987,17 @@ if __name__ == "__main__":
                     _render_history(history)
 
                     console.print(
-                        f"\n[bold green] 🚀 成功加载对话记录！当前上下文包含 {len(history)} 条消息。[/bold green]"
+                        f"\n[bold green]🚀 成功加载对话记录！当前上下文包含 {len(history)} 条消息。[/bold green]"
                     )
                 except Exception as exc:
                     log_error_traceback("main load checkpoint error", exc)
-                    console.print(f"\n[bold red] ❌ 加载失败: {exc}[/bold red]")
+                    console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]")
                     continue
 
                 task_plans = list_task_plans()
                 if task_plans:
                     console.print(
-                        "\n[bold cyan] 📋 发现保存的任务看板 (Task Plans)，是否要加载？[/bold cyan]"
+                        "\n[bold cyan]📋 发现保存的任务看板 (Task Plans)，是否要加载？[/bold cyan]"
                     )
 
                     try:
@@ -1013,7 +1013,7 @@ if __name__ == "__main__":
                         try:
                             plan_data = load_task_plan(Path(selected_task_path))
                             console.print(
-                                "[bold green] 🚀 成功加载任务看板！[/bold green]"
+                                "[bold green]🚀 成功加载任务看板！[/bold green]"
                             )
 
                             has_incomplete = any(
@@ -1030,7 +1030,7 @@ if __name__ == "__main__":
                                 team_histories = list_team_histories()
                                 if team_histories:
                                     console.print(
-                                        "\n[bold cyan] 💡 发现子代理执行历史 (Team Histories)，是否要加载？[/bold cyan]"
+                                        "\n[bold cyan]💡 发现子代理执行历史 (Team Histories)，是否要加载？[/bold cyan]"
                                     )
 
                                     try:
@@ -1048,19 +1048,19 @@ if __name__ == "__main__":
                                         try:
                                             load_team_history(Path(selected_team_path))
                                             console.print(
-                                                "[bold green] ✅ 成功加载子代理执行历史！[/bold green]"
+                                                "[bold green]✅ 成功加载子代理执行历史！[/bold green]"
                                             )
                                         except Exception as exc:
                                             log_error_traceback(
                                                 "main load team history error", exc
                                             )
                                             console.print(
-                                                f"[bold red] ❌ 加载子代理执行历史失败: {exc}[/bold red]"
+                                                f"[bold red]❌ 加载子代理执行历史失败: {exc}[/bold red]"
                                             )
                         except Exception as exc:
                             log_error_traceback("main load task plan error", exc)
                             console.print(
-                                f"[bold red] ❌ 加载任务看板失败: {exc}[/bold red]"
+                                f"[bold red]❌ 加载任务看板失败: {exc}[/bold red]"
                             )
 
                 continue

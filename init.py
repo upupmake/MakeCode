@@ -144,7 +144,7 @@ def _init_workdir() -> Path:
     try:
         print_formatted_text("\n ✏️ Enter custom workspace path:")
         user_input = prompt(
-            [("class:prompt", " 📂 Target Directory ❯❯ ")],
+            [("class:prompt", "📂 Target Directory ❯❯ ")],
             style=Style.from_dict({"prompt": "bold #00ffff"}),
         )
     except (EOFError, KeyboardInterrupt) as exc:
@@ -276,7 +276,7 @@ def _load_env_files():
                                     [
                                         (
                                             "class:prompt",
-                                            " ❓ Override current value with .env? [y/N] ❯❯ ",
+                                            "❓ Override current value with .env? [y/N] ❯❯ ",
                                         )
                                     ],
                                     style=Style.from_dict({"prompt": "bold #00ffff"}),

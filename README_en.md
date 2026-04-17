@@ -1,6 +1,6 @@
 # 🚀 MakeCode · Project Documentation
 
-🌐 Language: [简体中文](README.md) | **English** | [ 📦 Releases](https://github.com/cockmake/MakeCode/releases)
+🌐 Language: [简体中文](README.md) | **English** | [📦 Releases](https://github.com/cockmake/MakeCode/releases)
 
 > A multi-agent command-line orchestrator.
 >
@@ -169,18 +169,18 @@ Default behavior: the skills summary injection is enabled by default. When disab
   - `get_summary_system_prompt()` / `get_summary_user_prompt()`: Conversation compaction prompts
   - `get_skill_system_note()`: System note for skill loading
 
-### 2.9 Sub-Agent Execution History Loading (New)
+### 2.9 Conversation History and Loading (`/load`)
 
-- The `/load` command now supports loading sub-agent execution history (Team Histories).
-- Only prompts for loading sub-agent history after a task plan is successfully loaded.
-- If all tasks in the plan are already completed, skips the sub-agent history loading prompt to avoid unnecessary interaction.
-- History file location: `.makecode/team/task_history_*.json`
+- The `/load` command supports restoring any historical session from a Checkpoint, including the main agent conversation chain and sub-agent execution histories.
+- **Full UI Re-rendering**: After loading a history record, the system automatically clears the screen (`console.clear()`) and re-renders every message (including User inputs, AI text, Tool call intents, and Tool execution results) according to the latest terminal UI styling.
+- **Configuration Anti-Pollution**: When loading a historical Checkpoint, the system automatically syncs the latest System Prompt and global configurations (such as the current date, MCP/Skills toggle status) to prevent them from being overwritten by old data.
+- For sub-agent histories, the system only prompts for loading after the task plan is successfully loaded. If all tasks in the plan are already completed, it automatically skips the prompt.
 
 ### 2.10 Sub-Agent Todo Tool (`tools/todo.py`)
 
 Sub-agents can use the `TodoUpdate` tool to maintain a lightweight todo list for multi-step task tracking.
 
-### 2.11 MCP Service Integration (`utils/mcp_manager.py`) 🆕
+### 2.11 MCP Service Integration (`utils/mcp_manager.py`)🆕
 
 MakeCode supports integrating external tools and services via the **Model Context Protocol (MCP)**, extending the agent's capability boundary.
 
@@ -466,6 +466,16 @@ Typical steps:
 3. Register the tool in the proper tool collection
 4. Add the handler into the related `*_HANDLERS`
 5. Include it in the main orchestrator tool aggregation
+
+### 8.3 Code Style and Emoji Formatting
+
+To prevent style and layout messes caused by frequent use of Emojis in CLI outputs and Markdown documents, MakeCode adopts a unified **V2 Emoji Formatting Strategy**:
+
+- **Left Snug**: If the Emoji is immediately to the right of quotes (`"`, `'`), brackets/tags (`[`, `]`, `(`, `{`, `<`), or is at the beginning of a line, the space before the Emoji is removed (e.g., `"[bold red]⚠️ "`, `"[📦 Releases]"`).
+- **Right Snug**: If the Emoji is immediately to the left of closing punctuation (`"`, `'`, `]`, `}`, `>`, `.`, `,`, `。`, `，`, `！`, etc.), or is at the end of a line, the space after the Emoji is removed (e.g., `"User 🤖"`).
+- **Normal Spacing**: If the above conditions are not met, and the left/right side is plain text or Markdown control characters (`#`, `-`, `*`, etc.), exactly one space is strictly kept on the left/right side of the Emoji (e.g., `Hello 🤖`, `# 🤖 Title`).
+
+> All `.py` source files and `.md` documents strictly adhere to this formatting strategy.
 
 ---
 

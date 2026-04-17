@@ -1,6 +1,6 @@
 # 🚀 MakeCode · 项目说明
 
-🌐 语言切换：**简体中文** | [English](README_en.md) | [ 📦 Releases](https://github.com/cockmake/MakeCode/releases)
+🌐 语言切换：**简体中文** | [English](README_en.md) | [📦 Releases](https://github.com/cockmake/MakeCode/releases)
 
 > 一个多智能体命令行编排器。
 > 
@@ -164,12 +164,12 @@ Team 模块支持：
   - `get_summary_system_prompt()` / `get_summary_user_prompt()`：会话压缩提示
   - `get_skill_system_note()`：技能加载时的系统注释
 
-### 2.9 子智能体执行历史加载（新增）
+### 2.9 会话记录与历史加载 (`/load`)
 
-- `/load` 命令支持加载子智能体执行历史（Team Histories）。
-- 仅当任务看板成功加载后才提示加载子智能体历史。
-- 若任务看板中所有任务已全部完成，则跳过子智能体历史加载询问，避免不必要的交互。
-- 历史文件位置：`.makecode/team/task_history_*.json`
+- `/load` 命令支持从 Checkpoint 恢复任意历史会话，包括主智能体对话链路与子智能体执行历史。
+- **全量 UI 重绘**：加载历史记录后，系统会自动清屏（`console.clear()`）并按照最新终端 UI 样式重新渲染每一条消息（包括 User 输入、AI 文本、Tool 调用意图及 Tool 执行结果）。
+- **配置防污染**：在加载历史 Checkpoint 时，系统会自动同步最新的 System Prompt 和全局配置（如当前日期、MCP/Skills 开关状态），防止被旧数据覆盖。
+- 对于子智能体历史，仅当任务看板成功加载后才提示加载。若任务看板中所有任务已全部完成，则自动跳过询问。
 
 ### 2.10 子智能体 Todo 工具（`tools/todo.py`）
 
@@ -456,6 +456,16 @@ python main.py
 3. 通过 `pydantic_function_tool` 注册到对应工具集合列表
 4. 将该工具的方法名与对应的函数绑定到 `*_HANDLERS` 字典中
 5. 在主循环或子智能体循环的工具聚合列表中接入
+
+### 8.3 代码规范与 Emoji 格式
+
+由于在 CLI 输出与 Markdown 文档中频繁使用 Emoji 容易造成样式排版混乱，MakeCode 采取了统一的 **V2 Emoji 格式化策略**：
+
+- **左侧紧贴**：如果 Emoji 左侧紧邻引号（`"`、`'`）、括号/标签（`[`、`]`、`(`、`{`、`<`），或者是行首，则去除 Emoji 前的空格（例如 `"[bold red]⚠️ "`、`"[📦 Releases]"`）。
+- **右侧紧贴**：如果 Emoji 右侧紧邻闭合标点（`"`、`'`、`]`、`}`、`>`、`.`、`,`、`。`、`，`、`！` 等），或者是行尾，则去除 Emoji 后的空格（例如 `"User 🤖"`）。
+- **正常间隔**：若不满足上述条件，且左/右侧为普通文本或 Markdown 控制符（`#`、`-`、`*` 等），则 Emoji 的左/右侧严格保留一个空格（例如 `Hello 🤖`、`# 🤖 Title`）。
+
+> 所有 `.py` 源码和 `.md` 文档均受此排版策略约束。
 
 ---
 ---
