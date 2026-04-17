@@ -81,6 +81,7 @@ class RunTerminalCommand(BaseModel):
             f"Runtime terminal is fixed at startup: '{_STARTUP_TERMINAL_LABEL}' "
             f"(source={STARTUP_TERMINAL_SOURCE}). "
             "This tool only accepts command; terminal type is not configurable per call. "
+            "Execution is bound to the workspace root directory and has a hard timeout of 120 seconds. "
             "Do not use this tool for normal workspace file read/write/edit operations."
         ),
     )
@@ -514,7 +515,7 @@ FILE_NAMESPACE = {
     "description": (
         "Primary file operation tools for workspace files. Always prefer this namespace for file reads, "
         "writes, edits, and text searches instead of shell commands. "
-        "IMPORTANT: Use RunWrite only to create/write new files. For existing-file changes, you must call "
+        "IMPORTANT: Use RunWrite only to create/write new or completely empty files. For existing-file changes, you must call "
         "RunRead first and then use RunEdit."
     ),
     "tools": TOOLS,

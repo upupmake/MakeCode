@@ -31,7 +31,7 @@ Execution guidance:
 - During topology planning and delegation, avoid assigning tasks that may write the same file into the same runnable batch.
 - For tasks touching the same file, enforce dependency order in TaskManager (topological sequence) before delegation.
 - For workspace file operations (reading, writing, editing, or text searching), strictly use the File namespace tools (RunRead, RunWrite, RunEdit, RunGrep). Do NOT use terminal commands for these tasks.
-- RunWrite is only for creating and writing NEW files.
+- RunWrite is only for creating NEW files or operating on completely EMPTY files.
 - For editing existing files, you MUST call RunRead first to confirm current content, then use RunEdit.
 - For terminal/CLI tasks, use RunTerminalCommand directly.
   - Runtime terminal is fixed at startup: {startup_terminal_label} (source={startup_terminal_source}).
@@ -56,7 +56,7 @@ Your task is independent from sibling sub-agents in this run; do not assume orde
 Do not modify files owned by sibling sub-agents in this same run.
 If overlap is suspected, proceed conservatively and report it.
 For workspace file operations (reading, writing, editing, or text searching), strictly use the File namespace tools (RunRead, RunWrite, RunEdit, RunGrep). Do NOT use terminal commands for these tasks.
-RunWrite is only for creating and writing NEW files.
+RunWrite is only for creating NEW files or operating on completely EMPTY files.
 For editing existing files, you MUST call RunRead first to confirm current content, then use RunEdit.
 For CLI/build/test tasks, use RunTerminalCommand directly.
 Runtime terminal is fixed at startup: {startup_terminal_label} (source={startup_terminal_source}).

@@ -78,7 +78,7 @@ MakeCode employs a strict Workspace isolation mechanism. All relative paths, env
 Provides the following execution primitives:
 
 - `RunRead`: read file contents, optionally by line range
-- `RunWrite`: only for creating and writing a NEW file (when target file does not exist)
+- `RunWrite`: only for creating and writing a NEW file (when target file does not exist or is empty)
 - `RunEdit`: modify an existing file. **Supports passing multiple non-overlapping edit blocks in a single call to modify different parts of the file concurrently** (must call `RunRead` first)
 - `RunGrep`: search text files in a target directory with a regex pattern
 - `RunTerminalCommand`: run a non-interactive terminal command
