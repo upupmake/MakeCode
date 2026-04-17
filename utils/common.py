@@ -151,7 +151,7 @@ class RunRead(BaseModel):
 
 
 def run_read(
-        path: str, start: int | None = None, end: int | None = None, agent_access=None
+    path: str, start: int | None = None, end: int | None = None, agent_access=None
 ) -> str:
     try:
         fp = safe_path(path)
@@ -192,7 +192,7 @@ def run_read(
         if s > e or s > total_lines:
             return f"Total lines: {total_lines}\n(Empty range or out of bounds)"
 
-        sliced_lines = lines[s - 1: e]
+        sliced_lines = lines[s - 1 : e]
         formatted_lines = [f"{i + s}: {line}" for i, line in enumerate(sliced_lines)]
 
         return f"Total lines: {total_lines}\n" + "\n".join(formatted_lines)
@@ -203,10 +203,10 @@ def run_read(
 
 class RunWrite(BaseModel):
     """
-    Create and write a NEW file.
+    Create and write a NEW file, or overwrite an completely empty file.
     CRITICAL REQUIREMENTS:
-    1. Use this tool only when the target file does NOT exist yet.
-    2. If the file already exists and you need modifications, use RunRead first, then RunEdit.
+    1. Use this tool only when the target file does NOT exist yet, or is empty.
+    2. If the file already exists and has content, use RunRead first, then RunEdit.
     """
 
     path: str = Field(
@@ -220,12 +220,17 @@ def run_write(path: str, content: str, agent_access=None) -> str:
         fp = safe_path(path)
         file_lock = GLOBAL_FILE_CONTROLLER.get_lock(fp)
         with file_lock:
-            if fp.exists():
-                return (
-                    f"Error: File {path} already exists. "
-                    "RunWrite is only for creating new files. "
-                    "For modifications, call RunRead first, then RunEdit."
-                )
+            if fp.exists() and fp.stat().st_size > 0:
+                # 进一步检查是否全是空白字符
+                existing_content = fp.read_text(
+                    encoding="utf-8", errors="ignore"
+                ).strip()
+                if existing_content:
+                    return (
+                        f"Error: File {path} already exists and is not empty. "
+                        "RunWrite is only for creating new files or writing to empty ones. "
+                        "For modifications, call RunRead first, then RunEdit."
+                    )
             fp.parent.mkdir(parents=True, exist_ok=True)
             # 强制使用 utf-8 写入，保持跨平台一致性
             fp.write_text(content, encoding="utf-8")
@@ -242,9 +247,12 @@ def run_write(path: str, content: str, agent_access=None) -> str:
 
 class EditBlock(BaseModel):
     start: int = Field(..., description="Start line number (1-indexed) to replace.")
-    end: int = Field(..., description="End line number (1-indexed) to replace. Inclusive.")
+    end: int = Field(
+        ..., description="End line number (1-indexed) to replace. Inclusive."
+    )
     new_content: str = Field(
-        ..., description="The new content to insert. MUST contain exactly required indentation."
+        ...,
+        description="The new content to insert. MUST contain exactly required indentation.",
     )
 
 
@@ -257,6 +265,7 @@ class RunEdit(BaseModel):
     3. You can provide multiple edit blocks to edit different parts of the file at once.
     4. Multiple edit blocks MUST NOT overlap.
     """
+
     path: str = Field(
         ..., description="Path to the file to edit, relative to workspace."
     )
@@ -265,9 +274,7 @@ class RunEdit(BaseModel):
     )
 
 
-def run_edit(
-        path: str, edits: list[dict | EditBlock], agent_access=None
-) -> str:
+def run_edit(path: str, edits: list[dict | EditBlock], agent_access=None) -> str:
     try:
         fp = safe_path(path)
         file_lock = GLOBAL_FILE_CONTROLLER.get_lock(fp)
@@ -285,59 +292,69 @@ def run_edit(
             lines = text.splitlines()
             total_lines = len(lines)
 
-        # 1. 提取并校验所有的 Edit Blocks
-        parsed_edits = []
-        for i, edit in enumerate(edits):
-            # 兼容字典格式或 BaseModel 实例 (取决于 openai 函数调用的序列化方式)
-            start = edit.start if hasattr(edit, 'start') else edit.get('start')
-            end = edit.end if hasattr(edit, 'end') else edit.get('end')
-            new_content = edit.new_content if hasattr(edit, 'new_content') else edit.get('new_content')
-
-            try:
-                start = int(start)
-                end = int(end)
-            except (ValueError, TypeError) as exc:
-                log_error_traceback("RunEdit invalid line range type", exc)
-                return f"Error in edit block {i + 1}: start and end must be integers."
-
-            if start < 1 or end > total_lines or start > end:
-                return f"Error in edit block {i + 1}: Invalid line range [{start}, {end}]. File has {total_lines} lines."
-
-            parsed_edits.append({"start": start, "end": end, "new_content": new_content})
-
-        # 2. 按照 start 行号降序排列 (Bottom-Up)
-        parsed_edits.sort(key=lambda x: x["start"], reverse=True)
-
-        # 3. 校验重叠 (Overlap Check)
-        # 因为已经是降序，parsed_edits[i] 在文件下方，parsed_edits[i+1] 在文件上方
-        # 如果上方的 end >= 下方的 start，说明存在重叠或接壤冲突
-        for i in range(len(parsed_edits) - 1):
-            lower_block = parsed_edits[i]
-            upper_block = parsed_edits[i + 1]
-            if upper_block["end"] >= lower_block["start"]:
-                return (
-                    f"Error: Edit blocks overlap. Block ending at line {upper_block['end']} "
-                    f"overlaps with block starting at line {lower_block['start']}."
+            # 1. 提取并校验所有的 Edit Blocks
+            parsed_edits = []
+            for i, edit in enumerate(edits):
+                # 兼容字典格式或 BaseModel 实例 (取决于 openai 函数调用的序列化方式)
+                start = edit.start if hasattr(edit, "start") else edit.get("start")
+                end = edit.end if hasattr(edit, "end") else edit.get("end")
+                new_content = (
+                    edit.new_content
+                    if hasattr(edit, "new_content")
+                    else edit.get("new_content")
                 )
 
-        # 4. 从下往上依次应用修改
-        for edit in parsed_edits:
-            start = edit["start"]
-            end = edit["end"]
-            new_content = edit["new_content"]
+                try:
+                    start = int(start)
+                    end = int(end)
+                except (ValueError, TypeError) as exc:
+                    log_error_traceback("RunEdit invalid line range type", exc)
+                    return (
+                        f"Error in edit block {i + 1}: start and end must be integers."
+                    )
 
-            prefix = lines[: start - 1]
-            suffix = lines[end:]
-            new_lines = new_content.splitlines() if new_content else []
-            lines = prefix + new_lines + suffix
+                if total_lines == 0:
+                    if start > 1 or end > 1:
+                        return f"Error in edit block {i + 1}: File is empty. Use start=1, end=1 to insert content."
+                elif start < 1 or end > total_lines or start > end:
+                    return f"Error in edit block {i + 1}: Invalid line range [{start}, {end}]. File has {total_lines} lines."
 
-        # 5. 组装结果并写入
-        # 保持原文件末尾的空行习惯
-        final_text = "\n".join(lines)
-        if text.endswith("\n") or not text:
-            final_text += "\n"
+                parsed_edits.append(
+                    {"start": start, "end": end, "new_content": new_content}
+                )
 
-        with file_lock:
+            # 2. 按照 start 行号降序排列 (Bottom-Up)
+            parsed_edits.sort(key=lambda x: x["start"], reverse=True)
+
+            # 3. 校验重叠 (Overlap Check)
+            # 因为已经是降序，parsed_edits[i] 在文件下方，parsed_edits[i+1] 在文件上方
+            # 如果上方的 end >= 下方的 start，说明存在重叠或接壤冲突
+            for i in range(len(parsed_edits) - 1):
+                lower_block = parsed_edits[i]
+                upper_block = parsed_edits[i + 1]
+                if upper_block["end"] >= lower_block["start"]:
+                    return (
+                        f"Error: Edit blocks overlap. Block ending at line {upper_block['end']} "
+                        f"overlaps with block starting at line {lower_block['start']}."
+                    )
+
+            # 4. 从下往上依次应用修改
+            for edit in parsed_edits:
+                start = edit["start"]
+                end = edit["end"]
+                new_content = edit["new_content"]
+
+                prefix = lines[: start - 1]
+                suffix = lines[end:] if total_lines > 0 else []
+                new_lines = new_content.splitlines() if new_content else []
+                lines = prefix + new_lines + suffix
+
+            # 5. 组装结果并写入
+            # 保持原文件末尾的空行习惯
+            final_text = "\n".join(lines)
+            if text.endswith("\n") or not text:
+                final_text += "\n"
+
             fp.write_text(final_text, encoding="utf-8")
 
         return f"Edited {path}: Successfully applied {len(parsed_edits)} edit block(s)."
@@ -381,9 +398,9 @@ def _is_binary_file(filepath: Path) -> bool:
 
 
 def run_grep(
-        keyword_pattern: str,
-        target_dir: str = ".",
-        filename_pattern: str = "*",
+    keyword_pattern: str,
+    target_dir: str = ".",
+    filename_pattern: str = "*",
 ) -> str:
     try:
         regex = re.compile(keyword_pattern)
