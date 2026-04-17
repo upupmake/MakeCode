@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from openai import pydantic_function_tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from init import WORKDIR
 
@@ -45,6 +45,45 @@ class CreateTask(BaseModel):
         default="pending", description="Initial task status."
     )
 
+    @field_validator("depend_on", mode="before")
+    @classmethod
+    def parse_stringified_deps(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                v = v.strip()
+                if not v:
+                    return v
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    v = parsed
+                else:
+                    return v
+            except json.JSONDecodeError:
+                pass
+        
+        if isinstance(v, list):
+            res = []
+            for item in v:
+                if isinstance(item, str):
+                    try:
+                        item_parsed = json.loads(item.strip())
+                        if isinstance(item_parsed, dict):
+                            item = item_parsed
+                    except json.JSONDecodeError:
+                        pass
+                
+                if isinstance(item, dict):
+                    if "task_id" in item:
+                        res.append(str(item["task_id"]))
+                    elif "id" in item:
+                        res.append(str(item["id"]))
+                    else:
+                        res.append(str(item))
+                elif item is not None:
+                    res.append(str(item))
+            return res
+        return v
+
 
 class UpdateTaskStatus(BaseModel):
     """
@@ -74,6 +113,45 @@ class UpdateTaskDependencies(BaseModel):
     depend_on: list[str] = Field(
         default_factory=list, description="New full dependency list."
     )
+
+    @field_validator("depend_on", mode="before")
+    @classmethod
+    def parse_stringified_deps(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                v = v.strip()
+                if not v:
+                    return v
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    v = parsed
+                else:
+                    return v
+            except json.JSONDecodeError:
+                pass
+        
+        if isinstance(v, list):
+            res = []
+            for item in v:
+                if isinstance(item, str):
+                    try:
+                        item_parsed = json.loads(item.strip())
+                        if isinstance(item_parsed, dict):
+                            item = item_parsed
+                    except json.JSONDecodeError:
+                        pass
+                
+                if isinstance(item, dict):
+                    if "task_id" in item:
+                        res.append(str(item["task_id"]))
+                    elif "id" in item:
+                        res.append(str(item["id"]))
+                    else:
+                        res.append(str(item))
+                elif item is not None:
+                    res.append(str(item))
+            return res
+        return v
 
 
 class GetTask(BaseModel):
@@ -178,61 +256,6 @@ class TaskManager:
             raise ValueError(f"Tasks not found: {missing}")
         return ids
 
-    @staticmethod
-    def _normalize_dep_ids(
-        dep_input: list[str | int] | str | None, arg_name: str
-    ) -> list[str]:
-        """Defensive parsing for LLM hallucinated nested dependency payloads."""
-        if dep_input is None:
-            return []
-        current = dep_input
-        if isinstance(current, str):
-            payload = current.strip()
-            if not payload:
-                return []
-            try:
-                current = json.loads(payload)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{arg_name} JSON parse error: {exc}") from exc
-        if not isinstance(current, list):
-            raise ValueError(
-                f"{arg_name} must be a list after parsing, got {type(current).__name__}."
-            )
-
-        result: list[str] = []
-        for idx, item in enumerate(current):
-            item_obj = item
-            for _ in range(5):
-                if isinstance(item_obj, str):
-                    payload = item_obj.strip()
-                    if not payload:
-                        break
-                    try:
-                        parsed = json.loads(payload)
-                    except json.JSONDecodeError:
-                        break
-                    item_obj = parsed
-                    continue
-                break
-
-            if isinstance(item_obj, dict):
-                if "task_id" in item_obj:
-                    item_obj = item_obj["task_id"]
-                elif "id" in item_obj:
-                    item_obj = item_obj["id"]
-                else:
-                    raise ValueError(
-                        f"{arg_name}[{idx}] object must contain 'task_id' or 'id'."
-                    )
-
-            if item_obj is None:
-                continue
-
-            item_str = str(item_obj).strip()
-            if item_str:
-                result.append(item_str)
-        return result
-
     def _task(self, task_id: str | int) -> dict[str, Any]:
         return self._data["tasks"][self._ensure_task_exists(task_id)]
 
@@ -294,16 +317,30 @@ class TaskManager:
         self,
         subject: str,
         description: str = "",
-        depend_on: list[str | int] | None = None,
+        depend_on: Any = None,
         status: str = "pending",
         **kwargs,
     ) -> dict[str, Any]:
-        subject = (subject or "").strip()
-        if not subject:
-            raise ValueError("subject is required")
+        try:
+            validated_model = CreateTask.model_validate(
+                {
+                    "subject": subject,
+                    "description": description,
+                    "depend_on": depend_on or [],
+                    "status": status,
+                }
+            )
+            subject = validated_model.subject
+            description = validated_model.description
+            dep_input = validated_model.depend_on
+            status = validated_model.status
+        except Exception as exc:
+            from init import log_error_traceback
+            log_error_traceback("CreateTask validation", exc)
+            raise ValueError(f"CreateTask parameters invalid: {exc}") from exc
+
         self._validate_status(status)
 
-        dep_input = self._normalize_dep_ids(depend_on, "CreateTask.depend_on")
         dep_ids = self._ensure_tasks_exist(dep_input)
 
         task_id = str(self._data["next_id"])
@@ -339,12 +376,19 @@ class TaskManager:
         return task
 
     def update_task_dependencies(
-        self, task_id: str | int, depend_on: list[str | int], **kwargs
+        self, task_id: str | int, depend_on: Any, **kwargs
     ) -> dict[str, Any]:
-        tid = self._ensure_task_exists(task_id)
-        dep_input = self._normalize_dep_ids(
-            depend_on, "UpdateTaskDependencies.depend_on"
-        )
+        try:
+            validated_model = UpdateTaskDependencies.model_validate(
+                {"task_id": str(task_id), "depend_on": depend_on or []}
+            )
+            tid = self._ensure_task_exists(validated_model.task_id)
+            dep_input = validated_model.depend_on
+        except Exception as exc:
+            from init import log_error_traceback
+            log_error_traceback("UpdateTaskDependencies validation", exc)
+            raise ValueError(f"UpdateTaskDependencies parameters invalid: {exc}") from exc
+
         dep_ids = self._ensure_tasks_exist(dep_input)
         if tid in dep_ids:
             raise ValueError("Task cannot depend on itself")

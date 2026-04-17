@@ -1,8 +1,8 @@
 import json
-from typing import Literal
+from typing import Literal, Any
 
 from openai import pydantic_function_tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator, field_validator
 
 
 class TaskItem(BaseModel):
@@ -14,6 +14,27 @@ class TaskItem(BaseModel):
         description="Status of the task."
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def parse_stringified_item(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            try:
+                data = data.strip()
+                if not data:
+                    return data
+                parsed = json.loads(data)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        
+        # handle cases where LLM hallucinated 'content' instead of 'text'
+        if isinstance(data, dict):
+            if "content" in data and "text" not in data:
+                data["text"] = data.pop("content")
+                
+        return data
+
 
 class TodoUpdate(BaseModel):
     """
@@ -24,49 +45,41 @@ class TodoUpdate(BaseModel):
         description="List of todo items."
     )
 
+    @field_validator("items", mode="before")
+    @classmethod
+    def parse_stringified_items(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                v = v.strip()
+                if not v:
+                    return v
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        return v
+
 
 class TodoManager:
     def __init__(self):
         self.items: list[TaskItem] = []
 
-    def update(self, items: list[dict] | str):
-        if isinstance(items, str):
-            payload = items.strip()
-            if not payload:
-                raise ValueError("TodoUpdate.items is an empty string; expected a list.")
-            try:
-                items = json.loads(payload)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"TodoUpdate.items JSON parse error: {exc}") from exc
-        if not isinstance(items, list):
-            raise ValueError(f"TodoUpdate.items must be a list, got {type(items).__name__}")
-        if len(items) > 20:
+    def update(self, items: Any):
+        try:
+            validated_model = TodoUpdate.model_validate({"items": items})
+            spec_list = validated_model.items
+        except Exception as exc:
+            from init import log_error_traceback
+            log_error_traceback("TodoManager update validation", exc)
+            raise ValueError(f"TodoUpdate format invalid: {exc}") from exc
+
+        if len(spec_list) > 20:
             raise ValueError("Too many todo items, max is 20")
+        
         validated = []
         in_progress_count = 0
-        for idx, item in enumerate(items):
-            item_obj = item
-            for _ in range(5):
-                if isinstance(item_obj, str):
-                    payload = item_obj.strip()
-                    if not payload:
-                        raise ValueError(f"TodoUpdate.items[{idx}] is an empty string.")
-                    try:
-                        item_obj = json.loads(payload)
-                    except json.JSONDecodeError as exc:
-                        raise ValueError(f"TodoUpdate.items[{idx}] JSON parse error: {exc}") from exc
-                    continue
-                break
-            if not isinstance(item_obj, dict):
-                raise ValueError(
-                    f"TodoUpdate.items[{idx}] must be an object (dict), got {type(item_obj).__name__}"
-                )
-            item = dict(item_obj)
-            # handle cases where LLM hallucinated 'content' instead of 'text'
-            if "content" in item and "text" not in item:
-                item["text"] = item.pop("content")
-            
-            task_obj = TaskItem(**item)
+        for task_obj in spec_list:
             text = task_obj.text
             status = task_obj.status
             item_id = task_obj.id

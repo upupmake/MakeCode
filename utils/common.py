@@ -1,4 +1,5 @@
 import datetime
+import json
 import locale
 import os
 import re
@@ -8,7 +9,8 @@ from pathlib import Path
 from shutil import which
 
 from openai import pydantic_function_tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator, field_validator
+from typing import Any
 
 from init import WORKDIR, log_error_traceback
 from utils.file_access import GLOBAL_FILE_CONTROLLER
@@ -260,6 +262,21 @@ class EditBlock(BaseModel):
         description="The new content to replace the specified line range. MUST contain exactly required indentation.",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def parse_stringified_block(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            try:
+                data = data.strip()
+                if not data:
+                    return data
+                parsed = json.loads(data)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        return data
+
 
 class RunEdit(BaseModel):
     """
@@ -279,9 +296,31 @@ class RunEdit(BaseModel):
         ..., description="List of edit blocks to apply to the file."
     )
 
+    @field_validator("edits", mode="before")
+    @classmethod
+    def parse_stringified_edits(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                v = v.strip()
+                if not v:
+                    return v
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        return v
 
-def run_edit(path: str, edits: list[dict | EditBlock], agent_access=None) -> str:
+
+def run_edit(path: str, edits: Any, agent_access=None) -> str:
     try:
+        try:
+            validated = RunEdit.model_validate({"path": path, "edits": edits})
+            path = validated.path
+            parsed_blocks = validated.edits
+        except Exception as exc:
+            return f"Error: Invalid arguments provided to RunEdit. {exc}"
+
         fp = safe_path(path)
         file_lock = GLOBAL_FILE_CONTROLLER.get_lock(fp)
         with file_lock:
@@ -300,24 +339,10 @@ def run_edit(path: str, edits: list[dict | EditBlock], agent_access=None) -> str
 
             # 1. 提取并校验所有的 Edit Blocks
             parsed_edits = []
-            for i, edit in enumerate(edits):
-                # 兼容字典格式或 BaseModel 实例 (取决于 openai 函数调用的序列化方式)
-                start = edit.start if hasattr(edit, "start") else edit.get("start")
-                end = edit.end if hasattr(edit, "end") else edit.get("end")
-                new_content = (
-                    edit.new_content
-                    if hasattr(edit, "new_content")
-                    else edit.get("new_content")
-                )
-
-                try:
-                    start = int(start)
-                    end = int(end)
-                except (ValueError, TypeError) as exc:
-                    log_error_traceback("RunEdit invalid line range type", exc)
-                    return (
-                        f"Error in edit block {i + 1}: start and end must be integers."
-                    )
+            for i, block in enumerate(parsed_blocks):
+                start = block.start
+                end = block.end
+                new_content = block.new_content
 
                 if total_lines == 0:
                     if start > 1 or end > 1:
