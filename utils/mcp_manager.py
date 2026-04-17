@@ -260,7 +260,10 @@ class GlobalMCPManager:
                     }
 
                 server_tools.append(t_dict)
-                desc = t_dict.get("description") or f"MCP Tool: {t.name} from {server_name}"
+                desc = (
+                    t_dict.get("description")
+                    or f"MCP Tool: {t.name} from {server_name}"
+                )
                 server_status_tools.append(
                     {
                         "name": tool_name,
@@ -301,9 +304,20 @@ class GlobalMCPManager:
 
         if client and hasattr(client, "__aexit__"):
             try:
+                # 调用 __aexit__ 以触发底层的清理
                 await client.__aexit__(None, None, None)
             except Exception as e:
                 log_error_traceback(f"MCP Server Close Error [{server_name}]", e)
+            finally:
+                # 尝试从 AsyncExitStack 移除对应 client 的上下文回调，防止由于频繁断开重连导致的句柄泄露
+                if self._stack and hasattr(self._stack, "_exit_callbacks"):
+                    callbacks = self._stack._exit_callbacks
+                    # 倒序遍历安全移除
+                    for i in range(len(callbacks) - 1, -1, -1):
+                        is_sync, cb = callbacks[i]
+                        # AsyncExitStack 对 async context manager 会将其封装进一个 closure，通常 __self__ 能拿到原本的对象
+                        if hasattr(cb, "__self__") and cb.__self__ is client:
+                            callbacks.pop(i)
 
     async def _async_lifecycle(self):
         try:
@@ -448,9 +462,17 @@ class GlobalMCPManager:
                             )
                         )
                 else:
-                    failed.append({"server": server_name, "action": "disable", "error": "MCP event loop 未运行"})
+                    failed.append(
+                        {
+                            "server": server_name,
+                            "action": "disable",
+                            "error": "MCP event loop 未运行",
+                        }
+                    )
             except Exception as e:
-                failed.append({"server": server_name, "action": "disable", "error": str(e)})
+                failed.append(
+                    {"server": server_name, "action": "disable", "error": str(e)}
+                )
                 log_error_traceback(f"MCP Disable Error [{server_name}]", e)
 
         for server_name in enable_targets:
@@ -468,11 +490,25 @@ class GlobalMCPManager:
                             )
                         )
                     if not ok:
-                        failed.append({"server": server_name, "action": "enable", "error": "连接失败"})
+                        failed.append(
+                            {
+                                "server": server_name,
+                                "action": "enable",
+                                "error": "连接失败",
+                            }
+                        )
                 else:
-                    failed.append({"server": server_name, "action": "enable", "error": "MCP event loop 未运行"})
+                    failed.append(
+                        {
+                            "server": server_name,
+                            "action": "enable",
+                            "error": "MCP event loop 未运行",
+                        }
+                    )
             except Exception as e:
-                failed.append({"server": server_name, "action": "enable", "error": str(e)})
+                failed.append(
+                    {"server": server_name, "action": "enable", "error": str(e)}
+                )
                 log_error_traceback(f"MCP Enable Error [{server_name}]", e)
 
         if failed:
@@ -499,10 +535,14 @@ class GlobalMCPManager:
             servers = config_dict.get("mcpServers", {})
             config_servers = list(servers.keys())
             disabled_servers = [
-                name for name, cfg in servers.items() if bool(cfg.get("disabled", False))
+                name
+                for name, cfg in servers.items()
+                if bool(cfg.get("disabled", False))
             ]
             enabled_config_servers = [
-                name for name, cfg in servers.items() if not bool(cfg.get("disabled", False))
+                name
+                for name, cfg in servers.items()
+                if not bool(cfg.get("disabled", False))
             ]
         except Exception:
             pass
