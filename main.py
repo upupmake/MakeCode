@@ -224,6 +224,59 @@ def _render_tool_output(name: str, output: Any):
     )
 
 
+def _render_user_message(text: str):
+    if not text:
+        return
+    console.print(
+        Panel(
+            Text(text),
+            title="[bold green] 👤 User[/bold green]",
+            border_style="green",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+    )
+
+
+def _render_history(messages: list):
+    for msg in messages:
+        role = msg.get("role")
+        if role == "system":
+            continue
+        elif role == "user":
+            _render_user_message(_extract_message_text(msg))
+        elif role == "assistant":
+            content = msg.get("content")
+            if content:
+                _render_orchestrator_message(content)
+
+            tool_calls = msg.get("tool_calls", [])
+            for tc in tool_calls:
+                tc_func = (
+                    tc.get("function", {})
+                    if isinstance(tc, dict)
+                    else getattr(tc, "function", {})
+                )
+                if tc_func:
+                    tc_name = (
+                        tc_func.get("name")
+                        if isinstance(tc_func, dict)
+                        else getattr(tc_func, "name", "")
+                    )
+                    tc_args = (
+                        tc_func.get("arguments")
+                        if isinstance(tc_func, dict)
+                        else getattr(tc_func, "arguments", "")
+                    )
+                    if tc_name:
+                        _render_tool_call(tc_name, _parse_arguments(tc_args))
+        elif role == "tool" or role == "function":
+            content = msg.get("content") or msg.get("output")
+            name = msg.get("name") or "Tool"
+            if content:
+                _render_tool_output(name, content)
+
+
 def _render_token_usage(messages: list):
     tokens = estimate_tokens(
         messages, tools_definition=get_current_tools_definition(), system_prompt=SYSTEM
@@ -244,10 +297,10 @@ def _request_with_progress(messages: list, current_tools: list):
         )
 
         with Progress(
-                BarColumn(bar_width=30),
-                TextColumn("[bold cyan] ✨ Orchestrator is thinking..."),
-                transient=True,
-                console=console,
+            BarColumn(bar_width=30),
+            TextColumn("[bold cyan] ✨ Orchestrator is thinking..."),
+            transient=True,
+            console=console,
         ) as progress:
             progress.add_task("", total=None)
             return future.result()
@@ -485,8 +538,8 @@ def agent_loop(messages: list):
 
 
 def _interactive_choose_checkpoint(
-        checkpoints: list,
-        title: str = "\n 📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm):\n",
+    checkpoints: list,
+    title: str = "\n 📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm):\n",
 ) -> str:
     if not checkpoints:
         return "abort"
@@ -925,6 +978,12 @@ if __name__ == "__main__":
                 try:
                     history = load_checkpoint(Path(selected_path))
                     CURRENT_CHECKPOINT = Path(selected_path)
+
+                    console.clear()
+                    _render_startup_banner()
+                    _render_env_customization_hint()
+                    _render_history(history)
+
                     console.print(
                         f"\n[bold green] 🚀 成功加载对话记录！当前上下文包含 {len(history)} 条消息。[/bold green]"
                     )
