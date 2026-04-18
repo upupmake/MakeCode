@@ -87,11 +87,19 @@ code.
 Provides the following execution primitives:
 
 - `RunRead`: read file contents, optionally by line range
-- `RunWrite`: only for creating and writing a NEW file (when target file does not exist or is empty)
-- `RunEdit`: modify an existing file. **Supports passing multiple non-overlapping edit blocks in a single call to modify
-  different parts of the file concurrently** (must call `RunRead` first)
+- `RunWrite`: only for creating and writing a NEW file (when target file does not exist or is empty). **Automatically triggers Tree-sitter syntax validation before writing**, blocks and displays detailed error line numbers if syntax errors are detected.
+- `RunEdit`: modify an existing file. **Supports passing multiple non-overlapping edit blocks in a single call to modify different parts of the file concurrently** (must call `RunRead` first). **Automatically triggers Tree-sitter syntax validation after editing.**
 - `RunGrep`: search text files in a target directory with a regex pattern
 - `RunTerminalCommand`: run a non-interactive terminal command
+
+#### 📋 Tree-sitter Syntax Validation (`system/ts_validator.py`) 🆕
+
+`RunWrite` and `RunEdit` automatically invoke Tree-sitter for syntax checking before writing files:
+
+- **Multi-language Support**: Automatically detects Python, JavaScript, TypeScript, Go, Rust, and more
+- **Smart Exclusion**: Automatically skips plain text and documentation files (`.md`, `.txt`, `.rst`, `.log`, etc.) to avoid false positives
+- **Detailed Error Reporting**: If syntax errors are detected, blocks the write and shows precise line/column numbers, displaying up to 5 core errors
+- **Fail-Open Strategy**: Silently bypasses when language parser is unavailable, environment exception occurs, or language cannot be determined — does not block normal operations
 
 Implementation details:
 
@@ -313,8 +321,10 @@ Agent/
 │  ├─ mcp_manager.py        # MCP service manager, config loading & tool registration 🆕
 │  ├─ tasks.py              # TaskManager topology and status logic
 │  ├─ teams.py              # concurrent delegation and execution logs
-│  ├─ skills.py             # skill discovery and loading
 │  └─ memory.py             # transcript saving and history compaction
+├─ system/
+│  ├─ commands.py           # slash command module (descriptions, completer, interactive panels)
+│  └─ ts_validator.py        # Tree-sitter syntax validation module
 ├─ skills/
 │  ├─ pdf/
 │  │  └─ SKILL.md
@@ -339,13 +349,14 @@ flowchart TD
     O --> I["Initialization & Environment\ninit.py"]
 
     O --> C["File / Terminal Tools\nutils/common.py"]
-    O --> H["HITL UI Interceptor\nutils/hitl.py [NEW]"]
+    O --> TS["Tree-sitter Validator\nsystem/ts_validator.py"]
+    O --> H["HITL UI Interceptor\nutils/hitl.py"]
+    O --> CM["Commands\nsystem/commands.py"]
     O --> TM["TaskManager\nutils/tasks.py"]
     O --> S["Skills\nutils/skills.py"]
     O --> MM["Memory\nutils/memory.py"]
-    O --> T["Team Delegation\nutils/teams.py"]
-    O --> MCP["MCP Manager\nutils/mcp_manager.py [NEW]"]
-
+    O --> MCP["MCP Manager\nutils/mcp_manager.py"]
+    TS --> C["Validate then\nWrite Files"]
     I --> H
     H --> C
     C --> W["Workspace Files"]
@@ -355,8 +366,8 @@ flowchart TD
     MM --> TR[".makecode/transcripts/"]
     TM --> TP[".makecode/tasks/"]
     T --> TH[".makecode/team/"]
-    MCP --> MC["mcp_config.json\n.makecode/ [NEW]"]
-    MCP --> MT["MCP Services\nExternal Tools [NEW]"]
+    MCP --> MC["mcp_config.json\n.makecode/"]
+    MCP --> MT["MCP Services\nExternal Tools"]
 
     TM --> RQ["GetRunnableTasks\nRunnable Frontier"]
     RQ --> T
@@ -376,7 +387,7 @@ flowchart TD
     RP --> T
     T --> TM
     T --> O
-    MCP -.-> AC["Tool Registration [NEW]"]
+    MCP -.-> AC["Tool Registration"]
     O --> F["Final Response"]
 ```
 
@@ -397,6 +408,8 @@ flowchart TD
 - `utils/memory.py` handles long-session compaction and transcript saving.
 - `utils/mcp_manager.py` 🆕 manages MCP service configuration loading, client lifecycle, tool extraction and
   registration, with support for dynamic enable/disable.
+- `system/ts_validator.py` 🆕 provides Tree-sitter syntax validation, automatically detecting code syntax errors before file writes.
+- `system/commands.py` 🆕 handles slash command definitions, completion, and interactive panel processing.
 - `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
 
 ---
