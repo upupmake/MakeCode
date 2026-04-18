@@ -449,7 +449,7 @@ class TeammateManager:
     ) -> dict:
         """子节点独立的运行沙盒，将每一步决策实时写入 JSONL"""
         
-        current_agent_role.set(f"#{plan_task_id}:{role}")
+        current_agent_role.set(f"#{plan_task_id} - {role}")
 
         # 辅助函数：实时追加日志
         async def append_trace(event_type: str, data: any):
