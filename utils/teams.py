@@ -42,6 +42,7 @@ from utils.skills import (
     SKILL_TOOLS_HANDLERS,
 )
 from utils.tasks import TASK_MANAGER
+from utils.hitl import current_agent_role
 
 MAKECODE_DIR = WORKDIR / ".makecode"
 TEAM_DIR = MAKECODE_DIR / "team"
@@ -360,7 +361,7 @@ class TeammateManager:
                 try:
                     # 将日志文件路径传入执行沙盒
                     sub_result = await self._sub_agent_loop(
-                        role, prompt, log_file_path, local_async_llm_client
+                        plan_task_id, role, prompt, log_file_path, local_async_llm_client
                     )
                     report = sub_result["report"]
                     succeeded = sub_result["status"] == "completed"
@@ -444,9 +445,11 @@ class TeammateManager:
         return final_combined_report
 
     async def _sub_agent_loop(
-        self, role: str, prompt: str, log_file: Path, local_async_llm_client
+        self, plan_task_id: str, role: str, prompt: str, log_file: Path, local_async_llm_client
     ) -> dict:
         """子节点独立的运行沙盒，将每一步决策实时写入 JSONL"""
+        
+        current_agent_role.set(f"#{plan_task_id}:{role}")
 
         # 辅助函数：实时追加日志
         async def append_trace(event_type: str, data: any):

@@ -7,13 +7,14 @@ import subprocess
 import sys
 from pathlib import Path
 from shutil import which
+from typing import Any
 
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, model_validator, field_validator
-from typing import Any
 
 from init import WORKDIR, log_error_traceback
 from utils.file_access import GLOBAL_FILE_CONTROLLER
+from utils.hitl import check_permission
 
 
 def safe_path(p: str) -> Path:
@@ -102,6 +103,12 @@ def _build_terminal_argv(terminal_type: str, command: str) -> list[str]:
 
 
 def run_terminal_command(command: str) -> str:
+    parts = command.strip().split()
+    base_cmd = parts[0].strip(';') if parts else "unknown"
+    allowed, reason = check_permission("cmd", base_cmd, command)
+    if not allowed:
+        return f"User Denied Execution. Reason: {reason}"
+
     try:
         resolved_terminal = _resolve_startup_terminal_type()
         r = subprocess.run(
@@ -154,7 +161,7 @@ class RunRead(BaseModel):
 
 
 def run_read(
-    path: str, start: int | None = None, end: int | None = None, agent_access=None
+        path: str, start: int | None = None, end: int | None = None, agent_access=None
 ) -> str:
     try:
         fp = safe_path(path)
@@ -195,7 +202,7 @@ def run_read(
         if s > e or s > total_lines:
             return f"Total lines: {total_lines}\n(Empty range or out of bounds)"
 
-        sliced_lines = lines[s - 1 : e]
+        sliced_lines = lines[s - 1: e]
         formatted_lines = [f"{i + s}: {line}" for i, line in enumerate(sliced_lines)]
 
         return f"Total lines: {total_lines}\n" + "\n".join(formatted_lines)
@@ -219,6 +226,10 @@ class RunWrite(BaseModel):
 
 
 def run_write(path: str, content: str, agent_access=None) -> str:
+    allowed, reason = check_permission("tool", "RunWrite", path)
+    if not allowed:
+        return f"User Denied Execution. Reason: {reason}"
+
     try:
         fp = safe_path(path)
         file_lock = GLOBAL_FILE_CONTROLLER.get_lock(fp)
@@ -313,6 +324,10 @@ class RunEdit(BaseModel):
 
 
 def run_edit(path: str, edits: Any, agent_access=None) -> str:
+    allowed, reason = check_permission("tool", "RunEdit", path)
+    if not allowed:
+        return f"User Denied Execution. Reason: {reason}"
+
     try:
         try:
             validated = RunEdit.model_validate({"path": path, "edits": edits})
@@ -429,9 +444,9 @@ def _is_binary_file(filepath: Path) -> bool:
 
 
 def run_grep(
-    keyword_pattern: str,
-    target_dir: str = ".",
-    filename_pattern: str = "*",
+        keyword_pattern: str,
+        target_dir: str = ".",
+        filename_pattern: str = "*",
 ) -> str:
     try:
         regex = re.compile(keyword_pattern)
