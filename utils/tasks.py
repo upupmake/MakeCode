@@ -9,6 +9,7 @@ from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from init import WORKDIR
+from utils.hitl import check_permission
 
 MAKECODE_DIR = WORKDIR / ".makecode"
 TASKS_DIR = MAKECODE_DIR / "tasks"
@@ -449,7 +450,6 @@ class TaskManager:
         return task
 
     def delete_all_tasks(self, confirm: bool = False, **kwargs) -> dict[str, Any]:
-        from utils.hitl import check_permission
         allowed, reason = check_permission("tool", "DeleteAllTasks", "WARNING: Attempting to delete ALL tasks in the topology plan.")
         if not allowed:
             return {"status": "error", "message": f"User Denied Execution. Reason: {reason}"}
