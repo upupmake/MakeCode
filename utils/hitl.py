@@ -25,12 +25,12 @@ current_agent_role = ContextVar("current_agent_role", default="#0 - Orchestrator
 console = Console()
 
 
-def interactive_hitl_prompt() -> str:
+def interactive_hitl_prompt(action_key: str) -> str:
     """交互式拦截选项面板"""
     options = [
-        ("1", "允许本次执行 (Allow once)"),
-        ("2", "允许本次会话期间执行 (Allow for session)"),
-        ("3", "拒绝执行，并反馈原因 (Deny & Feedback)"),
+        ("1", f"允许本次执行 `{action_key}`"),
+        ("2", f"允许整个会话期间执行 `{action_key}`"),
+        ("3", "拒绝执行，并反馈原因"),
     ]
 
     selected_index = [0]
@@ -110,13 +110,13 @@ def check_permission(action_type: str, action_name: str, details: str) -> tuple[
 
         panel = Panel(
             panel_text,
-            title="⚠️ Sensitive Operation Intercepted",
+            title="⚠️ 敏感操作已拦截",
             border_style="red",
             expand=False
         )
         console.print(panel)
 
-        choice = interactive_hitl_prompt()
+        choice = interactive_hitl_prompt(action_key)
 
         if choice == '1':
             return True, ""
@@ -125,13 +125,13 @@ def check_permission(action_type: str, action_name: str, details: str) -> tuple[
             return True, ""
         elif choice == '3':
             try:
-                reason = prompt("Enter denial reason (feedback for agent): ").strip()
+                reason = prompt("请输入拒绝原因（反馈给 Agent）: ").strip()
             except KeyboardInterrupt:
-                reason = "User aborted the prompt via Ctrl+C."
+                reason = "用户通过 Ctrl+C 中断了操作。"
             except EOFError:
-                reason = "User aborted the prompt via EOF."
-            return False, reason or "User denied without providing a specific reason."
+                reason = "用户通过 EOF 中断了操作。"
+            return False, reason or "用户拒绝执行，未提供具体原因。"
         elif choice == 'abort':
-            return False, "User aborted the prompt via Ctrl+C."
+            return False, "用户通过 Ctrl+C 中断了操作。"
 
-    return False, "Unknown error"
+    return False, "未知错误"
