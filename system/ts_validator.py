@@ -24,7 +24,12 @@ def init_ts_cache():
     提取 .zst 压缩包中的预编译解析器，并设置环境变量强制离线模式。
     """
     is_frozen = getattr(sys, 'frozen', False)
-
+    
+    # 动态将 PyInstaller 的临时目录添加到 DLL 搜索路径中
+    # 这样 tree_sitter_*.dll 就能找到其中打包好的 VCRUNTIME140.dll 等依赖
+    if is_frozen and hasattr(os, 'add_dll_directory'):
+        os.add_dll_directory(sys._MEIPASS)
+        
     # 1. 定位源目录 (Source)
     if is_frozen:
         src_cache_dir = Path(sys._MEIPASS) / "ts_cache"
@@ -83,6 +88,7 @@ def validate_code(path: str, content: str) -> tuple[bool, str]:
     仅在成功解析出语法树且包含明确的 has_error 时，才拦截写入，并提取精准报错。
     """
     if not get_parser or not detect_language_from_path:
+        print("[ts_validator] ⚠️ 解析器模块未成功导入，所有校验将被绕过。")
         return True, ""
 
     try:
@@ -138,6 +144,7 @@ def validate_code(path: str, content: str) -> tuple[bool, str]:
             return False, error_msg
 
         return True, ""
-    except Exception:
-        # 任何异常（例如缺失 DLL、不支持的新语言等）都直接放行，绝不阻塞正常的文件操作
+    except Exception as e:
+        # 任何异常都放行，但在控制台打印警告以便排查环境问题（例如缺少 VC++ 运行库）
+        print(f"[ts_validator] ⚠️ 语法校验被环境异常绕过 (Bypassed): {e}")
         return True, ""

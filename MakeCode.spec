@@ -25,7 +25,15 @@ a = Analysis(
     binaries=[],
     # 2. 将原来的 datas 列表与 copy_metadata 的结果相加
     datas=[('tiktoken_cache', 'tiktoken_cache')] + ts_cache_datas + copy_metadata('fastmcp'),
-    hiddenimports=['tiktoken_ext.openai_public', 'tiktoken_ext', 'prompt_toolkit', 'rich', 'pyzstd'],
+    hiddenimports=[
+        'tiktoken_ext.openai_public', 
+        'tiktoken_ext', 
+        'prompt_toolkit', 
+        'rich', 
+        'pyzstd',
+        'tree_sitter',
+        'tree_sitter_language_pack'
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
