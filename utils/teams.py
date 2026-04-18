@@ -354,7 +354,7 @@ class TeammateManager:
 
                 print_formatted_text(
                     HTML(
-                        f"<ansiblue>  [Spawn] 子节点 '{role}' 开始工作... (TaskManager #{plan_task_id})</ansiblue>"
+                        f"<ansiblue>  [Spawn] 子节点 '{role}' 开始工作... (TaskManager #{plan_task_id}) </ansiblue>"
                     )
                 )
 
@@ -388,7 +388,7 @@ class TeammateManager:
                 await self._save_history(lock)
 
                 print_formatted_text(
-                    HTML(f"<ansigreen>  [Done] 子节点 '{role}' 任务结束。</ansigreen>")
+                    HTML(f"<ansigreen>  [Done] 子节点 '{role}' 任务结束 (TaskManager #{plan_task_id}) </ansigreen>")
                 )
                 return {
                     "task_id": plan_task_id,

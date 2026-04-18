@@ -105,8 +105,11 @@ def _build_terminal_argv(terminal_type: str, command: str) -> list[str]:
 
 def run_terminal_command(command: str) -> str:
     parts = command.strip().split()
-    base_cmd = parts[0].strip(';') if parts else "unknown"
-    allowed, reason = check_permission("cmd", base_cmd, command)
+    if len(parts) > 1:
+        action_name = " ".join(parts[:2])
+    else:
+        action_name = parts[0] if parts else "unknown"
+    allowed, reason = check_permission("cmd", action_name, command)
     if not allowed:
         return f"User Denied Execution. Reason: {reason}"
 
