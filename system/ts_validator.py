@@ -8,21 +8,13 @@ from pathlib import Path
 os.environ["TS_PACK_OFFLINE"] = "1"
 
 import pyzstd
-
-try:
-    from tree_sitter_language_pack import (
-        get_parser, 
-        detect_language_from_path,
-        process,
-        ProcessConfig,
-        configure
-    )
-except ImportError:
-    get_parser = None
-    detect_language_from_path = None
-    process = None
-    ProcessConfig = None
-    configure = None
+from tree_sitter_language_pack import (
+    get_parser,
+    detect_language_from_path,
+    process,
+    ProcessConfig,
+    configure
+)
 
 
 def init_ts_cache():
@@ -66,6 +58,10 @@ def init_ts_cache():
 
     # 4. 检查并按需解压
     for zst_file in src_cache_dir.glob("*.tar.zst"):
+        # 忽略已经标记的占位文件，防止死循环解压占位文件自己
+        if zst_file.name.startswith(".extracted_"):
+            continue
+            
         marker = dst_cache_dir / f".extracted_{zst_file.name}"
         if marker.exists():
             continue
