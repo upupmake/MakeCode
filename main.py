@@ -90,7 +90,7 @@ BASE_SUPER_TOOLS_HANDLERS = {
     **SKILL_TOOLS_HANDLERS,
     **TASK_MANAGER_TOOLS_HANDLERS,
     **TEAM_TOOLS_HANDLERS,
-    "RunRead": lambda path, regions=None, **kwargs: run_read(
+    "RunRead": lambda path, regions, **kwargs: run_read(
         path, regions, orchestrator_access
     ),
     "RunWrite": lambda path, content, **kwargs: run_write(

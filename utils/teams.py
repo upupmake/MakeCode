@@ -507,7 +507,7 @@ class TeammateManager:
             **SKILL_TOOLS_HANDLERS,
             **GLOBAL_MCP_MANAGER.get_handlers(),
             "TodoUpdate": lambda items, **kwargs: local_todo.update(items),
-            "RunRead": lambda path, regions=None, **kwargs: run_read(
+            "RunRead": lambda path, regions, **kwargs: run_read(
                 path, regions, agent_access
             ),
             "RunWrite": lambda path, content, **kwargs: run_write(

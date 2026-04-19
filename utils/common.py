@@ -156,12 +156,9 @@ class ReadBlock(BaseModel):
 
 
 class RunRead(BaseModel):
-    """Read contents of a file. Supports reading specific line ranges or the entire file.
+    """Read contents of a file. Reads only the specified line ranges.
     
-    - If 'regions' is None or not provided, reads the entire file.
-    - If 'regions' is provided, reads only the specified line ranges.
-    
-    Each region in 'regions' should be a dict with 'start' and 'end' keys.
+    'regions' must be a non-empty list. Each region should be a dict with 'start' and 'end' keys.
     
     IMPORTANT PERFORMANCE GUIDELINES:
     1. Provide specific regions when possible to improve efficiency and reduce context usage.
@@ -176,9 +173,10 @@ class RunRead(BaseModel):
     path: str = Field(
         ..., description="Path to the file to read, relative to workspace."
     )
-    regions: list[ReadBlock] | None = Field(
-        None,
-        description="List of line ranges to read. If None, reads the entire file. PREFER: Provide MULTIPLE regions in a SINGLE call rather than multiple separate calls. Example: regions=[{start:1,end:100},{start:200,end:300}]"
+    regions: list[ReadBlock] = Field(
+        ...,
+        min_length=1,
+        description="List of line ranges to read. Must contain at least one region. PREFER: Provide MULTIPLE regions in a SINGLE call rather than multiple separate calls. Example: regions=[{start:1,end:100},{start:200,end:300}]"
     )
 
     @field_validator("regions", mode="before")
@@ -187,13 +185,17 @@ class RunRead(BaseModel):
         if isinstance(v, str):
             v = v.strip()
             if not v:
-                return None
+                raise ValueError("regions must be a non-empty list")
             if v.lower() in {"none", "null"}:
-                return None
+                raise ValueError("regions must be a non-empty list")
+            if v == "[]":
+                raise ValueError("regions must be a non-empty list")
             try:
                 return json.loads(v)
             except json.JSONDecodeError:
                 return v
+        if isinstance(v, list) and len(v) == 0:
+            raise ValueError("regions must be a non-empty list")
         return v
 
 
@@ -230,7 +232,7 @@ def merge_intervals(intervals: list[list[int]]) -> list[list[int]]:
 
 
 def run_read(
-        path: str, regions: list[dict] | None = None, agent_access=None
+        path: str, regions: list[dict], agent_access=None
 ) -> str:
     try:
         try:
@@ -260,43 +262,38 @@ def run_read(
             lines = text.splitlines()
             total_lines = len(lines)
 
-        # 如果提供了regions，则读取指定区域；否则读取整个文件
-        if regions is not None:
-            # 收集所有有效区间（regions已经是经过model_validate的ReadBlock列表）
-            intervals = []
-            for region in regions:
-                s = region.start
-                e = region.end
+        # 读取指定区域
+        # 收集所有有效区间（regions已经是经过model_validate的ReadBlock列表）
+        intervals = []
+        for region in regions:
+            s = region.start
+            e = region.end
 
-                # 边界约束
-                s = max(1, s)
-                e = min(total_lines, e)
+            # 边界约束
+            s = max(1, s)
+            e = min(total_lines, e)
 
-                if s <= e:
-                    intervals.append([s, e])
+            if s <= e:
+                intervals.append([s, e])
 
-            if not intervals:
-                return f"File: {path}, Total lines: {total_lines}\n(No valid lines to read)"
+        if not intervals:
+            return f"File: {path}, Total lines: {total_lines}\n(No valid lines to read)"
 
-            # 合并区间
-            merged = merge_intervals(intervals)
+        # 合并区间
+        merged = merge_intervals(intervals)
 
-            # 收集行号
-            line_numbers = []
-            for s, e in merged:
-                line_numbers.extend(range(s, e + 1))
+        # 收集行号
+        line_numbers = []
+        for s, e in merged:
+            line_numbers.extend(range(s, e + 1))
 
-            if not line_numbers:
-                return f"File: {path}, Total lines: {total_lines}\n(No valid lines to read)"
+        if not line_numbers:
+            return f"File: {path}, Total lines: {total_lines}\n(No valid lines to read)"
 
-            # 格式化输出
-            formatted_lines = [f"{n}: {lines[n - 1]}" for n in line_numbers]
+        # 格式化输出
+        formatted_lines = [f"{n}: {lines[n - 1]}" for n in line_numbers]
 
-            return f"File: {path}, Total lines: {total_lines}\n" + "\n".join(formatted_lines)
-        else:
-            # 读取整个文件
-            formatted_lines = [f"{i + 1}: {line}" for i, line in enumerate(lines)]
-            return f"File: {path}, Total lines: {total_lines}\n" + "\n".join(formatted_lines)
+        return f"File: {path}, Total lines: {total_lines}\n" + "\n".join(formatted_lines)
     except Exception as e:
         log_error_traceback("RunRead execution", e)
         return f"Error: {e}"
