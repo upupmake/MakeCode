@@ -152,22 +152,107 @@ def run_terminal_command(command: str) -> str:
         return f"Error executing command: {e}"
 
 
+
+class ReadBlock(BaseModel):
+    """A block specifying a line range to read from a file."""
+    start: int = Field(
+        ...,
+        description="Start line number (1-indexed) to read.",
+    )
+    end: int = Field(
+        ...,
+        description="End line number (1-indexed) to read. Inclusive.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_stringified_block(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            try:
+                data = data.strip()
+                if not data:
+                    return data
+                parsed = json.loads(data)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        return data
+
+
 class RunRead(BaseModel):
-    """Read contents of a file. Supports reading a specific line range."""
+    """Read contents of a file. Supports reading specific line ranges or the entire file.
+    
+    - If 'regions' is None or not provided, reads the entire file.
+    - If 'regions' is provided, reads only the specified line ranges.
+    
+    Each region in 'regions' should be a dict with 'start' and 'end' keys.
+    """
 
     path: str = Field(
         ..., description="Path to the file to read, relative to workspace."
     )
-    start: int | None = Field(
-        None, description="Start line number (1-indexed). Optional."
+    regions: list[ReadBlock] | None = Field(
+        None, description="List of line ranges to read. If None, reads the entire file."
     )
-    end: int | None = Field(None, description="End line number (1-indexed). Optional.")
+
+    @field_validator("regions", mode="before")
+    @classmethod
+    def parse_stringified_regions(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                v = v.strip()
+                if not v:
+                    return v
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        return v
 
 
+def merge_intervals(intervals: list[list[int]]) -> list[list[int]]:
+    """
+    合并重叠或相邻的区间
+    
+    算法：排序 + 贪心合并
+    时间复杂度：O(n log n)
+    空间复杂度：O(n)
+    
+    Args:
+        intervals: 区间列表，每个区间为 [start, end]
+    
+    Returns:
+        合并后的区间列表
+    """
+    if not intervals:
+        return []
+    
+    # 按起始位置排序
+    intervals.sort(key=lambda x: x[0])
+    
+    # 合并重叠/相邻区间
+    merged = [intervals[0]]
+    for curr in intervals[1:]:
+        prev = merged[-1]
+        if curr[0] <= prev[1] + 1:  # 重叠或相邻
+            prev[1] = max(prev[1], curr[1])
+        else:
+            merged.append(curr)
+    
+    return merged
 def run_read(
-        path: str, start: int | None = None, end: int | None = None, agent_access=None
+        path: str, regions: list[dict] | None = None, agent_access=None
 ) -> str:
     try:
+        try:
+            validated = RunRead.model_validate({"path": path, "regions": regions})
+            path = validated.path
+            regions = validated.regions
+        except Exception as exc:
+            return f"Error: Invalid arguments provided to RunRead. {exc}"
+
         fp = safe_path(path)
         file_lock = GLOBAL_FILE_CONTROLLER.get_lock(fp)
         with file_lock:
@@ -184,32 +269,43 @@ def run_read(
             lines = text.splitlines()
             total_lines = len(lines)
 
-        try:
-            s = int(start) if (start is not None and str(start).strip() != "") else 1
-        except ValueError as exc:
-            log_error_traceback("RunRead invalid start line", exc)
-            s = 1
-
-        try:
-            e = (
-                int(end)
-                if (end is not None and str(end).strip() != "")
-                else total_lines
-            )
-        except ValueError as exc:
-            log_error_traceback("RunRead invalid end line", exc)
-            e = total_lines
-
-        s = max(1, s)
-        e = min(total_lines, e)
-
-        if s > e or s > total_lines:
-            return f"Total lines: {total_lines}\n(Empty range or out of bounds)"
-
-        sliced_lines = lines[s - 1: e]
-        formatted_lines = [f"{i + s}: {line}" for i, line in enumerate(sliced_lines)]
-
-        return f"Total lines: {total_lines}\n" + "\n".join(formatted_lines)
+        # 如果提供了regions，则读取指定区域；否则读取整个文件
+        if regions is not None:
+            # 收集所有有效区间（regions已经是经过model_validate的ReadBlock列表）
+            intervals = []
+            for region in regions:
+                s = region.start
+                e = region.end
+                
+                # 边界约束
+                s = max(1, s)
+                e = min(total_lines, e)
+                
+                if s <= e:
+                    intervals.append([s, e])
+            
+            if not intervals:
+                return f"Total lines: {total_lines}\n(No valid lines to read)"
+            
+            # 合并区间
+            merged = merge_intervals(intervals)
+            
+            # 收集行号
+            line_numbers = []
+            for s, e in merged:
+                line_numbers.extend(range(s, e + 1))
+            
+            if not line_numbers:
+                return f"Total lines: {total_lines}\n(No valid lines to read)"
+            
+            # 格式化输出
+            formatted_lines = [f"{n}: {lines[n - 1]}" for n in line_numbers]
+            
+            return f"Total lines: {total_lines}\n" + "\n".join(formatted_lines)
+        else:
+            # 读取整个文件
+            formatted_lines = [f"{i + 1}: {line}" for i, line in enumerate(lines)]
+            return f"Total lines: {total_lines}\n" + "\n".join(formatted_lines)
     except Exception as e:
         log_error_traceback("RunRead execution", e)
         return f"Error: {e}"
@@ -273,6 +369,8 @@ def run_write(path: str, content: str, agent_access=None) -> str:
     except Exception as e:
         log_error_traceback("RunWrite execution", e)
         return f"Error: {e}"
+
+
 
 
 class EditBlock(BaseModel):

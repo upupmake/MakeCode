@@ -94,12 +94,11 @@ orchestrator_access = AgentFileAccess()
 
 BASE_SUPER_TOOLS_HANDLERS = {
     **COMMON_TOOLS_HANDLERS,
-    **COMMON_TOOLS_HANDLERS,
     **SKILL_TOOLS_HANDLERS,
     **TASK_MANAGER_TOOLS_HANDLERS,
     **TEAM_TOOLS_HANDLERS,
-    "RunRead": lambda path, start=None, end=None, **kwargs: run_read(
-        path, start, end, orchestrator_access
+    "RunRead": lambda path, regions=None, **kwargs: run_read(
+        path, regions, orchestrator_access
     ),
     "RunWrite": lambda path, content, **kwargs: run_write(
         path, content, orchestrator_access
@@ -161,15 +160,29 @@ def _render_orchestrator_message(text: str):
 
 
 def _render_tool_call(name: str, arguments: Any):
+    # 美化参数显示，但不改变原始参数
+    display_args = arguments
+    if isinstance(arguments, str):
+        # 尝试解析字符串参数以便格式化显示
+        stripped = arguments.strip()
+        if stripped and (stripped.startswith('{') or stripped.startswith('[')):
+            try:
+                parsed = json.loads(stripped)
+                # 解析成功，使用解析后的数据进行格式化显示
+                display_args = parsed
+            except json.JSONDecodeError:
+                # 解析失败，保持原样
+                pass
+    
     body = (
         Syntax(
-            json.dumps(arguments, ensure_ascii=False, indent=2),
+            json.dumps(display_args, ensure_ascii=False, indent=2),
             "json",
             word_wrap=True,
             theme="monokai",
         )
-        if isinstance(arguments, (dict, list))
-        else Text(str(arguments))
+        if isinstance(display_args, (dict, list))
+        else Text(str(display_args))
     )
     console.print(
         Panel(
@@ -179,7 +192,6 @@ def _render_tool_call(name: str, arguments: Any):
             box=box.ROUNDED,
         )
     )
-
 
 def _render_tool_output(name: str, output: Any):
     text = _stringify_output(output).strip()
@@ -252,7 +264,7 @@ def _render_history(messages: list):
                         else getattr(tc_func, "arguments", "")
                     )
                     if tc_name:
-                        _render_tool_call(tc_name, _parse_arguments(tc_args))
+                        _render_tool_call(tc_name, tc_args)
         elif role == "tool" or role == "function":
             content = msg.get("content") or msg.get("output")
             name = msg.get("name") or "Tool"
@@ -322,7 +334,7 @@ def agent_loop(messages: list):
             tool_id = tc["id"]
             tool_args = tc["arguments"]
 
-            _render_tool_call(tool_name, _parse_arguments(tool_args))
+            _render_tool_call(tool_name, tool_args)
 
             try:
                 arguments = _parse_arguments(tool_args)

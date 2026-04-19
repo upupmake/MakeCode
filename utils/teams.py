@@ -35,7 +35,7 @@ from utils.common import (
     run_edit,
 )
 from utils.file_access import AgentFileAccess
-from utils.hitl import current_agent_role
+from utils.hitl import check_permission, current_agent_role
 from utils.llm_client import AsyncChatAPIClient, AsyncResponseAPIClient
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils.skills import (
@@ -92,7 +92,8 @@ class DelegateTasks(BaseModel):
        - no inter-task ordering dependency
        - no shared mutable file/state requiring serialization
        - each task can complete end-to-end without waiting on sibling tasks
-       - avoid batching tasks that may write the same file concurrently
+       - MUST NOT batch tasks that may edit the same file — concurrent writes cause conflicts and data corruption.
+         If multiple tasks need to edit the same file, establish explicit topology dependencies (via depend_on) first.
     6) Sub-agents are stateless. Each context_prompt must be complete and self-contained.
     """
 
@@ -287,6 +288,19 @@ class TeammateManager:
             log_error_traceback("DelegateTasks preflight validation", e)
             return f"Error: {e}"
 
+        # HITL 人工拦截：在委派子智能体前请求用户确认
+        delegation_summary_lines = []
+        for t in tasks:
+            delegation_summary_lines.append(
+                f"  Task #{t['task_id']} → Role: {t['role_name']}"
+            )
+        delegation_details = (
+            f"即将并发委派 {len(tasks)} 个子智能体任务:\n"
+            + "\n".join(delegation_summary_lines)
+        )
+        allowed, reason = check_permission("tool", "DelegateTasks", delegation_details)
+        if not allowed:
+            return f"User Denied Execution. Reason: {reason}"
         # 1. 创建本次调用的专属文件夹
         run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_id = f"run_{run_timestamp}"
@@ -495,8 +509,8 @@ class TeammateManager:
             **SKILL_TOOLS_HANDLERS,
             **GLOBAL_MCP_MANAGER.get_handlers(),
             "TodoUpdate": lambda items, **kwargs: local_todo.update(items),
-            "RunRead": lambda path, start=None, end=None, **kwargs: run_read(
-                path, start, end, agent_access
+            "RunRead": lambda path, regions=None, **kwargs: run_read(
+                path, regions, agent_access
             ),
             "RunWrite": lambda path, content, **kwargs: run_write(
                 path, content, agent_access

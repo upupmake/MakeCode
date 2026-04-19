@@ -29,7 +29,8 @@ class CreateTask(BaseModel):
     Constraints:
     - `subject` is required and cannot be empty.
     - `depend_on` can only contain existing task IDs.
-    - For tasks that may modify the same file, encode explicit topology order via `depend_on`.
+    - MUST NOT create tasks that edit the same file without topology ordering — concurrent writes to the same file cause conflicts.
+    - If multiple tasks need to edit the same file, you MUST establish explicit topology dependencies (via `depend_on`) so that they execute sequentially.
     - Task will be topology-validated after insertion.
     """
 
@@ -546,7 +547,8 @@ TASK_MANAGER_NAMESPACE = {
         "Task topology planning and execution state tools. "
         "Recommended flow: CreateTask -> UpdateTaskDependencies -> GetRunnableTasks -> DelegateTasks "
         "(DelegateTasks lives in Team tools and should only receive runnable task IDs). "
-        "For tasks that may write the same file, add dependencies to enforce topological order before delegation."
+        "MUST NOT put tasks that edit the same file in the same batch — if multiple tasks need to edit the same file, "
+        "establish explicit topology dependencies (via depend_on) so they execute sequentially."
     ),
     "tools": TOOLS,
 }
