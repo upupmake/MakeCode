@@ -2,6 +2,7 @@
 控制台渲染模块：提供所有与控制台输出相关的渲染函数。
 """
 import json
+import threading
 from typing import Any, List
 
 from rich import box
@@ -12,8 +13,25 @@ from rich.text import Text
 
 from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
 
-# 创建控制台实例，与 main.py 中的配置保持一致
 console = Console(force_terminal=True)
+
+# 线程锁：用于多子智能体并发输出时保护控制台，防止输出交错
+console_lock = threading.Lock()
+
+# =============================================================================
+# Sub-Agent 输出控制全局变量
+# =============================================================================
+# 控制 Sub-Agent 是否输出到主控制台
+# True  = 正常输出
+# False = 静默模式（默认），Sub-Agent 的输出不会显示在控制台（但仍会写入日志文件）
+SHOW_SUB_AGENT_CONSOLE = False
+
+
+def toggle_sub_agent_console() -> bool:
+    """切换 Sub-Agent 控制台输出状态，返回切换后的状态值"""
+    global SHOW_SUB_AGENT_CONSOLE
+    SHOW_SUB_AGENT_CONSOLE = not SHOW_SUB_AGENT_CONSOLE
+    return SHOW_SUB_AGENT_CONSOLE
 
 MAKECODE_ASCII = r"""
 ███╗   ███╗ █████╗ ██╗  ██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗
@@ -85,14 +103,14 @@ def _format_readable_ui(data: Any, indent_level: int = 0) -> List[Text]:
     return renderables
 
 
-def _render_orchestrator_message(text: str):
+def _render_agent_response_message(text: str, identity: str = "🧠 Orchestrator"):
     """渲染 Orchestrator 的消息"""
     if not text:
         return
     console.print(
         Panel(
             Markdown(text),
-            title="[bold magenta]🧠 Orchestrator[/bold magenta]",
+            title=f"[bold magenta] {identity} [/bold magenta]",
             border_style="magenta",
             box=box.ROUNDED,
             padding=(1, 2),
@@ -100,7 +118,7 @@ def _render_orchestrator_message(text: str):
     )
 
 
-def _render_tool_call(name: str, arguments: Any):
+def _render_tool_call(name: str, arguments: Any, identity: str = "🧠 Orchestrator"):
     """渲染工具调用"""
     display_data = arguments
     is_complex = False
@@ -129,7 +147,7 @@ def _render_tool_call(name: str, arguments: Any):
     console.print(
         Panel(
             body,
-            title=f"[bold cyan]🛠️ Action: {name}[/bold cyan]",
+            title=f"[bold cyan]🛠️ Action: {name} <- {identity} [/bold cyan]",
             border_style="cyan",
             box=box.ROUNDED,
             padding=(1, 2),
@@ -137,7 +155,7 @@ def _render_tool_call(name: str, arguments: Any):
     )
 
 
-def _render_tool_output(name: str, output: Any):
+def _render_tool_output(name: str, output: Any, identity: str = "🧠 Orchestrator"):
     """渲染工具输出"""
     text = _stringify_output(output).strip()
 
@@ -165,7 +183,7 @@ def _render_tool_output(name: str, output: Any):
     console.print(
         Panel(
             body,
-            title=f"[bold green]✅ Result: {name}[/bold green]",
+            title=f"[bold green]✅ Result: {name} <- {identity} [/bold green]",
             border_style="green",
             box=box.ROUNDED,
             padding=(1, 2),
@@ -199,7 +217,7 @@ def _render_history(messages: list):
         elif role == "assistant":
             content = msg.get("content")
             if content:
-                _render_orchestrator_message(content)
+                _render_agent_response_message(content)
 
             tool_calls = msg.get("tool_calls") or []
             for tc in tool_calls:

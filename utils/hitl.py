@@ -1,5 +1,4 @@
 import asyncio
-import threading
 from contextvars import ContextVar
 
 from prompt_toolkit import prompt
@@ -13,11 +12,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from system.console_render import console_lock
+
 # Global Session Whitelist
 SESSION_WHITELIST = set()
-
-# Global Lock for Concurrency
-hitl_lock = threading.Lock()
 
 # Context Variable for Agent Role
 current_agent_role = ContextVar("current_agent_role", default="#0 - Orchestrator")
@@ -83,7 +81,7 @@ def check_permission(action_type: str, action_name: str, details: str) -> tuple[
     if action_key in SESSION_WHITELIST:
         return True, ""
 
-    with hitl_lock:
+    with console_lock:
         # Double check in case another thread added it while waiting
         if action_key in SESSION_WHITELIST:
             return True, ""

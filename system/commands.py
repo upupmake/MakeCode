@@ -20,11 +20,10 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-
 from init import log_error_traceback
+from system.console_render import toggle_sub_agent_console
 from utils.tasks import list_task_plans, load_task_plan
 from utils.teams import list_team_histories, load_team_history
-
 
 class CommandAction(Enum):
     EXIT = auto()
@@ -59,6 +58,7 @@ COMMAND_DESCRIPTIONS = {
     "/tasks": "查看任务看板和当前执行进度",
     "/plan": "查看任务看板和当前执行进度",
     "/status": "汇报系统状态、已完成任务和下一步计划",
+    "/sub-agent-console": "切换 Sub-Agent 的控制台输出状态，默认关闭",
     "/help": "显示使用帮助和自我介绍",
     "/workspace": "查看当前工作区目录结构",
     "/ls": "查看当前工作区目录结构",
@@ -665,6 +665,14 @@ class CommandHandler:
         # /cmds - 列出命令
         if query == "/cmds":
             self.handle_cmds()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        # /sub-agent-console - 切换 Sub-Agent 的控制台输出状态
+        if query == "/sub-agent-console":
+            new_state = toggle_sub_agent_console()
+            status = "开启" if new_state else "关闭"
+            status_color = "green" if new_state else "yellow"
+            self.console.print(f"\n[bold]📊 Sub-Agent 输出状态: [{status_color}]{status}[/{status_color}][/bold]")
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /skills 相关命令

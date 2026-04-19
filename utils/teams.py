@@ -24,6 +24,13 @@ from prompts import (
     get_sub_agent_summary_prompt,
     get_report_assistant_system_prompt,
 )
+from system.console_render import (
+    console_lock,
+    _render_agent_response_message,
+    _render_tool_call,
+    _render_tool_output,
+    SHOW_SUB_AGENT_CONSOLE,
+)
 from tools.todo import TodoManager, TODO_TOOLS
 from utils.common import (
     COMMON_TOOLS,
@@ -464,6 +471,11 @@ class TeammateManager:
 
         current_agent_role.set(f"#{plan_task_id} - {role}")
 
+        # 同步渲染包装器：在线程锁保护下执行 Rich 渲染，防止并发输出交错
+        def _safe_render(render_fn, **kwargs):
+            with console_lock:
+                render_fn(**kwargs)
+
         # 辅助函数：实时追加日志
         async def append_trace(event_type: str, data: any):
             async with aiofiles.open(log_file, "a", encoding="utf-8") as f:
@@ -590,6 +602,17 @@ class TeammateManager:
                 {"text": text_content, "tool_calls": [tc["name"] for tc in tool_calls]},
             )
 
+            # 回显子智能体的文本回复到主控制台（如果启用）
+
+            if text_content and SHOW_SUB_AGENT_CONSOLE:
+                kw_args = {
+                    'identity': f"Sub-Agent - #{plan_task_id} - {role}",
+                    'text': text_content,
+                }
+                await asyncio.to_thread(
+                    _safe_render, _render_agent_response_message, **kw_args
+                )
+
             has_tool_call = len(tool_calls) > 0
 
             # 处理工具调用
@@ -597,7 +620,19 @@ class TeammateManager:
                 tool_name = tc["name"]
                 tool_id = tc["id"]
                 tool_args = tc["arguments"]
+                # 回显工具调用参数到主控制台（如果启用）
+                if SHOW_SUB_AGENT_CONSOLE:
+                    kw_args = {
+                        'identity': f"Sub-Agent - #{plan_task_id} - {role}",
+                        'name': tool_name,
+                        'arguments': tool_args
+                    }
+                    await asyncio.to_thread(
+                        _safe_render, _render_tool_call, **kw_args
+                    )
 
+                # 预处理参数：统一转换为字典，默认使用 tool_args
+                args = tool_args
                 try:
                     handler = sub_handlers.get(tool_name)
                     if handler:
@@ -615,13 +650,23 @@ class TeammateManager:
                         e,
                     )
                     output = f"Error: {e}."
+                # 回显工具输出结果到主控制台（如果启用）
+                if SHOW_SUB_AGENT_CONSOLE:
+                    kw_args = {
+                        'identity': f"Sub-Agent - #{plan_task_id} - {role}",
+                        'name': tool_name,
+                        'output': output,
+                    }
+                    await asyncio.to_thread(
+                        _safe_render, _render_tool_output, **kw_args
+                    )
 
                 # 记录工具调用的详细结果
                 await append_trace(
                     f"step_{step}_tool_execution",
                     {
                         "tool_name": tool_name,
-                        "arguments": args if "args" in locals() else tool_args,
+                        "arguments": args,
                         "output": output,
                     },
                 )

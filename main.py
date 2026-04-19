@@ -22,7 +22,7 @@ from system.commands import (
     CommandAction,
 )
 from system.console_render import (
-    _render_orchestrator_message,
+    _render_agent_response_message,
     _render_tool_call,
     _render_tool_output,
     _render_history,
@@ -170,7 +170,7 @@ def agent_loop(messages: list):
         has_tool_call = len(tool_calls) > 0
 
         if text_content:
-            _render_orchestrator_message(text_content)
+            _render_agent_response_message(text_content)
 
         for tc in tool_calls:
             tool_name = tc["name"]
