@@ -223,13 +223,9 @@ class RunRead(BaseModel):
             if v.lower() in {"none", "null"}:
                 return None
             try:
-                parsed = json.loads(v)
-                if parsed is None:
-                    return None
-                if isinstance(parsed, list):
-                    return parsed
+                return json.loads(v)
             except json.JSONDecodeError:
-                pass
+                return v
         return v
 
 
