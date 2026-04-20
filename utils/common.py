@@ -107,6 +107,8 @@ def run_terminal_command(command: str) -> str:
             log_error_traceback("RunTerminalCommand utf8 decode fallback", exc)
             sys_encoding = locale.getpreferredencoding()
             out = raw_output.decode(sys_encoding, errors="replace").strip()
+        MAX_LINES = 300
+        out = "\n".join(out.splitlines()[-MAX_LINES:])
         terminal_meta = f"{resolved_terminal}, source={STARTUP_TERMINAL_SOURCE}"
         return (
             out
