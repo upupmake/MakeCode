@@ -88,7 +88,7 @@ Provides the following execution primitives:
 
 - `RunRead`: read file contents, optionally by line range
 - `RunWrite`: only for creating and writing a NEW file (when target file does not exist or is empty). **Automatically triggers Tree-sitter syntax validation before writing**, blocks and displays detailed error line numbers if syntax errors are detected.
-- `RunEdit`: modify an existing file. **Supports passing multiple non-overlapping edit blocks in a single call to modify different parts of the file concurrently** (must call `RunRead` first). **Automatically triggers Tree-sitter syntax validation after editing.**
+- `RunEdit`: modify an existing file. **Uses text search-and-replace mechanism (search_content → replace_content) instead of line number ranges**. Must call `RunRead` first, locate changes by providing exact text with surrounding context. **Supports triple fallback: exact match → strip match → difflib fuzzy match (similarity ≥90%)**. Automatically triggers Tree-sitter syntax validation after editing.
 - `RunGrep`: search text files in a target directory with a regex pattern
 - `RunTerminalCommand`: run a non-interactive terminal command
 

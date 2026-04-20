@@ -37,7 +37,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['numpy', 'matplotlib', 'PIL', 'pandas', 'openpyxl', 'xlrd'],
+    excludes=['numpy', 'matplotlib', 'PIL', 'pandas', 'openpyxl', 'xlrd', 'pytest'],
     noarchive=False,
     optimize=0,
 )

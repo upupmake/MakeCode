@@ -1,4 +1,5 @@
 import datetime
+import difflib
 import json
 import locale
 import os
@@ -360,17 +361,28 @@ def run_write(path: str, content: str, agent_access=None) -> str:
 
 
 class EditBlock(BaseModel):
-    start: int = Field(
+    """
+    Represents a single search-and-replace operation.
+    It locates the exact text matching `search_content` and replaces it with `replace_content`.
+    """
+
+    search_content: str = Field(
         ...,
-        description="Start line number (1-indexed) in the ORIGINAL file to replace.",
+        description=(
+            "The EXACT original text to be replaced. "
+            "CRITICAL RULES: "
+            "1. You MUST include sufficient context (2-3 unchanged lines before and after the target) to uniquely identify the location. "
+            "2. You must output the exact literal text. Indentation and line breaks must perfectly match the original file."
+        ),
     )
-    end: int = Field(
+    replace_content: str = Field(
         ...,
-        description="End line number (1-indexed) in the ORIGINAL file to replace. Inclusive (the end line will be replaced).",
-    )
-    new_content: str = Field(
-        ...,
-        description="The new content to replace the specified line range. MUST contain exactly required indentation.",
+        description=(
+            "The NEW text that will replace `search_content`. "
+            "CRITICAL RULES: "
+            "1. If you included unchanged context lines in `search_content`, you MUST duplicate them exactly here, otherwise they will be permanently deleted! "
+            "2. Ensure absolute indentation spaces are perfectly maintained."
+        ),
     )
 
     @model_validator(mode="before")
@@ -391,20 +403,27 @@ class EditBlock(BaseModel):
 
 class RunEdit(BaseModel):
     """
-    Replace one or multiple specific line ranges in a file with new content.
-    CRITICAL REQUIREMENTS:
-    1. You MUST call `RunRead` first.
-    2. This is a REPLACE operation. The lines from `start` to `end` (inclusive) in the ORIGINAL file will be completely replaced by `new_content`.
-    3. `new_content` MUST contain the EXACT absolute indentation (spaces).
-    4. You can provide multiple edit blocks to edit different parts of the file at once.
-    5. Multiple edit blocks MUST NOT overlap.
+    Replace specific text blocks in a file with new content.
+
+    HOW TO USE PERFECTLY:
+    1. Read the file first using `RunRead`.
+    2. Identify the exact lines you want to change.
+    3. Copy those lines into `search_content`, adding 2-3 lines of unchanged code above and below as context.
+    4. Write the modified version into `replace_content`, making sure to KEEP the unchanged context lines!
+
+    WARNINGS:
+    - Never invent code or guess indentation.
+    - Never use `...` to skip code.
+    - If your search block is not unique, the system will reject it.
     """
 
     path: str = Field(
-        ..., description="Path to the file to edit, relative to workspace."
+        ...,
+        description="Path to the file you want to edit."
     )
     edits: list[EditBlock] = Field(
-        ..., description="List of edit blocks to apply to the file."
+        ...,
+        description="A list of edits. Processed sequentially. Do not overlap target regions."
     )
 
     @field_validator("edits", mode="before")
@@ -422,6 +441,75 @@ class RunEdit(BaseModel):
                 pass
         return v
 
+
+def apply_edit_block(file_text: str, search: str, replace: str) -> tuple[bool, str, str]:
+    """
+    尝试在文本中替换块，包含三重容错机制：精确匹配 -> Strip匹配 -> Difflib模糊匹配
+    """
+    # 统一换行符
+    file_text = file_text.replace("\r\n", "\n")
+    search = search.replace("\r\n", "\n")
+    replace = replace.replace("\r\n", "\n")
+
+    # 1. 尝试精确匹配
+    count = file_text.count(search)
+    if count == 1:
+        return True, file_text.replace(search, replace), ""
+    elif count > 1:
+        return False, file_text, "Search content found multiple times. Please include more context to make it unique."
+
+    # 2. 尝试容错匹配 (去除首尾空白)
+    search_stripped = search.strip()
+    if not search_stripped:
+        return False, file_text, "Search content cannot be empty or only whitespace."
+
+    count_stripped = file_text.count(search_stripped)
+    if count_stripped == 1:
+        start_idx = file_text.find(search_stripped)
+        end_idx = start_idx + len(search_stripped)
+        new_text = file_text[:start_idx] + replace.strip() + file_text[end_idx:]
+        return True, new_text, ""
+    elif count_stripped > 1:
+        return False, file_text, "Stripped search content matches multiple locations. Please include more context."
+
+    # 3. difflib 模糊匹配兜底
+    SIMILARITY_THRESHOLD = 0.95
+
+    file_lines = file_text.splitlines()
+    search_lines = search_stripped.splitlines()
+    replace_lines = replace.splitlines()
+
+    search_len = len(search_lines)
+    if search_len == 0 or not file_lines:
+        return False, file_text, "Search content NOT found."
+
+    best_ratio = 0.0
+    best_start_idx = -1
+    best_end_idx = -1
+
+    max_window_diff = 2
+    min_window = max(1, search_len - max_window_diff)
+    max_window = min(len(file_lines), search_len + max_window_diff)
+
+    for window_len in range(min_window, max_window + 1):
+        for i in range(len(file_lines) - window_len + 1):
+            window_text = "\n".join(file_lines[i: i + window_len]).strip()
+            ratio = difflib.SequenceMatcher(None, window_text, search_stripped).ratio()
+
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_start_idx = i
+                best_end_idx = i + window_len
+
+    if best_ratio >= SIMILARITY_THRESHOLD:
+        new_lines = file_lines[:best_start_idx] + replace_lines + file_lines[best_end_idx:]
+        new_text = "\n".join(new_lines)
+        return True, new_text, f"(Warning: Exact match failed. Used fuzzy match with similarity {best_ratio:.2f})"
+
+    return False, file_text, (
+        f"Search content NOT found. Best match similarity was {best_ratio:.2f} "
+        f"(needs >= {SIMILARITY_THRESHOLD}). Ensure exact indentation and spaces."
+    )
 
 def run_edit(path: str, edits: Any, agent_access=None) -> str:
     try:
@@ -449,65 +537,33 @@ def run_edit(path: str, edits: Any, agent_access=None) -> str:
                     return msg
 
             text = fp.read_text(encoding="utf-8", errors="replace")
-            lines = text.splitlines()
-            total_lines = len(lines)
-
-            # 1. 提取并校验所有的 Edit Blocks
-            parsed_edits = []
+            warnings = []
             for i, block in enumerate(parsed_blocks):
-                start = block.start
-                end = block.end
-                new_content = block.new_content
-
-                if total_lines == 0:
-                    if start > 1 or end > 1:
-                        return f"Error in edit block {i + 1}: File is empty. Use start=1, end=1 to insert content."
-                elif start < 1 or end > total_lines or start > end:
-                    return f"Error in edit block {i + 1}: Invalid line range [{start}, {end}]. File has {total_lines} lines."
-
-                parsed_edits.append(
-                    {"start": start, "end": end, "new_content": new_content}
+                success, new_text, msg = apply_edit_block(
+                    text, block.search_content, block.replace_content
                 )
 
-            # 2. 按照 start 行号降序排列 (Bottom-Up)
-            parsed_edits.sort(key=lambda x: x["start"], reverse=True)
+                if not success:
+                    return f"Error in edit block {i + 1}:\n{msg}\nNo changes were saved."
 
-            # 3. 校验重叠 (Overlap Check)
-            # 因为已经是降序，parsed_edits[i] 在文件下方，parsed_edits[i+1] 在文件上方
-            # 如果上方的 end >= 下方的 start，说明存在重叠或接壤冲突
-            for i in range(len(parsed_edits) - 1):
-                lower_block = parsed_edits[i]
-                upper_block = parsed_edits[i + 1]
-                if upper_block["end"] >= lower_block["start"]:
-                    return (
-                        f"Error: Edit blocks overlap. Block ending at line {upper_block['end']} "
-                        f"overlaps with block starting at line {lower_block['start']}."
-                    )
+                if "Warning" in msg:
+                    warnings.append(f"Block {i + 1}: {msg}")
 
-            # 4. 从下往上依次应用修改
-            for edit in parsed_edits:
-                start = edit["start"]
-                end = edit["end"]
-                new_content = edit["new_content"]
+                text = new_text
 
-                prefix = lines[: start - 1]
-                suffix = lines[end:] if total_lines > 0 else []
-                new_lines = new_content.splitlines() if new_content else []
-                lines = prefix + new_lines + suffix
+            if not text.endswith("\n"):
+                text += "\n"
 
-            # 5. 组装结果并写入
-            # 保持原文件末尾的空行习惯
-            final_text = "\n".join(lines)
-            if text.endswith("\n") or not text:
-                final_text += "\n"
+            fp.write_text(text, encoding="utf-8")
 
-            fp.write_text(final_text, encoding="utf-8")
-
-            is_valid, err_msg = validate_code(path, final_text)
+            is_valid, err_msg = validate_code(path, text)
             if not is_valid:
-                return f"Edited {path}: 成功应用 {len(parsed_edits)} 个编辑块，但检测到语法错误(Syntax error)\n\n{err_msg}"
+                return f"Edited {path}: 成功应用 {len(parsed_blocks)} 个编辑块，但检测到语法错误(Syntax error)\n\n{err_msg}"
 
-        return f"Edited {path}: Successfully applied {len(parsed_edits)} edit block(s)."
+        success_msg = f"Edited {path}: Successfully applied {len(parsed_blocks)} edit block(s)."
+        if warnings:
+            success_msg += "\n" + "\n".join(warnings)
+        return success_msg
 
     except Exception as e:
         log_error_traceback("RunEdit execution", e)
