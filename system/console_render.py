@@ -284,6 +284,7 @@ def _render_token_usage(
     )
     pct = (tokens / threshold) * 100
     color = "green" if pct < 70 else "yellow" if pct < 90 else "red"
+    console.print()
     console.print(
         f"[{color} dim]📈 Context: {tokens}/{threshold} Tokens ({pct:.1f}%)[/]"
     )
