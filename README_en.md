@@ -63,24 +63,17 @@ and extensible**.
 
 ### 2.2 Workspace and Environment Init (`init.py`)
 
-MakeCode employs a strict Workspace isolation mechanism. All relative paths, environment variables, and skill loading
-are resolved relative to the user's chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode source
-code.
+MakeCode employs a strict Workspace isolation mechanism. All paths and skill loading are resolved relative to the user's
+chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode source code.
 
-- **Environment Variable (`.env`) Loading**: At startup, the system automatically searches for a `.env` file within the
-  currently selected `WORKDIR`. If loaded variables conflict with existing system environment variables, the CLI will
-  present an interactive prompt allowing the user to decide whether to override them.
 - **Skill Library (`skills/`) Loading**: The system strictly scans and loads custom skills (`SKILL.md`) from the
   `WORKDIR/skills` directory. This ensures that different projects can maintain their own dedicated skill configurations
   without interference.
 - Supports interactive workspace selection (current directory or custom directory).
-- **New** Supports interactive API Standard selection:
+- Supports interactive API Standard selection:
     - `Chat Completions API` (Standard format, suitable for DeepSeek, Ollama, vLLM, and standard OpenAI endpoints)
     - `Responses API` (Legacy/Custom Beta format)
-- Initializes the OpenAI client from:
-    - `OPENAI_API_KEY`
-    - `OPENAI_BASE_URL`
-    - `MODEL_ID`
+- **Model Configuration**: Managed via the built-in `/models` command (see section 2.14)
 
 ### 2.3 File and Terminal Tools (`utils/common.py`) & File Access Control (`utils/file_access.py`)
 
@@ -206,6 +199,13 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - Performs lightweight cleanup of older tool outputs via `micro_compact`.
 - Uses the model to summarize past history and rebuild context.
 
+#### Streaming Summary Generation 🆕
+
+- **Real-time Streaming Display**: Uses Rich Live component to display summary generation progress in real-time
+- **Multi-API Adaptation**: Internally calls `get_summary_stream()` method, automatically adapting to Chat Completions or Responses API
+- **Intelligent Fallback**: If streaming generation fails, automatically falls back to normal mode to ensure compaction availability
+- **Context Compression Display Optimization**: Improved UI provides friendlier progress feedback during compression
+
 ### 2.10 Centralized Prompt Management (`prompts.py`) (New)
 
 - **Unified Prompt File**: All LLM system prompts, summarization prompts, and user-guided texts are maintained in a
@@ -298,6 +298,60 @@ Create `.makecode/mcp_config.json` in your workspace:
 > 💡 **Tip**: MCP service integration is optional. If `mcp_config.json` is not configured, the system will skip loading
 > and continue normal operation.
 
+### 2.14 Model Management Panel (`system/models.py`) 🆕
+
+MakeCode provides a visual model configuration management interface with multi-model switching and persistent storage.
+
+#### Core Features
+
+- **Disk Persistence**: Model configurations are automatically saved to `.makecode/model_config.json`, persisting across sessions
+- **Multi-Model Support**: Can manage multiple API endpoints and model IDs simultaneously
+- **Favorite Management**: Supports marking favorite models with priority sorting
+- **Context Configuration**: Each model can independently set `max_context` (in thousand tokens)
+- **Smart Display**: Automatically extracts domain prefix, displaying in `model_id (domain)` format
+
+#### ModelConfig Data Structure
+
+```python
+@dataclass
+class ModelConfig:
+    base_url: str          # API endpoint
+    api_key: str           # API key
+    model_id: str          # Model identifier
+    is_favorite: bool      # Is favorite
+    selected: bool         # Is selected
+    max_context: int       # Max context (k)
+```
+
+#### Related Components
+
+- `system/models.py`: ModelManager handles configuration loading, saving, and querying
+- `system/commands.py`: Provides `/models` command interaction
+- `init.py`: Loads model configuration at initialization
+
+### 2.15 Console Rendering & Output Optimization (`system/console_render.py`) 🆕
+
+MakeCode extracts rendering functions into a standalone `console_render.py` module, providing unified multi-thread-safe rendering capabilities.
+
+#### Core Features
+
+- **Multi-thread-safe Rendering**: Uses `threading.Lock` for global rendering lock to prevent concurrent output confusion
+- **Smart Truncation Strategy**: When console output is too long, keeps the first 50 lines + last 250 lines to avoid losing critical information
+- **Streaming Output Support**: Supports real-time streaming rendering, adapting to incremental output scenarios for LLM responses
+- **Terminal Type Adaptation**: Automatically detects and adapts to different terminal environments (Rich / tqdm / plain terminal)
+
+#### Sub-Agent Console Output Control
+
+- Each sub-agent has independent console state acquisition logic
+- Supports console output line limit to prevent log flooding
+- Multi-thread-safe rendering queue for sequential output of sub-agent logs
+
+#### Related Components
+
+- `system/console_render.py`: Unified rendering engine handling all terminal output
+- `utils/teams.py`: Integrates console rendering, managing sub-agent execution logs
+- `main.py`: Initializes renderer and sets output strategy
+
 ---
 ---
 
@@ -306,7 +360,7 @@ Create `.makecode/mcp_config.json` in your workspace:
 ```text
 Agent/
 ├─ main.py                  # orchestrator loop and CLI entry
-├─ init.py                  # .env loading, workspace selection, OpenAI client init
+├─ init.py                  # workspace selection, model config init
 ├─ prompts.py               # centralized management of all LLM prompts
 ├─ requirements.txt         # project dependencies
 ├─ README.md
@@ -324,6 +378,8 @@ Agent/
 │  └─ memory.py             # transcript saving and history compaction
 ├─ system/
 │  ├─ commands.py           # slash command module (descriptions, completer, interactive panels)
+│  ├─ console_render.py     # console rendering module (multi-thread-safe, streaming) 🆕
+│  ├─ models.py             # model management module (config persistence, favorites) 🆕
 │  └─ ts_validator.py        # Tree-sitter syntax validation module
 ├─ skills/
 │  ├─ pdf/
@@ -394,7 +450,7 @@ flowchart TD
 ### 3.3 Architecture Overview
 
 - `main.py` is the main orchestrator, handling model conversations, tool calls, and the main loop.
-- `init.py` provides workspace selection, environment variable loading, and OpenAI client initialization.
+- `init.py` provides workspace selection and model configuration initialization.
 - `prompts.py` centrally manages all LLM prompts for easier maintenance and parameterization.
 - `utils/common.py` provides file read/write, line-based editing, text search, and terminal command execution.
 - `utils/hitl.py` 🆕 manages secure interception of high-risk commands and destructive operations through a globally
@@ -410,6 +466,8 @@ flowchart TD
   registration, with support for dynamic enable/disable.
 - `system/ts_validator.py` 🆕 provides Tree-sitter syntax validation, automatically detecting code syntax errors before file writes.
 - `system/commands.py` 🆕 handles slash command definitions, completion, and interactive panel processing.
+- `system/console_render.py` 🆕 provides multi-thread-safe console rendering with streaming output and smart truncation (first 50 lines + last 250 lines).
+- `system/models.py` 🆕 provides model configuration management with multi-model persistence, favorites, and max_context settings.
 - `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
 
 ---
@@ -461,18 +519,7 @@ MakeCode employs a strict Workspace isolation mechanism. It is **not recommended
 source directory. Instead, prepare the following in your actual project directory (the directory where you want the
 Agent to work):
 
-1. **Environment Configuration `.env`**:
-   Create a `.env` file in the root of your target workspace directory and fill in the model configuration:
-   ```env
-   OPENAI_BASE_URL=your_endpoint
-   OPENAI_API_KEY=your_api_key
-   MODEL_ID=your_model_id
-   ```
-   > Note: The model behind `MODEL_ID` must support the Chat Completions API or Responses API. If any variables in this
-   file conflict with existing system environment variables, MakeCode will prompt you interactively at startup to choose
-   whether to override them.
-
-2. **Custom Skills Library `skills/` (Optional)**:
+1. **Custom Skills Library `skills/` (Optional)**:
    If your project requires specific expert skills, create a `skills` folder in the root of your target workspace
    directory.
    The structure should look like this: `skills/<skill-name>/SKILL.md`. MakeCode will strictly load skills only from
@@ -488,12 +535,10 @@ python main.py
 
 After startup, you will enter a wizard flow:
 
-1. **Interactive Workspace Selection (WORKDIR)**: Enter the directory (absolute path) where you just prepared your`.env`
-   and `skills`, or press Enter to use the current directory.
-2. **Resolve Environment Variable Conflicts**: If there are conflicts between your `.env` file and system variables,
-   follow the prompt to confirm overrides.
-3. **Select API Standard**: Choose your underlying API protocol (Chat Completions API or Responses API).
-4. **Enter Interactive Terminal**: Begin your conversation with the main agent.
+1. **Interactive Workspace Selection (WORKDIR)**: Enter your workspace directory (absolute path), or press Enter to use the current directory.
+2. **Select API Standard**: Choose your underlying API protocol (Chat Completions API or Responses API).
+3. **Enter Interactive Terminal**: Begin your conversation with the main agent.
+4. **Configure Model**: Use the `/models` command to add and manage your model configurations.
 
 ### 6.4 Built-in Slash Commands
 
@@ -502,6 +547,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | Command              | Description                                                                                                                                      |
 |----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
 | `/cmds`              | List all available commands and their descriptions                                                                                               |
+| `/models`            | Manage model configurations (add, edit, delete, switch, favorite) 🆕                                                                              |
 | `/mcp-view`          | View the MCP status overview and the currently loaded MCP tool list                                                                              |
 | `/mcp-restart`       | Restart the MCP background manager and reload configuration                                                                                      |
 | `/mcp-switch`        | Interactively toggle MCP services on/off, save changes to `.makecode/mcp_config.json` after confirmation, and attempt incremental enable/disable |
@@ -586,13 +632,13 @@ adopts a unified **V2 Emoji Formatting Strategy**:
 
 ## 9. Troubleshooting
 
-### 9.1 Missing environment variables
+### 9.1 Model Configuration Issues
 
-If startup fails, check:
+If model calls fail, use the `/models` command to check:
 
-- `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
-- `MODEL_ID`
+- Whether model configuration has been added (API address, key, model ID)
+- Whether the model is set to `selected` status
+- Whether the API key is valid
 
 ### 9.2 Path escapes workspace
 
