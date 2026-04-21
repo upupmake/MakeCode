@@ -71,18 +71,31 @@ def get_dynamic_system_prompt() -> str:
 
 def get_current_tools_definition():
     """获取当前可用的工具定义（包含动态加载的 MCP 工具）"""
-    return llm_client.format_tools(
-        COMMON_TOOLS
-        + SKILL_TOOLS
-        + TASK_MANAGER_TOOLS
-        + TEAM_TOOLS
-        + GLOBAL_MCP_MANAGER.get_tools()
-    )
+    try:
+        return llm_client.format_tools(
+            COMMON_TOOLS
+            + SKILL_TOOLS
+            + TASK_MANAGER_TOOLS
+            + TEAM_TOOLS
+            + GLOBAL_MCP_MANAGER.get_tools()
+        )
+    except RuntimeError as exc:
+        if "No model configured" in str(exc):
+            return []
+        raise
 
 
-BASE_SUPER_TOOLS = llm_client.format_tools(
-    COMMON_TOOLS + SKILL_TOOLS + TASK_MANAGER_TOOLS + TEAM_TOOLS
-)
+def get_base_super_tools():
+    """获取基础工具定义"""
+    try:
+        return llm_client.format_tools(
+            COMMON_TOOLS + SKILL_TOOLS + TASK_MANAGER_TOOLS + TEAM_TOOLS
+        )
+    except RuntimeError as exc:
+        if "No model configured" in str(exc):
+            return []
+        raise
+
 
 orchestrator_access = AgentFileAccess()
 
@@ -139,20 +152,33 @@ def _request_with_progress(messages: list, current_tools: list):
             return future.result()
 
 
+def _is_no_model_configured_error(exc: Exception) -> bool:
+    return "No model configured" in str(exc)
+
+
 def agent_loop(messages: list):
     """Agent 主循环：与 LLM 交互并执行工具调用"""
     global CURRENT_CHECKPOINT
     micro_compact(messages)
-    current_super_tools = get_current_tools_definition()
     current_handlers = {
         **BASE_SUPER_TOOLS_HANDLERS,
         **GLOBAL_MCP_MANAGER.get_handlers(),
     }
+    current_super_tools = []
 
     while True:
+        try:
+            current_super_tools = get_current_tools_definition()
+        except RuntimeError as exc:
+            if _is_no_model_configured_error(exc):
+                console.print(
+                    "[bold yellow]⚠️ No model configured. Please use /models to configure a model first.[/bold yellow]"
+                )
+                break
+            raise
         _render_token_usage(
             messages,
-            tools_definition=get_current_tools_definition(),
+            tools_definition=current_super_tools,
             system_prompt=get_dynamic_system_prompt(),
             threshold=THRESHOLD,
             estimate_tokens_fn=estimate_tokens,
@@ -163,6 +189,11 @@ def agent_loop(messages: list):
             response = _request_with_progress(messages, current_super_tools)
             response_time = time.perf_counter() - start_time
         except Exception as e:
+            if _is_no_model_configured_error(e):
+                console.print(
+                    "[bold yellow]⚠️ No model configured. Please use /models to configure a model first.[/bold yellow]"
+                )
+                break
             log_error_traceback("Orchestrator generation error", e)
             error_msg = f"Error during agent execution: {e}."
             console.print(f"[bold red]⚠️ {error_msg}[/bold red]")
@@ -384,7 +415,10 @@ if __name__ == "__main__":
                 continue
             elif command_result.action == CommandAction.RUN_AGENT:
                 history.append({"role": "user", "content": command_result.payload})
-                agent_loop(history)
+                try:
+                    agent_loop(history)
+                except RuntimeError as exc:
+                    console.print(f"[bold yellow]⚠️ {exc}[/bold yellow]")
             elif command_result.action == CommandAction.RESET_CHECKPOINT:
                 CURRENT_CHECKPOINT = None
             elif command_result.action == CommandAction.LOAD_HISTORY:

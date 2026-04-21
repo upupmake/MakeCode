@@ -354,11 +354,41 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
         return res.choices[0].message.content or ""
 
 
-from init import API_KEY, BASE_URL, MODEL, API_STANDARD
+from init import API_STANDARD
+from system.models import get_current_model_config
 
-_openai_client = OpenAI(base_url=BASE_URL, api_key=API_KEY, max_retries=2)
 
-if API_STANDARD == "chat":
-    llm_client = ChatAPIClient(_openai_client, MODEL)
-else:
-    llm_client = ResponseAPIClient(_openai_client, MODEL)
+def _create_llm_client():
+    """根据当前模型配置动态创建 LLM 客户端"""
+    current_model = get_current_model_config()
+    if current_model is None:
+        return None
+    client = OpenAI(
+        base_url=current_model.base_url,
+        api_key=current_model.api_key,
+        max_retries=2,
+    )
+    if API_STANDARD == "chat":
+        return ChatAPIClient(client, current_model.model_id)
+    return ResponseAPIClient(client, current_model.model_id)
+
+
+class DynamicLLMClientProxy:
+    """动态 LLM 客户端代理：每次调用时获取当前模型配置"""
+
+    def _get_client(self):
+        client = _create_llm_client()
+        if client is None:
+            raise RuntimeError("No model configured. Please use /models to configure a model first.")
+        return client
+
+    def __getattr__(self, item):
+        return getattr(self._get_client(), item)
+
+
+llm_client = DynamicLLMClientProxy()
+
+
+def reload_llm_client():
+    """兼容旧调用，当前为动态代理无需重载"""
+    return _create_llm_client()

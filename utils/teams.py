@@ -15,11 +15,9 @@ from pydantic import BaseModel, Field, ValidationError, model_validator, field_v
 from init import (
     WORKDIR,
     log_error_traceback,
-    API_KEY,
-    BASE_URL,
-    MODEL,
     API_STANDARD,
 )
+from system.models import get_current_model_config
 from prompts import (
     get_sub_agent_system_prompt,
     get_sub_agent_summary_prompt,
@@ -313,13 +311,16 @@ class TeammateManager:
         )
 
         async def _run_all():
+            current_model = get_current_model_config()
+            if current_model is None:
+                raise RuntimeError("No model configured. Please use /models to configure a model first.")
             async_client = AsyncOpenAI(
-                base_url=BASE_URL, api_key=API_KEY, max_retries=2
+                base_url=current_model.base_url, api_key=current_model.api_key, max_retries=2
             )
             if API_STANDARD == "chat":
-                local_async_llm_client = AsyncChatAPIClient(async_client, MODEL)
+                local_async_llm_client = AsyncChatAPIClient(async_client, current_model.model_id)
             else:
-                local_async_llm_client = AsyncResponseAPIClient(async_client, MODEL)
+                local_async_llm_client = AsyncResponseAPIClient(async_client, current_model.model_id)
 
             lock = asyncio.Lock()
 

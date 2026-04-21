@@ -1,13 +1,17 @@
 """
 斜杠命令模块 - 负责处理所有内置命令和交互式界面
 """
+import asyncio
 import time
+from asyncio import CancelledError
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import Optional, Any
 
+from prompt_toolkit import prompt
 from prompt_toolkit.application import Application
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.containers import Window
@@ -22,8 +26,10 @@ from rich.table import Table
 from rich.text import Text
 from init import log_error_traceback
 from system.console_render import toggle_sub_agent_console
+from system.models import get_model_manager
 from utils.tasks import list_task_plans, load_task_plan
 from utils.teams import list_team_histories, load_team_history
+
 
 class CommandAction(Enum):
     EXIT = auto()
@@ -47,6 +53,7 @@ class CommandResult:
 
 COMMAND_DESCRIPTIONS = {
     "/cmds": "列出所有的可用命令和功能描述",
+    "/models": "管理模型配置：添加、删除、标记常用、选择当前模型",
     "/mcp-view": "查看当前已加载的 MCP 服务器和工具",
     "/mcp-restart": "重新启动 MCP 管理器并加载配置",
     "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存",
@@ -495,6 +502,213 @@ class CommandHandler:
         )
         return True
 
+    def handle_models(self) -> bool:
+        """处理 /models 命令"""
+        model_manager = get_model_manager()
+        if model_manager is None:
+            self.console.print("\n[bold red]❌ 模型管理器未初始化。[/bold red]")
+            return True
+
+        selected_index = [0]
+        message = ["↑/↓ 选择模型；A 添加；D 删除选中；F 常用切换；S 设为当前；Q 退出"]
+        kb = KeyBindings()
+
+        def refresh_models():
+            model_manager._reload_from_disk()
+
+        def clamp_selection():
+            refresh_models()
+            if not model_manager.models:
+                selected_index[0] = 0
+            else:
+                selected_index[0] = max(0, min(selected_index[0], len(model_manager.models) - 1))
+
+        async def add_model_flow():
+            def sync_input_flow():
+                self.console.print("\n[bold cyan]➕ 添加模型[/bold cyan]")
+                base_url = input("Base URL: ").strip()
+                api_key = input("API Key: ").strip()
+                model_input = input("Model ID(s)（多个用逗号分隔）: ").strip()
+                return {
+                    "status": "ok",
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "model_input": model_input,
+                }
+
+            try:
+                result = await run_in_terminal(sync_input_flow)
+            except (EOFError, KeyboardInterrupt, CancelledError):
+                result = {"status": "cancel"}
+            if result.get("status") == "cancel":
+                message[0] = "⏭️ 已取消添加模型。"
+                app.invalidate()
+                return
+
+            base_url = result.get("base_url", "")
+            api_key = result.get("api_key", "")
+            model_input = result.get("model_input", "")
+            model_ids = [item.strip() for item in model_input.replace("，", ",").split(",") if item.strip()]
+
+            if not base_url or not api_key or not model_ids:
+                message[0] = "❌ base_url、api_key、model_id 不能为空。"
+                app.invalidate()
+                return
+
+            added_models = model_manager.add_model(base_url, api_key, model_ids)
+            clamp_selection()
+            if added_models:
+                selected_index[0] = len(model_manager.models) - len(added_models)
+                message[0] = f"✅ 已添加 {len(added_models)} 个模型。"
+            else:
+                message[0] = "⚠️ 未添加任何新模型，可能都已存在。"
+            app.invalidate()
+
+        async def confirm_delete_flow(delete_index: int, display_text: str):
+            def sync_confirm_flow():
+                self.console.print(f"\n[bold yellow]⚠️ 确认删除模型[/bold yellow]\n{display_text}")
+                confirm = input("确认删除？输入 y 确认，其它任意键取消: ").strip().lower()
+                return {"confirmed": confirm in {"y", "yes"}}
+
+            try:
+                result = await run_in_terminal(sync_confirm_flow)
+            except (EOFError, KeyboardInterrupt, CancelledError):
+                result = {"confirmed": False}
+
+            if not result.get("confirmed"):
+                message[0] = f"⏭️ 已取消删除: {display_text}"
+                app.invalidate()
+                return
+
+            if model_manager.delete_model_by_index(delete_index):
+                clamp_selection()
+                message[0] = f"✅ 已删除模型: {display_text}"
+            else:
+                message[0] = f"❌ 删除失败: {display_text}"
+            app.invalidate()
+
+        def get_selected_model():
+            clamp_selection()
+            if not model_manager.models:
+                message[0] = "⚠️ 当前没有可操作的模型。"
+                return None
+            return model_manager.models[selected_index[0]]
+
+        @kb.add("up")
+        def _go_up(event):
+            refresh_models()
+            if model_manager.models:
+                selected_index[0] = max(0, selected_index[0] - 1)
+                event.app.invalidate()
+
+        @kb.add("down")
+        def _go_down(event):
+            refresh_models()
+            if model_manager.models:
+                selected_index[0] = min(len(model_manager.models) - 1, selected_index[0] + 1)
+                event.app.invalidate()
+
+        @kb.add("a")
+        @kb.add("A")
+        def _add(event):
+            event.app.create_background_task(add_model_flow())
+            event.app.invalidate()
+
+        @kb.add("d")
+        @kb.add("D")
+        def _delete(event):
+            target_model = get_selected_model()
+            if target_model is None:
+                event.app.invalidate()
+                return
+            display_text = target_model.get_display_text()
+            delete_index = selected_index[0]
+            event.app.create_background_task(confirm_delete_flow(delete_index, display_text))
+            event.app.invalidate()
+
+        @kb.add("f")
+        @kb.add("F")
+        def _favorite(event):
+            target_model = get_selected_model()
+            if target_model is None:
+                event.app.invalidate()
+                return
+            before = target_model.is_favorite
+            display_text = target_model.get_display_text()
+            if model_manager.toggle_favorite_by_index(selected_index[0]):
+                state = "设为常用" if not before else "取消常用"
+                message[0] = f"✅ 已{state}: {display_text}"
+            else:
+                message[0] = f"❌ 常用状态切换失败: {display_text}"
+            event.app.invalidate()
+
+        @kb.add("s")
+        @kb.add("S")
+        def _select(event):
+            target_model = get_selected_model()
+            if target_model is None:
+                event.app.invalidate()
+                return
+            display_text = target_model.get_display_text()
+            if model_manager.set_current_model_by_index(selected_index[0]):
+                message[0] = f"✅ 当前模型已切换为: {display_text}"
+            else:
+                message[0] = f"❌ 模型切换失败: {display_text}"
+            event.app.invalidate()
+
+        @kb.add("q")
+        @kb.add("Q")
+        @kb.add("c-c")
+        def _quit(event):
+            event.app.exit(result=True)
+
+        def get_formatted_text():
+            clamp_selection()
+            current_model = model_manager.get_current_model()
+            result = [
+                ("class:title", "⚙️ 模型管理面板\n"),
+                ("class:hint", "↑/↓ 选择模型    A 添加    D 删除    F 常用切换    S 设为当前    Q 退出\n\n"),
+            ]
+            if not model_manager.models:
+                result.append(("class:empty", "  暂无模型。按 A 添加模型，按 Q 退出。\n"))
+            else:
+                for index, model in enumerate(model_manager.models):
+                    selected = index == selected_index[0]
+                    markers = []
+                    if current_model is model:
+                        markers.append("✓")
+                    if model.is_favorite:
+                        markers.append("♥")
+                    marker_text = " ".join(markers) if markers else " "
+                    line = f"  {index + 1:>2}. [{marker_text:^3}] {model.get_display_text()}\n"
+                    result.append(("class:selected" if selected else "class:unselected", line))
+            result.append(("class:message", f"\n{message[0]}\n"))
+            return result
+
+        app = Application(
+            layout=Layout(Window(content=FormattedTextControl(get_formatted_text))),
+            key_bindings=kb,
+            style=Style.from_dict(
+                {
+                    "title": "bold #00ffff",
+                    "hint": "#aaaaaa",
+                    "selected": "bold #00ffff",
+                    "unselected": "#ffffff",
+                    "empty": "#ffff00",
+                    "message": "#ffff00",
+                }
+            ),
+            full_screen=False,
+        )
+        try:
+            app.run()
+        except KeyboardInterrupt:
+            pass
+        current_model = model_manager.get_current_model()
+        current_text = current_model.get_display_text() if current_model else "未选择"
+        self.console.print(f"\n[bold cyan]已退出模型面板，当前模型：[/bold cyan][bold green]{current_text}[/bold green]")
+        return True
+
     def handle_clear_reset(self, history: list, current_checkpoint: Optional[Path]) -> tuple:
         """处理 /clear 和 /reset 命令，返回 (should_continue, new_checkpoint)"""
         from utils.hitl import SESSION_WHITELIST
@@ -665,6 +879,10 @@ class CommandHandler:
         # /cmds - 列出命令
         if query == "/cmds":
             self.handle_cmds()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/models":
+            self.handle_models()
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /sub-agent-console - 切换 Sub-Agent 的控制台输出状态

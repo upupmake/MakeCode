@@ -179,155 +179,11 @@ def _init_workdir() -> Path:
         return cwd
 
 
-def _interactive_choose_api_standard() -> str:
-    """使用 prompt_toolkit 构建内联的 ↑/↓ 选择菜单"""
-    options = [("chat", "Chat Completions API"), ("response", "Responses API")]
-    selected_index = [0]
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    def _(event):
-        selected_index[0] = max(0, selected_index[0] - 1)
-
-    @kb.add("down")
-    def _(event):
-        selected_index[0] = min(len(options) - 1, selected_index[0] + 1)
-
-    @kb.add("enter")
-    def _(event):
-        event.app.exit(result=options[selected_index[0]][0])
-
-    @kb.add("c-c")
-    def _(event):
-        event.app.exit(result="abort")
-
-    def get_formatted_text():
-        result = [
-            (
-                "class:title",
-                "\n⚙️ Select LLM API Standard (Use ↑/↓ arrows, Enter to confirm):\n",
-            )
-        ]
-        for i, (key, text) in enumerate(options):
-            if i == selected_index[0]:
-                result.append(("class:selected", f"  ❯ {text}\n"))
-            else:
-                result.append(("class:unselected", f"    {text}\n"))
-        return result
-
-    control = FormattedTextControl(get_formatted_text)
-    window = Window(content=control, height=len(options) + 2)
-    layout = Layout(window)
-    style = Style(
-        [
-            ("title", "fg:ansicyan bold"),
-            ("selected", "fg:ansigreen bold"),
-            ("unselected", "fg:ansigray"),
-        ]
-    )
-    app = Application(layout=layout, key_bindings=kb, style=style, erase_when_done=True)
-    return app.run()
-
-
-def _init_api_standard() -> str:
-    try:
-        choice = _interactive_choose_api_standard()
-    except Exception as exc:
-        log_error_traceback("init interactive api standard", exc)
-        choice = "abort"
-
-    if choice in ("abort", "chat"):
-        print_formatted_text(
-            HTML(
-                "<ansigreen>✅ API Standard set to: Chat Completions API</ansigreen>\n"
-            )
-        )
-        return "chat"
-    else:
-        print_formatted_text(
-            HTML("<ansigreen>✅ API Standard set to: Responses API</ansigreen>\n")
-        )
-        return "response"
-
-
-def _load_env_files():
-    """只从当前项目工作区目录加载 .env"""
-    workdir_env = str(WORKDIR / ".env")
-    try:
-        with open(workdir_env, encoding="utf-8", mode="r") as f:
-            for line in f.readlines():
-                if line.strip() and not line.strip().startswith("#") and "=" in line:
-                    key, value = line.strip().split("=", 1)
-                    key = key.strip()
-                    value = value.strip("'\"")
-
-                    if key in os.environ:
-                        if os.environ[key] != value:
-                            print_formatted_text(
-                                HTML(
-                                    f"\n<ansiyellow>⚠️ Conflict detected for environment variable: {key}</ansiyellow>"
-                                )
-                            )
-                            print_formatted_text(f"  Current value : {os.environ[key]}")
-                            print_formatted_text(f"  Value in .env : {value}")
-                            try:
-                                choice = prompt(
-                                    [
-                                        (
-                                            "class:prompt",
-                                            "❓ Override current value with .env? [y/N] ❯❯ ",
-                                        )
-                                    ],
-                                    style=Style.from_dict({"prompt": "bold #00ffff"}),
-                                )
-                            except (EOFError, KeyboardInterrupt):
-                                choice = "n"
-                                print_formatted_text("")
-
-                            if choice.strip().lower() == "y":
-                                os.environ[key] = value
-                                print_formatted_text(
-                                    HTML(f"<ansigreen>✅ Overridden {key}</ansigreen>")
-                                )
-                            else:
-                                print_formatted_text(
-                                    HTML(f"<ansigray>⏭️ Skipped {key}</ansigray>")
-                                )
-                    else:
-                        os.environ[key] = value
-        print_formatted_text(
-            HTML(
-                f"<ansiblue>ℹ️ Loaded environment variables from Workspace: {workdir_env}</ansiblue>"
-            )
-        )
-    except FileNotFoundError:
-        pass
-
-
 WORKDIR = _init_workdir()
 MAKECODE_DIR = WORKDIR / ".makecode"
 MAKECODE_DIR.mkdir(parents=True, exist_ok=True)
 
-# 确保在 WORKDIR 初始化后加载项目专属 .env
-_load_env_files()
-
-API_STANDARD = _init_api_standard()
-
-try:
-    API_KEY = os.environ["OPENAI_API_KEY"]
-    BASE_URL = os.environ["OPENAI_BASE_URL"]
-    MODEL = os.environ["MODEL_ID"]
-except KeyError as exc:
-    log_error_traceback("init missing required env", exc)
-    print_formatted_text(
-        HTML(
-            "\n<ansired>⚠️ Error: Missing required environment variables.</ansired>\n"
-            "<ansiyellow>Please ensure OPENAI_API_KEY, OPENAI_BASE_URL, and MODEL_ID are set in your .env file or system environment.</ansiyellow>"
-        )
-    )
-    input("\nPress Enter to exit... (按回车键退出...)")
-    sys.exit(1)
+API_STANDARD = "chat"
 
 import sys
 from shutil import which
@@ -365,3 +221,7 @@ def _detect_startup_terminal_type() -> tuple[str | None, str]:
 
 
 STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE = _detect_startup_terminal_type()
+
+# 初始化模型管理器
+from system.models import init_model_manager
+MODEL_MANAGER = init_model_manager(MAKECODE_DIR)

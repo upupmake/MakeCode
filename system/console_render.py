@@ -307,15 +307,16 @@ def _render_startup_banner():
 
 
 def _render_env_customization_hint():
-    """渲染环境变量自定义提示"""
+    """渲染模型配置提示"""
     hint_text = (
-        "💡 下次启动前可通过环境变量自定义模型：\n"
-        "MODEL_ID=xxx\nOPENAI_BASE_URL=xxx\nOPENAI_API_KEY=xxx"
+        "💡 模型配置已迁移到 MakeCode 配置面板：\n"
+        "使用 /models 添加、删除、标记常用或切换当前模型。\n"
+        "配置文件位置：.makecode/model_config.json"
     )
     console.print(
         Panel(
             Text(hint_text, style="bold yellow"),
-            title="[bold yellow]环境变量提示[/bold yellow]",
+            title="[bold yellow]模型配置提示[/bold yellow]",
             border_style="yellow",
             box=box.ROUNDED,
             padding=(1, 2),
