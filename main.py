@@ -170,7 +170,8 @@ def _stream_with_render(messages: list, current_tools: list):
                 # 最终渲染确保完整
                 if text_content:
                     live.update(Markdown(text_content))
-
+    if not text_content:
+        console.print()
     # 尾部标识 + 响应时间（stream 结束后 Live 自动换行），后方空行分隔上下文
     elapsed = time.perf_counter() - start_time
     console.rule(f"[bold magenta] 🧠 Orchestrator ({elapsed:.2f}s) [/bold magenta]", style="magenta")
