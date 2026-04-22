@@ -14,7 +14,7 @@ if is_frozen:
     INSTALL_DIR = Path(sys.executable).parent
 else:
     # 开发环境：使用源码目录
-    INSTALL_DIR = Path(__file__).resolve().parent.parent
+    INSTALL_DIR = Path(__file__).resolve().parent
 
 # 安装目录下的配置目录
 INSTALL_MAKECODE_DIR = INSTALL_DIR / ".makecode"
