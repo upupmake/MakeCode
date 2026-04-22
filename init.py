@@ -8,12 +8,13 @@ from pathlib import Path
 # 安装目录 (INSTALL_DIR) - 软件源码/打包所在目录
 # ============================================================================
 # 兼容 PyInstaller 打包环境
-if getattr(sys, "frozen", False):
+is_frozen = getattr(sys, 'frozen', False)
+if is_frozen:
     # 打包后运行：使用 PyInstaller 的临时解压目录
-    INSTALL_DIR = Path(sys._MEIPASS)
+    INSTALL_DIR = Path(sys.executable).parent
 else:
     # 开发环境：使用源码目录
-    INSTALL_DIR = Path(__file__).resolve().parent
+    INSTALL_DIR = Path(__file__).resolve().parent.parent
 
 # 安装目录下的配置目录
 INSTALL_MAKECODE_DIR = INSTALL_DIR / ".makecode"
