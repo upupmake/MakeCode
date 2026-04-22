@@ -8,10 +8,11 @@ from fastmcp import Client
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import HTML
 
-from init import MAKECODE_DIR
+# 使用安装目录的配置
+from init import INSTALL_MAKECODE_DIR
 from init import log_error_traceback
 
-mcp_config_path = MAKECODE_DIR / "mcp_config.json"
+mcp_config_path = INSTALL_MAKECODE_DIR / "mcp_config.json"
 
 
 class GlobalMCPManager:

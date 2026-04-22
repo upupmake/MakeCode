@@ -4,6 +4,31 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+# ============================================================================
+# 安装目录 (INSTALL_DIR) - 软件源码/打包所在目录
+# ============================================================================
+# 兼容 PyInstaller 打包环境
+if getattr(sys, "frozen", False):
+    # 打包后运行：使用 PyInstaller 的临时解压目录
+    INSTALL_DIR = Path(sys._MEIPASS)
+else:
+    # 开发环境：使用源码目录
+    INSTALL_DIR = Path(__file__).resolve().parent
+
+# 安装目录下的配置目录
+INSTALL_MAKECODE_DIR = INSTALL_DIR / ".makecode"
+
+# 确保安装目录的配置目录存在
+INSTALL_MAKECODE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _get_error_log_path() -> Path:
+    """错误日志路径 - 放在安装目录下"""
+    log_path = INSTALL_MAKECODE_DIR / "error.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    return log_path
+
+
 # 确保在 Windows 控制台下可以正确打印 Emoji
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -12,14 +37,6 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import HTML
-
-
-def _get_error_log_path() -> Path:
-    workdir = globals().get("WORKDIR")
-    base_dir = workdir if isinstance(workdir, Path) else Path.cwd()
-    log_path = base_dir / ".makecode" / "error.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    return log_path
 
 
 def log_error_traceback(context: str, exc: Exception):
@@ -222,6 +239,6 @@ def _detect_startup_terminal_type() -> tuple[str | None, str]:
 
 STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE = _detect_startup_terminal_type()
 
-# 初始化模型管理器
+# 初始化模型管理器 - 使用安装目录的配置
 from system.models import init_model_manager
-MODEL_MANAGER = init_model_manager(MAKECODE_DIR)
+MODEL_MANAGER = init_model_manager(INSTALL_MAKECODE_DIR)
