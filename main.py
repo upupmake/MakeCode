@@ -33,6 +33,7 @@ from system.console_render import (
     _render_env_customization_hint,
     console,
 )
+from system.models import get_current_model_config
 from system.stream_render import StreamRenderer
 from system.ts_validator import init_ts_cache
 from utils.common import (
@@ -295,6 +296,7 @@ def _init_user_session():
             {
                 "prompt": "bold #00ff00",
                 "arrow": "#00ffff bold",
+                "bottom_toolbar": "bg:#3c3c3c fg:#e0e0e0",
             }
         )
 
@@ -333,7 +335,14 @@ def _read_user_query(messages: list = None) -> str:
         pct = (tokens / THRESHOLD) * 100
         color = "ansigreen" if pct < 70 else "ansiyellow" if pct < 90 else "ansired"
         # 组装 toolbar 内容
-        bottom_toolbar_content = [(f"fg:{color}", f"📈 Tokens: {tokens}/{THRESHOLD} ({pct:.1f}%) ")]
+        _tb_bg = "bg:#1a1a2e"
+        bottom_toolbar_content = [(f"{_tb_bg} fg:{color} bold", f" 📈 Tokens: {tokens}/{THRESHOLD} ({pct:.1f}%) ")]
+
+        # 追加当前模型信息
+        current_model = get_current_model_config()
+        if current_model:
+            model_text = current_model.get_display_text()
+            bottom_toolbar_content.append((f"{_tb_bg} fg:#e0e0e0 bold", f" 🤖 Model: {model_text} "))
 
     try:
         with patch_stdout():

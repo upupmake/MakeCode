@@ -510,7 +510,7 @@ class CommandHandler:
             return True
 
         selected_index = [0]
-        message = ["↑/↓ 选择模型；A 添加；D 删除选中；F 常用切换；S 设为当前；Q 退出"]
+        message = ["↑/↓ 选择模型   A 添加   D 删除   F 常用切换   S 设为当前   Enter 选中并退出   Q 退出"]
         kb = KeyBindings()
 
         def refresh_models():
@@ -656,6 +656,18 @@ class CommandHandler:
                 message[0] = f"❌ 模型切换失败: {display_text}"
             event.app.invalidate()
 
+        @kb.add("enter")
+        def _select_and_exit(event):
+            target_model = get_selected_model()
+            if target_model is None:
+                event.app.exit(result=True)
+                return
+            display_text = target_model.get_display_text()
+            model_manager.set_current_model_by_index(selected_index[0])
+            message[0] = f"✅ 当前模型已切换为: {display_text}"
+            event.app.invalidate()
+            event.app.exit(result=True)
+
         @kb.add("q")
         @kb.add("Q")
         @kb.add("c-c")
@@ -667,7 +679,7 @@ class CommandHandler:
             current_model = model_manager.get_current_model()
             result = [
                 ("class:title", "⚙️ 模型管理面板\n"),
-                ("class:hint", "↑/↓ 选择模型    A 添加    D 删除    F 常用切换    S 设为当前    Q 退出\n\n"),
+                ("class:hint", "↑/↓ 选择模型   A 添加   D 删除   F 常用切换   S 设为当前   Enter 选中并退出   Q 退出\n\n"),
             ]
             if not model_manager.models:
                 result.append(("class:empty", "  暂无模型。按 A 添加模型，按 Q 退出。\n"))
