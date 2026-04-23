@@ -218,14 +218,14 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
             enabled = not disabled
             loaded = item.get("loaded", False)
             marker = "👉" if i == selected_index[0] else "  "
-            switch_box = "√" if enabled else "×"
+            switch_box = "[√]" if enabled else "[×]"
             runtime_txt = "已加载" if loaded else "未加载"
             status_txt = "启用" if enabled else "禁用"
             style = "class:selected" if i == selected_index[0] else "class:unselected"
             lines.append(
                 (
                     style,
-                    f" {marker} {switch_box} {name}    当前草稿: {status_txt}    运行态: {runtime_txt}\n",
+                    f" {marker}  {switch_box}  {name}    当前草稿: {status_txt}    运行态: {runtime_txt}\n",
                 )
             )
 
@@ -860,7 +860,7 @@ class CommandHandler:
         # /quit, /exit - 退出程序
         if query in ["/quit", "/exit"]:
             self.console.print(
-                "\n[bold yellow]👋 Exiting MakeCode CLI. Goodbye![/bold yellow]"
+                "\n[bold yellow]👋 正在退出 MakeCode CLI。再见！[/bold yellow]"
             )
             return CommandResult(action=CommandAction.EXIT)
 
