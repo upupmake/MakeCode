@@ -108,13 +108,17 @@ def run_terminal_command(command: str) -> str:
         )
         raw_output = r.stdout + r.stderr
 
-        # 动态解码策略：优先 UTF-8，失败则回退到系统默认编码 (Windows 下通常是 GBK)
-        try:
-            out = raw_output.decode("utf-8").strip()
-        except UnicodeDecodeError as exc:
-            log_error_traceback("RunTerminalCommand utf8 decode fallback", exc)
-            sys_encoding = locale.getpreferredencoding()
-            out = raw_output.decode(sys_encoding, errors="replace").strip()
+        # 动态解码策略：优先 UTF-8，依次尝试多种编码
+        out = None
+        encodings = ['utf-8', 'gbk', 'gb2312', locale.getpreferredencoding()]
+        for enc in encodings:
+            try:
+                out = raw_output.decode(enc).strip()
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        if out is None:
+            out = raw_output.decode('utf-8', errors='replace').strip()
         # 智能截断：保留开头50行 + 结尾250行，避免丢失关键信息
         HEAD_LINES = 50
         TAIL_LINES = 250
