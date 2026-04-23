@@ -177,9 +177,9 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
 
     @kb.add("down")
     def _go_down(event):
-        selected_index[0] = min(len(server_switches) + 1, selected_index[0] + 1)
+        selected_index[0] = min(len(server_switches) - 1, selected_index[0] + 1)
 
-    @kb.add("space")
+    @kb.add("tab")
     def _toggle(event):
         if selected_index[0] < len(server_switches):
             server_name = server_switches[selected_index[0]]["name"]
@@ -187,15 +187,17 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
 
     @kb.add("enter")
     def _confirm(event):
-        if selected_index[0] == len(server_switches):
-            event.app.exit(
-                result={
-                    "action": "confirm",
-                    "disabled_updates": dict(draft_states),
-                }
-            )
-        elif selected_index[0] == len(server_switches) + 1:
-            event.app.exit(result={"action": "cancel"})
+        event.app.exit(
+            result={
+                "action": "confirm",
+                "disabled_updates": dict(draft_states),
+            }
+        )
+
+    @kb.add("q")
+    @kb.add("Q")
+    def _quit(event):
+        event.app.exit(result={"action": "cancel"})
 
     @kb.add("c-c")
     def _cancel(event):
@@ -206,7 +208,7 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
             (
                 "class:title",
                 "\n🔀 MCP 服务开关面板\n"
-                " 使用 ↑/↓ 选择，Space 切换启用/禁用，Enter 在底部执行确认或取消。\n\n"
+                " ↑/↓ 选择 | Tab 切换启用/禁用 | Enter 确认应用 | Q 取消\n\n"
             )
         ]
 
@@ -216,7 +218,7 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
             enabled = not disabled
             loaded = item.get("loaded", False)
             marker = "👉" if i == selected_index[0] else "  "
-            switch_box = "[x]" if enabled else "[ ]"
+            switch_box = "√" if enabled else "×"
             runtime_txt = "已加载" if loaded else "未加载"
             status_txt = "启用" if enabled else "禁用"
             style = "class:selected" if i == selected_index[0] else "class:unselected"
@@ -227,23 +229,10 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
                 )
             )
 
-        lines.append(("class:title", "\n"))
-        confirm_style = (
-            "class:selected"
-            if selected_index[0] == len(server_switches)
-            else "class:unselected"
-        )
-        cancel_style = (
-            "class:selected"
-            if selected_index[0] == len(server_switches) + 1
-            else "class:unselected"
-        )
-        lines.append((confirm_style, "  [确认保存并应用变更]\n"))
-        lines.append((cancel_style, "  [取消，不保存本次修改]\n"))
         return lines
 
     control = FormattedTextControl(get_formatted_text)
-    window = Window(content=control, height=len(server_switches) + 8)
+    window = Window(content=control, height=len(server_switches) + 5)
     layout = Layout(window)
     style = Style(
         [
