@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 import time
 from typing import Any
 
@@ -16,7 +17,7 @@ from rich.padding import Padding
 from rich.rule import Rule
 
 from init import WORKDIR, log_error_traceback, STARTUP_TERMINAL_SOURCE, STARTUP_TERMINAL_TYPE
-from prompts import get_orchestrator_system_prompt
+from prompts import get_orchestrator_system_prompt, get_title_generation_system_prompt
 # 导入命令模块
 from system.commands import (
     COMMAND_DESCRIPTIONS,
@@ -53,11 +54,13 @@ from utils.memory import (
     list_checkpoints,
     load_checkpoint,
     micro_compact,
+    rename_checkpoint_with_title,
     save_checkpoint,
 )
 from utils.skills import SKILL_LOADER, SKILL_TOOLS, SKILL_TOOLS_HANDLERS
+import utils.tasks as _tasks_module
 from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS
-from utils.teams import TEAM_TOOLS, TEAM_TOOLS_HANDLERS
+from utils.teams import TEAM, TEAM_TOOLS, TEAM_TOOLS_HANDLERS
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 
@@ -135,6 +138,28 @@ def _parse_arguments(arguments: Any) -> dict:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def generate_title(user_query: str) -> str:
+    """Generate a short title for the conversation based on the first user query."""
+    try:
+        messages = [
+            {"role": "system", "content": get_title_generation_system_prompt()},
+            {"role": "user", "content": user_query},
+        ]
+        response = llm_client.generate(messages)
+        # Parse response based on client type
+        if hasattr(response, 'choices'):  # Chat API
+            return response.choices[0].message.content.strip()
+        else:  # Response API
+            for item in response.output:
+                if item.type == "message":
+                    return next(
+                        (c.text for c in item.content if c.type == "output_text"), ""
+                    ).strip()
+    except Exception as exc:
+        log_error_traceback("Failed to generate title", exc)
+    return None
 
 
 def _stream_with_render(messages: list, current_tools: list):
@@ -223,6 +248,7 @@ def agent_loop(messages: list):
             messages.append(llm_client.format_tool_result(tool_id, tool_name, output))
 
         CURRENT_CHECKPOINT = save_checkpoint(messages, CURRENT_CHECKPOINT)
+        _apply_pending_title()
 
         if not has_tool_call:
             break
@@ -321,7 +347,7 @@ def _read_user_query(messages: list = None) -> str:
     _init_user_session()
 
     console.print(
-        "\n[dim]💡 提示：按 [bold]Enter[/bold] 发送消息，按 [bold]Ctrl+N[/bold] 换行。[/dim]"
+        "\n[dim]💡 Tips：按 [bold]Enter[/bold] 发送消息，按 [bold]Ctrl+N[/bold] 换行。[/dim]"
     )
 
     # 将 rprompt 变量名改为 bottom_toolbar
@@ -360,6 +386,31 @@ def _read_user_query(messages: list = None) -> str:
 
 
 CURRENT_CHECKPOINT = None
+_pending_title = None
+
+
+def _apply_pending_title():
+    """Apply a pending title that was generated in the background.
+
+    Called synchronously from the main thread (agent_loop) after each
+    save_checkpoint to avoid race conditions with file I/O.
+    """
+    global _pending_title, CURRENT_CHECKPOINT
+    if _pending_title is None or CURRENT_CHECKPOINT is None:
+        if _pending_title is not None and CURRENT_CHECKPOINT is None:
+            _pending_title = None  # checkpoint was reset — discard pending title
+        return
+    title = _pending_title
+    _pending_title = None
+    try:
+        new_ckpt = rename_checkpoint_with_title(CURRENT_CHECKPOINT, title)
+        if new_ckpt != CURRENT_CHECKPOINT:
+            CURRENT_CHECKPOINT = new_ckpt
+        _tasks_module.TASK_MANAGER.rename_with_title(title)
+        TEAM.rename_history_with_title(title)
+    except Exception as exc:
+        log_error_traceback("Failed to apply pending title", exc)
+
 
 if __name__ == "__main__":
     _render_startup_banner()
@@ -415,14 +466,41 @@ if __name__ == "__main__":
                 continue
             elif command_result.action == CommandAction.RUN_AGENT:
                 history.append({"role": "user", "content": command_result.payload})
+                
+                # Generate title on first user message (parallel with agent_loop)
+                if CURRENT_CHECKPOINT is None and any(msg['role'] == 'user' for msg in history):
+                    # Save initial checkpoint without title — fast, no blocking
+                    CURRENT_CHECKPOINT = save_checkpoint(history)
+
+                    # Kick off title generation in a background thread
+                    def _title_worker():
+                        global _pending_title
+                        try:
+                            title = generate_title(query)
+                            if title:
+                                _pending_title = title
+                        except Exception as exc:
+                            log_error_traceback("Failed to generate title", exc)
+
+                    _title_thread = threading.Thread(target=_title_worker, daemon=True)
+                    _title_thread.start()
+                else:
+                    _title_thread = None
+                
                 try:
                     agent_loop(history)
                 except RuntimeError as exc:
                     console.print(f"[bold yellow]⚠️ {exc}[/bold yellow]")
+                # Wait for title generation to finish, then apply rename
+                if _title_thread is not None:
+                    _title_thread.join(timeout=10)
+                _apply_pending_title()
             elif command_result.action == CommandAction.RESET_CHECKPOINT:
                 CURRENT_CHECKPOINT = None
+                _pending_title = None
             elif command_result.action == CommandAction.LOAD_HISTORY:
                 history, CURRENT_CHECKPOINT = command_result.payload
+                _pending_title = None
             elif command_result.action == CommandAction.UPDATE_CHECKPOINT:
                 CURRENT_CHECKPOINT = command_result.payload
             elif command_result.action == CommandAction.UPDATE_SYSTEM_PROMPT:

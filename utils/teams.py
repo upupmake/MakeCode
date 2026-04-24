@@ -36,6 +36,7 @@ from utils.common import (
     COMMON_TOOLS_HANDLERS,
     STARTUP_TERMINAL_SOURCE,
     STARTUP_TERMINAL_TYPE,
+    sanitize_title,
     run_read,
     run_write,
     run_edit,
@@ -148,6 +149,24 @@ class TeammateManager:
         async with lock:
             async with aiofiles.open(self.history_path, "w", encoding="utf-8") as f:
                 await f.write(json.dumps(self.history, ensure_ascii=False, indent=2))
+
+    def rename_history_with_title(self, title: str) -> bool:
+        """Rename the task history file on disk to include *title*."""
+        safe_title = sanitize_title(title)
+        if not safe_title:
+            return False
+
+        stem = self.history_path.stem
+        session_id = stem.rsplit("_", 1)[-1]
+        new_path = self.history_path.parent / f"task_history_{safe_title}_{session_id}.json"
+
+        if new_path == self.history_path:
+            return False
+
+        if self.history_path.exists():
+            self.history_path.rename(new_path)
+        self.history_path = new_path
+        return True
 
     async def _set_plan_task_status(
             self, task_id: str, status: str, lock: asyncio.Lock
@@ -700,6 +719,21 @@ class TeammateManager:
 
 
 TEAM = TeammateManager(TEAM_DIR)
+
+
+def get_history_title(filepath: Path) -> str:
+    """Extract title from task history filename if available."""
+    stem = filepath.stem
+    if not stem.startswith("task_history_"):
+        return None
+    parts = stem.split("_")
+    # task_history_{title_parts...}_{session_id}
+    # session_id is 8 hex chars, always the last part
+    if len(parts) > 2:
+        title_parts = parts[2:-1]
+        if title_parts:
+            return " ".join(title_parts)
+    return None
 
 
 def list_team_histories() -> list[Path]:

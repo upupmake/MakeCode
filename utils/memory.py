@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.live import Live
 from init import WORKDIR
+from utils.common import sanitize_title
 from utils.llm_client import llm_client
 
 _compact_console = Console()
@@ -20,16 +21,90 @@ CHECKPOINT_DIR = MAKECODE_DIR / "checkpoint"
 KEEP_RECENT_TOOL_CALL = 64
 
 
-def save_checkpoint(messages: list, filepath: Path = None) -> Path:
+def save_checkpoint(messages: list, filepath: Path = None, title: str = None) -> Path:
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     if filepath is None:
         uid = uuid.uuid4().hex[:8]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"ckpt_{timestamp}_{uid}.json"
+        if title:
+            safe_title = sanitize_title(title)
+            if safe_title:
+                filename = f"ckpt_{safe_title}_{timestamp}_{uid}.json"
+            else:
+                filename = f"ckpt_{timestamp}_{uid}.json"
+        else:
+            filename = f"ckpt_{timestamp}_{uid}.json"
         filepath = CHECKPOINT_DIR / filename
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(messages, f, ensure_ascii=False, indent=2)
     return filepath
+
+
+def get_checkpoint_title(filepath: Path) -> str:
+    """Extract title from checkpoint filename if available."""
+    stem = filepath.stem
+    if not stem.startswith("ckpt_"):
+        return None
+        
+    parts = stem.split("_")
+    # Check if it has title format: ckpt_title_YYYYMMDD_HHMMSS_uid
+    # Timestamp format is YYYYMMDD_HHMMSS which is 8_6 chars
+    
+    # Try to find timestamp
+    for i, part in enumerate(parts):
+        if len(part) == 8 and part.isdigit():  # YYYYMMDD
+            # Check next part for time
+            if i + 1 < len(parts) and len(parts[i+1]) == 6 and parts[i+1].isdigit():
+                # Found timestamp at index i
+                if i > 1:  # There is a title (ckpt_title_...)
+                    title_parts = parts[1:i]
+                    return " ".join(title_parts).replace("_", " ")
+                return None
+    return None
+
+
+# --- Checkpoint rename --- #
+
+
+def rename_checkpoint_with_title(filepath: Path, title: str) -> Path:
+    """Rename an existing checkpoint file to include *title* in its name.
+
+    Because ``sanitize_title`` never allows ``_``, we can discover the
+    timestamp anchor by splitting on ``_`` and finding the 8-digit date
+    segment followed by a 6-digit time segment.
+    Everything between ``ckpt`` and that date is the (possibly empty)
+    old title portion.
+    """
+    safe_title = sanitize_title(title)
+    if not safe_title:
+        return filepath
+
+    stem = filepath.stem
+    if not stem.startswith("ckpt_"):
+        return filepath
+
+    parts = stem.split("_")
+    # Find date segment: 8-digit, followed by 6-digit time
+    try:
+        date_idx = next(
+            i for i, p in enumerate(parts)
+            if len(p) == 8 and p.isdigit()
+               and i + 1 < len(parts)
+               and len(parts[i + 1]) == 6 and parts[i + 1].isdigit()
+        )
+    except StopIteration:
+        return filepath
+
+    ts = f"{parts[date_idx]}_{parts[date_idx + 1]}"
+    uid = parts[-1]
+    new_path = filepath.parent / f"ckpt_{safe_title}_{ts}_{uid}.json"
+
+    if new_path == filepath:
+        return filepath
+
+    if filepath.exists():
+        filepath.rename(new_path)
+    return new_path
 
 
 def list_checkpoints() -> list:

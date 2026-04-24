@@ -9,6 +9,7 @@ from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, field_validator
 
 from init import WORKDIR
+from utils.common import sanitize_title
 from utils.hitl import check_permission
 
 MAKECODE_DIR = WORKDIR / ".makecode"
@@ -224,6 +225,21 @@ def list_task_plans() -> list[Path]:
     return files
 
 
+def get_task_plan_title(filepath: Path) -> str:
+    """Extract title from task plan filename if available."""
+    stem = filepath.stem
+    if not stem.startswith("task_plan_"):
+        return None
+    parts = stem.split("_")
+    # task_plan_{title_parts...}_{epic_id}
+    # epic_id is 8 hex chars, always the last part
+    if len(parts) > 2:
+        title_parts = parts[2:-1]
+        if title_parts:
+            return " ".join(title_parts)
+    return None
+
+
 def load_task_plan(filepath: Path) -> dict:
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -245,15 +261,24 @@ class TaskManager:
       6) get_task_table
     """
 
-    def __init__(self, workspace: Path = TASKS_DIR):
+    def __init__(self, workspace: Path = TASKS_DIR, title: str = None):
         self.workspace = workspace
         self.workspace.mkdir(parents=True, exist_ok=True)
         epic_id = uuid.uuid4().hex[:8]
-        self.path = self.workspace / f"task_plan_{epic_id}.json"
+        
+        # Use title in filename if provided
+        if title:
+            safe_title = sanitize_title(title)
+            if safe_title:
+                self.path = self.workspace / f"task_plan_{safe_title}_{epic_id}.json"
+            else:
+                self.path = self.workspace / f"task_plan_{epic_id}.json"
+        else:
+            self.path = self.workspace / f"task_plan_{epic_id}.json"
+            
         now = _now_iso()
         self._data: dict[str, Any] = {
             "epic_id": epic_id,
-            "epic_subject": "Main Project Task",
             "next_id": 1,
             "created_at": now,
             "updated_at": now,
@@ -265,6 +290,30 @@ class TaskManager:
         self.path.write_text(
             json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+
+    def rename_with_title(self, title: str) -> bool:
+        """Rename the task plan file on disk to include *title*.
+
+        The epic_id is always the last ``_``-delimited segment of the stem,
+        so we can safely extract it regardless of whether a title was present
+        before.  The file content is unchanged; only the filename differs.
+        Returns True if the file was actually renamed.
+        """
+        safe_title = sanitize_title(title)
+        if not safe_title:
+            return False
+
+        stem = self.path.stem  # e.g. "task_plan_abc12345" or "task_plan_old_abc12345"
+        epic_id = stem.rsplit("_", 1)[-1]  # always the last segment
+        new_path = self.path.parent / f"task_plan_{safe_title}_{epic_id}.json"
+
+        if new_path == self.path:
+            return False
+
+        if self.path.exists():
+            self.path.rename(new_path)
+        self.path = new_path
+        return True
 
     @staticmethod
     def _id_str(task_id: str | int) -> str:
@@ -465,7 +514,6 @@ class TaskManager:
 
         self._data["tasks"] = {}
         self._data["next_id"] = 1
-        self._data["epic_subject"] = "Main Project Task (Reset)"
         self._data["updated_at"] = _now_iso()
 
         self._save()
@@ -511,7 +559,6 @@ class TaskManager:
         return {
             "summary": {
                 "epic_id": self._data["epic_id"],
-                "epic_subject": self._data["epic_subject"],
                 "total": len(tasks),
                 "pending": status_count["pending"],
                 "in_progress": status_count["in_progress"],
@@ -561,13 +608,15 @@ TASK_MANAGER_TOOLS = [
     TASK_MANAGER_NAMESPACE,
 ]
 
+# Lazy lookup — resolve TASK_MANAGER at call time so that replacing the
+# module-level instance (e.g. when a title becomes available) is picked up.
 TASK_MANAGER_TOOLS_HANDLERS = {
-    "CreateTask": TASK_MANAGER.create_task,
-    "UpdateTaskContent": TASK_MANAGER.update_task_content,
-    "UpdateTaskStatus": TASK_MANAGER.update_task_status,
-    "UpdateTaskDependencies": TASK_MANAGER.update_task_dependencies,
-    "DeleteAllTasks": TASK_MANAGER.delete_all_tasks,
-    "GetTask": TASK_MANAGER.get_task,
-    "GetRunnableTasks": TASK_MANAGER.get_runnable_tasks,
-    "GetTaskTable": TASK_MANAGER.get_task_table,
+    "CreateTask": lambda **kw: TASK_MANAGER.create_task(**kw),
+    "UpdateTaskContent": lambda **kw: TASK_MANAGER.update_task_content(**kw),
+    "UpdateTaskStatus": lambda **kw: TASK_MANAGER.update_task_status(**kw),
+    "UpdateTaskDependencies": lambda **kw: TASK_MANAGER.update_task_dependencies(**kw),
+    "DeleteAllTasks": lambda **kw: TASK_MANAGER.delete_all_tasks(**kw),
+    "GetTask": lambda **kw: TASK_MANAGER.get_task(**kw),
+    "GetRunnableTasks": lambda **kw: TASK_MANAGER.get_runnable_tasks(**kw),
+    "GetTaskTable": lambda **kw: TASK_MANAGER.get_task_table(**kw),
 }

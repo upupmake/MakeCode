@@ -27,8 +27,9 @@ from rich.text import Text
 from init import log_error_traceback
 from system.console_render import toggle_sub_agent_console
 from system.models import get_model_manager
-from utils.tasks import list_task_plans, load_task_plan
-from utils.teams import list_team_histories, load_team_history
+from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title
+from utils.teams import list_team_histories, load_team_history, get_history_title
+from utils.memory import get_checkpoint_title
 
 
 class CommandAction(Enum):
@@ -105,11 +106,32 @@ def interactive_choose_checkpoint(
 
     options = []
     for cp in checkpoints:
-        parts = cp.stem.split("_")
-        uid = parts[-1] if len(parts) >= 4 else cp.name
+        stem = cp.stem
+        parts = stem.split("_")
+        if stem.startswith("ckpt_"):
+            uid = parts[-1] if len(parts) >= 4 else cp.name
+        elif stem.startswith("task_plan_") or stem.startswith("task_history_"):
+            uid = parts[-1]  # epic_id / session_id is always last
+        else:
+            uid = cp.name
         mtime = cp.stat().st_mtime
         date_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
-        desc = f"File: {uid} (Last updated: {date_str})"
+        
+        # Extract title based on file type
+        if stem.startswith("ckpt_"):
+            cp_title = get_checkpoint_title(cp)
+        elif stem.startswith("task_plan_"):
+            cp_title = get_task_plan_title(cp)
+        elif stem.startswith("task_history_"):
+            cp_title = get_history_title(cp)
+        else:
+            cp_title = None
+        
+        if cp_title:
+            desc = f"{uid} - {cp_title} (最近一次对话时间：{date_str})"
+        else:
+            desc = f"{uid} (最近一次对话时间：{date_str})"
+            
         options.append((str(cp), desc))
 
     options.append(("abort", "取消 (Cancel)"))

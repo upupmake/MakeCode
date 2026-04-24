@@ -37,6 +37,42 @@ def _is_binary_file(filepath: Path) -> bool:
         return True
 
 
+def sanitize_title(title: str, max_len: int = 50) -> str | None:
+    """Sanitize a title string for safe use in filenames.
+
+    Scans from the end of the string backwards. When an invalid character is
+    found, everything before it (inclusive) is discarded — only the valid
+    suffix is kept.  This handles models that prepend XML-like tags such as
+    ``<thinking>...</thinking>正文`` by stripping the prefix automatically.
+
+    Allowed characters: English letters, digits, Chinese (CJK), spaces, dots.
+    Returns None if the result is empty after processing.
+    """
+    if not title:
+        return None
+    title = title.strip()
+    if not title:
+        return None
+
+    # Allowed pattern: English letters, digits, CJK Unified Ideographs, space, dot, hyphen
+    _allowed = re.compile(r'[a-zA-Z0-9\u4e00-\u9fff .-]')
+
+    # Scan from the end to find the last invalid character
+    last_invalid = -1
+    for i in range(len(title) - 1, -1, -1):
+        if not _allowed.match(title[i]):
+            last_invalid = i
+            break
+
+    # Keep the valid suffix after the last invalid character
+    if last_invalid >= 0:
+        title = title[last_invalid + 1:]
+
+    # Truncate to max_len
+    title = title[:max_len]
+    return title if title else None
+
+
 def _resolve_startup_terminal_type() -> str:
     if STARTUP_TERMINAL_TYPE:
         return STARTUP_TERMINAL_TYPE
