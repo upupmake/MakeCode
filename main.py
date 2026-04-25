@@ -134,12 +134,22 @@ def _parse_arguments(arguments: Any) -> dict:
         if not payload:
             return {}
         try:
-            parsed = json.loads(payload)
+            parsed = json.loads(payload, strict=False)
         except json.JSONDecodeError as exc:
             log_error_traceback("main parse arguments json decode", exc)
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
+            return {"_error": f"Failed to parse tool arguments: {exc}. Raw: {payload[:200]}"}
+        if isinstance(parsed, dict):
+            return parsed
+        log_error_traceback(
+            "main parse arguments type mismatch",
+            ValueError(f"Expected dict, got {type(parsed).__name__}"),
+        )
+        return {"_error": f"Tool arguments parsed to {type(parsed).__name__}, expected dict. Raw: {payload[:200]}"}
+    log_error_traceback(
+        "main parse arguments unexpected type",
+        TypeError(f"Unexpected type: {type(arguments).__name__}"),
+    )
+    return {"_error": f"Unexpected arguments type: {type(arguments).__name__}"}
 
 
 def generate_title(user_query: str) -> str:

@@ -49,7 +49,6 @@ class TodoUpdate(BaseModel):
 
     CONSTRAINTS:
     - Maximum 20 tasks
-    - Only ONE task can be "in_progress" at a time
     - Each task requires: id, description, status
 
     USAGE PATTERN:
@@ -95,7 +94,6 @@ class TodoManager:
             raise ValueError("Too many todo items, max is 20")
         
         validated = []
-        in_progress_count = 0
         for task_obj in spec_list:
             desc = task_obj.description
             status = task_obj.status
@@ -104,10 +102,6 @@ class TodoManager:
                 raise ValueError(f"Task {item_id}: description required")
             if status not in ("pending", "in_progress", "completed"):
                 raise ValueError(f"Item {item_id}: invalid status '{status}'")
-            if status == "in_progress":
-                in_progress_count += 1
-                if in_progress_count > 1:
-                    raise ValueError("Only one item can be in_progress")
             validated.append(task_obj)
         self.items = validated
         return self.render()

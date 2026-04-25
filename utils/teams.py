@@ -121,10 +121,14 @@ class DelegateTasks(BaseModel):
                 v = v.strip()
                 if not v:
                     return v
-                parsed = json.loads(v)
+                # strict=False allows control chars (e.g. unescaped newlines from LLM)
+                parsed = json.loads(v, strict=False)
+                # Handle double-encoded JSON string
+                if isinstance(parsed, str):
+                    parsed = json.loads(parsed, strict=False)
                 if isinstance(parsed, list):
                     return parsed
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError, TypeError):
                 pass
         return v
 
@@ -660,11 +664,14 @@ class TeammateManager:
                     handler = sub_handlers.get(tool_name)
                     if handler:
                         if isinstance(tool_args, str):
-                            args = json.loads(tool_args) if tool_args.strip() else {}
+                            args = json.loads(tool_args, strict=False) if tool_args.strip() else {}
                         else:
                             args = tool_args or {}
 
-                        output = await asyncio.to_thread(handler, **args)
+                        if not isinstance(args, dict):
+                            output = f"Error: {tool_name} arguments must be a dict, got {type(args).__name__}"
+                        else:
+                            output = await asyncio.to_thread(handler, **args)
                     else:
                         output = f"Unknown tool: {tool_name}"
                 except Exception as e:

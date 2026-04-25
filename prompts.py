@@ -82,10 +82,10 @@ CONFLICT AVOIDANCE:
 - If unsure whether a file is shared, read it first and proceed conservatively.
 
 WORKFLOW:
-1. Call TodoUpdate to create a short actionable plan (2-6 items)
+1. Call TodoUpdate to create a short actionable plan (2-6 tasks)
 2. Execute the task step by step
 3. Keep TodoUpdate status current as you progress
-4. Mark all items completed when done
+4. Mark all tasks completed when done
 
 ERROR HANDLING:
 - If a tool returns an error, analyze the reason and retry with adjusted approach
