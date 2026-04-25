@@ -154,7 +154,7 @@ def _init_workdir() -> Path:
 
     if choice == "default":
         print_formatted_text(
-            HTML(f"<ansigreen>✅ Workspace set to: {cwd}</ansigreen>\n")
+            HTML(f"\n<ansigreen>✅ Workspace set to: {cwd}</ansigreen>\n")
         )
         return cwd
 
@@ -184,7 +184,7 @@ def _init_workdir() -> Path:
 
     if target_path.exists() and target_path.is_dir():
         print_formatted_text(
-            HTML(f"<ansigreen>✅ Workspace set to: {target_path}</ansigreen>\n")
+            HTML(f"\n<ansigreen>✅ Workspace set to: {target_path}</ansigreen>\n")
         )
         return target_path
     else:

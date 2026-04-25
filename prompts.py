@@ -66,7 +66,7 @@ def get_sub_agent_system_prompt(
 ) -> str:
     """Prompt 2: Sub-Agent system prompt."""
     skills_prompt_block = SKILL_LOADER.render_prompt_block()
-    return f"""You are a '{role}', working at {workdir}.
+    return f"""You are a subagent. You are a '{role}', working at {workdir}.
 Today's date is {datetime.date.today().isoformat()}.
 You have been assigned a specific task by the Orchestrator.
 Use available tools to complete the task.

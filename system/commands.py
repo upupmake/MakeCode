@@ -128,9 +128,9 @@ def interactive_choose_checkpoint(
             cp_title = None
         
         if cp_title:
-            desc = f"{uid} - {cp_title} (最近一次对话时间：{date_str})"
+            desc = f"{uid} - {cp_title} (最近一次更新时间：{date_str})"
         else:
-            desc = f"{uid} (最近一次对话时间：{date_str})"
+            desc = f"{uid} (最近一次更新时间：{date_str})"
             
         options.append((str(cp), desc))
 
