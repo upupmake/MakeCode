@@ -17,10 +17,33 @@ from system.console_render import console_lock
 # Global Session Whitelist
 SESSION_WHITELIST = set()
 
+# Global HITL Switch (默认开启)
+HITL_ENABLED = True
+
 # Context Variable for Agent Role
 current_agent_role = ContextVar("current_agent_role", default="#0 - Orchestrator")
 
 console = Console()
+
+
+def toggle_hitl(enabled: bool = None) -> bool:
+    """切换 HITL 状态，返回新状态
+
+    Args:
+        enabled: 传 True/False 直接设置，传 None 则切换
+    """
+    global HITL_ENABLED
+    if enabled is not None:
+        HITL_ENABLED = enabled
+    else:
+        HITL_ENABLED = not HITL_ENABLED
+    SESSION_WHITELIST.clear()  # 切换时清空白名单
+    return HITL_ENABLED
+
+
+def get_hitl_status() -> bool:
+    """获取当前 HITL 状态"""
+    return HITL_ENABLED
 
 
 def interactive_hitl_prompt(action_key: str) -> str:
@@ -76,6 +99,10 @@ def interactive_hitl_prompt(action_key: str) -> str:
 
 
 def check_permission(action_type: str, action_name: str, details: str) -> tuple[bool, str]:
+    # 如果 HITL 关闭，直接允许所有操作
+    if not HITL_ENABLED:
+        return True, ""
+
     action_key = f"{action_type}:{action_name}"
 
     if action_key in SESSION_WHITELIST:

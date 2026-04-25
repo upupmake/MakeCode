@@ -28,12 +28,14 @@ from system.commands import (
 from system.console_render import (
     _render_tool_call,
     _render_tool_output,
+    toggle_sub_agent_console,
     _render_history,
     _render_token_usage,
     _render_startup_banner,
     _render_env_customization_hint,
     console,
 )
+from utils.hitl import get_hitl_status
 from system.models import get_current_model_config
 from system.stream_render import StreamRenderer
 from system.ts_validator import init_ts_cache
@@ -369,6 +371,12 @@ def _read_user_query(messages: list = None) -> str:
         if current_model:
             model_text = current_model.get_display_text()
             bottom_toolbar_content.append((f"{_tb_bg} fg:#e0e0e0 bold", f" 🤖 Model: {model_text} "))
+
+        # 追加 HITL 状态
+        hitl_on = get_hitl_status()
+        hitl_color = "ansigreen" if hitl_on else "ansired"
+        hitl_text = "ON" if hitl_on else "OFF"
+        bottom_toolbar_content.append((f"{_tb_bg} fg:{hitl_color} bold", f" 🛡️ HITL: {hitl_text} "))
 
     try:
         with patch_stdout():

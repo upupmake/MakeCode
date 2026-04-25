@@ -27,6 +27,7 @@ from rich.text import Text
 from init import log_error_traceback
 from system.console_render import toggle_sub_agent_console
 from system.models import get_model_manager
+from utils import hitl as hitl_mod
 from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title
 from utils.teams import list_team_histories, load_team_history, get_history_title
 from utils.memory import get_checkpoint_title
@@ -72,6 +73,7 @@ COMMAND_DESCRIPTIONS = {
     "/ls": "查看当前工作区目录结构",
     "/clear": "清空当前对话历史",
     "/reset": "清空当前对话历史",
+    "/hitl": "切换 Human-in-the-Loop 拦截状态 (开启/关闭)",
     "/quit": "退出程序",
     "/exit": "退出程序",
 }
@@ -734,8 +736,11 @@ class CommandHandler:
 
     def handle_clear_reset(self, history: list, current_checkpoint: Optional[Path]) -> tuple:
         """处理 /clear 和 /reset 命令，返回 (should_continue, new_checkpoint)"""
-        from utils.hitl import SESSION_WHITELIST
-        SESSION_WHITELIST.clear()
+        if not hitl_mod.get_hitl_status():
+            hitl_mod.toggle_hitl(enabled=True)
+            self.console.print("[dim]🛡️ Human-in-the-Loop 已恢复为开启状态[/dim]")
+        else:
+            hitl_mod.SESSION_WHITELIST.clear()
 
         history.clear()
         history.append({"role": "system", "content": self.get_system_prompt_fn()})
@@ -906,6 +911,16 @@ class CommandHandler:
 
         if query == "/models":
             self.handle_models()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        # /hitl - 切换 HITL 拦截状态
+        if query == "/hitl":
+            new_state = hitl_mod.toggle_hitl()
+            status = "开启" if new_state else "关闭"
+            status_color = "green" if new_state else "yellow"
+            self.console.print(f"\n[bold]🛡️ Human-in-the-Loop 状态: [{status_color}]{status}[/{status_color}][/bold]")
+            if not new_state:
+                self.console.print("[dim]⚠️ 警告：所有敏感操作将自动执行，不再需要确认[/dim]")
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /sub-agent-console - 切换 Sub-Agent 的控制台输出状态
