@@ -1,8 +1,13 @@
 import json
 from abc import ABC, abstractmethod
-from typing import Union, Generator, AsyncGenerator
+from typing import Union, Generator
 
 from openai import OpenAI, AsyncOpenAI
+
+# Monkey-patch OpenAI SDK 重试策略：重试3次，等待 10s → 20s → 30s
+import openai._constants as _openai_consts
+_openai_consts.INITIAL_RETRY_DELAY = 10
+_openai_consts.MAX_RETRY_DELAY = 30
 
 from init import log_error_traceback
 from prompts import get_summary_system_prompt, get_summary_user_prompt
@@ -24,20 +29,6 @@ def _extract_tool_info(raw_tool):
         params = raw_tool.get("inputSchema", {})
 
     return name, desc, params
-
-
-def _make_response_tool(tool_dict):
-    """Flatten pydantic_function_tool output for Responses API"""
-    name, desc, params = _extract_tool_info(tool_dict)
-    tool_def = {
-        "type": "function",
-        "name": name,
-        "description": desc,
-        "parameters": params,
-    }
-    if "function" in tool_dict:
-        tool_def["strict"] = True
-    return tool_def
 
 
 class BaseLLMClient(ABC):
@@ -121,99 +112,6 @@ class AsyncBaseLLMClient(ABC):
     @abstractmethod
     async def get_summary(self, conversation_text: str, reason: str) -> str:
         pass
-
-
-class ResponseAPIClient(BaseLLMClient):
-    """Implementation for the custom/beta Responses API standard."""
-
-    def generate(self, messages: list, tools: list = None):
-        return self.client.responses.create(
-            model=self.model, input=messages, tools=tools or []
-        )
-
-    def generate_stream(self, messages: list, tools: list = None):
-        raise NotImplementedError("generate_stream is not supported for Response API")
-
-    def parse_response(self, response) -> tuple[str, list, any]:
-        text_content = ""
-        tool_calls = []
-        for item in response.output:
-            if item.type == "message":
-                text_content += next(
-                    (c.text for c in item.content if c.type == "output_text"), ""
-                )
-            elif item.type == "function_call":
-                tool_calls.append(
-                    {
-                        "id": item.call_id,
-                        "name": item.name,
-                        "arguments": item.arguments,
-                        "raw": item,
-                    }
-                )
-        # The raw message in this case is the list of outputs, but we append them differently
-        return text_content, tool_calls, response.output
-
-    def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: any
-    ) -> dict:
-        return {
-            "type": "function_call_output",
-            "call_id": tool_call_id,
-            "output": json.dumps(output, ensure_ascii=False)
-            if not isinstance(output, str)
-            else output,
-        }
-
-    def append_assistant_message(self, messages: list, raw_message: any):
-        # Response API expects each output item to be appended directly
-        for item in raw_message:
-            msg_dict = (
-                item.model_dump()
-                if hasattr(item, "model_dump")
-                else dict(item)
-            )
-            messages.append(msg_dict)
-
-    def format_tools(self, pydantic_tools: list) -> list:
-        result = []
-        for t in pydantic_tools:
-            if isinstance(t, dict) and t.get("type") == "namespace":
-                # Flatten the namespace by extracting and converting its inner tools
-                for inner_t in t.get("tools", []):
-                    result.append(_make_response_tool(inner_t))
-            else:
-                result.append(_make_response_tool(t))
-
-        # Responses API supports a native web_search tool, let's append it by default
-        result.append({"type": "web_search"})
-
-        return result
-
-    def get_summary(self, conversation_text: str, reason: str) -> str:
-        summary_request = [
-            {"role": "system", "content": get_summary_system_prompt()},
-            {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(reason)},
-        ]
-        res = self.client.responses.create(model=self.model, input=summary_request)
-        for item in res.output:
-            if item.type == "message":
-                return next(
-                    (c.text for c in item.content if c.type == "output_text"), ""
-                )
-        return ""
-
-    def get_summary_stream(self, conversation_text: str, reason: str) -> Generator[str, None, None]:
-        summary_request = [
-            {"role": "system", "content": get_summary_system_prompt()},
-            {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(reason)},
-        ]
-        with self.client.responses.stream(model=self.model, input=summary_request) as stream:
-            for event in stream:
-                if event.type == "response.output_text.delta":
-                    yield event.delta
 
 
 class ChatAPIClient(BaseLLMClient):
@@ -433,29 +331,6 @@ class ChatAPIClient(BaseLLMClient):
                     yield delta
 
 
-class AsyncResponseAPIClient(ResponseAPIClient, AsyncBaseLLMClient):
-    async def generate(self, messages: list, tools: list = None):
-        return await self.client.responses.create(
-            model=self.model, input=messages, tools=tools or []
-        )
-
-    async def get_summary(self, conversation_text: str, reason: str) -> str:
-        summary_request = [
-            {"role": "system", "content": get_summary_system_prompt()},
-            {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(reason)},
-        ]
-        res = await self.client.responses.create(
-            model=self.model, input=summary_request
-        )
-        for item in res.output:
-            if item.type == "message":
-                return next(
-                    (c.text for c in item.content if c.type == "output_text"), ""
-                )
-        return ""
-
-
 class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
     async def generate(self, messages: list, tools: list = None):
         kwargs = {"model": self.model, "messages": messages}
@@ -475,7 +350,6 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
         return res.choices[0].message.content or ""
 
 
-from init import API_STANDARD
 from system.models import get_current_model_config
 
 
@@ -487,11 +361,9 @@ def _create_llm_client():
     client = OpenAI(
         base_url=current_model.base_url,
         api_key=current_model.api_key,
-        max_retries=2,
+        max_retries=3,
     )
-    if API_STANDARD == "chat":
-        return ChatAPIClient(client, current_model.model_id)
-    return ResponseAPIClient(client, current_model.model_id)
+    return ChatAPIClient(client, current_model.model_id)
 
 
 class DynamicLLMClientProxy:

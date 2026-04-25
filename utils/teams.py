@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field, ValidationError, model_validator, field_v
 from init import (
     WORKDIR,
     log_error_traceback,
-    API_STANDARD,
 )
 from system.models import get_current_model_config
 from prompts import (
@@ -43,7 +42,7 @@ from utils.common import (
 )
 from utils.file_access import AgentFileAccess
 from utils.hitl import check_permission, current_agent_role
-from utils.llm_client import AsyncChatAPIClient, AsyncResponseAPIClient
+from utils.llm_client import AsyncChatAPIClient
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils.skills import (
     SKILL_TOOLS,
@@ -338,12 +337,9 @@ class TeammateManager:
             if current_model is None:
                 raise RuntimeError("No model configured. Please use /models to configure a model first.")
             async_client = AsyncOpenAI(
-                base_url=current_model.base_url, api_key=current_model.api_key, max_retries=2
+                base_url=current_model.base_url, api_key=current_model.api_key, max_retries=3
             )
-            if API_STANDARD == "chat":
-                local_async_llm_client = AsyncChatAPIClient(async_client, current_model.model_id)
-            else:
-                local_async_llm_client = AsyncResponseAPIClient(async_client, current_model.model_id)
+            local_async_llm_client = AsyncChatAPIClient(async_client, current_model.model_id)
 
             lock = asyncio.Lock()
 
