@@ -78,7 +78,7 @@ Provides the following execution primitives:
 - `RunRead`: read file contents, optionally by line range
 - `RunWrite`: only for creating and writing a NEW file (when target file does not exist or is empty). **Automatically triggers Tree-sitter syntax validation before writing**, blocks and displays detailed error line numbers if syntax errors are detected.
 - `RunEdit`: modify an existing file. **Uses text search-and-replace mechanism (search_content → replace_content) instead of line number ranges**. Must call `RunRead` first, locate changes by providing exact text with surrounding context. **Supports triple fallback: exact match → strip match → difflib fuzzy match (similarity ≥90%)**. Automatically triggers Tree-sitter syntax validation after editing.
-- `RunGrep`: search text files in a target directory with a regex pattern
+- `RunGrep`: search text files in a target directory with a regex pattern. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
 - `RunTerminalCommand`: run a non-interactive terminal command
 
 #### 📋 Tree-sitter Syntax Validation (`system/ts_validator.py`) 🆕
@@ -230,11 +230,23 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - For sub-agent histories, the system only prompts for loading after the task plan is successfully loaded. If all tasks
   in the plan are already completed, it automatically skips the prompt.
 
-### 2.12 Sub-Agent Todo Tool (`tools/todo.py`)
+### 2.12 Auto Session Title Generation 🆕
+
+MakeCode automatically generates a concise session title based on the user's first query, and embeds it into the relevant file names for easy session identification and management:
+
+- **Automatic Title Generation**: Uses LLM to generate a short, meaningful session title from the user's first query
+- **File Name Association**: The generated title is automatically synced to the following file names:
+    - Checkpoint files: `ckpt_{title}_{timestamp}_{uid}.json`
+    - Task plan files: `task_plan_{title}_{epic_id}.json`
+    - Task history files: `task_history_{title}_{session_id}.json`
+- **Title Sanitization**: `sanitize_title()` ensures the title contains only filename-safe characters, preventing file system issues
+- **Lazy Tool Binding**: Tool handlers use deferred resolution, ensuring tool calls automatically target the latest instance after title changes
+
+### 2.13 Sub-Agent Todo Tool (`tools/todo.py`)
 
 Sub-agents can use the `TodoUpdate` tool to maintain a lightweight todo list for multi-step task tracking.
 
-### 2.13 MCP Service Integration (`utils/mcp_manager.py`)🆕
+### 2.14 MCP Service Integration (`utils/mcp_manager.py`)🆕
 
 MakeCode supports integrating external tools and services via the **Model Context Protocol (MCP)**, extending the
 agent's capability boundary.
@@ -294,13 +306,13 @@ Create `.makecode/mcp_config.json` in your workspace:
 > 💡 **Tip**: MCP service integration is optional. If `mcp_config.json` is not configured, the system will skip loading
 > and continue normal operation.
 
-### 2.14 Model Management Panel (`system/models.py`) 🆕
+### 2.15 Model Management Panel (`system/models.py`) 🆕
 
 MakeCode provides a visual model configuration management interface with multi-model switching and persistent storage.
 
 #### Core Features
 
-- **Disk Persistence**: Model configurations are automatically saved to `.makecode/model_config.json`, persisting across sessions
+- **Disk Persistence**: Model configurations are automatically saved to `.makecode/model_config.json` under the installation directory, persisting across sessions. Model configuration, MCP configuration, and error logs are stored in the installation directory (not the workspace directory), ensuring shared configuration across multiple projects.
 - **Multi-Model Support**: Can manage multiple API endpoints and model IDs simultaneously
 - **Favorite Management**: Supports marking favorite models with priority sorting
 - **Context Configuration**: Each model can independently set `max_context` (in thousand tokens)
@@ -325,7 +337,7 @@ class ModelConfig:
 - `system/commands.py`: Provides `/models` command interaction
 - `init.py`: Loads model configuration at initialization
 
-### 2.15 Console Rendering & Output Optimization (`system/console_render.py`) 🆕
+### 2.16 Console Rendering & Output Optimization (`system/console_render.py`) 🆕
 
 MakeCode extracts rendering functions into a standalone `console_render.py` module, providing unified multi-thread-safe rendering capabilities.
 
@@ -333,7 +345,7 @@ MakeCode extracts rendering functions into a standalone `console_render.py` modu
 
 - **Multi-thread-safe Rendering**: Uses `threading.Lock` for global rendering lock to prevent concurrent output confusion
 - **Smart Truncation Strategy**: When console output is too long, keeps the first 50 lines + last 250 lines to avoid losing critical information
-- **Streaming Output Support**: Supports real-time streaming rendering, adapting to incremental output scenarios for LLM responses
+- **Two-Phase Streaming Rendering**: Standalone `stream_render.py` module. Reasoning process uses native append mode with dim styling (flicker-free performance), Text body uses throttled Live + Markdown real-time rendering with code block relay support
 - **Terminal Type Adaptation**: Automatically detects and adapts to different terminal environments (Rich / tqdm / plain terminal)
 
 #### Sub-Agent Console Output Control
@@ -375,6 +387,7 @@ Agent/
 ├─ system/
 │  ├─ commands.py           # slash command module (descriptions, completer, interactive panels)
 │  ├─ console_render.py     # console rendering module (multi-thread-safe, streaming) 🆕
+│  ├─ stream_render.py      # streaming render module (two-phase, relay Live, throttled refresh) 🆕
 │  ├─ models.py             # model management module (config persistence, favorites) 🆕
 │  └─ ts_validator.py        # Tree-sitter syntax validation module
 ├─ skills/
@@ -463,6 +476,7 @@ flowchart TD
 - `system/ts_validator.py` 🆕 provides Tree-sitter syntax validation, automatically detecting code syntax errors before file writes.
 - `system/commands.py` 🆕 handles slash command definitions, completion, and interactive panel processing.
 - `system/console_render.py` 🆕 provides multi-thread-safe console rendering with streaming output and smart truncation (first 50 lines + last 250 lines).
+- `system/stream_render.py` 🆕 implements a two-phase streaming render engine: Reasoning process uses native append mode with dim styling, Text body uses throttled Live + Markdown real-time rendering with Markdown code block relay support.
 - `system/models.py` 🆕 provides model configuration management with multi-model persistence, favorites, and max_context settings.
 - `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
 
