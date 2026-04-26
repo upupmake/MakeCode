@@ -2,6 +2,7 @@
 斜杠命令模块 - 负责处理所有内置命令和交互式界面
 """
 import asyncio
+import shutil
 import time
 from asyncio import CancelledError
 from dataclasses import dataclass
@@ -100,7 +101,7 @@ class SlashCommandCompleter(Completer):
 
 def interactive_choose_checkpoint(
         checkpoints: list,
-        title: str = "\n📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm):\n",
+        title: str = "\n📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
 ) -> str:
     """交互式选择 checkpoint"""
     if not checkpoints:
@@ -136,22 +137,44 @@ def interactive_choose_checkpoint(
             
         options.append((str(cp), desc))
 
-    options.append(("abort", "取消 (Cancel)"))
-
     selected_index = [0]
+    scroll_offset = [0]  # 视口偏移，支持列表滚动
+
+    def _calc_max_visible():
+        """根据终端高度计算可视区域最大选项数"""
+        term_height = shutil.get_terminal_size().lines
+        return max(3, term_height - 5)
+
+    def _adjust_scroll():
+        """确保选中项始终在视口内"""
+        max_vis = _calc_max_visible()
+        if selected_index[0] < scroll_offset[0]:
+            scroll_offset[0] = selected_index[0]
+        elif selected_index[0] >= scroll_offset[0] + max_vis:
+            scroll_offset[0] = selected_index[0] - max_vis + 1
+
     kb = KeyBindings()
 
     @kb.add("up")
     def _go_up(event):
-        selected_index[0] = max(0, selected_index[0] - 1)
+        if selected_index[0] > 0:
+            selected_index[0] -= 1
+            _adjust_scroll()
 
     @kb.add("down")
     def _go_down(event):
-        selected_index[0] = min(len(options) - 1, selected_index[0] + 1)
+        if selected_index[0] < len(options) - 1:
+            selected_index[0] += 1
+            _adjust_scroll()
 
     @kb.add("enter")
     def _confirm(event):
         event.app.exit(result=options[selected_index[0]][0])
+
+    @kb.add("q")
+    @kb.add("Q")
+    def _quit(event):
+        event.app.exit(result="abort")
 
     @kb.add("c-c")
     def _cancel(event):
@@ -159,15 +182,30 @@ def interactive_choose_checkpoint(
 
     def get_formatted_text():
         result = [("class:title", title)]
-        for i, (key, text) in enumerate(options):
+        max_vis = _calc_max_visible()
+        start = scroll_offset[0]
+        end = min(start + max_vis, len(options))
+
+        if start > 0:
+            result.append(("class:indicator", f"     ⬆ ... 还有 {start} 项未显示\n"))
+
+        for i in range(start, end):
+            key, text = options[i]
             if i == selected_index[0]:
                 result.append(("class:selected", f"👉 {text}\n"))
             else:
                 result.append(("class:unselected", f"     {text}\n"))
+
+        if end < len(options):
+            remaining = len(options) - end
+            result.append(("class:indicator", f"     ⬇ ... 还有 {remaining} 项未显示\n"))
+
         return result
 
+    max_vis = _calc_max_visible()
+    visible_count = min(len(options), max_vis)
     control = FormattedTextControl(get_formatted_text)
-    window = Window(content=control, height=len(options) + 2)
+    window = Window(content=control, height=visible_count + 4)
     layout = Layout(window)
 
     style = Style(
@@ -175,6 +213,7 @@ def interactive_choose_checkpoint(
             ("title", "fg:ansicyan bold"),
             ("selected", "fg:ansigreen bold"),
             ("unselected", "fg:ansigray"),
+            ("indicator", "fg:ansiyellow"),
         ]
     )
 
@@ -192,16 +231,35 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
         return "empty"
 
     selected_index = [0]
+    scroll_offset = [0]  # 视口偏移，支持列表滚动
     draft_states = {item["name"]: bool(item["disabled"]) for item in server_switches}
+
+    def _calc_max_visible():
+        """根据终端高度计算可视区域最大选项数"""
+        term_height = shutil.get_terminal_size().lines
+        return max(3, term_height - 7)  # 标题区约占4行 + 指示符 + 边距
+
+    def _adjust_scroll():
+        """确保选中项始终在视口内"""
+        max_vis = _calc_max_visible()
+        if selected_index[0] < scroll_offset[0]:
+            scroll_offset[0] = selected_index[0]
+        elif selected_index[0] >= scroll_offset[0] + max_vis:
+            scroll_offset[0] = selected_index[0] - max_vis + 1
+
     kb = KeyBindings()
 
     @kb.add("up")
     def _go_up(event):
-        selected_index[0] = max(0, selected_index[0] - 1)
+        if selected_index[0] > 0:
+            selected_index[0] -= 1
+            _adjust_scroll()
 
     @kb.add("down")
     def _go_down(event):
-        selected_index[0] = min(len(server_switches) - 1, selected_index[0] + 1)
+        if selected_index[0] < len(server_switches) - 1:
+            selected_index[0] += 1
+            _adjust_scroll()
 
     @kb.add("tab")
     def _toggle(event):
@@ -236,7 +294,15 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
             )
         ]
 
-        for i, item in enumerate(server_switches):
+        max_vis = _calc_max_visible()
+        start = scroll_offset[0]
+        end = min(start + max_vis, len(server_switches))
+
+        if start > 0:
+            lines.append(("class:indicator", f"     ⬆ ... 还有 {start} 项未显示\n"))
+
+        for i in range(start, end):
+            item = server_switches[i]
             name = item["name"]
             disabled = draft_states[name]
             enabled = not disabled
@@ -253,16 +319,23 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
                 )
             )
 
+        if end < len(server_switches):
+            remaining = len(server_switches) - end
+            lines.append(("class:indicator", f"     ⬇ ... 还有 {remaining} 项未显示\n"))
+
         return lines
 
+    max_vis = _calc_max_visible()
+    visible_count = min(len(server_switches), max_vis)
     control = FormattedTextControl(get_formatted_text)
-    window = Window(content=control, height=len(server_switches) + 5)
+    window = Window(content=control, height=visible_count + 7)
     layout = Layout(window)
     style = Style(
         [
             ("title", "fg:ansicyan bold"),
             ("selected", "fg:ansigreen bold"),
             ("unselected", "fg:ansigray"),
+            ("indicator", "fg:ansiyellow"),
         ]
     )
     app = Application(layout=layout, key_bindings=kb, style=style, erase_when_done=True)
