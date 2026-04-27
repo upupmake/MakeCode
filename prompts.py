@@ -8,7 +8,6 @@ import platform
 from pathlib import Path
 
 from init import WORKDIR
-from utils.plan_mode import is_plan_mode
 from utils.skills import SKILL_LOADER
 
 
@@ -235,25 +234,6 @@ Use this context to provide more personalized and informed responses.
 {content}"""
 
 
-def _plan_mode_section() -> str:
-    """Inject Plan Mode constraints when active."""
-    if not is_plan_mode():
-        return ""
-    return """# PLAN MODE ACTIVE
-
-You are in Plan Mode. Focus on analyzing the codebase and creating an execution plan.
-
-Your available tools are limited to:
- - RunRead, RunGrep, RunGlob — read, search, and discover files
- - TaskManager tools — create and manage task topology
- - GetSystemTime, LoadSkill — auxiliary
-
-Workflow:
-1. Use RunRead/RunGrep/RunGlob to understand the codebase
-2. Use TaskManager tools to create a complete task topology plan
-3. Inform the user when your plan is ready and they can exit Plan Mode to begin execution"""
-
-
 # ============================================================================
 # Prompt 1: Orchestrator (Super-Agent) System Prompt
 # ============================================================================
@@ -262,23 +242,42 @@ def get_orchestrator_system_prompt(
     workdir: str,
     startup_terminal_label: str,
     startup_terminal_source: str,
+    plan_mode: bool = False,
 ) -> str:
-    """Prompt 1: Orchestrator (Super-Agent) system prompt."""
+    """Prompt 1: Orchestrator (Super-Agent) system prompt.
+    
+    When plan_mode=True, use Plan Mode policy (read-only + planning only).
+    When plan_mode=False, use Act Mode policy (full execution).
+    """
     skills_prompt_block = SKILL_LOADER.render_prompt_block()
 
-    orchestrator_policy = """Core operating policy:
+    if plan_mode:
+        orchestrator_policy = """You are in Plan Mode. Focus on analyzing the codebase and creating an execution plan.
+
+Blocked tools (do NOT use):
+ - RunWrite, RunEdit — file write/edit operations
+ - RunTerminalCommand — terminal execution
+ - DelegateTasks — sub-agent delegation
+
+Core operating policy:
+1. Use RunRead/RunGrep/RunGlob to understand the codebase structure
+2. Use TaskManager tools to create task topology
+3. Only plan — do not execute any modifications
+4. Inform the user when your plan is ready and they can exit Plan Mode to begin execution"""
+    else:
+        orchestrator_policy = """Core operating policy:
 1) Always plan work with TaskManager first.
 2) Before any delegation, call GetRunnableTasks to obtain the current runnable frontier.
 3) DelegateTasks is ONLY for runnable tasks from the latest GetRunnableTasks result.
 4) After each delegation batch, critically evaluate and verify the feedback (tool results/status) returned by sub-agents. Ensure the task was genuinely completed successfully, re-plan or retry if failures occurred.
 5) Continuously re-check task state (GetTaskTable/GetRunnableTasks) and iterate until the entire plan is done.
-6) If the user's requirement is ambiguous, incomplete, or you have doubts during planning, you MUST discuss these uncertain points with the user and get their confirmation before creating tasks \u2014 do NOT assume or guess. Only proceed with task creation after the user has explicitly confirmed the plan details.
+6) If the user's requirement is ambiguous, incomplete, or you have doubts during planning, you MUST discuss these uncertain points with the user and get their confirmation before creating tasks — do NOT assume or guess. Only proceed with task creation after the user has explicitly confirmed the plan details.
 
 Execution guidance:
  - Prefer parallel delegation for independent runnable tasks.
  - Keep tool calls explicit and deterministic; avoid speculative actions.
  - Sub-agents are stateless across delegated runs. Every DelegateTasks item must include complete, self-contained context_prompt (goal, constraints, relevant files/context, expected output/evidence).
- - MUST NOT put tasks that may edit the same file into the same DelegateTasks batch \u2014 concurrent writes to the same file will cause conflicts and data corruption.
+ - MUST NOT put tasks that may edit the same file into the same DelegateTasks batch — concurrent writes to the same file will cause conflicts and data corruption.
  - If multiple tasks need to edit the same file, you MUST establish explicit topology dependencies (via depend_on) so that they execute sequentially in a defined order.
  - If a planned task lacks clarity or its scope changes, use UpdateTaskContent to refine its subject and description.
  - If the entire topology plan is fundamentally flawed or a complete restart is requested, use DeleteAllTasks (requires confirm=True) to clear the board.
@@ -309,7 +308,6 @@ When providing your final answer, use this structure:
         _communication_style_section(),
         _error_recovery_section(),
         _hitl_section(is_orchestrator=True),
-        _plan_mode_section(),
         final_answer_format,
         _memory_section(),
         skills_prompt_block,

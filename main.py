@@ -37,7 +37,7 @@ from system.console_render import (
 )
 from utils.hitl import get_hitl_status
 from system.models import get_current_model_config
-from utils.plan_mode import is_plan_mode, PLAN_TOOLS_WHITELIST
+from utils.plan_mode import is_plan_mode, PLAN_MODE_BLOCKLIST
 from system.stream_render import StreamRenderer
 from system.ts_validator import init_ts_cache
 from utils.common import (
@@ -76,6 +76,7 @@ def get_dynamic_system_prompt() -> str:
         WORKDIR,
         STARTUP_TERMINAL_LABEL,
         STARTUP_TERMINAL_SOURCE,
+        plan_mode=is_plan_mode(),
     )
 
 
@@ -84,8 +85,8 @@ def get_current_tools_definition():
     all_tools = _get_all_tools_definition()
     if is_plan_mode():
         from openai import pydantic_function_tool
-        # Plan Mode: 白名单工具 + RunGlob（不在 COMMON_TOOLS 中，需单独添加）
-        filtered = [t for t in all_tools if t["function"]["name"] in PLAN_TOOLS_WHITELIST]
+        # Plan Mode: 黑名单过滤，禁止写入/执行/委托工具
+        filtered = [t for t in all_tools if t["function"]["name"] not in PLAN_MODE_BLOCKLIST]
         if not any(t["function"]["name"] == "RunGlob" for t in filtered):
             filtered.append(pydantic_function_tool(RunGlob))
         return filtered
@@ -262,8 +263,8 @@ def agent_loop(messages: list):
 
             try:
                 arguments = _parse_arguments(tool_args)
-                # Plan Mode safety net: block execution tools
-                if is_plan_mode() and tool_name not in PLAN_TOOLS_WHITELIST:
+                # Plan Mode safety net: block write/execute/delegate tools
+                if is_plan_mode() and tool_name in PLAN_MODE_BLOCKLIST:
                     output = (
                         f"⛔ Plan Mode active: '{tool_name}' is blocked. "
                         f"Complete your plan first, then exit Plan Mode to execute."

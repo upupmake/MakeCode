@@ -8,24 +8,15 @@ before any file modifications or command execution.
 Toggle via Tab key or /plan command.
 """
 
-# Tools allowed in Plan Mode: read-only + planning
-PLAN_TOOLS_WHITELIST = frozenset({
-    # File read-only
-    "RunRead",
-    "RunGrep",
-    "RunGlob",
-    # TaskManager planning
-    "CreateTask",
-    "UpdateTaskContent",
-    "UpdateTaskStatus",
-    "UpdateTaskDependencies",
-    "DeleteAllTasks",
-    "GetTask",
-    "GetRunnableTasks",
-    "GetTaskTable",
-    # Auxiliary
-    "GetSystemTime",
-    "LoadSkill",
+# Tools blocked in Plan Mode: write/execute/delegate tools
+PLAN_MODE_BLOCKLIST = frozenset({
+    # File write/edit
+    "RunWrite",
+    "RunEdit",
+    # Terminal execution
+    "RunTerminalCommand",
+    # Team delegation
+    "DelegateTasks",
 })
 
 # Global state
