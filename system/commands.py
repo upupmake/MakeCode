@@ -998,7 +998,7 @@ class CommandHandler:
                     "\n[bold cyan]📋 Plan Mode 已启用[/bold cyan]"
                 )
                 self.console.print(
-                    "[dim]📋 只允许只读和规划工具。使用 /plan 或 Tab 切回执行模式。[/dim]"
+                    "[dim]📋 只允许只读和规划工具。使用 /plan 或 Ctrl+P 切回执行模式。[/dim]"
                 )
             else:
                 self.console.print(

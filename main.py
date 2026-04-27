@@ -353,11 +353,8 @@ def _init_user_session():
         def _insert_newline(event):
             event.current_buffer.insert_text("\n")
 
-        @user_kb.add(Keys.Tab)
+        @user_kb.add("c-p")
         def _toggle_plan_mode(event):
-            # Only toggle when buffer is empty; otherwise fall through to completion
-            if event.current_buffer.text.strip():
-                return
             from utils.plan_mode import toggle_plan_mode
             new_state = toggle_plan_mode()
             if new_state:
@@ -397,7 +394,7 @@ def _read_user_query(messages: list = None) -> str:
     _init_user_session()
 
     console.print(
-        "\n[dim]💡 Tips：按 [bold]Enter[/bold] 发送消息，按 [bold]Ctrl+N[/bold] 换行，按 [bold]Tab[/bold] 切换 Plan/Act 模式。[/dim]"
+        "\n[dim]💡 Tips：按 [bold]Enter[/bold] 发送消息，按 [bold]Ctrl+N[/bold] 换行，按 [bold]Ctrl+P[/bold] 切换 Plan/Act 模式。[/dim]"
     )
 
     # 将 rprompt 变量名改为 bottom_toolbar
@@ -429,9 +426,9 @@ def _read_user_query(messages: list = None) -> str:
         # 追加 Plan/Act 模式状态
         from utils.plan_mode import is_plan_mode as _is_plan_mode
         if _is_plan_mode():
-            bottom_toolbar_content.append((f"{_tb_bg} fg:#ff8800 bold", " 📋 Plan (Tab 切换) "))
+            bottom_toolbar_content.append((f"{_tb_bg} fg:#ff8800 bold", " 📋 Plan (Ctrl+P 切换) "))
         else:
-            bottom_toolbar_content.append((f"{_tb_bg} fg:#aaaaaa bold", " 🎬 Act (Tab 切换) "))
+            bottom_toolbar_content.append((f"{_tb_bg} fg:#aaaaaa bold", " 🎬 Act (Ctrl+P 切换) "))
 
     try:
         with patch_stdout():
