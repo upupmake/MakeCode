@@ -719,11 +719,8 @@ def run_grep(
                         continue
 
                 try:
-                    rel_path_str = filepath.relative_to(WORKDIR).as_posix()
-                except ValueError as exc:
-                    log_error_traceback(
-                        f"RunGrep path outside workspace: {filepath}", exc
-                    )
+                    rel_path_str = filepath.relative_to(base_dir).as_posix()
+                except ValueError:
                     continue
 
                 if _is_binary_file(filepath):
@@ -759,6 +756,9 @@ def run_grep(
         return f"No matches found for '{keyword_pattern}' in dir '{target_dir}' matching {patterns}."
 
     output_blocks = []
+    if base_dir != WORKDIR:
+        output_blocks.append(f"(paths relative to {base_dir.as_posix()})")
+        output_blocks.append("")
     for file_path, lines in results.items():
         output_blocks.append(f"File: {file_path}")
         output_blocks.extend(lines)
@@ -849,9 +849,9 @@ def run_glob(
                 if len(matched_files) + len(matched_dirs) >= MAX_ITEMS:
                     break
 
-                # Skip if any parent in the relative path is excluded
+                # Relative to base_dir for display
                 try:
-                    rel_path = item.relative_to(WORKDIR)
+                    rel_path = item.relative_to(base_dir)
                 except ValueError:
                     continue
 
@@ -885,7 +885,10 @@ def run_glob(
         sorted_dirs = sorted(matched_dirs)
         lines = [f"[DIR] {d}/" for d in sorted_dirs] + list(sorted_files)
 
-        output = f"Found {total_count} {type_label} matching '{pattern}' in '{target_dir}':\n\n"
+        if base_dir == WORKDIR:
+            output = f"Found {total_count} {type_label} matching '{pattern}' in '{target_dir}':\n\n"
+        else:
+            output = f"Found {total_count} {type_label} matching '{pattern}' in '{target_dir}' (paths relative to {base_dir.as_posix()}):\n\n"
         output += "\n".join(lines)
 
         if total_count >= MAX_ITEMS:
