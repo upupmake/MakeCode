@@ -129,7 +129,7 @@ If a lock file exists, investigate what process holds it rather than deleting it
 Measure twice, cut once."""
 
 
-def _tool_priority_section(terminal_label: str) -> str:
+def _tool_priority_section(terminal_label: str, terminal_source: str) -> str:
     """Guide tool selection to prefer dedicated tools over shell commands."""
     return f"""# Tool Usage Priority
 
@@ -140,7 +140,7 @@ Do NOT use RunTerminalCommand when a dedicated tool exists:
  - To SEARCH file content: use RunGrep (not grep, rg, findstr)
  - Reserve RunTerminalCommand EXCLUSIVELY for: builds, tests, git, package management, system info
 
-Runtime terminal is fixed at startup: {terminal_label}.
+Runtime terminal is fixed at startup: {terminal_label} (source={terminal_source}).
 Execution is bound to the workspace root directory and has a hard timeout of 120 seconds.
 
 You can call multiple tools in a single response. If calls are independent,
@@ -273,7 +273,7 @@ When providing your final answer, use this structure:
         orchestrator_policy,
         _code_style_section(),
         _cautious_actions_section(),
-        _tool_priority_section(startup_terminal_label),
+        _tool_priority_section(startup_terminal_label, startup_terminal_source),
         _output_efficiency_section(),
         _security_section(),
         _communication_style_section(),
@@ -332,7 +332,7 @@ Note: The system will automatically generate a detailed report based on your wor
         sub_agent_policy,
         _code_style_section(),
         _cautious_actions_section(),
-        _tool_priority_section(startup_terminal_label),
+        _tool_priority_section(startup_terminal_label, startup_terminal_source),
         _output_efficiency_section(),
         _security_section(),
         _hitl_section(),
