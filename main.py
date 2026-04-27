@@ -509,7 +509,7 @@ if __name__ == "__main__":
             # Handle Tab toggle for Plan Mode
             if query == '__PLAN_MODE_ON__':
                 console.print("[bold cyan]📋 Plan Mode 已启用[/bold cyan]")
-                console.print("[dim]📋 只允许只读和规划工具。再次按 Ctrl+P 切回执行模式。[/dim]")
+                console.print("[dim]📋 只允许只读和规划工具。使用 /plan 或 Ctrl+P 切回执行模式。[/dim]")
                 continue
             elif query == '__PLAN_MODE_OFF__':
                 console.print("[bold green]✅ Plan Mode 已退出，所有工具已恢复。[/bold green]")
