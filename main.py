@@ -430,7 +430,7 @@ def _read_user_query(messages: list = None) -> str:
         if _is_plan_mode():
             bottom_toolbar_content.append((f"{_tb_bg} fg:#ff8800 bold", " 📋 Plan (Tab 切换) "))
         else:
-            bottom_toolbar_content.append((f"{_tb_bg} fg:#aaaaaa", " 🎬 Act (Tab 切换) "))
+            bottom_toolbar_content.append((f"{_tb_bg} fg:#aaaaaa bold", " 🎬 Act (Tab 切换) "))
 
     try:
         with patch_stdout():

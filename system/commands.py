@@ -815,6 +815,7 @@ class CommandHandler:
             self.console.print("[dim]🛡️ Human-in-the-Loop 已恢复为开启状态[/dim]")
         else:
             hitl_mod.SESSION_WHITELIST.clear()
+            hitl_mod.PATH_WHITELIST.clear()
 
         history.clear()
         history.append({"role": "system", "content": self.get_system_prompt_fn()})
@@ -875,6 +876,8 @@ class CommandHandler:
             self.console.print(
                 f"\n[bold green]🚀 成功加载对话记录！当前上下文包含 {len(loaded)} 条消息。[/bold green]"
             )
+            hitl_mod.SESSION_WHITELIST.clear()
+            hitl_mod.PATH_WHITELIST.clear()
         except Exception as exc:
             log_error_traceback("commands handle_load error", exc)
             self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]")
