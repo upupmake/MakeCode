@@ -28,6 +28,7 @@ from system.console_render import (
     _render_token_usage,
     _render_startup_banner,
     _render_env_customization_hint,
+    render_current_workdir,
     render_current_task_plan,
     format_runtime_info,
     console,
@@ -368,6 +369,7 @@ def _refresh_workspace_state() -> None:
 
 def _apply_workdir(path) -> None:
     set_workdir(path)
+    orchestrator_access.visited_files.clear()
     _refresh_workspace_state()
 
 
@@ -514,6 +516,7 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         refresh_status()
         refresh_tools_title()
         post_tui(TuiRegion.BACKGROUND, f"[bold green]📂 Workspace switched to: {selected_workdir}[/bold green]")
+        render_current_workdir("当前工作目录已切换")
 
     def runtime_info_provider() -> str:
         tokens = estimate_tokens(
@@ -558,6 +561,7 @@ if __name__ == "__main__":
 
     _render_startup_banner()
     _render_env_customization_hint()
+    render_current_workdir()
 
     # 后台检查更新（仅打包环境）
     if getattr(sys, 'frozen', False):
@@ -580,6 +584,7 @@ if __name__ == "__main__":
         load_checkpoint_fn=load_checkpoint,
         list_checkpoints_fn=list_checkpoints,
         auto_compact_fn=auto_compact,
+        apply_workdir_fn=_apply_workdir,
     )
 
     try:

@@ -15,6 +15,11 @@ from rich.theme import Theme
 
 from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
 from system.tui_app import TuiRegion, post_tui
+from utils import paths
+
+
+def render_current_workdir(label: str = "当前工作目录") -> None:
+    post_tui(TuiRegion.CONTENT, f"[bold cyan]📂 {label}: {paths.workdir()}[/bold cyan]")
 
 
 def render_current_task_plan(target_console: Console) -> None:

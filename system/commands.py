@@ -14,10 +14,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from init import log_error_traceback
-from system.console_render import render_current_task_plan, toggle_sub_agent_console
+from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, show_info_panel_tui, set_agent_loop_active, refresh_status, refresh_tools_title, begin_tui_batch_render, end_tui_batch_render
-from utils import hitl as hitl_mod
+from utils import hitl as hitl_mod, paths
 from utils.plan_mode import toggle_plan_mode
 from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title
 from utils.teams import list_team_histories, load_team_history, get_history_title
@@ -77,6 +77,8 @@ COMMAND_DESCRIPTIONS = {
     "/sub-agent-console": "切换 Sub-Agent 的控制台输出状态，默认开启",
     "/help": "显示使用帮助和自我介绍",
     "/new": "清空当前对话历史",
+    "/pwd": "显示当前工作目录",
+    "/cd": "切换当前工作目录，例如 /cd D:\\Projects\\Demo",
     "/hitl": "切换 Human-in-the-Loop 拦截状态 (开启/关闭)",
     "/quit": "退出程序",
     "/exit": "退出程序",
@@ -164,6 +166,7 @@ class CommandHandler:
             load_checkpoint_fn,
             list_checkpoints_fn,
             auto_compact_fn,
+            apply_workdir_fn=None,
     ):
         self.console = console
         self.mcp_manager = mcp_manager
@@ -173,6 +176,7 @@ class CommandHandler:
         self.load_checkpoint = load_checkpoint_fn
         self.list_checkpoints = list_checkpoints_fn
         self.auto_compact = auto_compact_fn
+        self.apply_workdir = apply_workdir_fn
 
     def handle_mcp_view(self) -> bool:
         """处理 /mcp-view 命令"""
@@ -542,6 +546,54 @@ class CommandHandler:
 
     def handle_new(self, history: list, current_checkpoint: Optional[Path]) -> tuple:
         """处理 /new 命令，返回 (should_continue, new_checkpoint)"""
+        self._reset_hitl_session()
+        self._reset_conversation_view(history)
+        self.console.print(
+            "\n[bold green]✨ 对话历史已清空，开启全新会话！[/bold green]"
+        )
+        render_current_workdir()
+        refresh_status()
+        return True, None
+
+    def handle_cd(self, query: str, history: list) -> bool:
+        """处理 /cd 命令，切换当前工作目录。"""
+        if self.apply_workdir is None:
+            self.console.print("[bold red]⚠️ 当前环境不支持切换工作目录。[/bold red]")
+            return False
+
+        raw_path = query.removeprefix("/cd").strip()
+        if not raw_path:
+            self.console.print("[bold yellow]用法：/cd <目录路径>[/bold yellow]")
+            render_current_workdir()
+            return False
+        if (raw_path.startswith('"') and raw_path.endswith('"')) or (raw_path.startswith("'") and raw_path.endswith("'")):
+            raw_path = raw_path[1:-1].strip()
+
+        current_workdir = Path(paths.workdir()).resolve()
+        target_path = Path(raw_path).expanduser()
+        if not target_path.is_absolute():
+            target_path = current_workdir / target_path
+        target_path = target_path.resolve()
+
+        if not target_path.exists() or not target_path.is_dir():
+            self.console.print(f"[bold red]⚠️ 目录不存在或不是有效目录：{target_path}[/bold red]")
+            render_current_workdir()
+            return False
+        if target_path == current_workdir:
+            self.console.print("[#aaaaaa]📂 目标目录与当前工作目录相同，未切换。[/#aaaaaa]")
+            render_current_workdir()
+            return False
+
+        self.apply_workdir(target_path)
+        self._reset_hitl_session()
+        self._reset_conversation_view(history)
+        refresh_status()
+        refresh_tools_title()
+        self.console.print("[bold green]✅ 工作目录已切换，已开启全新会话。[/bold green]")
+        render_current_workdir()
+        return True
+
+    def _reset_hitl_session(self) -> None:
         if not hitl_mod.get_hitl_status():
             hitl_mod.toggle_hitl(enabled=True)
             self.console.print("[#aaaaaa]🛡️ Human-in-the-Loop 已恢复为开启状态[/#aaaaaa]")
@@ -549,6 +601,7 @@ class CommandHandler:
             hitl_mod.SESSION_WHITELIST.clear()
             hitl_mod.PATH_WHITELIST.clear()
 
+    def _reset_conversation_view(self, history: list) -> None:
         history.clear()
         history.append({"role": "system", "content": self.get_system_prompt_fn()})
         for region in (
@@ -559,11 +612,6 @@ class CommandHandler:
             TuiRegion.SUB_AGENT,
         ):
             post_tui(region, "", clear=True)
-        self.console.print(
-            "\n[bold green]✨ 对话历史已清空，开启全新会话！[/bold green]"
-        )
-        refresh_status()
-        return True, None
 
     def handle_compact(self, history: list, current_checkpoint: Optional[Path]) -> tuple:
         """处理 /compact 命令，返回 (should_continue, new_checkpoint)"""
@@ -939,6 +987,18 @@ class CommandHandler:
         if query == "/new":
             self.handle_new(history, current_checkpoint)
             return CommandResult(action=CommandAction.RESET_CHECKPOINT)
+
+        # /pwd - 显示当前工作目录
+        if query == "/pwd":
+            render_current_workdir()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        # /cd - 切换当前工作目录，并开启全新会话
+        if query == "/cd" or query.startswith("/cd "):
+            changed = self.handle_cd(query, history)
+            if changed:
+                return CommandResult(action=CommandAction.RESET_CHECKPOINT)
+            return CommandResult(action=CommandAction.CONTINUE)
 
         # /compact - 压缩上下文
         if query == "/compact":
