@@ -10,6 +10,7 @@ from typing import Optional, Any
 from rich import box
 from rich.console import Console, Group
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -19,7 +20,7 @@ from system.models import get_model_manager
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, show_info_panel_tui, set_agent_loop_active, refresh_status, refresh_tools_title, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.plan_mode import toggle_plan_mode
-from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title
+from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
 from utils.teams import list_team_histories, load_team_history, get_history_title
 from utils.memory import (
     delete_long_term_memory,
@@ -57,32 +58,32 @@ class CommandResult:
 # ============================================================================
 
 COMMAND_DESCRIPTIONS = {
-    "/cmds": "列出所有的可用命令和功能描述",
-    "/models": "管理模型配置：添加、删除、标记常用、选择当前模型",
-    "/layout": "调整 TUI 面板高度比例：左侧 Content/Tools，右侧 Reasoning/Background/Sub-Agent",
-    "/mcp-view": "查看当前已加载的 MCP 服务器和工具",
-    "/mcp-restart": "重新启动 MCP 管理器并加载配置",
-    "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存",
-    "/load": "列出历史checkpoint并选择加载",
-    "/skills-switch": "切换 skills 目录摘要注入状态 (开启/关闭)",
-    "/skills-list": "列出当前工作区可用的 skills",
-    "/compact": "压缩当前对话上下文（自动尝试提取关键记忆信息）",
-    "/memory-list": "列出当前保存的长期记忆",
-    "/memory-panel": "打开长期记忆交互面板，可查看详情并二次确认删除",
-    "/memory-delete": "按 ID 删除一条长期记忆，例如 /memory-delete mem_20260510_abc123",
-    "/memory-config": "打开记忆配置面板，修改 memory_size 和 keep_recent_tool_call",
-    "/memory-update": "根据用户请求主动管理长期记忆，例如 /memory-update 记住：以后...",
-    "/tasks": "查看任务看板和当前执行进度",
-    "/plan": "进入/退出 Plan Mode — 规划阶段只允许只读和任务规划工具",
-    "/sub-agent-console": "切换 Sub-Agent 的控制台输出状态，默认开启",
-    "/help": "显示使用帮助和自我介绍",
-    "/new": "清空当前对话历史",
-    "/pwd": "显示当前工作目录",
-    "/cd": "切换当前工作目录，例如 /cd D:\\Projects\\Demo",
-    "/hitl": "切换 Human-in-the-Loop 拦截状态 (开启/关闭)",
-    "/quit": "退出程序",
-    "/exit": "退出程序",
-    "/update": "检查并安装最新版本更新",
+    "/cmds": "列出所有可用内置命令和功能描述。",
+    "/models": "打开模型管理面板，可添加、删除、标记常用、选择当前模型。",
+    "/layout": "调整 TUI 面板高度比例：左侧 Content/Tools，右侧 Task/Background/Sub-Agent。",
+    "/mcp-view": "查看当前已加载的 MCP 服务器和工具。",
+    "/mcp-restart": "重新启动 MCP 管理器并加载配置。",
+    "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存。",
+    "/load": "列出历史 checkpoint 并选择加载。",
+    "/skills-switch": "切换 skills 目录摘要注入状态（开启/关闭）。",
+    "/skills-list": "列出当前工作区可用的 skills。",
+    "/compact": "[prompt] 压缩当前对话上下文；prompt 可选，不填则使用默认压缩提示，并自动尝试提取关键记忆信息。",
+    "/memory-list": "列出当前保存的长期记忆。",
+    "/memory-panel": "打开长期记忆交互面板，可查看详情并二次确认删除。",
+    "/memory-delete": "<memory_id> [memory_id ...] 按 ID 删除一条或多条长期记忆。",
+    "/memory-config": "打开记忆配置面板，修改 memory_size 和 keep_recent_tool_call。",
+    "/memory-update": "[prompt] 根据用户请求主动管理长期记忆；prompt 可选，不填则根据当前对话使用默认记忆管理提示。",
+    "/tasks": "查看完整任务看板和当前执行进度。",
+    "/plan": "进入或退出 Plan Mode；规划阶段只允许只读和任务规划工具。",
+    "/sub-agent-console": "切换 Sub-Agent 的控制台输出状态，默认开启。",
+    "/help": "显示帮助信息和所有可用命令。",
+    "/new": "清空当前对话历史，并开启当前工作区的全新对话。",
+    "/pwd": "显示当前工作目录。",
+    "/cd": "<path> 切换当前工作目录，例如 /cd D:\\Projects\\Demo。",
+    "/hitl": "切换 Human-in-the-Loop 拦截状态（开启/关闭）。",
+    "/quit": "退出程序。",
+    "/exit": "退出程序。",
+    "/update": "检查并安装最新版本更新。",
 }
 
 
@@ -155,6 +156,9 @@ def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
 
 class CommandHandler:
     """命令处理器 - 统一处理所有斜杠命令"""
+
+    DEFAULT_COMPACT_PROMPT = "User triggered compact"
+    DEFAULT_MEMORY_UPDATE_PROMPT = "请根据当前对话上下文主动管理长期记忆，提取稳定偏好、项目约定和未来可复用信息；没有值得更新的内容则不变更。"
 
     def __init__(
             self,
@@ -374,7 +378,7 @@ class CommandHandler:
         table.add_column("命令 (Command)", style="bold green", justify="left")
         table.add_column("描述 (Description)", style="white")
         for cmd, desc in COMMAND_DESCRIPTIONS.items():
-            table.add_row(cmd, desc)
+            table.add_row(cmd, escape(desc))
         if show_info_panel_tui("🛠️ 可用内置命令列表", table) == "<cancelled>":
             self.console.print(table)
         return True
@@ -539,13 +543,14 @@ class CommandHandler:
             self.console.print(
                 "\n[bold green]✅ Layout 已应用：[/bold green]"
                 f"左侧 Content/Tools = {result['content']}/{result['tools']}；"
-                f"右侧 Reasoning/Background/Sub-Agent = {result['reasoning']}/{result['background']}/{result['sub_agent']}",
+                f"右侧 Task/Background/Sub-Agent = {result['task']}/{result['background']}/{result['sub_agent']}",
                 tui_region=TuiRegion.TOOLS,
             )
         return True
 
     def handle_new(self, history: list, current_checkpoint: Optional[Path]) -> tuple:
         """处理 /new 命令，返回 (should_continue, new_checkpoint)"""
+        refresh_task_workspace_paths()
         self._reset_hitl_session()
         self._reset_conversation_view(history)
         self.console.print(
@@ -607,19 +612,23 @@ class CommandHandler:
         for region in (
             TuiRegion.CONTENT,
             TuiRegion.TOOLS,
-            TuiRegion.REASONING,
+            TuiRegion.TASK,
             TuiRegion.BACKGROUND,
             TuiRegion.SUB_AGENT,
         ):
             post_tui(region, "", clear=True)
+        render_current_task_plan(self.console)
 
-    def handle_compact(self, history: list, current_checkpoint: Optional[Path]) -> tuple:
-        """处理 /compact 命令，返回 (should_continue, new_checkpoint)"""
+    def handle_compact(self, query: str, history: list, current_checkpoint: Optional[Path]) -> tuple:
+        """处理 /compact [prompt] 命令，返回 (should_continue, new_checkpoint)"""
+        parts = query.split(maxsplit=1)
+        reason = parts[1].strip() if len(parts) == 2 and parts[1].strip() else self.DEFAULT_COMPACT_PROMPT
+
         set_agent_loop_active(True)
         try:
             self.auto_compact(
                 history,
-                reason="User triggered compact",
+                reason=reason,
                 system_prompt_fn=self.get_system_prompt_fn,
             )
             self.console.print(
@@ -730,15 +739,13 @@ class CommandHandler:
         return True
 
     def handle_memory_update(self, query: str, history: list) -> bool:
-        """处理 /memory-update <prompt> 命令"""
+        """处理 /memory-update [prompt] 命令"""
         parts = query.split(maxsplit=1)
-        if len(parts) != 2 or not parts[1].strip():
-            self.console.print("\n[bold yellow]用法：/memory-update <memory update request>[/bold yellow]")
-            return True
+        prompt = parts[1].strip() if len(parts) == 2 and parts[1].strip() else self.DEFAULT_MEMORY_UPDATE_PROMPT
 
         set_agent_loop_active(True)
         try:
-            outputs = manual_memory_update(parts[1].strip(), history)
+            outputs = manual_memory_update(prompt, history)
             if outputs and history and history[0].get("role") == "system":
                 history[0]["content"] = self.get_system_prompt_fn()
         finally:
@@ -784,7 +791,7 @@ class CommandHandler:
             for region in (
                 TuiRegion.CONTENT,
                 TuiRegion.TOOLS,
-                TuiRegion.REASONING,
+                TuiRegion.TASK,
                 TuiRegion.BACKGROUND,
                 TuiRegion.SUB_AGENT,
             ):
@@ -879,6 +886,7 @@ class CommandHandler:
                         f"\n[bold red]❌ 加载任务看板失败: {exc}[/bold red]",
                         tui_region=TuiRegion.TOOLS,
                     )
+        render_current_task_plan(self.console)
         return loaded, new_checkpoint
 
     def process_command(
@@ -1000,9 +1008,9 @@ class CommandHandler:
                 return CommandResult(action=CommandAction.RESET_CHECKPOINT)
             return CommandResult(action=CommandAction.CONTINUE)
 
-        # /compact - 压缩上下文
-        if query == "/compact":
-            _, new_checkpoint = self.handle_compact(history, current_checkpoint)
+        # /compact [prompt] - 压缩上下文
+        if query == "/compact" or query.startswith("/compact "):
+            _, new_checkpoint = self.handle_compact(query, history, current_checkpoint)
             return CommandResult(action=CommandAction.UPDATE_CHECKPOINT, payload=new_checkpoint)
 
         # /memory-list - 列出长期记忆
@@ -1025,7 +1033,7 @@ class CommandHandler:
             self.handle_memory_config(query)
             return CommandResult(action=CommandAction.CONTINUE)
 
-        # /memory-update <prompt> - 主动管理长期记忆
+        # /memory-update [prompt] - 主动管理长期记忆
         if query == "/memory-update" or query.startswith("/memory-update "):
             self.handle_memory_update(query, history)
             refresh_status()

@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Literal
 
+from rich.text import Text
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, field_validator
 
@@ -278,6 +279,7 @@ class TaskManager:
         self.path.write_text(
             json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        render_task_pane()
 
     def rename_with_title(self, title: str) -> bool:
         """Rename the task plan file on disk to include *title*.
@@ -569,12 +571,74 @@ class TaskManager:
         }
 
 
+def render_task_pane() -> None:
+    from system.tui_app import TuiRegion, post_tui
+
+    task_table = TASK_MANAGER.get_task_table()
+    summary = task_table.get("summary", {})
+    rows = task_table.get("rows", [])
+    rows_by_id = {row["id"]: row for row in rows}
+    post_tui(TuiRegion.TASK, "", clear=True)
+
+    if not rows:
+        post_tui(TuiRegion.TASK, Text("当前任务计划为空。", style="bold yellow"))
+        return
+
+    completed = summary.get("completed", 0)
+    total = summary.get("total", len(rows))
+    pending = summary.get("pending", 0)
+    runnable = summary.get("runnable_count", 0)
+    blocked = max(int(pending) - int(runnable), 0)
+
+    text = Text()
+    text.append("当前任务计划\n", style="bold cyan")
+    text.append(f"✓ {completed}/{total} completed", style="green")
+    text.append(" · ")
+    text.append(f"▶ {runnable} runnable", style="yellow")
+    text.append(" · ")
+    text.append(f"□ {blocked} blocked\n\n", style="#aaaaaa")
+
+    for row in rows:
+        if row["status"] == "completed":
+            icon = "✓"
+            style = "green"
+        elif row.get("is_runnable"):
+            icon = "▶"
+            style = "yellow"
+        else:
+            icon = "□"
+            style = "#aaaaaa"
+        text.append(f"{icon} {row['id']} ", style=style)
+        text.append(str(row["subject"]))
+        text.append("\n")
+
+        depend_on = row.get("depend_on", [])
+        if depend_on:
+            waiting_deps = [
+                dep_id for dep_id in depend_on
+                if rows_by_id.get(dep_id, {}).get("status") != "completed"
+            ]
+            label = "waits" if waiting_deps else "deps"
+            text.append(f"  {label}: ", style="#aaaaaa")
+            for index, dep_id in enumerate(depend_on):
+                if index:
+                    text.append(" · ", style="#aaaaaa")
+                dep_completed = rows_by_id.get(dep_id, {}).get("status") == "completed"
+                dep_icon = "✓" if dep_completed else "□"
+                dep_style = "green" if dep_completed else "#aaaaaa"
+                text.append(f"{dep_icon} {dep_id}", style=dep_style)
+            text.append("\n")
+
+    post_tui(TuiRegion.TASK, text)
+
+
 TASK_MANAGER = TaskManager()
 
 
 def refresh_workspace_paths() -> None:
     global TASK_MANAGER
     TASK_MANAGER = TaskManager(_tasks_dir())
+    render_task_pane()
 
 
 TOOLS = [

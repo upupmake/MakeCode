@@ -1091,7 +1091,7 @@ class LayoutModal(ModalScreen[str | dict[str, int]]):
     _LABELS = {
         "content": "Content",
         "tools": "Tools",
-        "reasoning": "Reasoning",
+        "task": "Task",
         "background": "Background",
         "sub_agent": "Sub-Agent",
     }

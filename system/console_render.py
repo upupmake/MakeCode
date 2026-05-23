@@ -23,27 +23,9 @@ def render_current_workdir(label: str = "当前工作目录") -> None:
 
 
 def render_current_task_plan(target_console: Console) -> None:
-    from rich.table import Table as RichTable
-    from utils.tasks import TASK_MANAGER
+    from utils.tasks import render_task_pane
 
-    task_table = TASK_MANAGER.get_task_table()
-    rows = task_table.get("rows", [])
-    if not rows:
-        return
-
-    tbl = RichTable(title="当前任务计划", show_lines=False)
-    tbl.add_column("ID", style="cyan", width=4)
-    tbl.add_column("Subject", style="white")
-    tbl.add_column("Status", style="green")
-    tbl.add_column("Runnable", style="yellow", width=8)
-    for row in rows:
-        tbl.add_row(
-            str(row["id"]),
-            row["subject"],
-            row["status"],
-            "✓" if row.get("is_runnable") else "",
-        )
-    target_console.print(tbl, tui_region=TuiRegion.CONTENT)
+    render_task_pane()
 
 # 自定义主题：覆盖默认深色调，h1 金色醒目、h2-4 蓝青色系层次分明
 _custom_theme = Theme({

@@ -8,6 +8,7 @@ from queue import Queue
 from typing import Any
 
 from rich.console import RenderableType
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -430,7 +431,7 @@ class MakeCodeTuiApp(App[None]):
         height: 1fr;
     }
 
-    #reasoning-pane {
+    #task-pane {
         height: 1fr;
     }
 
@@ -575,9 +576,9 @@ class MakeCodeTuiApp(App[None]):
                     yield RichLog(id="tools-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="tools-tail", classes="pane-tail")
             with Vertical(id="right-column"):
-                with Vertical(id="reasoning-pane", classes="pane"):
-                    yield RichLog(id="reasoning-log", classes="pane-log", markup=True, wrap=True, min_width=1)
-                    yield Static("", id="reasoning-tail", classes="pane-tail")
+                with Vertical(id="task-pane", classes="pane"):
+                    yield RichLog(id="task-log", classes="pane-log", markup=True, wrap=True, min_width=1)
+                    yield Static("", id="task-tail", classes="pane-tail")
                 with Vertical(id="background-pane", classes="pane"):
                     yield RichLog(id="background-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="background-tail", classes="pane-tail")
@@ -595,27 +596,30 @@ class MakeCodeTuiApp(App[None]):
     def on_mount(self) -> None:
         self._panes = {
             TuiRegion.CONTENT: self.query_one("#content-pane", Vertical),
-            TuiRegion.REASONING: self.query_one("#reasoning-pane", Vertical),
+            TuiRegion.REASONING: self.query_one("#content-pane", Vertical),
+            TuiRegion.TASK: self.query_one("#task-pane", Vertical),
             TuiRegion.TOOLS: self.query_one("#tools-pane", Vertical),
             TuiRegion.BACKGROUND: self.query_one("#background-pane", Vertical),
             TuiRegion.SUB_AGENT: self.query_one("#sub-agent-pane", Vertical),
         }
         self._logs = {
             TuiRegion.CONTENT: self.query_one("#content-log", RichLog),
-            TuiRegion.REASONING: self.query_one("#reasoning-log", RichLog),
+            TuiRegion.REASONING: self.query_one("#content-log", RichLog),
+            TuiRegion.TASK: self.query_one("#task-log", RichLog),
             TuiRegion.TOOLS: self.query_one("#tools-log", RichLog),
             TuiRegion.BACKGROUND: self.query_one("#background-log", RichLog),
             TuiRegion.SUB_AGENT: self.query_one("#sub-agent-log", RichLog),
         }
         self._tails = {
             TuiRegion.CONTENT: self.query_one("#content-tail", Static),
-            TuiRegion.REASONING: self.query_one("#reasoning-tail", Static),
+            TuiRegion.REASONING: self.query_one("#content-tail", Static),
+            TuiRegion.TASK: self.query_one("#task-tail", Static),
             TuiRegion.TOOLS: self.query_one("#tools-tail", Static),
             TuiRegion.BACKGROUND: self.query_one("#background-tail", Static),
             TuiRegion.SUB_AGENT: self.query_one("#sub-agent-tail", Static),
         }
         self.query_one("#content-pane", Vertical).border_title = "Content"
-        self.query_one("#reasoning-pane", Vertical).border_title = "Reasoning"
+        self.query_one("#task-pane", Vertical).border_title = "Task"
         self._update_tools_title()
         self.query_one("#background-pane", Vertical).border_title = "Background"
         self.query_one("#sub-agent-pane", Vertical).border_title = "Sub-Agent"
@@ -629,6 +633,9 @@ class MakeCodeTuiApp(App[None]):
         self.set_interval(0.5, self._check_responsive_layout)
         self.set_interval(1.0, self._update_clock)
         TUI_BRIDGE.bind(self)
+        from utils.tasks import render_task_pane
+
+        render_task_pane()
         if self._startup_workdir_provider is not None and self._startup_workdir_handler is not None:
             self.call_after_refresh(self._open_startup_workdir_modal)
         else:
@@ -675,7 +682,7 @@ class MakeCodeTuiApp(App[None]):
         pane_ids = {
             "content": "#content-pane",
             "tools": "#tools-pane",
-            "reasoning": "#reasoning-pane",
+            "task": "#task-pane",
             "background": "#background-pane",
             "sub_agent": "#sub-agent-pane",
         }
@@ -719,7 +726,11 @@ class MakeCodeTuiApp(App[None]):
         else:
             current = max(current - 1, 0)
         self._pane_active_counts[region] = current
-        pane.set_class(current > 0, "pane-active")
+        pane_is_active = any(
+            mapped_pane is pane and self._pane_active_counts.get(mapped_region, 0) > 0
+            for mapped_region, mapped_pane in self._panes.items()
+        )
+        pane.set_class(pane_is_active, "pane-active")
 
     def _update_tail(self, region: TuiRegion, payload: Any) -> None:
         tail = self._tails.get(region)
@@ -806,7 +817,7 @@ class MakeCodeTuiApp(App[None]):
         if event.region == TuiRegion.CONTENT and event.payload == "":
             self._mark_runtime_dirty()
             return
-        if event.payload is not None and event.region in {TuiRegion.CONTENT, TuiRegion.REASONING, TuiRegion.TOOLS, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
+        if event.payload is not None and event.region in {TuiRegion.CONTENT, TuiRegion.REASONING, TuiRegion.TASK, TuiRegion.TOOLS, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
             should_scroll_end = self._is_log_at_bottom(log)
             log.write(event.payload, expand=True, shrink=True, scroll_end=should_scroll_end)
             if should_scroll_end:
@@ -1212,7 +1223,7 @@ class MakeCodeTuiApp(App[None]):
         lines = []
         for index, (command, desc) in enumerate(matches[start:end], start=start):
             marker = "❯ " if index == selected else "  "
-            lines.append(f"{marker}[bold cyan]{command}[/bold cyan]  [#aaaaaa]{desc}[/#aaaaaa]")
+            lines.append(f"{marker}[bold cyan]{command}[/bold cyan]  [#aaaaaa]{escape(desc)}[/#aaaaaa]")
         hint_box.update("\n".join(lines))
         hint_box.add_class("visible")
         self._slash_hint_visible = True

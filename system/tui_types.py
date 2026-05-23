@@ -11,6 +11,7 @@ from utils import paths
 class TuiRegion(StrEnum):
     CONTENT = "content"
     REASONING = "reasoning"
+    TASK = "task"
     TOOLS = "tools"
     BACKGROUND = "background"
     SUB_AGENT = "sub_agent"
@@ -33,12 +34,12 @@ LAYOUT_CONFIG_FILE = paths.layout_config_file()
 LAYOUT_DEFAULT_RATIOS: dict[str, int] = {
     "content": 1,
     "tools": 1,
-    "reasoning": 2,
+    "task": 2,
     "background": 2,
     "sub_agent": 1,
 }
 LAYOUT_LEFT_KEYS = ("content", "tools")
-LAYOUT_RIGHT_KEYS = ("reasoning", "background", "sub_agent")
+LAYOUT_RIGHT_KEYS = ("task", "background", "sub_agent")
 
 
 def normalize_layout_ratios(data: Any) -> dict[str, int]:
@@ -46,7 +47,10 @@ def normalize_layout_ratios(data: Any) -> dict[str, int]:
     ratios: dict[str, int] = {}
     for key, default in LAYOUT_DEFAULT_RATIOS.items():
         try:
-            value = int(source.get(key, default))
+            if key == "task" and key not in source and "reasoning" in source:
+                value = int(source.get("reasoning", default))
+            else:
+                value = int(source.get(key, default))
         except (TypeError, ValueError):
             value = default
         ratios[key] = min(max(value, 0), 10)
