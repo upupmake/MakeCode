@@ -465,37 +465,36 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
         return None
     if command_result.action == CommandAction.RUN_AGENT:
         user_query = command_result.payload
-        recall_result = recall_long_term_memories(user_query, source="用户请求预召回")
-        user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
-        history.append({"role": "user", "content": user_message})
-
-        if CURRENT_CHECKPOINT is None and any(msg['role'] == 'user' for msg in history):
-            CURRENT_CHECKPOINT = save_checkpoint(history)
-
-            def _title_worker():
-                global _pending_title
-                post_tui(TuiRegion.BACKGROUND, active=True)
-                post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 正在生成对话标题...[/#aaaaaa]")
-                try:
-                    title = generate_title(query)
-                    if title:
-                        _pending_title = title
-                        post_tui(TuiRegion.BACKGROUND, f"[bold green]🏷️ 对话标题生成完成：{title}[/bold green]")
-                    else:
-                        post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 对话标题生成结束：未生成可用标题[/#aaaaaa]")
-                except Exception as exc:
-                    log_error_traceback("Failed to generate title", exc)
-                    post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题生成失败：{exc}[/bold red]")
-                finally:
-                    post_tui(TuiRegion.BACKGROUND, active=False)
-
-            _title_thread = threading.Thread(target=_title_worker, daemon=True)
-            _title_thread.start()
-        else:
-            _title_thread = None
-
+        _title_thread = None
         try:
             set_agent_loop_active(True)
+            recall_result = recall_long_term_memories(user_query, source="用户请求预召回")
+            user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
+            history.append({"role": "user", "content": user_message})
+
+            if CURRENT_CHECKPOINT is None and any(msg['role'] == 'user' for msg in history):
+                CURRENT_CHECKPOINT = save_checkpoint(history)
+
+                def _title_worker():
+                    global _pending_title
+                    post_tui(TuiRegion.BACKGROUND, active=True)
+                    post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 正在生成对话标题...[/#aaaaaa]")
+                    try:
+                        title = generate_title(query)
+                        if title:
+                            _pending_title = title
+                            post_tui(TuiRegion.BACKGROUND, f"[bold green]🏷️ 对话标题生成完成：{title}[/bold green]")
+                        else:
+                            post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 对话标题生成结束：未生成可用标题[/#aaaaaa]")
+                    except Exception as exc:
+                        log_error_traceback("Failed to generate title", exc)
+                        post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题生成失败：{exc}[/bold red]")
+                    finally:
+                        post_tui(TuiRegion.BACKGROUND, active=False)
+
+                _title_thread = threading.Thread(target=_title_worker, daemon=True)
+                _title_thread.start()
+
             agent_loop(history)
         except RuntimeError as exc:
             console.print(f"[bold yellow]⚠️ {exc}[/bold yellow]")
