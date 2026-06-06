@@ -1,6 +1,8 @@
 """
 斜杠命令模块 - 负责处理所有内置命令和交互式界面
 """
+import argparse
+import shlex
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -53,6 +55,11 @@ class CommandResult:
     payload: Any = None
 
 
+class SlashArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
 # ============================================================================
 # 命令描述定义
 # ============================================================================
@@ -62,6 +69,9 @@ COMMAND_DESCRIPTIONS = {
     "/models": "打开模型管理面板，可添加、删除、标记常用、选择当前模型。",
     "/layout": "调整 TUI 面板高度比例：左侧 Content/Tools，右侧 Task/Background/Sub-Agent。",
     "/mcp-view": "查看当前已加载的 MCP 服务器和工具。",
+    "/mcp-help": "显示 MCP 相关命令帮助，包含 /mcp-add 参数说明和使用示例。",
+    "/mcp-add": "<name> 添加 MCP 服务配置；stdio 示例：/mcp-add fs --command npx --arg -y --arg @server/pkg；HTTP 示例：/mcp-add api --url https://example.com/mcp --header X-Api-Key=xxx。服务名已存在时请先 /mcp-delete <name>。",
+    "/mcp-delete": "<name> 删除 MCP 服务配置；会二次确认并停用运行中的服务。",
     "/mcp-restart": "重新启动 MCP 管理器并加载配置。",
     "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存。",
     "/load": "列出历史 checkpoint 并选择加载。",
@@ -276,6 +286,68 @@ class CommandHandler:
         self.mcp_manager.restart()
         return True
 
+    def handle_mcp_help(self) -> bool:
+        """处理 /mcp-help 命令"""
+        content = Markdown(
+            """
+### MCP 命令帮助
+
+MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是唯一标识；如果同名服务已存在，请先使用 `/mcp-delete <name>` 删除，再重新 `/mcp-add`。
+
+#### `/mcp-help`
+显示当前帮助说明。
+
+#### `/mcp-view`
+查看 MCP 状态总览和已加载工具明细，包括：配置文件路径、后台状态、配置中的服务、已启用/已禁用服务、当前已加载服务和工具列表。
+
+#### `/mcp-add <name> [--command <cmd> | --url <url>] [options]`
+添加一个 MCP 服务配置并尝试增量启用。`<name>` 是服务唯一标识，会成为工具名前缀的一部分。服务名已存在时不会覆盖。
+
+必选项二选一：
+
+- `--command <cmd>`：添加 stdio 类型 MCP 服务，例如 `npx`、`uvx`、`python`、`node`。
+- `--url <url>`：添加远程 MCP 服务，例如 Streamable HTTP 或 SSE 地址。
+
+常用参数：
+
+- `--transport stdio|streamable-http|http|sse`：指定传输类型。`http` 会按 fastmcp 行为归一化为 `streamable-http`；不填时，`--command` 默认 `stdio`，普通 `--url` 默认 `streamable-http`，包含 `/sse` 的 URL 默认 `sse`。
+- `--arg <value>`：stdio 命令参数，可重复。参数值以 `-` 开头也可以，例如 `--arg -y`。
+- `--env KEY=VALUE`：stdio 子进程环境变量，可重复。
+- `--header KEY=VALUE`：远程 MCP 请求头，可重复。
+- `headers.KEY=VALUE`：另一种设置 headers 的写法，适合一次性补充多个嵌套字段。
+- `env.KEY=VALUE`：另一种设置 env 的写法。
+- `--cwd <path>`：stdio 子进程工作目录。
+- `--auth <value>`：远程 MCP 鉴权配置，支持 token 字符串或 `oauth`。
+- `--timeout <milliseconds>`：响应超时时间，单位毫秒。
+- `--sse-read-timeout <seconds>`：SSE 读取超时。
+- `--keep-alive true|false`：stdio 子进程是否保持存活。
+- `--disabled`：只写入配置，不立即启用服务。
+
+示例：
+
+```bash
+/mcp-add fs --command npx --arg -y --arg @modelcontextprotocol/server-filesystem --arg D:/PythonProject/Agent
+/mcp-add git --command uvx --arg mcp-server-git --arg --repository --arg D:/PythonProject/Agent
+/mcp-add api --url https://example.com/mcp --header X-Api-Key=secret
+/mcp-add api --url https://example.com/mcp headers.Authorization="Bearer token"
+/mcp-add legacy --url https://example.com/sse --transport sse
+/mcp-add draft-api --url https://example.com/mcp --disabled
+```
+
+#### `/mcp-delete <name>`
+删除指定 MCP 服务配置。该命令会二次确认；确认后写入配置文件，并尝试停用运行中的同名服务。
+
+#### `/mcp-switch`
+打开交互式 MCP 服务开关面板。可切换已有服务的启用/禁用状态，确认后保存到配置文件并尝试增量启停服务。
+
+#### `/mcp-restart`
+重启 MCP 后台管理器，重新读取配置文件并重新连接所有启用的 MCP 服务。适合配置手动编辑后完整重载，或增量启停失败后恢复状态。
+""".strip()
+        )
+        if show_info_panel_tui("🔌 MCP 命令帮助", content) == "<cancelled>":
+            self.console.print(content, tui_region=TuiRegion.TOOLS)
+        return True
+
     def handle_mcp_switch(self) -> bool:
         """处理 /mcp-switch 命令"""
         self.console.print(
@@ -366,6 +438,197 @@ class CommandHandler:
                 f"[bold red]部分服务切换失败:[/bold red] {failure_text}"
             )
         self.console.print("\n".join(summary_lines), tui_region=TuiRegion.TOOLS)
+        return True
+
+    def _parse_mcp_bool(self, value: str) -> bool:
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "启用", "是"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "禁用", "否"}:
+            return False
+        raise ValueError(f"无法解析布尔值: {value}")
+
+    def _parse_mcp_pair(self, value: str, option_name: str) -> tuple[str, str]:
+        if "=" not in value:
+            raise ValueError(f"{option_name} 需要 KEY=VALUE 格式")
+        key, item_value = value.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"{option_name} 的 KEY 不能为空")
+        return key, item_value
+
+    def _set_mcp_nested_field(self, cfg: dict, key: str, value: str) -> None:
+        if "." not in key:
+            cfg[key] = value
+            return
+        parent, child = key.split(".", 1)
+        if not parent or not child:
+            raise ValueError(f"字段格式无效: {key}")
+        target = cfg.setdefault(parent, {})
+        if not isinstance(target, dict):
+            raise ValueError(f"字段 {parent} 已存在且不是对象，不能设置 {key}")
+        target[child] = value
+
+    def _preprocess_mcp_add_tokens(self, tokens: list[str]) -> list[str]:
+        result = []
+        index = 0
+        while index < len(tokens):
+            if tokens[index] == "--arg" and index + 1 < len(tokens):
+                result.append(f"--arg={tokens[index + 1]}")
+                index += 2
+                continue
+            result.append(tokens[index])
+            index += 1
+        return result
+
+    def _build_mcp_add_parser(self) -> argparse.ArgumentParser:
+        parser = SlashArgumentParser(prog="/mcp-add", add_help=False)
+        parser.add_argument("name")
+        parser.add_argument("--command")
+        parser.add_argument("--url")
+        parser.add_argument("--transport", choices=["stdio", "streamable-http", "http", "sse"])
+        parser.add_argument("--arg", dest="args", action="append", default=[])
+        parser.add_argument("--env", action="append", default=[])
+        parser.add_argument("--header", action="append", default=[])
+        parser.add_argument("--cwd")
+        parser.add_argument("--auth")
+        parser.add_argument("--timeout", type=int)
+        parser.add_argument("--sse-read-timeout", dest="sse_read_timeout", type=float)
+        parser.add_argument("--keep-alive", dest="keep_alive")
+        parser.add_argument("--disabled", action="store_true")
+        return parser
+
+    def _parse_mcp_add_config(self, query: str) -> tuple[str, dict]:
+        try:
+            tokens = shlex.split(query)
+        except ValueError as exc:
+            raise ValueError(f"命令参数解析失败: {exc}") from exc
+        if len(tokens) < 2:
+            raise ValueError("用法：/mcp-add <name> [--command <cmd> | --url <url>] [options]")
+
+        parser = self._build_mcp_add_parser()
+        try:
+            namespace, extra_fields = parser.parse_known_args(
+                self._preprocess_mcp_add_tokens(tokens[1:])
+            )
+        except SystemExit as exc:
+            raise ValueError("参数格式无效") from exc
+
+        server_name = namespace.name
+        if server_name.startswith("-"):
+            raise ValueError("/mcp-add 需要先提供服务名")
+        if not namespace.command and not namespace.url:
+            raise ValueError("/mcp-add 必须提供 --command 或 --url")
+        if namespace.command and namespace.url:
+            raise ValueError("--command 和 --url 不能同时使用")
+
+        cfg = {}
+        if namespace.command:
+            cfg["command"] = namespace.command
+        if namespace.url:
+            cfg["url"] = namespace.url
+        if namespace.transport:
+            cfg["transport"] = namespace.transport
+        if namespace.args:
+            cfg["args"] = namespace.args
+        if namespace.cwd:
+            cfg["cwd"] = namespace.cwd
+        if namespace.auth:
+            cfg["auth"] = namespace.auth
+        if namespace.timeout is not None:
+            cfg["timeout"] = namespace.timeout
+        if namespace.sse_read_timeout is not None:
+            cfg["sse_read_timeout"] = namespace.sse_read_timeout
+        if namespace.keep_alive is not None:
+            cfg["keep_alive"] = self._parse_mcp_bool(namespace.keep_alive)
+        if namespace.disabled:
+            cfg["disabled"] = True
+
+        for item in namespace.env:
+            key, value = self._parse_mcp_pair(item, "--env")
+            cfg.setdefault("env", {})[key] = value
+        for item in namespace.header:
+            key, value = self._parse_mcp_pair(item, "--header")
+            cfg.setdefault("headers", {})[key] = value
+        for item in extra_fields:
+            if "=" not in item:
+                raise ValueError(f"未知参数: {item}")
+            key, value = self._parse_mcp_pair(item, "字段")
+            self._set_mcp_nested_field(cfg, key, value)
+
+        if "url" in cfg and "transport" not in cfg:
+            cfg["transport"] = "sse" if "/sse" in cfg["url"] else "streamable-http"
+        if cfg.get("transport") == "http":
+            cfg["transport"] = "streamable-http"
+        if "command" in cfg and "transport" not in cfg:
+            cfg["transport"] = "stdio"
+
+        return server_name, cfg
+
+    def handle_mcp_add(self, query: str) -> bool:
+        try:
+            server_name, cfg = self._parse_mcp_add_config(query)
+            result = self.mcp_manager.add_server_config(server_name, cfg)
+        except Exception as exc:
+            log_error_traceback("commands handle_mcp_add", exc)
+            self.console.print(
+                "\n[bold yellow]用法：/mcp-add <name> [--command <cmd> | --url <url>] [options][/bold yellow]\n"
+                "[#aaaaaa]常用选项：--arg <value>、--env KEY=VALUE、--header KEY=VALUE、--transport stdio|streamable-http|sse、--disabled。也支持 headers.X=Y / env.X=Y。服务名已存在时请先 /mcp-delete <name>。[/#aaaaaa]\n"
+                f"[bold red]❌ {escape(str(exc))}[/bold red]",
+                tui_region=TuiRegion.TOOLS,
+            )
+            return True
+
+        failed = result.get("failed", [])
+        lines = [
+            f"\n[bold green]✅ 已添加 MCP 服务:[/bold green] {escape(server_name)}",
+            f"[#aaaaaa]配置文件: {self.mcp_manager.get_status_info().get('config_path')}[/#aaaaaa]",
+            f"[#aaaaaa]{escape(result.get('message', ''))}[/#aaaaaa]",
+        ]
+        if failed:
+            failure_text = "; ".join(
+                f"{item['server']} ({item['action']} 失败: {item['error']})"
+                for item in failed
+            )
+            lines.append(f"[bold red]服务启用失败:[/bold red] {escape(failure_text)}")
+        self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
+        return True
+
+    def handle_mcp_delete(self, query: str) -> bool:
+        parts = query.split()
+        if len(parts) != 2:
+            self.console.print("\n[bold yellow]用法：/mcp-delete <name>[/bold yellow]", tui_region=TuiRegion.TOOLS)
+            return True
+
+        server_name = parts[1]
+        choice = choose_tui(
+            f"确认删除 MCP 服务配置：{server_name}？\n该操作会写入配置文件，并停用运行中的同名服务。",
+            ["确认删除", "取消"],
+        )
+        if choice != "确认删除":
+            self.console.print("\n[#aaaaaa]已取消删除 MCP 服务配置。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
+            return True
+
+        try:
+            result = self.mcp_manager.delete_server_config(server_name)
+        except Exception as exc:
+            log_error_traceback("commands handle_mcp_delete", exc)
+            self.console.print(f"\n[bold red]❌ 删除 MCP 服务失败: {escape(str(exc))}[/bold red]", tui_region=TuiRegion.TOOLS)
+            return True
+
+        failed = result.get("failed", [])
+        lines = [
+            f"\n[bold green]✅ 已删除 MCP 服务配置:[/bold green] {escape(server_name)}",
+            f"[#aaaaaa]配置文件: {self.mcp_manager.get_status_info().get('config_path')}[/#aaaaaa]",
+            f"[#aaaaaa]{escape(result.get('message', ''))}[/#aaaaaa]",
+        ]
+        if failed:
+            failure_text = "; ".join(
+                f"{item['server']} ({item['action']} 失败: {item['error']})"
+                for item in failed
+            )
+            lines.append(f"[bold red]服务停用失败:[/bold red] {escape(failure_text)}")
+        self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
         return True
 
     def handle_cmds(self) -> bool:
@@ -909,8 +1172,22 @@ class CommandHandler:
             return CommandResult(action=CommandAction.EXIT)
 
         # MCP 相关命令
+        if query == "/mcp-help":
+            self.handle_mcp_help()
+            return CommandResult(action=CommandAction.CONTINUE)
+
         if query == "/mcp-view":
             self.handle_mcp_view()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/mcp-add" or query.startswith("/mcp-add "):
+            self.handle_mcp_add(query)
+            refresh_status()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/mcp-delete" or query.startswith("/mcp-delete "):
+            self.handle_mcp_delete(query)
+            refresh_status()
             return CommandResult(action=CommandAction.CONTINUE)
 
         if query == "/mcp-restart":

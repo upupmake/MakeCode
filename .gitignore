@@ -33,7 +33,9 @@ dist/
 # Playwright MCP
 .playwright-mcp/
 t.py
-tests/
+tests/*
+!tests/
+!tests/test_mcp_commands.py
 .github_token
 .ftp_config
 ts_cache/libs

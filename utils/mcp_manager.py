@@ -437,6 +437,95 @@ class GlobalMCPManager:
 
         self.start_background()
 
+    def _read_or_create_config_dict(self) -> dict:
+        if not self.config_path or not self.config_path.exists():
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_dict = {"mcpServers": {}}
+            self._save_config_dict(config_dict)
+            return config_dict
+        return self._load_config_dict()
+
+    def add_server_config(self, server_name: str, cfg: dict) -> dict:
+        config_dict = self._read_or_create_config_dict()
+        servers = config_dict.setdefault("mcpServers", {})
+        if server_name in servers:
+            raise ValueError(f"MCP 服务已存在: {server_name}。请先执行 /mcp-delete {server_name} 后再添加。")
+
+        servers[server_name] = cfg
+        self._save_config_dict(config_dict)
+        self.server_configs = servers
+
+        enable_targets = [] if cfg.get("disabled", False) else [server_name]
+        failed = []
+        if enable_targets:
+            if not self._is_running:
+                self.start_background()
+            elif self.loop:
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._enable_servers_parallel(enable_targets, servers),
+                        self.loop,
+                    )
+                    failed.extend(future.result(timeout=120))
+                except Exception as e:
+                    failed.append({"server": server_name, "action": "enable", "error": str(e)})
+                    log_error_traceback(f"MCP Add Enable Error [{server_name}]", e)
+            else:
+                failed.append({"server": server_name, "action": "enable", "error": "MCP event loop 未运行"})
+
+        return {
+            "saved": True,
+            "server": server_name,
+            "enabled": enable_targets,
+            "failed": failed,
+            "message": "MCP 服务配置已保存，并已尝试启用服务。" if enable_targets else "MCP 服务配置已保存，当前为禁用状态。",
+        }
+
+    def delete_server_config(self, server_name: str) -> dict:
+        config_dict = self.read_config()
+        servers = config_dict.get("mcpServers", {})
+        if server_name not in servers:
+            raise ValueError(f"MCP 服务不存在: {server_name}")
+
+        was_loaded = False
+        with self._db_lock:
+            was_loaded = server_name in self.clients
+
+        servers.pop(server_name)
+        self._save_config_dict(config_dict)
+        self.server_configs = servers
+
+        failed = []
+        if was_loaded:
+            if self._is_running and self.loop:
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._disconnect_server(server_name),
+                        self.loop,
+                    )
+                    future.result(timeout=30)
+                    if self.console:
+                        print_formatted_text(
+                            f"[bold yellow]⏹️ 已停用 MCP 服务: '{escape(str(server_name))}'[/bold yellow]"
+                        )
+                except Exception as e:
+                    failed.append({"server": server_name, "action": "disable", "error": str(e)})
+                    log_error_traceback(f"MCP Delete Disable Error [{server_name}]", e)
+            else:
+                failed.append({"server": server_name, "action": "disable", "error": "MCP event loop 未运行"})
+        else:
+            with self._db_lock:
+                self._rebuild_global_registry_locked()
+            refresh_status()
+
+        return {
+            "saved": True,
+            "server": server_name,
+            "was_loaded": was_loaded,
+            "failed": failed,
+            "message": "MCP 服务配置已删除，并已尝试停用运行中的服务。" if was_loaded else "MCP 服务配置已删除。",
+        }
+
     async def _enable_servers_parallel(self, enable_targets: list, servers: dict) -> list:
         """并行启用多个 MCP 服务"""
         failed = []
