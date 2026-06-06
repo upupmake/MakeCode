@@ -17,10 +17,12 @@ MakeCode is an Agent CLI designed for engineering workflows. It follows an **Orc
 - TaskManager maintains dependency relationships and the runnable frontier.
 - The Team module wakes sub-agents concurrently for parallel-safe tasks, with **automatic failure context recovery**.
 - The Skills module loads domain-specific guidance on demand.
-- The Memory module handles long-conversation compaction, long-term memory management, and transcript storage.
+- The Memory module handles long-conversation compaction, long-term memory management, and transcript storage, and **pre-recalls relevant long-term memories** before every main request.
 - The **File Access Control** module enforces read-before-edit, mtime-lock validation, and fine-grained file-level
   concurrency locks.
 - **Centralized Prompt Management** unifies all LLM prompts for easier maintenance and parameterization.
+- The **Centralized Path Module (`utils/paths.py`)** unifies workspace and install-directory path derivation; all consumers access `.makecode/` subpaths through shared getters.
+- The **Textual multi-pane TUI** dispatches orchestrator output into independent panes (`Content / Tools / Task / Background / Sub-Agent / Status`), with customizable pane ratios.
 
 The goal is not just to answer questions, but to provide an agent workflow that is **plannable, executable, traceable,
 and extensible**.
@@ -65,10 +67,11 @@ chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode sou
 - **Skill Library (`skills/`) Loading**: The system strictly scans and loads custom skills (`SKILL.md`) from the
   `WORKDIR/skills` directory. This ensures that different projects can maintain their own dedicated skill configurations
   without interference.
-- Supports interactive workspace selection (current directory or custom directory).
+- Workspace selection happens through an **interactive Textual TUI wizard panel** (current directory or a custom path); MakeCode no longer depends on any environment variable (the historical `MAKECODE_WORKDIR` has been removed).
 - Supports interactive API Standard selection:
     - `Chat Completions API` (Standard format, suitable for DeepSeek, Ollama, vLLM, and standard OpenAI endpoints)
     - `Responses API` (Legacy/Custom Beta format)
+- **Centralized Paths**: workspace paths, install-directory paths, `.makecode/` subdirectories (`tasks/`, `team/`, `memory/`, `transcripts/`, `checkpoint/`, etc.), as well as `model_config.json`, `mcp_config.json`, `layout_config.json`, and `error.log` under the install directory are all provided by `utils/paths.py`.
 - **Model Configuration**: Managed via the built-in `/models` command (see section 2.14)
 
 ### 2.3 File and Terminal Tools (`utils/common.py`) & File Access Control (`utils/file_access.py`)
@@ -198,6 +201,9 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - Uses the model to summarize past history and rebuild context.
 - After compaction, the system automatically analyzes whether durable information should be appended, updated, or deleted from **long-term memory**, then injects reusable cross-session knowledge into future prompts.
 - Long-term memory also supports an **active management mode**, so users can explicitly request memory maintenance without waiting for the compaction flow.
+- **Pre-recall before every main request**: At the start of every main user request, the orchestrator queries `RecallLongTermMemory` with the current user input and injects relevant long-term memories into the conversation as contextual hints; the orchestrator can also call `RememberLongTermMemory` to ask the memory manager to update long-term memory when durable, reusable facts emerge.
+- **TUI Background pane rendering**: long-term memory recall and write activity are rendered in the dedicated `Background` pane so they do not pollute the main conversation area.
+- **Plan Mode isolation**: `RememberLongTermMemory` is intercepted in Plan Mode to prevent memory writes during planning; read-only memory actions are unaffected.
 
 #### Long-Term Memory Management
 
@@ -210,13 +216,15 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - **Selection policy**: stores only stable information with reuse value across future sessions, such as user preferences, project conventions, workflow rules, repeated pitfalls, and confirmed release norms. It does not store one-off task progress, temporary implementation details, or facts that can be directly re-read from the repository.
 - **Capacity and eviction policy**: long-term memory capacity is configurable; when the limit is exceeded, older active memories are evicted in chronological order.
 - **Storage paths**: long-term memories are stored in `.makecode/memory/memory.jsonl`, and memory settings are stored in `.makecode/memory/memory_config.json`. JSONL reads skip invalid lines without rewriting the file.
+- **Rendering order**: long-term memory rendering and the `/memory-panel` view are both sorted by `updated_at` ascending (falling back to `created_at` when missing); this affects only the display layer and never changes the JSONL storage order or CRUD logic.
 
 #### Long-Term Memory Commands
 
 - `/memory-list`: list current active long-term memories.
+- `/memory-panel`: open the long-term memory panel for viewing, copying, and management.
 - `/memory-delete`: delete one or more long-term memories by ID.
 - `/memory-config`: open the memory configuration panel to edit `memory_size` and `keep_recent_tool_call`.
-- `/memory-update`: proactively add, refine, or remove long-term memories from an explicit user request. The explicit request is the primary basis, and the current non-system conversation transcript is used only as supporting evidence. Empty summaries are omitted from the memory-decision message instead of rendering an empty Summary section.
+- `/memory-update [prompt]`: proactively add, refine, or remove long-term memories from an explicit user request; the prompt is optional — when omitted, the system infers from the current conversation transcript.
 
 #### Streaming Summary Generation
 
@@ -316,11 +324,19 @@ Create `.makecode/mcp_config.json` in your workspace:
 
 #### Usage Flow
 
-1. **Configure**: Define MCP services to integrate in `mcp_config.json`
+1. **Configure**: Define MCP services to integrate in `mcp_config.json`, or add them dynamically via `/mcp-add`
 2. **Start**: MakeCode automatically loads the config and starts MCP clients at initialization
 3. **Discover**: System automatically extracts tool lists from MCP services and registers them
 4. **Invoke**: Agents can use MCP-provided capabilities via the standard tool call interface
-5. **Monitor**: Check MCP service status via logs and status tools
+5. **Monitor**: Check MCP service status via logs, status tools, and `/mcp-view`
+
+#### Command-Line Configuration (New)
+
+- `/mcp-add <name> [options] -- <cmd> [args...]`: add a stdio MCP service using Claude-style separator syntax; for remote services use `--url <url>` instead of `-- <cmd>`. Supports multiple `--env KEY=VALUE`, `--header KEY=VALUE`, and `--transport stdio|streamable-http|sse`, and also accepts dotted `env.KEY=VALUE` / `headers.KEY=VALUE` forms. Duplicate names must first be removed via `/mcp-delete`.
+- `/mcp-add` always writes new services with `disabled=True` by default, so unverified services are never started accidentally; enable them later via `/mcp-switch`.
+- `/mcp-delete <name>`: delete a MCP service configuration after a confirmation step, safely shutting down any running instance first.
+- `/mcp-help`: render an MCP command introduction with usage examples in the Tools pane.
+- The `/mcp-switch` panel adds a delete shortcut: with a service selected, press `d` to enter delete confirmation, `y` to delete immediately (same behavior as `/mcp-delete`), and `n` to cancel while preserving panel state and selection.
 
 #### Related Components
 
@@ -337,7 +353,7 @@ MakeCode provides a visual model configuration management interface with multi-m
 
 #### Core Features
 
-- **Disk Persistence**: Model configurations are automatically saved to `.makecode/model_config.json` under the installation directory, persisting across sessions. Model configuration, MCP configuration, and error logs are stored in the installation directory (not the workspace directory), ensuring shared configuration across multiple projects.
+- **Disk Persistence**: Model configurations are automatically saved to `.makecode/model_config.json` under the installation directory, persisting across sessions. Model configuration, MCP configuration, pane layout configuration (`layout_config.json`), and error logs are all stored in the installation directory (not the workspace directory), with paths supplied uniformly by `utils/paths.py` so that multiple projects share one configuration set.
 - **Multi-Model Support**: Can manage multiple API endpoints and model IDs simultaneously
 - **Favorite Management**: Supports marking favorite models with priority sorting
 - **Context Configuration**: Each model can independently set `max_context` (in thousand tokens)
@@ -362,13 +378,26 @@ class ModelConfig:
 - `system/commands.py`: Provides `/models` command interaction
 - `init.py`: Loads model configuration at initialization
 
-### 2.16 Console Rendering & Output Optimization (`system/console_render.py`)
+### 2.16 Console Rendering & Multi-Pane TUI (`system/console_render.py` + `system/tui_app.py`)
 
-MakeCode extracts rendering functions into a standalone `console_render.py` module, providing unified multi-thread-safe rendering capabilities.
+MakeCode builds a multi-pane TUI on top of **Textual** and dispatches agent output into different regions to avoid information clutter; the low-level rendering is extracted into standalone `console_render.py` and `stream_render.py` modules.
+
+#### Multi-Pane Regions (TuiRegion)
+
+Orchestrator output is semantically dispatched to the following independent panes:
+
+- **Content**: main conversation pane displaying user input, AI text, and Reasoning output (Reasoning is uniformly routed to Content to preserve narrative flow).
+- **Tools**: tool-call intents, execution results, and status command feedback (output from `/models`, `/memory-config`, `/layout`, MCP commands, `/load`, etc. is all routed here).
+- **Task**: dedicated task-board pane showing TaskManager state, the runnable frontier, and execution progress in real time.
+- **Background**: background activity pane for long-term memory recall/write, background checks, and other events that should not interrupt the main conversation.
+- **Sub-Agent**: sub-agent console output, disabled by default and toggled via `/sub-agent-console`.
+- **Status / RuntimeInfo**: top status bar showing the current mode (Plan/Act), model, token usage, and other runtime indicators.
+
+Pane ratios can be customized via the `/layout` command and persisted to `.makecode/layout_config.json` under the installation directory. For backward compatibility, the old `reasoning` key is still read; new configurations use the unified `task` key.
 
 #### Core Features
 
-- **Multi-thread-safe Rendering**: Uses `threading.Lock` for global rendering lock to prevent concurrent output confusion
+- **Multi-thread-safe Rendering**: Uses `threading.Lock` for a global rendering lock to prevent concurrent output confusion
 - **Smart Truncation Strategy**: When console output is too long, keeps the first 50 lines + last 250 lines to avoid losing critical information
 - **Two-Phase Streaming Rendering**: Standalone `stream_render.py` module. Reasoning process uses native append mode with dim styling (flicker-free performance), Text body uses throttled Live + Markdown real-time rendering with code block relay support
 - **Terminal Type Adaptation**: Automatically detects and adapts to different terminal environments (Rich / tqdm / plain terminal)
@@ -453,7 +482,7 @@ MakeCode includes a complete built-in auto-update system supporting version chec
 #### Version Configuration (`version.py`)
 
 ```python
-CURRENT_VERSION = "3.0.5"
+CURRENT_VERSION = "4.2.2"
 UPDATE_SERVER_URL = "https://starvpn.forwardforever.top"
 VERSION_CHECK_URL = f"{UPDATE_SERVER_URL}/version.json"
 DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode.exe"
@@ -475,7 +504,36 @@ DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode.exe"
 - `version.py`: Version number and update server URL configuration
 - `system/commands.py`: `/update` command handling and interactive confirmation
 
----
+### 2.20 Centralized Path Module (`utils/paths.py`) (New)
+
+To centrally manage workspace paths and install-directory global configuration, MakeCode unifies all path-derivation logic in `utils/paths.py`. Every consumer accesses paths through shared getters, avoiding scattered path calculations.
+
+#### Path Layers
+
+- **Install Directory**: The directory containing `MakeCode.exe` or the source code root. Cross-project shared config and logs live here.
+    - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, `error.log` reside under `install_dir/.makecode/`.
+- **Workspace Directory (Workdir)**: The user's chosen working directory. Session- and task-related state lives here.
+    - `tasks/`, `team/runs/`, `memory/memory.jsonl`, `memory/memory_config.json`, `transcripts/`, `checkpoint/` reside under `workdir/.makecode/`.
+    - `skills/` resides under `workdir/skills/`.
+
+#### Core API
+
+- `paths.install_dir()` / `paths.install_makecode_dir()`: return the install directory and its `.makecode` subdirectory.
+- `paths.workdir()` / `paths.workspace_makecode_dir()`: return the current workspace and its `.makecode` subdirectory.
+- `paths.set_workdir(path)`: switch workspace at runtime, used internally by the `/cd` command.
+- Task/memory/skills/transcript/checkpoint/MCP/model-config getters are all unified here (`workspace_tasks_dir()`, `workspace_memory_jsonl_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
+
+#### Design Benefits
+
+- **Single source of truth**: changing a path structure requires editing only `paths.py`.
+- **No environment variable dependency**: the historical `MAKECODE_WORKDIR` startup support has been removed; workspace is fully determined by TUI interaction.
+- **Frozen build compatible**: automatically distinguishes PyInstaller-frozen environments from source-code environments when computing the install directory.
+
+### 2.21 Workspace Directory Commands (`/pwd` and `/cd`) (New)
+
+- `/pwd`: display the current working directory in the Content pane; also displayed automatically on startup, after workspace switching, and after `/new`.
+- `/cd <path>`: switch the working directory and start a fresh session. Supports absolute, relative, and quoted paths. Switching triggers a full reset: clears all five panes, rebuilds history, resets the HITL directory allowlist, clears `visited_files`, and resets the checkpoint. Uses `paths.set_workdir(...)` to synchronize path state. Both `/new` and `/cd` share the same session-reset logic.
+
 ---
 
 ## 3. Project Structure
@@ -500,6 +558,7 @@ Agent/
 │  ├─ skills.py             # skill discovery and content loading
 │  ├─ file_access.py        # file access control and fine-grained concurrency locks
 │  ├─ mcp_manager.py        # MCP service manager, config loading & tool registration
+│  ├─ paths.py              # centralized path module (install / workspace path derivation)
 │  ├─ plan_mode.py          # Plan Mode state management and tool interception
 │  ├─ tasks.py              # TaskManager topology and status logic
 │  ├─ teams.py              # concurrent delegation and execution logs
@@ -508,9 +567,14 @@ Agent/
 │  ├─ commands.py           # slash command module (descriptions, completer, interactive panels)
 │  ├─ console_render.py     # console rendering module (multi-thread-safe, streaming)
 │  ├─ stream_render.py      # streaming render module (two-phase, relay Live, throttled refresh)
+│  ├─ stream_cancel.py      # streaming cancellation and state synchronization
+│  ├─ tui_app.py            # Textual TUI main application (multi-pane layout, key bindings, event dispatch)
+│  ├─ tui_modals.py         # TUI dialogs/panels (models, memory, MCP, layout, info panels)
+│  ├─ tui_types.py          # TUI types and pane enums (TuiRegion, default layout ratios)
 │  ├─ models.py             # model management module (config persistence, favorites)
 │  ├─ updater.py            # auto-update module (version check, download, verification & upgrade launch)
-│  └─ ts_validator.py        # Tree-sitter syntax validation module
+│  ├─ window_attention.py   # Windows taskbar attention notifier (used by AskUser and similar prompts)
+│  └─ ts_validator.py       # Tree-sitter syntax validation module
 ├─ skills/
 │  ├─ pdf/
 │  │  └─ SKILL.md
@@ -525,6 +589,14 @@ Runtime-generated directories:
 - `.makecode/team/`: sub-agent history and run logs
 - `.makecode/transcripts/`: transcripts saved before compaction
 - `.makecode/memory/`: long-term memory data and capacity settings
+- `.makecode/checkpoint/`: session checkpoints (for `/load` to restore from)
+
+Additionally, under the install directory (cross-project shared):
+
+- `<install_dir>/.makecode/model_config.json`: model configuration
+- `<install_dir>/.makecode/mcp_config.json`: MCP service configuration
+- `<install_dir>/.makecode/layout_config.json`: pane layout ratios
+- `<install_dir>/.makecode/mcp_stderr.log`, `error.log`: MCP / system error logs
 
 ### 3.2 Architecture Diagram (Mermaid)
 
@@ -545,6 +617,8 @@ flowchart TD
     O --> MCP["MCP Manager\nutils/mcp_manager.py"]
     O --> PM["Plan Mode\nutils/plan_mode.py"]
     O --> FA["File Access Control\nutils/file_access.py"]
+    O --> PA["Paths\nutils/paths.py"]
+    O --> TUI["Textual TUI\nsystem/tui_app.py"]
 
     TS --> CV["Validate then\nWrite Files"]
     I --> H
@@ -555,10 +629,14 @@ flowchart TD
 
     S --> SK["skills/*/SKILL.md"]
     MM --> TR[".makecode/transcripts/"]
+    MM --> LTM[".makecode/memory/memory.jsonl"]
     TM --> TP[".makecode/tasks/"]
     T --> TH[".makecode/team/"]
-    MCP --> MC["mcp_config.json\n.makecode/"]
+    MCP --> MC["mcp_config.json\ninstall .makecode/"]
     MCP --> MT["MCP Services\nExternal Tools"]
+    PA --> ID["install_dir/.makecode/"]
+    PA --> WD["workdir/.makecode/"]
+    TUI --> R1["Content / Tools / Task\nBackground / Sub-Agent"]
 
     TM --> RQ["GetRunnableTasks\nRunnable Frontier"]
     RQ --> T
@@ -599,11 +677,16 @@ flowchart TD
 - `utils/memory.py` handles long-session compaction, long-term memory management, and transcript storage.
 - `utils/mcp_manager.py` manages MCP service configuration loading, client lifecycle, tool extraction and
   registration, with support for dynamic enable/disable.
+- `utils/paths.py` provides centralized install-directory and workspace-directory path derivation; all consumers access paths through shared getters; automatically adapts to PyInstaller frozen and source-code environments.
 - `utils/plan_mode.py` manages Plan/Act mode state and intercepts restricted tool calls in Plan Mode.
 - `system/ts_validator.py` provides Tree-sitter syntax validation, automatically detecting code syntax errors before file writes.
 - `system/commands.py` handles slash command definitions, completion, and interactive panel processing.
 - `system/console_render.py` provides multi-thread-safe console rendering with streaming output and smart truncation (first 50 lines + last 250 lines).
 - `system/stream_render.py` implements a two-phase streaming render engine: Reasoning process uses native append mode with dim styling, Text body uses throttled Live + Markdown real-time rendering with Markdown code block relay support.
+- `system/stream_cancel.py` handles streaming output cancellation and state synchronization for clean shutdowns of interrupted sessions.
+- `system/tui_app.py` is the Textual TUI main application responsible for pane layout, event dispatch, status bar, and key binding.
+- `system/tui_modals.py` provides unified TUI dialogs/panels (model, memory, MCP, layout, info panels, etc.).
+- `system/tui_types.py` defines the `TuiRegion` enum (Content / Reasoning / Task / Tools / Background / Sub-Agent / Status / RuntimeInfo) and default layout ratios, with backward-compatible `reasoning→task` key migration.
 - `system/models.py` provides model configuration management with multi-model persistence, favorites, and max_context settings.
 - `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
 - `tools/ask_user.py` allows agents to proactively ask users questions when uncertain, supporting option lists and custom input via a TUI interactive panel.
@@ -682,9 +765,9 @@ python main.py
 
 After startup, you will enter a wizard flow:
 
-1. **Interactive Workspace Selection (WORKDIR)**: Enter your workspace directory (absolute path), or press Enter to use the current directory.
+1. **Interactive Workspace Selection (WORKDIR)**: Enter your workspace directory (absolute path) through the Textual panel, or directly use the current directory (the historical `MAKECODE_WORKDIR` environment variable is no longer used).
 2. **Select API Standard**: Choose your underlying API protocol (Chat Completions API or Responses API).
-3. **Enter Interactive Terminal**: Begin your conversation with the main agent.
+3. **Enter Interactive Terminal**: Begin your conversation with the main agent; you can switch to another workspace at any time via `/cd <path>`.
 4. **Configure Model**: Use the `/models` command to add and manage your model configurations.
 
 ### 6.4 Built-in Slash Commands
@@ -698,16 +781,27 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/mcp-view`          | View the MCP status overview and the currently loaded MCP tool list                                                                              |
 | `/mcp-restart`       | Restart the MCP background manager and reload configuration                                                                                      |
 | `/mcp-switch`        | Interactively toggle MCP services on/off, save changes to `.makecode/mcp_config.json` after confirmation, and attempt incremental enable/disable |
+| `/mcp-add`           | Add an MCP service using `<name> [options] -- <cmd> [args...]` syntax; remote services use `--url`; written as disabled by default               |
+| `/mcp-delete`        | Delete a specific MCP service configuration and safely shut down the running instance (requires confirmation)                                    |
+| `/mcp-help`          | Show an introduction to MCP-related commands                                                                                                     |
 | `/load`              | List historical checkpoints and select one to load                                                                                               |
 | `/skills-switch`     | Toggle skills catalog injection status (On/Off)                                                                                                  |
 | `/skills-list`       | List available skills in the current workspace                                                                                                   |
-| `/compact`           | Compact the current conversation context                                                                                                         |
+| `/compact [prompt]`  | Compact the current conversation context; prompt is optional                                                                                     |
 | `/tools`             | List detailed information of available tools                                                                                                     |
 | `/tasks`              | View the task board and current execution progress                                                                                               |
 | `/plan`               | Enter/exit Plan Mode — only read-only and planning tools are allowed in the planning phase                                                       |
 | `/status`            | Report system status, completed tasks, and next steps                                                                                            |
 | `/help`              | Show usage help and self-introduction                                                                                                            |
 | `/new`                | Clear current conversation history                                                                                                               |
+| `/pwd`               | Show the current working directory in the Content pane                                                                                           |
+| `/cd <path>`         | Switch the current working directory and start a fresh session; supports absolute / relative / quoted paths                                       |
+| `/layout`            | Open the layout panel to adjust Content / Tools / Task / Background / Sub-Agent pane ratios                                                       |
+| `/memory-list`       | List current active long-term memories                                                                                                           |
+| `/memory-panel`      | Open the long-term memory panel (sorted by `updated_at` ascending)                                                                               |
+| `/memory-delete`     | Delete one or more long-term memories by ID                                                                                                       |
+| `/memory-config`     | Open the memory configuration panel to edit `memory_size` and `keep_recent_tool_call`                                                            |
+| `/memory-update [prompt]` | Proactively add, refine, or remove long-term memories; prompt is optional                                                                  |
 | `/hitl`               | Toggle Human-in-the-Loop interception status (On/Off)                                                                                            |
 | `/sub-agent-console`  | Toggle Sub-Agent console output status, disabled by default                                                                                      |
 | `/quit` / `/exit`    | Exit the program                                                                                                                                 |

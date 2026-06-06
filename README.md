@@ -16,9 +16,11 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
 - TaskManager 负责维护任务依赖关系与可执行前沿。
 - Team 系统负责并发唤醒子智能体执行可并行任务，并支持**失败上下文自动恢复**。
 - Skills 系统负责按需加载领域技能说明。
-- Memory 模块负责长会话压缩、长期记忆管理与转录保存。
+- Memory 模块负责长会话压缩、长期记忆管理与转录保存，并在每次主请求前自动进行**长期记忆召回（Pre-Recall）**。
 - **File Access Control** 模块提供强制读取后编辑、修改时间锁校验与细粒度文件级并发锁。
 - **Prompt 集中管理** 将所有 LLM Prompt 统一维护，便于扩展与参数化。
+- **集中路径模块（`utils/paths.py`）** 统一管理工作区目录与安装目录派生路径，所有模块统一通过共享 getter 访问 `.makecode/` 子目录。
+- **Textual 多区 TUI** 将主智能体输出分发到 `Content / Tools / Task / Background / Sub-Agent / Status` 等独立面板，并支持自定义面板比例。
 
 这个项目的目标不是只回答问题，而是让智能体具备**可规划、可执行、可追踪、可扩展**的工程工作流能力。
 
@@ -61,10 +63,11 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 
 - **技能库 (`skills/`) 加载**：系统会严格从 `WORKDIR/skills` 目录中扫描并加载所有的自定义技能（`SKILL.md`
   ）。这样可以确保不同的工程项目可以使用其专属的技能配置，互不干扰。
-- 支持交互式选择工作区目录（支持当前目录/自定义目录）。
+- 启动时以 **Textual TUI 向导面板** 交互式选择工作区目录（当前目录或自定义路径），不再依赖任何环境变量（如历史上的 `MAKECODE_WORKDIR` 已移除）。
 - 支持交互式选择底层的接口规范标准：
     - `Chat Completions API`（标准格式，适用于接入大多数开源模型如 DeepSeek、Ollama 等）。
     - `Responses API`（内测定制格式，原生兼容）。
+- **路径集中管理**：工作区路径、安装目录路径、`.makecode/` 子目录（`tasks/`、`team/`、`memory/`、`transcripts/`、`checkpoint/`等）及安装目录下的 `model_config.json`、`mcp_config.json`、`layout_config.json`、`error.log` 均由 `utils/paths.py` 统一提供。
 - **模型配置**：通过内置的 `/models` 命令进行管理（详见 2.15 节）
 
 ### 2.3 文件与终端工具（`utils/common.py`）与文件访问控制（`utils/file_access.py`）
@@ -175,6 +178,9 @@ Team 模块支持：
 - 调用模型对历史进行摘要后再重建上下文。
 - 在压缩完成后自动分析是否需要写入、更新或删除**长期记忆**，将可跨会话复用的稳定信息注入后续 Prompt。
 - 长期记忆同时支持**主动管理模式**：用户可显式发起记忆维护请求，而不必等待自动压缩流程触发。
+- **请求前自动召回（Pre-Recall）**：每次主请求开始前，编排器会先以当前用户输入为查询，调用 `RecallLongTermMemory` 检索相关长期记忆，并作为处理上下文注入到对话中；编排器还可主动调用 `RememberLongTermMemory` 请求记忆管理器更新长期记忆。
+- **TUI Background 区渲染**：记忆召回与写入活动会在独立的 `Background` 面板中实时展示，不污染主对话区。
+- **Plan Mode 隔离**：`RememberLongTermMemory` 在 Plan Mode 下被拦截，防止规划阶段写入记忆；读取类动作不受影响。
 
 #### 长期记忆管理机制
 
@@ -189,13 +195,15 @@ Team 模块支持：
 - **容量与淘汰策略**：长期记忆容量可配置；超出上限时，系统会按时间顺序淘汰较旧的 active 记忆。
 - **存储位置**：长期记忆保存于 `.makecode/memory/memory.jsonl`，记忆配置保存于 `.makecode/memory/memory_config.json`。
 - **容错读取**：读取记忆 JSONL 时会跳过无效行，并保持原文件内容不被重写。
+- **渲染顺序**：长期记忆渲染与 `/memory-panel` 面板均按 `updated_at` 升序排列（缺失时回退 `created_at`），只影响展示层，不改变 JSONL 存储顺序和增删改查逻辑。
 
 #### 长期记忆命令
 
 - `/memory-list`：列出当前 active 长期记忆。
+- `/memory-panel`：打开长期记忆面板，可查看/复制/管理记忆。
 - `/memory-delete`：按 ID 删除一条或多条长期记忆。
 - `/memory-config`：打开记忆配置面板，可修改 `memory_size` 和 `keep_recent_tool_call`。
-- `/memory-update`：根据用户提供的请求主动新增、修正或清理长期记忆。
+- `/memory-update [prompt]`：根据用户提供的请求主动新增、修正或清理长期记忆；prompt 可选，省略时基于当前转录自动推断。
 
 #### 流式摘要生成
 
@@ -284,11 +292,19 @@ MakeCode 支持通过 **Model Context Protocol (MCP)** 集成外部工具和服�
 
 #### 使用流程
 
-1. **配置**：在 `mcp_config.json` 中定义需要集成的 MCP 服务
+1. **配置**：在 `mcp_config.json` 中定义需要集成的 MCP 服务，或使用 `/mcp-add` 动态追加
 2. **启动**：MakeCode 初始化时自动加载配置并启动 MCP 客户端
 3. **发现**：系统自动提取 MCP 服务的工具列表并注册到工具集
 4. **调用**：智能体可通过标准工具调用接口使用 MCP 提供的能力
-5. **监控**：通过日志和状态工具查看 MCP 服务运行状态
+5. **监控**：通过日志、状态工具以及 `/mcp-view` 查看 MCP 服务运行状态
+
+#### 命令行配置能力（新增）
+
+- `/mcp-add <name> [options] -- <cmd> [args...]`：以 Claude 风格分隔符语法添加 stdio 型 MCP 服务；远程服务使用 `--url <url>` 取代 `-- <cmd>`。支持多个 `--env KEY=VALUE`、`--header KEY=VALUE`、`--transport stdio|streamable-http|sse`，并兼容 `env.KEY=VALUE` / `headers.KEY=VALUE` 点分语法。同名服务需先 `/mcp-delete` 删除后重新添加。
+- `/mcp-add` 默认将新服务写为 `disabled=True`，避免未验证的服务被意外启动；后续可通过 `/mcp-switch` 启用。
+- `/mcp-delete <name>`：二次确认后删除指定 MCP 服务配置，并安全停用运行中的实例。
+- `/mcp-help`：在 Tools 区展示 MCP 相关命令介绍与使用示例。
+- `/mcp-switch` 面板增加删除快捷键：选中服务后按 `d` 进入删除确认，`y` 立即删除（与 `/mcp-delete` 行为一致），`n` 取消并保留面板状态与选中项。
 
 #### 相关组件
 
@@ -304,7 +320,7 @@ MakeCode 提供可视化的模型配置管理功能，支持多模型切换和�
 
 #### 核心功能
 
-- **磁盘持久化**：模型配置自动保存到安装目录下的 `.makecode/model_config.json`，跨会话保留。模型配置、MCP 配置及错误日志统一存储在安装目录（非工作区目录），确保多项目共享同一套配置。
+- **磁盘持久化**：模型配置自动保存到安装目录下的 `.makecode/model_config.json`，跨会话保留。模型配置、MCP 配置、面板布局配置（`layout_config.json`）及错误日志统一存储在安装目录（非工作区目录），路径由 `utils/paths.py` 统一提供，确保多项目共享同一套配置。
 - **多模型支持**：可同时管理多个 API 端点和模型 ID
 - **收藏管理**：支持标记收藏模型，优先排序显示
 - **上下文配置**：每个模型可独立设置 `max_context`（单位：千 tokens）
@@ -329,9 +345,22 @@ class ModelConfig:
 - `system/commands.py`：提供 `/model` 相关命令交互
 - `init.py`：初始化时加载模型配置
 
-### 2.16 控制台渲染与输出优化（`system/console_render.py`）
+### 2.16 控制台渲染与多区 TUI（`system/console_render.py` + `system/tui_app.py`）
 
-MakeCode 将渲染函数抽取到独立的 `console_render.py` 模块，提供统一的多线程安全渲染能力。
+MakeCode 采用 **Textual** 构建的多面板 TUI，将智能体输出路由到不同区域，避免信息混淆；底层渲染抽取到独立的 `console_render.py` 与 `stream_render.py` 中。
+
+#### 多区面板（TuiRegion）
+
+智能体输出按语义分发到以下独立面板：
+
+- **Content**：主对话区，展示用户输入、AI 文本与 Reasoning 输出（Reasoning 统一路由到 Content，以保持上下文连贯）。
+- **Tools**：工具调用意图与执行结果、各类状态命令反馈（`/models`、`/memory-config`、`/layout`、MCP 系列、`/load` 等命令的输出均路由到该区）。
+- **Task**：任务看板专用面板，实时展示 TaskManager 状态、Runnable Frontier 与执行进度。
+- **Background**：后台活动区，用于展示长期记忆召回/写入、后台检查等不需打断主对话的事件。
+- **Sub-Agent**：子智能体控制台输出，默认关闭，可通过 `/sub-agent-console` 切换。
+- **Status / RuntimeInfo**：顶部状态栏，展示当前模式（Plan/Act）、模型、Token 使用量等运行时指标。
+
+面板布局比例可通过 `/layout` 命令定制，配置保存到安装目录下的 `.makecode/layout_config.json`。为延续旧配置设计上保留 `reasoning` 键名的兼容读取，迁移后统一使用 `task` 键。
 
 #### 核心功能
 
@@ -420,7 +449,7 @@ MakeCode 内置了完整的自动更新系统，支持版本检查、增量下�
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "3.0.5"
+CURRENT_VERSION = "4.2.2"
 UPDATE_SERVER_URL = "https://starvpn.forwardforever.top"
 VERSION_CHECK_URL = f"{UPDATE_SERVER_URL}/version.json"
 DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode.exe"
@@ -441,6 +470,36 @@ DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode.exe"
 - `updater.py`：独立更新器程序，负责等待主程序退出后替换 exe
 - `version.py`：版本号与更新服务器地址配置
 - `system/commands.py`：`/update` 命令处理与交互确认
+
+### 2.20 集中路径模块（`utils/paths.py`）（新增）
+
+为统一管理工作区路径与安装目录下的全局配置，MakeCode 将所有路径派生逻辑集中到 `utils/paths.py`，所有消费者通过共享 getter 访问路径，避免路径计算散布在各个模块。
+
+#### 路径分层
+
+- **安装目录（Install Dir）**：`MakeCode.exe` 或源码所在目录，存放跨项目共享的配置与日志。
+    - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 均位于 `install_dir/.makecode/`。
+- **工作区目录（Workdir）**：用户当前交互选择的工程目录，存放会话/任务相关的状态。
+    - `tasks/`、`team/runs/`、`memory/memory.jsonl`、`memory/memory_config.json`、`transcripts/`、`checkpoint/` 均位于 `workdir/.makecode/`。
+    - `skills/` 位于 `workdir/skills/`。
+
+#### 核心 API
+
+- `paths.install_dir()` / `paths.install_makecode_dir()`：返回安装目录与其 `.makecode` 子目录。
+- `paths.workdir()` / `paths.workspace_makecode_dir()`：返回当前工作区与其 `.makecode` 子目录。
+- `paths.set_workdir(path)`：切换工作区时代替手动拼接，`/cd` 命令内部调用该函数。
+- 面向任务/记忆/技能/转录/检查点/MCP/模型配置的各级 getter（如 `workspace_tasks_dir()`、`workspace_memory_jsonl_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
+
+#### 设计收益
+
+- **一处修改、全局生效**：路径结构变更只需修改 `paths.py`。
+- **避免环境依赖**：已移除历史上的 `MAKECODE_WORKDIR` 环境变量启动支持，工作区完全由 TUI 交互决定。
+- **冻结打包兼容**：自动区分 PyInstaller 冻结环境与源码环境下的安装目录计算。
+
+### 2.21 工作目录切换与快捷查看（`/pwd` 与 `/cd`）（新增）
+
+- `/pwd`：在 Content 区展示当前工作目录；启动时、工作区切换后、`/new` 清空会话后也会自动调用。
+- `/cd <路径>`：切换工作目录并开启全新会话。支持绝对/相对/带引号路径；切换后会完整重置五区 UI、重建 history、重置 HITL 白名单、清空 `visited_files`、重置 checkpoint，并使用 `paths.set_workdir(...)` 同步路径状态。`/new` 与 `/cd` 共用同一套会话重置逻辑。
 
 ## 3. 项目结构与架构
 
@@ -466,6 +525,7 @@ Agent/
 │  ├─ skills.py             # 技能发现与内容加载
 │  ├─ file_access.py        # 文件访问控制与细粒度并发锁
 │  ├─ mcp_manager.py        # MCP 服务管理器，配置加载与工具注册
+│  ├─ paths.py              # 集中路径模块（安装/工作区路径派生）
 │  ├─ plan_mode.py          # Plan Mode 状态管理与工具拦截
 │  ├─ tasks.py              # TaskManager 任务拓扑与状态管理
 │  ├─ teams.py              # 子智能体并发委派与执行日志
@@ -474,9 +534,14 @@ Agent/
 │  ├─ commands.py           # 斜杠命令模块（命令描述、补全器、交互面板）
 │  ├─ console_render.py     # 控制台渲染模块（多线程安全渲染、流式输出）
 │  ├─ stream_render.py      # 流式渲染模块（两阶段渲染、接力Live、节流刷新）
+│  ├─ stream_cancel.py      # 流式取消与状态同步
+│  ├─ tui_app.py            # Textual TUI 主应用（多区面板、快捷键、事件分发）
+│  ├─ tui_modals.py         # TUI 弹窗/面板（模型、记忆、MCP、布局、信息面板）
+│  ├─ tui_types.py          # TUI 类型与面板柚枚（TuiRegion、布局默认比例等）
 │  ├─ models.py             # 模型管理模块（配置持久化、收藏管理）
 │  ├─ updater.py            # 自动更新模块（版本检查、下载、校验与升级启动）
-│  └─ ts_validator.py        # Tree-sitter 语法验证模块
+│  ├─ window_attention.py   # Windows 任务栏闪烁提醒（AskUser 等场景）
+│  └─ ts_validator.py       # Tree-sitter 语法验证模块
 ├─ skills/
 │  ├─ pdf/
 │  │  └─ SKILL.md
@@ -491,6 +556,14 @@ Agent/
 - `.makecode/team/`：子智能体历史与运行日志
 - `.makecode/transcripts/`：压缩前会话转录
 - `.makecode/memory/`：长期记忆数据与容量配置
+- `.makecode/checkpoint/`：会话 Checkpoint 记录（供 `/load` 恢复）
+
+以及安装目录下的（跨项目共享）：
+
+- `<install_dir>/.makecode/model_config.json`：模型配置
+- `<install_dir>/.makecode/mcp_config.json`：MCP 服务配置
+- `<install_dir>/.makecode/layout_config.json`：面板布局比例
+- `<install_dir>/.makecode/mcp_stderr.log`、`error.log`：MCP/系统错误日志
 
 ### 3.2 架构图（Mermaid）
 
@@ -511,6 +584,8 @@ flowchart TD
     O --> MCP["MCP Manager\nutils/mcp_manager.py"]
     O --> PM["Plan Mode\nutils/plan_mode.py"]
     O --> FA["File Access Control\nutils/file_access.py"]
+    O --> PA["Paths\nutils/paths.py"]
+    O --> TUI["Textual TUI\nsystem/tui_app.py"]
 
     TS --> CV["验证通过后\n执行文件写入"]
     I --> H
@@ -521,10 +596,14 @@ flowchart TD
 
     S --> SK["skills/*/SKILL.md"]
     MM --> TR[".makecode/transcripts/"]
+    MM --> LTM[".makecode/memory/memory.jsonl"]
     TM --> TP[".makecode/tasks/"]
     T --> TH[".makecode/team/"]
-    MCP --> MC["mcp_config.json\n.makecode/"]
+    MCP --> MC["mcp_config.json\ninstall .makecode/"]
     MCP --> MT["MCP Services\nExternal Tools"]
+    PA --> ID["install_dir/.makecode/"]
+    PA --> WD["workdir/.makecode/"]
+    TUI --> R1["Content / Tools / Task\nBackground / Sub-Agent"]
 
     TM --> RQ["GetRunnableTasks\nRunnable Frontier"]
     RQ --> T
@@ -561,11 +640,16 @@ flowchart TD
 - `utils/skills.py` 提供技能发现和技能内容加载。
 - `utils/memory.py` 负责长会话压缩、长期记忆管理与转录保存。
 - `utils/mcp_manager.py` 负责 MCP 服务配置加载、客户端生命周期管理、工具提取与注册，支持动态启用/禁用服务。
+- `utils/paths.py` 集中提供安装目录与工作区目录下的路径派生，所有消费者通过共享 getter 访问；PyInstaller 冻结与源码运行环境自动适配。
 - `utils/plan_mode.py` 管理 Plan/Act 模式状态，拦截 Plan Mode 下的受限工具调用。
 - `system/ts_validator.py` 提供 Tree-sitter 语法验证，在文件写入前自动检测语法错误。
 - `system/commands.py` 负责斜杠命令的定义、补全与交互式面板处理。
-- `system/console_render.py` 提供多线程安全的控制台渲染，支持流式输出和智能截断（保留开头50行+结尾250行）。
+- `system/console_render.py` 提供多线程安全的控制台渲染，支持流式输出和智能截断（保留开头 50 行 + 结尾 250 行）。
 - `system/stream_render.py` 实现两阶段流式渲染引擎：Reasoning 思考过程采用原生 append 模式配合 dim 样式，Text 正文采用带节流（Throttle）的 Live + Markdown 实时渲染，并支持 Markdown 代码块接力渲染。
+- `system/stream_cancel.py` 负责流式输出的取消与状态同步，供中断中的会话结尾清理使用。
+- `system/tui_app.py` 是 Textual TUI 主应用，负责面板布局、事件分发、状态栏与快捷键绑定。
+- `system/tui_modals.py` 提供统一的 TUI 弹窗/面板（模型、记忆、MCP、布局、信息面板等）。
+- `system/tui_types.py` 定义 TUI 区柚枚 `TuiRegion`（Content / Reasoning / Task / Tools / Background / Sub-Agent / Status / RuntimeInfo）与默认布局比例。
 - `system/models.py` 提供模型配置管理，支持多模型配置持久化、收藏管理与 max_context 设置。
 - `tools/todo.py` 供子智能体在多步骤任务中维护内部待办。
 - `tools/ask_user.py` 允许智能体在不确定时主动向用户提问，支持选项列表与自定义输入，基于 TUI 交互面板实现。
@@ -640,9 +724,9 @@ python main.py
 
 启动后会进入向导流程：
 
-1. **交互式选择工作区目录（WORKDIR）**：输入你的工作目录（绝对路径），或者按回车使用当前目录。
+1. **交互式选择工作区目录（WORKDIR）**：通过 Textual 面板输入工作目录绝对路径，或直接使用当前目录（不再使用 `MAKECODE_WORKDIR` 环境变量）。
 2. **选择 API 标准**：选择你使用的底层 API 协议（Chat Completions API 或 Responses API）。
-3. **进入交互式终端**：开始与主代理对话。
+3. **进入交互式终端**：开始与主代理对话，运行期可随时使用 `/cd <path>` 切换到另一个工作区。
 4. **配置模型**：使用 `/models` 命令添加和管理你的模型配置。
 
 ### 6.4 内置快捷命令（Slash Commands）
@@ -656,16 +740,27 @@ python main.py
 | `/mcp-view`          | 查看 MCP 状态总览，以及当前已加载的 MCP 工具列表                                  |
 | `/mcp-restart`       | 重新启动 MCP 后台管理器并重新加载配置                                          |
 | `/mcp-switch`        | 交互式切换 MCP 服务启用/禁用状态，确认后保存到 `.makecode/mcp_config.json` 并尝试增量启停 |
+| `/mcp-add`           | 使用 `<name> [options] -- <cmd> [args...]` 语法添加 MCP 服务；远程服务使用 `--url`；默认 disabled |
+| `/mcp-delete`        | 删除指定 MCP 服务配置，并安全停用运行中的实例（需二次确认）                  |
+| `/mcp-help`          | 显示 MCP 相关命令的使用介绍                                                |
 | `/load`              | 列出历史 checkpoint 并选择加载                                          |
 | `/skills-switch`     | 切换 skills 目录摘要注入状态 (开启/关闭)                                     |
 | `/skills-list`       | 列出当前工作区可用的 skills                                              |
-| `/compact`           | 压缩当前对话上下文                                                      |
+| `/compact [prompt]`  | 压缩当前对话上下文，prompt 可选                                            |
 | `/tools`             | 列出当前可用工具详细信息                                                   |
 | `/tasks`              | 查看任务看板和当前执行进度                                                  |
 | `/plan`               | 进入/退出 Plan Mode — 规划阶段只允许只读和任务规划工具                             |
 | `/status`            | 汇报系统状态、已完成任务和下一步计划                                             |
 | `/help`              | 显示使用帮助和自我介绍                                                    |
 | `/new`                | 清空当前对话历史                                                       |
+| `/pwd`               | 在 Content 区展示当前工作目录                                            |
+| `/cd <path>`         | 切换当前工作目录并开启全新会话，支持绝对/相对/带引号路径                       |
+| `/layout`            | 打开面板布局面板，调整 Content/Tools/Task/Background/Sub-Agent 面板比例      |
+| `/memory-list`       | 列出当前 active 长期记忆                                                |
+| `/memory-panel`      | 打开长期记忆面板（按 `updated_at` 升序展示）                            |
+| `/memory-delete`     | 按 ID 删除一条或多条长期记忆                                            |
+| `/memory-config`     | 打开记忆配置面板，修改 `memory_size` 与 `keep_recent_tool_call`           |
+| `/memory-update [prompt]` | 主动新增/修正/清理长期记忆，prompt 可选                              |
 | `/hitl`               | 切换 Human-in-the-Loop 拦截状态 (开启/关闭)                               |
 | `/sub-agent-console`  | 切换 Sub-Agent 的控制台输出状态，默认关闭                                      |
 | `/quit` / `/exit`    | 退出程序                                                           |
