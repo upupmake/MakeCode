@@ -69,8 +69,8 @@ COMMAND_DESCRIPTIONS = {
     "/models": "打开模型管理面板，可添加、删除、标记常用、选择当前模型。",
     "/layout": "调整 TUI 面板高度比例：左侧 Content/Tools，右侧 Task/Background/Sub-Agent。",
     "/mcp-view": "查看当前已加载的 MCP 服务器和工具。",
-    "/mcp-help": "显示 MCP 相关命令帮助，包含 /mcp-add 参数说明和使用示例。",
-    "/mcp-add": "<name> 添加 MCP 服务配置；stdio 示例：/mcp-add fs --command npx --arg -y --arg @server/pkg；HTTP 示例：/mcp-add api --url https://example.com/mcp --header X-Api-Key=xxx。服务名已存在时请先 /mcp-delete <name>。",
+    "/mcp-help": "显示 MCP 相关命令介绍。",
+    "/mcp-add": "<name> 添加 MCP 服务配置；stdio 示例：/mcp-add fs -- npx -y @server/pkg；HTTP 示例：/mcp-add api --url https://example.com/mcp --header X-Api-Key=xxx。服务名已存在时请先 /mcp-delete <name>。",
     "/mcp-delete": "<name> 删除 MCP 服务配置；会二次确认并停用运行中的服务。",
     "/mcp-restart": "重新启动 MCP 管理器并加载配置。",
     "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存。",
@@ -153,11 +153,11 @@ def interactive_choose_checkpoint(
 # MCP 服务开关面板
 # ============================================================================
 
-def interactive_switch_mcp_servers(server_switches: list) -> str | dict:
+def interactive_switch_mcp_servers(server_switches: list, mcp_manager: Any) -> str | dict:
     """交互式切换 MCP 服务启用/禁用状态"""
     if not server_switches:
         return "empty"
-    return choose_mcp_switch_tui(server_switches)
+    return choose_mcp_switch_tui(server_switches, mcp_manager)
 
 
 # ============================================================================
@@ -300,18 +300,15 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 #### `/mcp-view`
 查看 MCP 状态总览和已加载工具明细，包括：配置文件路径、后台状态、配置中的服务、已启用/已禁用服务、当前已加载服务和工具列表。
 
-#### `/mcp-add <name> [--command <cmd> | --url <url>] [options]`
-添加一个 MCP 服务配置并尝试增量启用。`<name>` 是服务唯一标识，会成为工具名前缀的一部分。服务名已存在时不会覆盖。
+#### `/mcp-add <name> [options] -- <cmd> [args...]`
+添加一个 stdio MCP 服务配置。`<name>` 是服务唯一标识，会成为工具名前缀的一部分。服务名已存在时不会覆盖。`--` 后面的内容会作为启动命令解析，第一个值写入 `command`，其余值写入 `args`。
 
-必选项二选一：
-
-- `--command <cmd>`：添加 stdio 类型 MCP 服务，例如 `npx`、`uvx`、`python`、`node`。
-- `--url <url>`：添加远程 MCP 服务，例如 Streamable HTTP 或 SSE 地址。
+远程 MCP 服务使用：`/mcp-add <name> --url <url> [options]`。
 
 常用参数：
 
-- `--transport stdio|streamable-http|http|sse`：指定传输类型。`http` 会按 fastmcp 行为归一化为 `streamable-http`；不填时，`--command` 默认 `stdio`，普通 `--url` 默认 `streamable-http`，包含 `/sse` 的 URL 默认 `sse`。
-- `--arg <value>`：stdio 命令参数，可重复。参数值以 `-` 开头也可以，例如 `--arg -y`。
+- `--url <url>`：添加远程 MCP 服务，例如 Streamable HTTP 或 SSE 地址。
+- `--transport stdio|streamable-http|http|sse`：指定传输类型。`http` 会按 fastmcp 行为归一化为 `streamable-http`；不填时，stdio 命令默认 `stdio`，普通 `--url` 默认 `streamable-http`，包含 `/sse` 的 URL 默认 `sse`。
 - `--env KEY=VALUE`：stdio 子进程环境变量，可重复。
 - `--header KEY=VALUE`：远程 MCP 请求头，可重复。
 - `headers.KEY=VALUE`：另一种设置 headers 的写法，适合一次性补充多个嵌套字段。
@@ -321,17 +318,16 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 - `--timeout <milliseconds>`：响应超时时间，单位毫秒。
 - `--sse-read-timeout <seconds>`：SSE 读取超时。
 - `--keep-alive true|false`：stdio 子进程是否保持存活。
-- `--disabled`：只写入配置，不立即启用服务。
 
 示例：
 
 ```bash
-/mcp-add fs --command npx --arg -y --arg @modelcontextprotocol/server-filesystem --arg D:/PythonProject/Agent
-/mcp-add git --command uvx --arg mcp-server-git --arg --repository --arg D:/PythonProject/Agent
+/mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem D:/PythonProject/Agent
+/mcp-add git -- uvx mcp-server-git --repository D:/PythonProject/Agent
+/mcp-add MiniMax --env MINIMAX_API_KEY=api_key --env MINIMAX_API_HOST=https://api.minimaxi.com -- uvx minimax-coding-plan-mcp -y
 /mcp-add api --url https://example.com/mcp --header X-Api-Key=secret
 /mcp-add api --url https://example.com/mcp headers.Authorization="Bearer token"
 /mcp-add legacy --url https://example.com/sse --transport sse
-/mcp-add draft-api --url https://example.com/mcp --disabled
 ```
 
 #### `/mcp-delete <name>`
@@ -373,7 +369,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return True
 
         try:
-            switch_result = interactive_switch_mcp_servers(server_switches)
+            switch_result = interactive_switch_mcp_servers(server_switches, self.mcp_manager)
         except Exception as exc:
             log_error_traceback("commands handle_mcp_switch interactive", exc)
             self.console.print(
@@ -382,11 +378,20 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
             return True
 
-        if switch_result == "empty" or switch_result.get("action") == "cancel":
+        if switch_result == "empty":
             self.console.print(
                 "\n[bold yellow]↩️ 已取消本次 MCP 开关修改，配置文件未保存，运行中的服务状态保持不变。[/bold yellow]",
                 tui_region=TuiRegion.TOOLS,
             )
+            return True
+
+        deleted_lines = self._format_mcp_panel_delete_lines(switch_result.get("deleted_results", []))
+        if switch_result.get("action") == "cancel":
+            lines = [
+                "\n[bold yellow]↩️ 已取消本次 MCP 开关修改，配置文件未保存，运行中的服务状态保持不变。[/bold yellow]"
+            ]
+            lines.extend(deleted_lines)
+            self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
             return True
 
         try:
@@ -402,10 +407,9 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return True
 
         if not apply_result.get("saved"):
-            self.console.print(
-                f"\n[bold yellow]ℹ️ {apply_result.get('message', '没有检测到变更。')}[/bold yellow]",
-                tui_region=TuiRegion.TOOLS,
-            )
+            lines = [f"\n[bold yellow]ℹ️ {apply_result.get('message', '没有检测到变更。')}[/bold yellow]"]
+            lines.extend(deleted_lines)
+            self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
             return True
 
         changed = apply_result.get("changed", [])
@@ -437,8 +441,30 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             summary_lines.append(
                 f"[bold red]部分服务切换失败:[/bold red] {failure_text}"
             )
+        summary_lines.extend(deleted_lines)
         self.console.print("\n".join(summary_lines), tui_region=TuiRegion.TOOLS)
         return True
+
+    def _format_mcp_delete_lines(self, server_name: str, result: dict) -> list[str]:
+        failed = result.get("failed", [])
+        lines = [
+            f"\n[bold green]✅ 已删除 MCP 服务配置:[/bold green] {escape(server_name)}",
+            f"[#aaaaaa]配置文件: {self.mcp_manager.get_status_info().get('config_path')}[/#aaaaaa]",
+            f"[#aaaaaa]{escape(result.get('message', ''))}[/#aaaaaa]",
+        ]
+        if failed:
+            failure_text = "; ".join(
+                f"{item['server']} ({item['action']} 失败: {item['error']})"
+                for item in failed
+            )
+            lines.append(f"[bold red]服务停用失败:[/bold red] {escape(failure_text)}")
+        return lines
+
+    def _format_mcp_panel_delete_lines(self, deleted_results: list[dict]) -> list[str]:
+        lines = []
+        for item in deleted_results:
+            lines.extend(self._format_mcp_delete_lines(item.get("server", ""), item.get("result", {})))
+        return lines
 
     def _parse_mcp_bool(self, value: str) -> bool:
         normalized = value.strip().lower()
@@ -469,25 +495,11 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             raise ValueError(f"字段 {parent} 已存在且不是对象，不能设置 {key}")
         target[child] = value
 
-    def _preprocess_mcp_add_tokens(self, tokens: list[str]) -> list[str]:
-        result = []
-        index = 0
-        while index < len(tokens):
-            if tokens[index] == "--arg" and index + 1 < len(tokens):
-                result.append(f"--arg={tokens[index + 1]}")
-                index += 2
-                continue
-            result.append(tokens[index])
-            index += 1
-        return result
-
     def _build_mcp_add_parser(self) -> argparse.ArgumentParser:
         parser = SlashArgumentParser(prog="/mcp-add", add_help=False)
         parser.add_argument("name")
-        parser.add_argument("--command")
         parser.add_argument("--url")
         parser.add_argument("--transport", choices=["stdio", "streamable-http", "http", "sse"])
-        parser.add_argument("--arg", dest="args", action="append", default=[])
         parser.add_argument("--env", action="append", default=[])
         parser.add_argument("--header", action="append", default=[])
         parser.add_argument("--cwd")
@@ -495,7 +507,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         parser.add_argument("--timeout", type=int)
         parser.add_argument("--sse-read-timeout", dest="sse_read_timeout", type=float)
         parser.add_argument("--keep-alive", dest="keep_alive")
-        parser.add_argument("--disabled", action="store_true")
         return parser
 
     def _parse_mcp_add_config(self, query: str) -> tuple[str, dict]:
@@ -504,33 +515,38 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         except ValueError as exc:
             raise ValueError(f"命令参数解析失败: {exc}") from exc
         if len(tokens) < 2:
-            raise ValueError("用法：/mcp-add <name> [--command <cmd> | --url <url>] [options]")
+            raise ValueError("用法：/mcp-add <name> [options] -- <cmd> [args...] 或 /mcp-add <name> --url <url> [options]")
+
+        command_parts = []
+        parse_tokens = tokens[1:]
+        if "--" in parse_tokens:
+            separator_index = parse_tokens.index("--")
+            command_parts = parse_tokens[separator_index + 1:]
+            parse_tokens = parse_tokens[:separator_index]
 
         parser = self._build_mcp_add_parser()
         try:
-            namespace, extra_fields = parser.parse_known_args(
-                self._preprocess_mcp_add_tokens(tokens[1:])
-            )
+            namespace, extra_fields = parser.parse_known_args(parse_tokens)
         except SystemExit as exc:
             raise ValueError("参数格式无效") from exc
 
         server_name = namespace.name
         if server_name.startswith("-"):
             raise ValueError("/mcp-add 需要先提供服务名")
-        if not namespace.command and not namespace.url:
-            raise ValueError("/mcp-add 必须提供 --command 或 --url")
-        if namespace.command and namespace.url:
-            raise ValueError("--command 和 --url 不能同时使用")
+        if not command_parts and not namespace.url:
+            raise ValueError("/mcp-add 必须提供 -- 后的启动命令或 --url")
+        if command_parts and namespace.url:
+            raise ValueError("--url 不能和 -- 后的启动命令同时使用")
 
         cfg = {}
-        if namespace.command:
-            cfg["command"] = namespace.command
+        if command_parts:
+            cfg["command"] = command_parts[0]
+            if len(command_parts) > 1:
+                cfg["args"] = command_parts[1:]
         if namespace.url:
             cfg["url"] = namespace.url
         if namespace.transport:
             cfg["transport"] = namespace.transport
-        if namespace.args:
-            cfg["args"] = namespace.args
         if namespace.cwd:
             cfg["cwd"] = namespace.cwd
         if namespace.auth:
@@ -541,8 +557,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             cfg["sse_read_timeout"] = namespace.sse_read_timeout
         if namespace.keep_alive is not None:
             cfg["keep_alive"] = self._parse_mcp_bool(namespace.keep_alive)
-        if namespace.disabled:
-            cfg["disabled"] = True
+        cfg["disabled"] = True
 
         for item in namespace.env:
             key, value = self._parse_mcp_pair(item, "--env")
@@ -572,8 +587,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         except Exception as exc:
             log_error_traceback("commands handle_mcp_add", exc)
             self.console.print(
-                "\n[bold yellow]用法：/mcp-add <name> [--command <cmd> | --url <url>] [options][/bold yellow]\n"
-                "[#aaaaaa]常用选项：--arg <value>、--env KEY=VALUE、--header KEY=VALUE、--transport stdio|streamable-http|sse、--disabled。也支持 headers.X=Y / env.X=Y。服务名已存在时请先 /mcp-delete <name>。[/#aaaaaa]\n"
+                "\n[bold yellow]用法：/mcp-add <name> [options] -- <cmd> [args...] 或 /mcp-add <name> --url <url> [options][/bold yellow]\n"
+                "[#aaaaaa]常用选项：--env KEY=VALUE、--header KEY=VALUE、--transport stdio|streamable-http|sse。也支持 headers.X=Y / env.X=Y。服务名已存在时请先 /mcp-delete <name>。[/#aaaaaa]\n"
                 f"[bold red]❌ {escape(str(exc))}[/bold red]",
                 tui_region=TuiRegion.TOOLS,
             )
@@ -616,19 +631,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             self.console.print(f"\n[bold red]❌ 删除 MCP 服务失败: {escape(str(exc))}[/bold red]", tui_region=TuiRegion.TOOLS)
             return True
 
-        failed = result.get("failed", [])
-        lines = [
-            f"\n[bold green]✅ 已删除 MCP 服务配置:[/bold green] {escape(server_name)}",
-            f"[#aaaaaa]配置文件: {self.mcp_manager.get_status_info().get('config_path')}[/#aaaaaa]",
-            f"[#aaaaaa]{escape(result.get('message', ''))}[/#aaaaaa]",
-        ]
-        if failed:
-            failure_text = "; ".join(
-                f"{item['server']} ({item['action']} 失败: {item['error']})"
-                for item in failed
-            )
-            lines.append(f"[bold red]服务停用失败:[/bold red] {escape(failure_text)}")
-        self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
+        self.console.print("\n".join(self._format_mcp_delete_lines(server_name, result)), tui_region=TuiRegion.TOOLS)
         return True
 
     def handle_cmds(self) -> bool:

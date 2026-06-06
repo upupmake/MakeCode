@@ -406,22 +406,35 @@ class McpSwitchModal(ModalScreen[str | dict]):
     BINDINGS = [
         Binding("enter", "confirm_or_toggle", "Toggle/Confirm", priority=True),
         Binding("space", "toggle", "Toggle", priority=True),
+        Binding("d", "delete", "Delete", priority=True),
+        Binding("y", "confirm_delete", "Confirm Delete", priority=True),
+        Binding("n", "cancel_delete", "Cancel Delete", priority=True),
     ]
 
-    def __init__(self, server_switches: list[dict[str, Any]]) -> None:
+    def __init__(self, server_switches: list[dict[str, Any]], mcp_manager: Any) -> None:
         super().__init__()
         self._server_switches = server_switches
+        self._mcp_manager = mcp_manager
         self._draft_states = {item["name"]: bool(item["disabled"]) for item in server_switches}
+        self._pending_delete_name: str | None = None
+        self._pending_delete_index: int | None = None
+        self._deleted_results: list[dict[str, Any]] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label("🔀 MCP 服务开关面板\n选择服务可切换启用/禁用；选择确认应用保存。", id="choice-title")
+            yield Label(self._title_text(), id="choice-title")
             yield ListView(*[ListItem(Label(label)) for label in self._labels()], id="choice-list")
 
     def on_mount(self) -> None:
         choice_list = self.query_one("#choice-list", ListView)
         choice_list.index = 0
         choice_list.focus()
+
+    def _title_text(self) -> str:
+        return "🔀 MCP 服务开关面板\n选择服务可切换启用/禁用；d 删除选中服务；选择确认应用保存。"
+
+    def _reset_title(self) -> None:
+        self.query_one("#choice-title", Label).update(self._title_text())
 
     def _labels(self) -> list[str]:
         choices = []
@@ -450,35 +463,106 @@ class McpSwitchModal(ModalScreen[str | dict]):
         choice_list.index = index
         choice_list.focus()
 
+    def _reload_rows(self, selected_index: int | None = None) -> None:
+        self._pending_delete_name = None
+        self._pending_delete_index = None
+        self._reset_title()
+        choice_list = self.query_one("#choice-list", ListView)
+        choice_list.clear()
+
+        def _mount_rows() -> None:
+            labels = self._labels()
+            choice_list.extend(ListItem(Label(label)) for label in labels)
+            max_index = max(len(labels) - 1, 0)
+            choice_list.index = min(selected_index or 0, max_index)
+            choice_list.focus()
+
+        self.call_after_refresh(_mount_rows)
+
+    def _dismiss_payload(self, action: str) -> dict[str, Any]:
+        return {
+            "action": action,
+            "disabled_updates": dict(self._draft_states),
+            "deleted_results": list(self._deleted_results),
+        }
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_confirm_or_toggle()
 
     def _on_key(self, event: Key) -> None:
-        if event.key == "enter":
-            self.action_confirm_or_toggle()
-            event.stop()
-            event.prevent_default()
+        key_actions = {
+            "enter": self.action_confirm_or_toggle,
+            "space": self.action_toggle,
+            "d": self.action_delete,
+            "y": self.action_confirm_delete,
+            "n": self.action_cancel_delete,
+        }
+        action = key_actions.get(event.key)
+        if action is None:
             return
-        if event.key == "space":
-            self.action_toggle()
-            event.stop()
-            event.prevent_default()
-            return
+        action()
+        event.stop()
+        event.prevent_default()
 
     def action_confirm_or_toggle(self) -> None:
+        if self._pending_delete_name is not None:
+            return
         index = self._selected_index()
         if index < len(self._server_switches):
             self._toggle_index(index)
             return
         if index == len(self._server_switches):
-            self.dismiss({"action": "confirm", "disabled_updates": dict(self._draft_states)})
+            self.dismiss(self._dismiss_payload("confirm"))
             return
-        self.dismiss({"action": "cancel"})
+        self.dismiss(self._dismiss_payload("cancel"))
 
     def action_toggle(self) -> None:
+        if self._pending_delete_name is not None:
+            return
         index = self._selected_index()
         if index < len(self._server_switches):
             self._toggle_index(index)
+
+    def action_delete(self) -> None:
+        index = self._selected_index()
+        if index >= len(self._server_switches):
+            return
+        server_name = self._server_switches[index]["name"]
+        self._pending_delete_name = server_name
+        self._pending_delete_index = index
+        self.query_one("#choice-title", Label).update(
+            "⚠️ 确认删除 MCP 服务配置？\n"
+            f"{server_name}\n"
+            "该操作会写入配置文件，并停用运行中的同名服务。按 y 确认删除，按 n 取消。"
+        )
+
+    def action_confirm_delete(self) -> None:
+        if self._pending_delete_name is None:
+            return
+        server_name = self._pending_delete_name
+        selected_index = self._pending_delete_index or self._selected_index()
+        try:
+            result = self._mcp_manager.delete_server_config(server_name)
+        except Exception as exc:
+            self.query_one("#choice-title", Label).update(
+                "❌ 删除 MCP 服务失败\n"
+                f"{server_name}: {exc}\n"
+                "按 n 返回面板。"
+            )
+            return
+        self._deleted_results.append({"server": server_name, "result": result})
+        self._server_switches = [item for item in self._server_switches if item["name"] != server_name]
+        self._draft_states.pop(server_name, None)
+        self._reload_rows(selected_index)
+
+    def action_cancel_delete(self) -> None:
+        selected_index = self._pending_delete_index or self._selected_index()
+        self._pending_delete_name = None
+        self._pending_delete_index = None
+        self._reset_title()
+        choice_list = self.query_one("#choice-list", ListView)
+        choice_list.index = selected_index
+        choice_list.focus()
 
     def _toggle_index(self, index: int) -> None:
         name = self._server_switches[index]["name"]

@@ -29,24 +29,28 @@ def make_handler():
 
 
 def test_mcp_help_command_registered():
-    assert "/mcp-help" in COMMAND_DESCRIPTIONS
-    assert "/mcp-add" in COMMAND_DESCRIPTIONS["/mcp-help"]
+    assert COMMAND_DESCRIPTIONS["/mcp-help"] == "显示 MCP 相关命令介绍。"
 
 
-def test_parse_mcp_add_stdio_repeated_args_and_env():
+def test_parse_mcp_add_stdio_command_parts_and_env():
     handler = make_handler()
 
     name, cfg = handler._parse_mcp_add_config(
-        "/mcp-add fs --command npx --arg -y --arg @modelcontextprotocol/server-filesystem "
-        "--arg D:/Work --env NODE_ENV=test --keep-alive false"
+        "/mcp-add MiniMax --env MINIMAX_API_KEY=api_key "
+        "--env MINIMAX_API_HOST=https://api.minimaxi.com --keep-alive false "
+        "-- uvx minimax-coding-plan-mcp -y"
     )
 
-    assert name == "fs"
+    assert name == "MiniMax"
     assert cfg == {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/Work"],
-        "env": {"NODE_ENV": "test"},
+        "command": "uvx",
+        "args": ["minimax-coding-plan-mcp", "-y"],
+        "env": {
+            "MINIMAX_API_KEY": "api_key",
+            "MINIMAX_API_HOST": "https://api.minimaxi.com",
+        },
         "keep_alive": False,
+        "disabled": True,
         "transport": "stdio",
     }
 
@@ -61,6 +65,7 @@ def test_parse_mcp_add_remote_headers_and_http_normalization():
 
     assert name == "api"
     assert cfg["transport"] == "streamable-http"
+    assert cfg["disabled"] is True
     assert cfg["headers"] == {
         "X-Api-Key": "secret",
         "Authorization": "Bearer-token",
@@ -69,13 +74,35 @@ def test_parse_mcp_add_remote_headers_and_http_normalization():
     assert cfg["timeout"] == 30000
 
 
+def test_parse_mcp_add_rejects_disabled_option():
+    handler = make_handler()
+
+    try:
+        handler._parse_mcp_add_config("/mcp-add api --url https://example.com/mcp --disabled")
+    except ValueError as exc:
+        assert "未知参数: --disabled" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_parse_mcp_add_rejects_old_command_arg_syntax():
+    handler = make_handler()
+
+    try:
+        handler._parse_mcp_add_config("/mcp-add fs --command npx --arg -y")
+    except ValueError as exc:
+        assert "-- 后的启动命令或 --url" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
 def test_parse_mcp_add_requires_command_or_url():
     handler = make_handler()
 
     try:
         handler._parse_mcp_add_config("/mcp-add missing")
     except ValueError as exc:
-        assert "--command 或 --url" in str(exc)
+        assert "-- 后的启动命令或 --url" in str(exc)
     else:
         raise AssertionError("Expected ValueError")
 

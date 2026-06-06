@@ -102,16 +102,16 @@ class TuiBridge:
             app.call_from_thread(app.open_add_model_modal, future)
         return future.result()
 
-    def choose_mcp_switch(self, server_switches: list[dict[str, Any]]) -> str | dict:
+    def choose_mcp_switch(self, server_switches: list[dict[str, Any]], mcp_manager: Any) -> str | dict:
         with self._lock:
             app = self._app
         if app is None:
             return {"action": "cancel"}
         future: Future[str | dict] = Future()
         if self._is_app_thread():
-            app.open_mcp_switch_modal(server_switches, future)
+            app.open_mcp_switch_modal(server_switches, mcp_manager, future)
         else:
-            app.call_from_thread(app.open_mcp_switch_modal, server_switches, future)
+            app.call_from_thread(app.open_mcp_switch_modal, server_switches, mcp_manager, future)
         return future.result()
 
     def show_info_panel(self, title: str, content: RenderableType) -> str:
@@ -858,14 +858,14 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(ModelPanelModal(title, options), _done)
 
-    def open_mcp_switch_modal(self, server_switches: list[dict[str, Any]], future: Future[str | dict]) -> None:
+    def open_mcp_switch_modal(self, server_switches: list[dict[str, Any]], mcp_manager: Any, future: Future[str | dict]) -> None:
         def _done(value: str | dict | None) -> None:
             self._modal_active = False
             if not future.done():
                 future.set_result(value or {"action": "cancel"})
 
         self._modal_active = True
-        self.push_screen(McpSwitchModal(server_switches), _done)
+        self.push_screen(McpSwitchModal(server_switches, mcp_manager), _done)
 
     def open_info_panel_modal(self, title: str, content: RenderableType, future: Future[str]) -> None:
         def _done(value: str | None) -> None:
@@ -1342,8 +1342,8 @@ def manage_memory_config_tui(values: dict[str, int]) -> str | dict[str, int]:
     return TUI_BRIDGE.manage_memory_config(values)
 
 
-def choose_mcp_switch_tui(server_switches: list[dict[str, Any]]) -> str | dict:
-    return TUI_BRIDGE.choose_mcp_switch(server_switches)
+def choose_mcp_switch_tui(server_switches: list[dict[str, Any]], mcp_manager: Any) -> str | dict:
+    return TUI_BRIDGE.choose_mcp_switch(server_switches, mcp_manager)
 
 
 def show_info_panel_tui(title: str, content: RenderableType) -> str:
