@@ -255,16 +255,16 @@ def _hitl_section(is_orchestrator: bool = True) -> str:
     )
 
 
-def _memory_section() -> str:
-    """Inject user memory from the current workspace if available."""
-    content = _load_memory_entries()
-    if not content:
-        return ""
-    return f"""# User Memory
-The following notes have been saved from previous sessions.
-Use this context to provide more personalized and informed responses.
+def _memory_action_section() -> str:
+    """Guide the orchestrator on when to consider memory-related actions."""
+    return """# Long-Term Memory Actions
+Use memory actions only when they help the current work or preserve durable future context.
 
-{content}"""
+Consider recalling long-term memory when the user request may depend on prior project conventions, workflow preferences, release/build rules, environment facts, recurring pitfalls, or stable user preferences.
+
+Consider asking the memory manager to update long-term memory when the current conversation reveals a durable, reusable preference, convention, workflow rule, pitfall, environment fact, or release/build norm that is likely to matter in future sessions.
+
+Do not use memory actions for temporary task progress, one-off implementation details, facts directly readable from the repository, secrets, or information that is only relevant to the current turn. Tool-specific schemas and argument requirements are defined by the tools themselves."""
 
 
 # ============================================================================
@@ -394,7 +394,7 @@ For simple answers or focused reviews, respond directly without forcing this str
         _error_recovery_section(),
         _hitl_section(is_orchestrator=True),
         final_answer_format,
-        _memory_section(),
+        _memory_action_section(),
         skills_prompt_block,
     ]
 
@@ -473,7 +473,6 @@ Note: The system will automatically generate a detailed report based on your wor
         _output_efficiency_section(),
         _security_section(),
         _hitl_section(is_orchestrator=False),
-        _memory_section(),
         skills_prompt_block,
     ]
 
@@ -597,6 +596,11 @@ Long-term memory policy:
 - Do not infer a durable user preference from a single task unless the user explicitly states or confirms a future-facing preference.
 
 Memory write/update policy:
+- Before any AppendLongTermMemory, UpdateLongTermMemory, or DeleteLongTermMemory call, silently complete this decision checklist:
+  1) Long-term value: is this information durable and reusable across future sessions, rather than temporary task progress or code-readable detail?
+  2) Existing coverage: does an active memory already capture the same or a very similar rule, preference, convention, trigger, or assistant behavior?
+  3) Correct operation: should the right action be no-op, UpdateLongTermMemory, AppendLongTermMemory, or DeleteLongTermMemory? Prefer no-op or update over appending near-duplicates.
+  4) Recallability: is the reuse_condition concrete enough that a future recall selector can decide when to apply it?
 - Before appending a memory, always compare it against current active memories.
 - Do not append a new memory if an existing memory already captures the same rule, preference, convention, or future behavior.
 - If the new information is merely another example of an existing memory, do not write anything unless the existing memory should be generalized or corrected.

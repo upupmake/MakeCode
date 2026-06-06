@@ -4,6 +4,7 @@ import threading
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.markdown import Markdown
 
 from init import (
@@ -56,12 +57,18 @@ from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
 from utils.memory import (
     THRESHOLD,
+    MEMORY_RECALL_TOOLS,
+    MEMORY_RECALL_TOOLS_HANDLERS,
+    MEMORY_SELF_MANAGEMENT_TOOLS,
     auto_compact,
     estimate_tokens,
     get_active_memory_count,
     list_checkpoints,
     load_checkpoint,
+    manual_memory_update,
     micro_compact,
+    prepend_recalled_memory_to_query,
+    recall_long_term_memories,
     rename_checkpoint_with_title,
     save_checkpoint,
 )
@@ -105,6 +112,8 @@ def _get_all_tools_definition():
     try:
         return llm_client.format_tools(
             COMMON_TOOLS
+            + MEMORY_RECALL_TOOLS
+            + MEMORY_SELF_MANAGEMENT_TOOLS
             + SKILL_TOOLS
             + TASK_MANAGER_TOOLS
             + TEAM_TOOLS
@@ -122,6 +131,7 @@ orchestrator_access = AgentFileAccess()
 
 BASE_SUPER_TOOLS_HANDLERS = {
     **COMMON_TOOLS_HANDLERS,
+    **MEMORY_RECALL_TOOLS_HANDLERS,
     **SKILL_TOOLS_HANDLERS,
     **TASK_MANAGER_TOOLS_HANDLERS,
     **TEAM_TOOLS_HANDLERS,
@@ -216,9 +226,20 @@ def agent_loop(messages: list):
     """Agent 主循环：与 LLM 交互并执行工具调用"""
     global CURRENT_CHECKPOINT
     micro_compact(messages)
+
+    def _remember_long_term_memory(prompt: str, **kwargs):
+        post_tui(TuiRegion.BACKGROUND, active=True)
+        post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 Agent 主动请求写入长期记忆：{escape(prompt.strip())}[/#aaaaaa]")
+        try:
+            return manual_memory_update(prompt, messages)
+        finally:
+            post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 Agent 主动记忆写入流程已返回。[/#aaaaaa]")
+            post_tui(TuiRegion.BACKGROUND, active=False)
+
     current_handlers = {
         **BASE_SUPER_TOOLS_HANDLERS,
         **GLOBAL_MCP_MANAGER.get_handlers(),
+        "RememberLongTermMemory": _remember_long_term_memory, # 单独注册，因为只提供给 Agent 主循环使用，不暴露给技能调用
     }
     current_super_tools = []
 
@@ -443,7 +464,10 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
     if command_result.action == CommandAction.CONTINUE:
         return None
     if command_result.action == CommandAction.RUN_AGENT:
-        history.append({"role": "user", "content": command_result.payload})
+        user_query = command_result.payload
+        recall_result = recall_long_term_memories(user_query, source="用户请求预召回")
+        user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
+        history.append({"role": "user", "content": user_message})
 
         if CURRENT_CHECKPOINT is None and any(msg['role'] == 'user' for msg in history):
             CURRENT_CHECKPOINT = save_checkpoint(history)

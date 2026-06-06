@@ -196,6 +196,16 @@ class ChoiceModal(ModalScreen[str]):
     .model-form-input {
         margin-top: 0;
     }
+
+    #model-form-hint {
+        height: auto;
+        color: #aaaaaa;
+        margin-top: 1;
+    }
+
+    #model-confirm {
+        width: 14;
+    }
     """
 
     BINDINGS = [
@@ -1042,7 +1052,9 @@ class AddModelModal(ModalScreen[dict[str, str] | None]):
             yield Input(placeholder="API Key", password=True, id="model-api-key", classes="model-form-input")
             yield Label("Model ID(s)（多个用逗号分隔）", classes="model-form-label")
             yield Input(placeholder="model-a, model-b", id="model-ids", classes="model-form-input")
+            yield Label("提示：填写完成后点击“确定”，也可以按 Enter 提交。", id="model-form-hint")
             with Horizontal(id="custom-actions"):
+                yield Button("确定", id="model-confirm", variant="success")
                 yield Button("取消", id="custom-cancel", variant="warning")
 
     def on_mount(self) -> None:
@@ -1064,6 +1076,8 @@ class AddModelModal(ModalScreen[dict[str, str] | None]):
         self.action_submit()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "model-confirm":
+            self.action_submit()
         if event.button.id == "custom-cancel":
             self.action_cancel()
 
