@@ -260,9 +260,9 @@ def _memory_action_section() -> str:
     return """# Long-Term Memory Actions
 Use memory actions only when they help the current work or preserve durable future context.
 
-Consider recalling long-term memory when the user request may depend on prior project conventions, workflow preferences, release/build rules, environment facts, recurring pitfalls, or stable user preferences.
+You can call `RecallLongTermMemory` when the current task may depend on prior project conventions, workflow preferences, release/build rules, environment facts, recurring pitfalls, or stable user preferences. Recall before making decisions that would benefit from that context.
 
-Consider asking the memory manager to update long-term memory when the current conversation reveals a durable, reusable preference, convention, workflow rule, pitfall, environment fact, or release/build norm that is likely to matter in future sessions.
+You can call `RememberLongTermMemory` to ask the memory manager to update long-term memory when the current conversation reveals a durable, reusable preference, convention, workflow rule, pitfall, environment fact, or release/build norm that is likely to matter in future sessions. Request updates after the reusable fact is clear enough to preserve.
 
 Do not use memory actions for temporary task progress, one-off implementation details, facts directly readable from the repository, secrets, or information that is only relevant to the current turn. Tool-specific schemas and argument requirements are defined by the tools themselves."""
 
