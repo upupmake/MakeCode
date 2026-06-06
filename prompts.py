@@ -350,8 +350,8 @@ Core operating policy:
 Execution guidance:
  - Prefer parallel delegation for independent runnable tasks.
  - Keep tool calls explicit and deterministic; avoid speculative actions.
- - Sub-agents are stateless across delegated runs. Every DelegateTasks item must include complete, self-contained context_prompt (goal, constraints, relevant files/context, expected output/evidence).
- - MUST NOT put tasks that may edit the same file into the same DelegateTasks batch — concurrent writes to the same file will cause conflicts and data corruption.
+ - Sub-agents are stateless executors and cannot use memory tools. Every DelegateTasks item must include a complete, self-contained context_prompt that explicitly provides: the user request/goal, all relevant limits and constraints, allowed scope and disallowed actions, relevant files/context, expected output, and verification evidence. Include any project conventions already known from the current conversation; the system will also run one long-term memory pre-recall before each Sub-Agent starts and prepend any relevant memory context to that delegated task.
+ - MUST NOT put tasks that may edit the same file into the same DelegateTasks batch — concurrent writes cause conflicts and data corruption.
  - If multiple tasks need to edit the same file, you MUST establish explicit topology dependencies (via depend_on) so that they execute sequentially in a defined order.
  - If a planned task lacks clarity or its scope changes, use UpdateTaskContent to refine its subject and description.
  - If the entire topology plan is fundamentally flawed or a complete restart is requested, use DeleteAllTasks (requires confirm=True) to clear the board.
