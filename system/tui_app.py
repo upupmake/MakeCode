@@ -8,6 +8,7 @@ from queue import Queue
 from typing import Any
 
 from rich.console import RenderableType
+from rich.cells import cell_len
 from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -1221,9 +1222,23 @@ class MakeCodeTuiApp(App[None]):
         start = min(max(0, selected - window_size + 1), max(0, len(matches) - window_size))
         end = min(len(matches), start + window_size)
         lines = []
+        hint_width = hint_box.size.width or 80
         for index, (command, desc) in enumerate(matches[start:end], start=start):
             marker = "❯ " if index == selected else "  "
-            lines.append(f"{marker}[bold cyan]{command}[/bold cyan]  [#aaaaaa]{escape(desc)}[/#aaaaaa]")
+            display_desc = desc
+            if index != selected:
+                desc_cell_limit = max(16, hint_width - cell_len(marker) - cell_len(command) - 8)
+                if cell_len(desc) > desc_cell_limit:
+                    desc_chars = []
+                    desc_cells = 0
+                    for char in desc:
+                        char_cells = cell_len(char)
+                        if desc_cells + char_cells > desc_cell_limit - 1:
+                            break
+                        desc_chars.append(char)
+                        desc_cells += char_cells
+                    display_desc = f"{''.join(desc_chars)}…"
+            lines.append(f"{marker}[bold cyan]{command}[/bold cyan]  [#aaaaaa]{escape(display_desc)}[/#aaaaaa]")
         hint_box.update("\n".join(lines))
         hint_box.add_class("visible")
         self._slash_hint_visible = True
