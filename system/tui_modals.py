@@ -167,6 +167,23 @@ class ChoiceModal(ModalScreen[str]):
         max-height: 16;
     }
 
+    #choice-list > ListItem {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #choice-list > ListItem > Label {
+        width: 1fr;
+    }
+
+    #custom-hint {
+        height: auto;
+        margin-top: 1;
+        padding-top: 1;
+        border-top: solid #555555;
+        color: #aaaaaa;
+    }
+
     #custom-input {
         margin-top: 1;
     }
@@ -225,7 +242,8 @@ class ChoiceModal(ModalScreen[str]):
             if self._options:
                 yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
             if self._allow_custom:
-                yield Input(placeholder="自定义输入，Enter 提交", id="custom-input")
+                yield Label("自定义输入（Enter 提交，q 取消）", id="custom-hint")
+                yield Input(placeholder="输入自定义选项", id="custom-input")
                 with Horizontal(id="custom-actions"):
                     yield Button("取消", id="custom-cancel", variant="warning")
 

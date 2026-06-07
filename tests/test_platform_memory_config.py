@@ -216,3 +216,135 @@ def test_tui_modals_use_q_not_escape_for_cancel():
         keys = {binding.key for binding in modal.BINDINGS}
         assert "q" in keys
         assert "escape" not in keys
+
+
+# ---------- ChoiceModal 渲染与交互测试 ----------
+
+import pytest
+from textual.app import App, ComposeResult
+from textual.widgets import Input, Label
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+class ChoiceModalHost(App):
+    """Test host app for mounting ChoiceModal."""
+    def __init__(self, modal: ChoiceModal, on_dismiss=None):
+        super().__init__()
+        self._modal = modal
+        self._on_dismiss = on_dismiss
+
+    def compose(self) -> ComposeResult:
+        yield Label("host")
+
+    def on_mount(self) -> None:
+        self.push_screen(self._modal, self._on_dismiss)
+
+
+@pytest.mark.anyio
+async def test_choice_modal_options_only_renders_list_no_custom():
+    """ChoiceModal 有选项且 allow_custom=False 时，不渲染自定义输入和提示。"""
+    modal = ChoiceModal("测试标题", ["选项A", "选项B"], allow_custom=False)
+    app = ChoiceModalHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert str(modal.query_one("#choice-title", Label).render()) == "测试标题"
+        assert modal.query("#choice-list").__len__() == 1
+        assert modal.query("#custom-input").__len__() == 0
+        assert modal.query("#custom-hint").__len__() == 0
+
+
+@pytest.mark.anyio
+async def test_choice_modal_with_custom_input_renders_hint_and_input():
+    """ChoiceModal 有选项且 allow_custom=True 时，渲染提示标签和输入框。"""
+    modal = ChoiceModal("测试标题", ["选项A"], allow_custom=True)
+    app = ChoiceModalHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        hint = modal.query_one("#custom-hint", Label)
+        assert "Enter 提交" in str(hint.render())
+        assert "q 取消" in str(hint.render())
+
+        inp = modal.query_one("#custom-input", Input)
+        assert inp.placeholder == "输入自定义选项"
+
+
+@pytest.mark.anyio
+async def test_choice_modal_custom_only_no_options_renders_input():
+    """HITL 拒绝原因场景：空选项 + allow_custom=True，只有标题、提示和输入框。"""
+    modal = ChoiceModal("请输入拒绝原因", [], allow_custom=True)
+    app = ChoiceModalHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert str(modal.query_one("#choice-title", Label).render()) == "请输入拒绝原因"
+        assert modal.query("#choice-list").__len__() == 0
+        assert modal.query_one("#custom-hint", Label) is not None
+        assert modal.query_one("#custom-input", Input) is not None
+
+
+@pytest.mark.anyio
+async def test_choice_modal_css_contains_list_item_auto_height():
+    """ChoiceModal CSS 包含 ListItem height:auto 和 margin-bottom 规则。"""
+    css = ChoiceModal.CSS
+    assert "#choice-list > ListItem" in css
+    assert "height: auto" in css
+    assert "margin-bottom: 1" in css
+
+
+@pytest.mark.anyio
+async def test_choice_modal_css_contains_custom_hint_style():
+    """ChoiceModal CSS 包含 #custom-hint 的边框和颜色样式。"""
+    css = ChoiceModal.CSS
+    assert "#custom-hint" in css
+    assert "border-top: solid" in css
+    assert "color: #aaaaaa" in css
+
+
+@pytest.mark.anyio
+async def test_choice_modal_long_option_text_stored():
+    """长选项文本正确存储，不因 height:auto 而丢失。"""
+    long_text = "这是一个非常非常长的选项文本，用于测试 ListItem 的 height:auto 是否能正确换行显示"
+    modal = ChoiceModal("测试", [long_text], allow_custom=False)
+    app = ChoiceModalHost(modal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import ListView
+        lv = modal.query_one("#choice-list", ListView)
+        item_label = lv.children[0].query_one(Label)
+        assert str(item_label.render()) == long_text
+
+
+@pytest.mark.anyio
+async def test_choice_modal_long_option_text_wraps():
+    """长选项文本在 ListItem 内自动换行，不被截断为单行。"""
+    long_text = "ThisIsAVeryLongOptionText" * 5  # 125 chars
+    modal = ChoiceModal("测试", [long_text], allow_custom=False)
+    app = ChoiceModalHost(modal)
+    async with app.run_test(size=(62, 25)) as pilot:
+        await pilot.pause()
+        from textual.widgets import ListView
+        lv = modal.query_one("#choice-list", ListView)
+        item_label = lv.children[0].query_one(Label)
+        # Label should be constrained to container width and wrap to multiple rows
+        assert item_label.size.height > 1, f"Expected height > 1 for wrapping, got {item_label.size.height}"
+
+
+@pytest.mark.anyio
+async def test_choice_modal_q_cancels_when_not_in_input():
+    """按 q 键在非 Input 焦点时取消弹窗。"""
+    modal = ChoiceModal("测试", ["选项A"], allow_custom=False)
+    result = None
+
+    def on_dismiss(val):
+        nonlocal result
+        result = val
+
+    app = ChoiceModalHost(modal, on_dismiss)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+    assert result == "<cancelled>"
