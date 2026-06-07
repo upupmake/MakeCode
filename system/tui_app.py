@@ -33,6 +33,7 @@ from system.tui_modals import (
     MemoryPanelModal,
     ModelManagerModal,
     ModelPanelModal,
+    RecallModelPickerModal,
     StartupWorkdirModal,
 )
 
@@ -163,16 +164,28 @@ class TuiBridge:
             app.call_from_thread(app.open_memory_panel_modal, memory_provider, future)
         return future.result()
 
-    def manage_memory_config(self, values: dict[str, int]) -> str | dict[str, int]:
+    def manage_memory_config(self, values: dict[str, Any]) -> str | dict[str, Any]:
         with self._lock:
             app = self._app
         if app is None:
             return "<cancelled>"
-        future: Future[str | dict[str, int]] = Future()
+        future: Future[str | dict[str, Any]] = Future()
         if self._is_app_thread():
             app.open_memory_config_modal(values, future)
         else:
             app.call_from_thread(app.open_memory_config_modal, values, future)
+        return future.result()
+
+    def choose_recall_model(self, options: list[str]) -> str:
+        with self._lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_recall_model_picker_modal(options, future)
+        else:
+            app.call_from_thread(app.open_recall_model_picker_modal, options, future)
         return future.result()
 
     def _dispatch_event(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
@@ -918,14 +931,23 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(MemoryPanelModal(memory_provider), _done)
 
-    def open_memory_config_modal(self, values: dict[str, int], future: Future[str | dict[str, int]]) -> None:
-        def _done(value: str | dict[str, int] | None) -> None:
+    def open_memory_config_modal(self, values: dict[str, Any], future: Future[str | dict[str, Any]]) -> None:
+        def _done(value: str | dict[str, Any] | None) -> None:
             self._modal_active = False
             if not future.done():
                 future.set_result(value or "<cancelled>")
 
         self._modal_active = True
         self.push_screen(MemoryConfigModal(values), _done)
+
+    def open_recall_model_picker_modal(self, options: list[str], future: Future[str]) -> None:
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "<cancelled>")
+
+        self._modal_active = True
+        self.push_screen(RecallModelPickerModal(options), _done)
 
     def action_toggle_plan_mode(self) -> None:
         from utils.plan_mode import toggle_plan_mode
@@ -1353,8 +1375,12 @@ def manage_memories_tui(memory_provider: Any) -> list[str]:
     return TUI_BRIDGE.manage_memories(memory_provider)
 
 
-def manage_memory_config_tui(values: dict[str, int]) -> str | dict[str, int]:
+def manage_memory_config_tui(values: dict[str, Any]) -> str | dict[str, Any]:
     return TUI_BRIDGE.manage_memory_config(values)
+
+
+def choose_recall_model_tui(options: list[str]) -> str:
+    return TUI_BRIDGE.choose_recall_model(options)
 
 
 def choose_mcp_switch_tui(server_switches: list[dict[str, Any]], mcp_manager: Any) -> str | dict:

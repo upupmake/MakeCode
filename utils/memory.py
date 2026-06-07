@@ -19,7 +19,7 @@ from system.console_render import (
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion, post_tui
 from utils.common import sanitize_title
-from utils.llm_client import llm_client
+from utils.llm_client import create_memory_recall_llm_client, llm_client
 from settings import KEEP_RECENT_TOOL_CALL, MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_MAX_ITERATIONS
 from utils import paths
 
@@ -475,13 +475,14 @@ def select_relevant_memory_ids(query: str, max_iterations: int = MEMORY_RECALL_M
         return []
 
     messages = _get_memory_recall_messages(query, candidates)
-    tools = llm_client.format_tools(MEMORY_RECALL_SELECTION_TOOLS)
+    recall_client = create_memory_recall_llm_client() or llm_client
+    tools = recall_client.format_tools(MEMORY_RECALL_SELECTION_TOOLS)
     for round_index in range(max_iterations):
         post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 记忆召回选择中：第 {round_index + 1}/{max_iterations} 轮[/#aaaaaa]")
-        response = llm_client.generate(messages, tools)
-        text_content, tool_calls, raw_message = llm_client.parse_response(response)
+        response = recall_client.generate(messages, tools)  # todo 改为 generate_stream
+        text_content, tool_calls, raw_message = recall_client.parse_response(response)
         if raw_message is not None:
-            llm_client.append_assistant_message(messages, raw_message)
+            recall_client.append_assistant_message(messages, raw_message)
 
         for tool_call in tool_calls:
             if tool_call.get("name") != "SelectRelevantMemories":

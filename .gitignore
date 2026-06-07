@@ -36,6 +36,7 @@ t.py
 tests/*
 !tests/
 !tests/test_mcp_commands.py
+!tests/test_platform_memory_config.py
 .github_token
 .ftp_config
 ts_cache/libs

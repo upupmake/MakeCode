@@ -79,6 +79,7 @@ class ModelManager:
         self.current_model: Optional[ModelConfig] = None
         self.current_model_key: Optional[tuple[str, str, str]] = None
         self.last_selected_key: Optional[tuple[str, str, str]] = None
+        self.memory_recall_model_key: Optional[tuple[str, str, str]] = None
         self._load_config()
         self._set_initial_current_model()
 
@@ -119,6 +120,7 @@ class ModelManager:
         if not self.config_file.exists():
             self.models = []
             self.last_selected_key = None
+            self.memory_recall_model_key = None
             return
 
         try:
@@ -126,6 +128,7 @@ class ModelManager:
                 data = json.load(f)
 
             self.last_selected_key = None
+            self.memory_recall_model_key = None
             if isinstance(data, list):
                 selected_item = next(
                     (item for item in data if isinstance(item, dict) and item.get("selected")),
@@ -136,6 +139,7 @@ class ModelManager:
             elif isinstance(data, dict):
                 models_data = data.get("models", [])
                 self.last_selected_key = ModelConfig.key_from_dict(data.get("last_selected", {}))
+                self.memory_recall_model_key = ModelConfig.key_from_dict(data.get("memory_recall_model", {}))
                 if self.last_selected_key is None:
                     selected_item = next(
                         (item for item in models_data if isinstance(item, dict) and item.get("selected")),
@@ -154,12 +158,17 @@ class ModelManager:
         except Exception:
             self.models = []
             self.last_selected_key = None
+            self.memory_recall_model_key = None
 
     def _get_last_selected_payload(self) -> Optional[dict]:
         model = self._get_model_by_key(self.last_selected_key)
         if model is None:
             model = self._get_default_model()
             self.last_selected_key = model.key if model else None
+        return model.to_identity_dict() if model else None
+
+    def _get_memory_recall_model_payload(self) -> Optional[dict]:
+        model = self.get_memory_recall_model()
         return model.to_identity_dict() if model else None
 
     def _save_config(self):
@@ -169,6 +178,7 @@ class ModelManager:
         payload = {
             "version": 2,
             "last_selected": self._get_last_selected_payload(),
+            "memory_recall_model": self._get_memory_recall_model_payload(),
             "models": [model.to_dict() for model in self.models],
         }
         with open(self.config_file, "w", encoding="utf-8") as f:
@@ -185,6 +195,23 @@ class ModelManager:
 
     def get_current_model(self) -> Optional[ModelConfig]:
         return self.current_model
+
+    def get_memory_recall_model(self) -> Optional[ModelConfig]:
+        model = self._get_model_by_key(self.memory_recall_model_key)
+        if model is None:
+            self.memory_recall_model_key = None
+        return model
+
+    def get_memory_recall_model_display_text(self) -> str:
+        model = self.get_memory_recall_model()
+        return model.get_display_text() if model else "同主模型"
+
+    def set_memory_recall_model_by_key(self, key: Optional[tuple[str, str, str]]) -> bool:
+        if key is not None and self._get_model_by_key(key) is None:
+            return False
+        self.memory_recall_model_key = key
+        self._save_config()
+        return True
 
     def set_current_model_by_index(self, index: int) -> bool:
         if not (0 <= index < len(self.models)):
@@ -257,6 +284,8 @@ class ModelManager:
 
         if self.last_selected_key == deleted_model.key:
             self.last_selected_key = None
+        if self.memory_recall_model_key == deleted_model.key:
+            self.memory_recall_model_key = None
 
         self._save_config()
         return True

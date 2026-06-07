@@ -493,7 +493,17 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
         return res.choices[0].message.content or ""
 
 
-from system.models import get_current_model_config
+from system.models import get_current_model_config, get_model_manager
+
+
+def _create_chat_client(model_config):
+    client = OpenAI(
+        base_url=model_config.base_url,
+        api_key=model_config.api_key,
+        max_retries=3,
+        default_headers={"User-Agent": "MakeCode Agent"},
+    )
+    return ChatAPIClient(client, model_config.model_id)
 
 
 def _create_llm_client():
@@ -501,13 +511,17 @@ def _create_llm_client():
     current_model = get_current_model_config()
     if current_model is None:
         return None
-    client = OpenAI(
-        base_url=current_model.base_url,
-        api_key=current_model.api_key,
-        max_retries=3,
-        default_headers={"User-Agent": "MakeCode Agent"},
-    )
-    return ChatAPIClient(client, current_model.model_id)
+    return _create_chat_client(current_model)
+
+
+def create_memory_recall_llm_client():
+    manager = get_model_manager()
+    if manager is None:
+        return None
+    recall_model = manager.get_memory_recall_model()
+    if recall_model is None:
+        return None
+    return _create_chat_client(recall_model)
 
 
 class DynamicLLMClientProxy:

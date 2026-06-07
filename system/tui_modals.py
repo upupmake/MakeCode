@@ -21,7 +21,7 @@ from system.tui_types import (
 
 class ChoiceModal(ModalScreen[str]):
     CSS = """
-    ChoiceModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, InfoPanelModal {
+    ChoiceModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal {
         align: center middle;
     }
 
@@ -209,7 +209,6 @@ class ChoiceModal(ModalScreen[str]):
     """
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel", priority=True),
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "confirm", "Confirm", priority=True),
     ]
@@ -244,11 +243,6 @@ class ChoiceModal(ModalScreen[str]):
     def _on_key(self, event: Key) -> None:
         if event.key == "enter":
             self.action_confirm()
-            event.stop()
-            event.prevent_default()
-            return
-        if event.key == "escape":
-            self.action_cancel()
             event.stop()
             event.prevent_default()
             return
@@ -1029,11 +1023,11 @@ class MemoryPanelModal(ModalScreen[list[str]]):
         self.dismiss(list(self._deleted_ids))
 
 
-class MemoryConfigModal(ModalScreen[str | dict[str, int]]):
+class MemoryConfigModal(ModalScreen[str | dict[str, Any]]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "submit", "Submit", priority=True),
     ]
 
@@ -1048,7 +1042,7 @@ class MemoryConfigModal(ModalScreen[str | dict[str, int]]):
         },
     }
 
-    def __init__(self, values: dict[str, int]) -> None:
+    def __init__(self, values: dict[str, Any]) -> None:
         super().__init__()
         self._values = values
 
@@ -1065,6 +1059,12 @@ class MemoryConfigModal(ModalScreen[str | dict[str, int]]):
                     id=meta["input_id"],
                     classes="memory-config-input",
                 )
+            yield Label(
+                f"记忆召回模型：{self._values.get('memory_recall_model_display', '同主模型')}",
+                id="memory-config-recall-model",
+                classes="memory-config-label",
+            )
+            yield Button("选择记忆召回模型", id="memory-config-choose-recall-model", classes="memory-config-button")
             with Horizontal(id="memory-config-actions"):
                 yield Button("确认应用", id="memory-config-apply", variant="success", classes="memory-config-button")
                 yield Button("取消", id="memory-config-cancel", variant="warning", classes="memory-config-button")
@@ -1074,11 +1074,14 @@ class MemoryConfigModal(ModalScreen[str | dict[str, int]]):
 
     def _on_key(self, event: Key) -> None:
         if event.key == "enter":
-            self.action_submit()
+            if getattr(self.focused, "id", None) == "memory-config-choose-recall-model":
+                self._dismiss_values("choose_recall_model")
+            else:
+                self.action_submit()
             event.stop()
             event.prevent_default()
             return
-        if event.key == "escape":
+        if event.key == "q":
             self.action_cancel()
             event.stop()
             event.prevent_default()
@@ -1087,13 +1090,16 @@ class MemoryConfigModal(ModalScreen[str | dict[str, int]]):
         self.action_submit()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "memory-config-choose-recall-model":
+            self._dismiss_values("choose_recall_model")
+            return
         if event.button.id == "memory-config-apply":
             self.action_submit()
             return
         if event.button.id == "memory-config-cancel":
             self.action_cancel()
 
-    def action_submit(self) -> None:
+    def _collect_values(self) -> dict[str, Any] | None:
         values = {}
         for field, meta in self._FIELDS.items():
             raw_value = self.query_one(f"#{meta['input_id']}", Input).value.strip()
@@ -1101,11 +1107,26 @@ class MemoryConfigModal(ModalScreen[str | dict[str, int]]):
                 value = int(raw_value)
             except ValueError:
                 self._show_error(f"{meta['label']} 必须是大于 0 的整数。")
-                return
+                return None
             if value <= 0:
                 self._show_error(f"{meta['label']} 必须是大于 0 的整数。")
-                return
+                return None
             values[field] = value
+        values["memory_recall_model_key"] = self._values.get("memory_recall_model_key")
+        values["memory_recall_model_display"] = self._values.get("memory_recall_model_display", "同主模型")
+        return values
+
+    def _dismiss_values(self, action: str) -> None:
+        values = self._collect_values()
+        if values is None:
+            return
+        values["__action"] = action
+        self.dismiss(values)
+
+    def action_submit(self) -> None:
+        values = self._collect_values()
+        if values is None:
+            return
         self.dismiss(values)
 
     def action_cancel(self) -> None:
@@ -1119,11 +1140,59 @@ class MemoryConfigModal(ModalScreen[str | dict[str, int]]):
         )
 
 
+class RecallModelPickerModal(ModalScreen[str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("enter", "select", "Select", priority=True),
+        Binding("q", "cancel", "Cancel", priority=True),
+    ]
+
+    def __init__(self, options: list[str]) -> None:
+        super().__init__()
+        self._options = options
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="choice-dialog"):
+            yield Label("🧠 选择记忆召回模型\nEnter 选择；q 取消。", id="choice-title")
+
+            yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
+
+    def on_mount(self) -> None:
+        choice_list = self.query_one("#choice-list", ListView)
+        choice_list.index = 0
+        choice_list.focus()
+
+    def _selected_index(self) -> int:
+        choice_list = self.query_one("#choice-list", ListView)
+        return choice_list.index if choice_list.index is not None else 0
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        self.action_select()
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "enter":
+            self.action_select()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "q":
+            self.action_cancel()
+            event.stop()
+            event.prevent_default()
+
+    def action_select(self) -> None:
+        self.dismiss(f"select:{self._selected_index()}")
+
+    def action_cancel(self) -> None:
+        self.dismiss("<cancelled>")
+
+
 class AddModelModal(ModalScreen[dict[str, str] | None]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "submit", "Submit", priority=True),
     ]
 
@@ -1150,7 +1219,7 @@ class AddModelModal(ModalScreen[dict[str, str] | None]):
             event.stop()
             event.prevent_default()
             return
-        if event.key == "escape":
+        if event.key == "q" and not isinstance(self.focused, Input):
             self.action_cancel()
             event.stop()
             event.prevent_default()
@@ -1181,7 +1250,6 @@ class LayoutModal(ModalScreen[str | dict[str, int]]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel", priority=True),
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("space", "increment_focused", "Increment", priority=True),
     ]
@@ -1239,7 +1307,7 @@ class LayoutModal(ModalScreen[str | dict[str, int]]):
                 self.action_cancel()
 
     def _on_key(self, event: Key) -> None:
-        if event.key == "escape" or (event.key == "q" and not isinstance(self.focused, Input)):
+        if event.key == "q" and not isinstance(self.focused, Input):
             self.action_cancel()
             event.stop()
             event.prevent_default()

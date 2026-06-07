@@ -19,7 +19,7 @@ from rich.text import Text
 from init import log_error_traceback
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, show_info_panel_tui, set_agent_loop_active, refresh_status, refresh_tools_title, begin_tui_batch_render, end_tui_batch_render
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, set_agent_loop_active, refresh_status, refresh_tools_title, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.plan_mode import toggle_plan_mode
 from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
@@ -981,25 +981,53 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             self.console.print("\n[bold yellow]用法：/memory-config[/bold yellow]", tui_region=TuiRegion.TOOLS)
             return True
 
+        model_manager = get_model_manager()
         current_values = {
             "memory_size": get_memory_size(),
             "keep_recent_tool_call": get_keep_recent_tool_call(),
+            "memory_recall_model_key": model_manager.memory_recall_model_key if model_manager else None,
+            "memory_recall_model_display": model_manager.get_memory_recall_model_display_text() if model_manager else "同主模型",
         }
-        result = manage_memory_config_tui(current_values)
-        if result == "<cancelled>":
-            self.console.print("\n[#aaaaaa]已取消记忆配置修改。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
-            return True
-        if not isinstance(result, dict):
-            return True
+        while True:
+            result = manage_memory_config_tui(current_values)
+            if result == "<cancelled>":
+                self.console.print("\n[#aaaaaa]已取消记忆配置修改。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
+                return True
+            if not isinstance(result, dict):
+                return True
+            current_values.update(result)
+            if result.get("__action") != "choose_recall_model":
+                break
+            if model_manager is None:
+                self.console.print("\n[bold red]❌ 模型管理器未初始化，无法选择记忆召回模型。[/bold red]", tui_region=TuiRegion.TOOLS)
+                continue
+            model_manager._reload_from_disk()
+            options = ["使用主模型（同主模型）"] + [model.get_display_text() for model in model_manager.models]
+            keys = [None] + [model.key for model in model_manager.models]
+            picker_result = choose_recall_model_tui(options)
+            if not picker_result.startswith("select:"):
+                continue
+            try:
+                selected_index = int(picker_result.removeprefix("select:"))
+            except ValueError:
+                continue
+            if not (0 <= selected_index < len(keys)):
+                continue
+            current_values["memory_recall_model_key"] = keys[selected_index]
+            current_values["memory_recall_model_display"] = "同主模型" if selected_index == 0 else options[selected_index]
 
         set_memory_size(result["memory_size"])
         set_keep_recent_tool_call(result["keep_recent_tool_call"])
+        if model_manager is not None:
+            model_manager.set_memory_recall_model_by_key(result.get("memory_recall_model_key"))
         refresh_tools_title()
+        recall_model_text = model_manager.get_memory_recall_model_display_text() if model_manager else "同主模型"
         self.console.print(
             "\n[bold green]记忆配置已更新[/bold green]\n"
             f"  memory_size: {result['memory_size']} "
             f"[#aaaaaa](当前 active：{get_active_memory_count()})[/#aaaaaa]\n"
-            f"  keep_recent_tool_call: {result['keep_recent_tool_call']}",
+            f"  keep_recent_tool_call: {result['keep_recent_tool_call']}\n"
+            f"  memory_recall_model: {recall_model_text}",
             tui_region=TuiRegion.TOOLS,
         )
         return True
