@@ -64,6 +64,42 @@ def test_model_manager_persists_and_clears_memory_recall_model(tmp_path):
     assert reloaded.get_memory_recall_model_display_text() == "同主模型"
 
 
+def test_model_manager_preserves_unknown_top_level_fields(tmp_path):
+    config_file = tmp_path / "model_config.json"
+    config_file.write_text(json.dumps({
+        "version": 2,
+        "extra_field": {"keep": True},
+        "models": [
+            {
+                "base_url": "https://example.com",
+                "api_key": "key",
+                "model_id": "main",
+                "is_favorite": False,
+                "max_context": 128,
+            }
+        ],
+    }), encoding="utf-8")
+
+    manager = ModelManager(tmp_path)
+    assert manager.toggle_favorite_by_index(0)
+
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["extra_field"] == {"keep": True}
+    assert saved["models"][0]["is_favorite"] is True
+
+
+def test_model_manager_does_not_overwrite_unreadable_config(tmp_path):
+    config_file = tmp_path / "model_config.json"
+    original_content = '{"models": '
+    config_file.write_text(original_content, encoding="utf-8")
+
+    manager = ModelManager(tmp_path)
+
+    assert manager.load_error is not None
+    assert manager.add_model("https://example.com", "key", ["main"]) == []
+    assert config_file.read_text(encoding="utf-8") == original_content
+
+
 def test_create_memory_recall_llm_client_uses_configured_model_and_falls_back():
     recall_model = ModelConfig("https://example.com", "key", "recall-model")
 

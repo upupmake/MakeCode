@@ -80,6 +80,8 @@ class ModelManager:
         self.current_model_key: Optional[tuple[str, str, str]] = None
         self.last_selected_key: Optional[tuple[str, str, str]] = None
         self.memory_recall_model_key: Optional[tuple[str, str, str]] = None
+        self.load_error: Optional[str] = None
+        self._raw_config: Optional[dict] = None
         self._load_config()
         self._set_initial_current_model()
 
@@ -121,44 +123,70 @@ class ModelManager:
             self.models = []
             self.last_selected_key = None
             self.memory_recall_model_key = None
+            self.load_error = None
+            self._raw_config = None
             return
 
         try:
             with open(self.config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self.last_selected_key = None
-            self.memory_recall_model_key = None
+            self.load_error = None
+            raw_config = data.copy() if isinstance(data, dict) else None
+            last_selected_key = None
+            memory_recall_model_key = None
             if isinstance(data, list):
                 selected_item = next(
                     (item for item in data if isinstance(item, dict) and item.get("selected")),
                     None,
                 )
-                self.last_selected_key = ModelConfig.key_from_dict(selected_item) if selected_item else None
-                self.models = [ModelConfig.from_dict(item) for item in data if isinstance(item, dict)]
+                last_selected_key = ModelConfig.key_from_dict(selected_item) if selected_item else None
+                models = [ModelConfig.from_dict(item) for item in data if isinstance(item, dict)]
             elif isinstance(data, dict):
                 models_data = data.get("models", [])
-                self.last_selected_key = ModelConfig.key_from_dict(data.get("last_selected", {}))
-                self.memory_recall_model_key = ModelConfig.key_from_dict(data.get("memory_recall_model", {}))
-                if self.last_selected_key is None:
+                if not isinstance(models_data, list):
+                    raise ValueError("models 字段必须是列表")
+                last_selected_key = ModelConfig.key_from_dict(data.get("last_selected", {}))
+                memory_recall_model_key = ModelConfig.key_from_dict(data.get("memory_recall_model", {}))
+                if last_selected_key is None:
                     selected_item = next(
                         (item for item in models_data if isinstance(item, dict) and item.get("selected")),
                         None,
                     )
-                    self.last_selected_key = ModelConfig.key_from_dict(selected_item) if selected_item else None
-                self.models = [
+                    last_selected_key = ModelConfig.key_from_dict(selected_item) if selected_item else None
+                models = [
                     ModelConfig.from_dict(item)
                     for item in models_data
                     if isinstance(item, dict)
                 ]
             else:
-                self.models = []
+                models = []
 
+            self.models = models
+            self.last_selected_key = last_selected_key
+            self.memory_recall_model_key = memory_recall_model_key
+            self._raw_config = raw_config
             self._sort_models()
-        except Exception:
-            self.models = []
-            self.last_selected_key = None
-            self.memory_recall_model_key = None
+        except Exception as exc:
+            self.load_error = str(exc)
+
+    def _ensure_config_loaded_for_save(self) -> bool:
+        if self.load_error is None:
+            return True
+        if not self.config_file.exists():
+            return True
+        return False
+
+    def _build_save_payload(self) -> dict:
+        payload = self._raw_config.copy() if isinstance(self._raw_config, dict) else {}
+        payload["version"] = payload.get("version", 2)
+        payload["last_selected"] = self._get_last_selected_payload()
+        payload["memory_recall_model"] = self._get_memory_recall_model_payload()
+        payload["models"] = [model.to_dict() for model in self.models]
+        return payload
+
+    def get_load_error_display(self) -> str:
+        return f"无法读取模型配置文件 {self.config_file}: {self.load_error}" if self.load_error else ""
 
     def _get_last_selected_payload(self) -> Optional[dict]:
         model = self._get_model_by_key(self.last_selected_key)
@@ -173,19 +201,20 @@ class ModelManager:
 
     def _save_config(self):
         """保存配置文件"""
+        if not self._ensure_config_loaded_for_save():
+            return False
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self._sort_models()
-        payload = {
-            "version": 2,
-            "last_selected": self._get_last_selected_payload(),
-            "memory_recall_model": self._get_memory_recall_model_payload(),
-            "models": [model.to_dict() for model in self.models],
-        }
+        payload = self._build_save_payload()
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=4)
+        self._raw_config = payload.copy()
+        self.load_error = None
+        return True
 
-    def _reload_from_disk(self):
+    def _reload_from_disk(self) -> bool:
         self._load_config()
+        return self.load_error is None
 
     def is_configured(self) -> bool:
         return len(self.models) > 0
@@ -207,20 +236,22 @@ class ModelManager:
         return model.get_display_text() if model else "同主模型"
 
     def set_memory_recall_model_by_key(self, key: Optional[tuple[str, str, str]]) -> bool:
+        if not self._ensure_config_loaded_for_save():
+            return False
         if key is not None and self._get_model_by_key(key) is None:
             return False
         self.memory_recall_model_key = key
-        self._save_config()
-        return True
+        return self._save_config()
 
     def set_current_model_by_index(self, index: int) -> bool:
+        if not self._ensure_config_loaded_for_save():
+            return False
         if not (0 <= index < len(self.models)):
             return False
 
         self._set_current_model(self.models[index])
         self.last_selected_key = self.current_model_key
-        self._save_config()
-        return True
+        return self._save_config()
 
     def add_model(
         self,
@@ -230,6 +261,8 @@ class ModelManager:
         max_contexts: Optional[list[int]] = None,
     ) -> list[ModelConfig]:
         self._reload_from_disk()
+        if self.load_error is not None:
+            return []
 
         if max_contexts is None:
             max_contexts = [128] * len(model_ids)
@@ -264,14 +297,16 @@ class ModelManager:
         return new_models
 
     def delete_model_by_index(self, index: int) -> bool:
-        self._reload_from_disk()
+        if not self._reload_from_disk():
+            return False
         if not (0 <= index < len(self.models)):
             return False
 
         return self.delete_model_by_key(self.models[index].key)
 
     def delete_model_by_key(self, key: tuple[str, str, str]) -> bool:
-        self._reload_from_disk()
+        if not self._reload_from_disk():
+            return False
         delete_index = next(
             (index for index, model in enumerate(self.models) if model.key == key),
             None,
@@ -287,18 +322,18 @@ class ModelManager:
         if self.memory_recall_model_key == deleted_model.key:
             self.memory_recall_model_key = None
 
-        self._save_config()
-        return True
+        return self._save_config()
 
     def toggle_favorite_by_index(self, index: int) -> bool:
-        self._reload_from_disk()
+        if not self._reload_from_disk():
+            return False
         if not (0 <= index < len(self.models)):
             return False
         self.models[index].is_favorite = not self.models[index].is_favorite
-        self._save_config()
-        if self.current_model is None:
+        saved = self._save_config()
+        if saved and self.current_model is None:
             self._set_initial_current_model()
-        return True
+        return saved
 
 
 _model_manager: Optional[ModelManager] = None

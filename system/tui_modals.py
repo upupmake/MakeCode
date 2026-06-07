@@ -669,7 +669,13 @@ class ModelManagerModal(ModalScreen[str]):
         self._pending_delete_key = None
         self._pending_delete_index = None
         self._reset_title()
-        self._model_manager._reload_from_disk()
+        loaded = self._model_manager._reload_from_disk()
+        if not loaded:
+            self.query_one("#choice-title", Label).update(
+                "⚠️ 模型配置读取失败，已禁止写入以避免覆盖原文件。\n"
+                f"{self._model_manager.get_load_error_display()}\n"
+                "请修复 model_config.json 后重新打开 /models；q 关闭。"
+            )
         current_model = self._model_manager.get_current_model()
         current_key = current_model.key if current_model else None
         labels = ["➕ 添加模型"]
