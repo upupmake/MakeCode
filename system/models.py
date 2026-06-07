@@ -49,7 +49,9 @@ class ModelConfig:
         }
 
     @classmethod
-    def key_from_dict(cls, data: dict) -> Optional[tuple[str, str, str]]:
+    def key_from_dict(cls, data: dict | None) -> Optional[tuple[str, str, str]]:
+        if not isinstance(data, dict):
+            return None
         base_url = data.get("base_url")
         api_key = data.get("api_key")
         model_id = data.get("model_id")
@@ -160,7 +162,7 @@ class ModelManager:
                     if isinstance(item, dict)
                 ]
             else:
-                models = []
+                raise ValueError("模型配置必须是对象或列表")
 
             self.models = models
             self.last_selected_key = last_selected_key

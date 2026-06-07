@@ -1,5 +1,6 @@
 import datetime
 import difflib
+import fnmatch
 import json
 import locale
 import os
@@ -43,6 +44,34 @@ def _is_binary_file(filepath: Path) -> bool:
     except Exception as exc:
         log_error_traceback("ContentSearch binary file check", exc)
         return True
+
+
+def _split_filename_patterns(filename_pattern: str) -> list[str]:
+    patterns = [p.strip() for p in filename_pattern.split("|") if p.strip()]
+    return patterns or ["*"]
+
+
+def _matches_filename_pattern(rel_path: Path, patterns: list[str]) -> bool:
+    if patterns == ["*"]:
+        return True
+
+    rel_posix = rel_path.as_posix()
+    name = rel_path.name
+    for pattern in patterns:
+        pattern = pattern.replace("\\", "/")
+        if pattern.startswith("**/"):
+            pattern = pattern[3:]
+        if "/" in pattern:
+            if fnmatch.fnmatch(rel_posix, pattern):
+                return True
+        elif fnmatch.fnmatch(name, pattern):
+            return True
+    return False
+
+
+def _is_excluded_dir_path(rel_path: Path, is_dir: bool, exclude_dirs: set[str]) -> bool:
+    dir_parts = rel_path.parts if is_dir else rel_path.parts[:-1]
+    return any(part.startswith(".") or part in exclude_dirs for part in dir_parts)
 
 
 def sanitize_title(title: str, max_len: int = 50) -> str | None:
@@ -693,12 +722,7 @@ def content_search(
         log_error_traceback("ContentSearch regex compile", e)
         return f"Error: Invalid regex pattern '{content_pattern}': {e}"
 
-    # Split pipe-separated patterns, e.g., "*.py|*.js|*.vue" -> ["*.py", "*.js", "*.vue"]
-    patterns = [p.strip() for p in filename_pattern.split("|") if p.strip()]
-    if not patterns:
-        patterns = ["*"]
-
-    clean_patterns = [p.replace("**/", "") for p in patterns]
+    patterns = _split_filename_patterns(filename_pattern)
 
     results = {}
     total_matches = 0
@@ -723,14 +747,15 @@ def content_search(
 
             for file in files:
                 filepath = Path(root) / file
-                if clean_patterns != ["*"] and clean_patterns != [""]:
-                    if not any(filepath.match(p) for p in clean_patterns):
-                        continue
-
                 try:
-                    rel_path_str = filepath.relative_to(base_dir).as_posix()
+                    rel_path = filepath.relative_to(base_dir)
                 except ValueError:
                     continue
+
+                if not _matches_filename_pattern(rel_path, patterns):
+                    continue
+
+                rel_path_str = rel_path.as_posix()
 
                 if _is_binary_file(filepath):
                     continue
@@ -832,17 +857,7 @@ def file_search(
     if type not in ("file", "dir", "all"):
         return f"Error: Invalid type '{type}'. Must be 'file', 'dir', or 'all'."
 
-    # Split pipe-separated patterns, e.g., "*.py|*.js" -> ["*.py", "*.js"]
-    patterns = [p.strip() for p in filename_pattern.split("|") if p.strip()]
-    if not patterns:
-        patterns = ["*"]
-
-    def _to_recursive(p: str) -> str:
-        if p.startswith("**/"):
-            return p
-        return "**/*" if p == "*" else f"**/{p}"
-
-    patterns = [_to_recursive(p) for p in patterns]
+    patterns = _split_filename_patterns(filename_pattern)
 
     # Determine item type label for output
     type_label = {"file": "file(s)", "dir": "director(ies)", "all": "item(s)"}[type]
@@ -858,8 +873,16 @@ def file_search(
     try:
         matched_files = set()
         matched_dirs = set()
-        for p in patterns:
-            for item in base_dir.glob(p):
+        for root, dirs, files in os.walk(base_dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in EXCLUDE_DIRS]
+
+            entries = []
+            if type in ("dir", "all"):
+                entries.extend((Path(root) / d, True) for d in dirs)
+            if type in ("file", "all"):
+                entries.extend((Path(root) / f, False) for f in files)
+
+            for item, is_dir in entries:
                 if len(matched_files) + len(matched_dirs) >= MAX_ITEMS:
                     break
 
@@ -869,20 +892,14 @@ def file_search(
                 except ValueError:
                     continue
 
-                parts = rel_path.parts
-                if any(part.startswith(".") for part in parts):
-                    continue
-                if any(part in EXCLUDE_DIRS for part in parts):
+                if _is_excluded_dir_path(rel_path, is_dir, EXCLUDE_DIRS):
                     continue
 
-                # Filter by type
-                if type == "file" and not item.is_file():
-                    continue
-                if type == "dir" and not item.is_dir():
+                if not _matches_filename_pattern(rel_path, patterns):
                     continue
 
                 rel_str = rel_path.as_posix()
-                if item.is_dir():
+                if is_dir:
                     matched_dirs.add(rel_str)
                 else:
                     matched_files.add(rel_str)

@@ -100,6 +100,42 @@ def test_model_manager_does_not_overwrite_unreadable_config(tmp_path):
     assert config_file.read_text(encoding="utf-8") == original_content
 
 
+def test_model_manager_accepts_null_selected_model_fields(tmp_path):
+    config_file = tmp_path / "model_config.json"
+    config_file.write_text(json.dumps({
+        "version": 2,
+        "last_selected": None,
+        "memory_recall_model": None,
+        "models": [
+            {
+                "base_url": "https://example.com",
+                "api_key": "key",
+                "model_id": "main",
+                "is_favorite": False,
+                "max_context": 128,
+            }
+        ],
+    }), encoding="utf-8")
+
+    manager = ModelManager(tmp_path)
+
+    assert manager.load_error is None
+    assert manager.get_current_model().model_id == "main"
+    assert manager.get_memory_recall_model() is None
+
+
+def test_model_manager_does_not_overwrite_null_top_level_config(tmp_path):
+    config_file = tmp_path / "model_config.json"
+    original_content = "null"
+    config_file.write_text(original_content, encoding="utf-8")
+
+    manager = ModelManager(tmp_path)
+
+    assert manager.load_error is not None
+    assert manager.add_model("https://example.com", "key", ["main"]) == []
+    assert config_file.read_text(encoding="utf-8") == original_content
+
+
 def test_create_memory_recall_llm_client_uses_configured_model_and_falls_back():
     recall_model = ModelConfig("https://example.com", "key", "recall-model")
 
