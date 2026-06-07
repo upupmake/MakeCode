@@ -518,9 +518,13 @@ def create_memory_recall_llm_client():
     manager = get_model_manager()
     if manager is None:
         return None
+    manager._reload_from_disk()
     recall_model = manager.get_memory_recall_model()
     if recall_model is None:
-        return None
+        current_model = manager.get_current_model()
+        if current_model is None:
+            return None
+        return _create_chat_client(current_model)
     return _create_chat_client(recall_model)
 
 

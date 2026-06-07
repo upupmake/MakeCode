@@ -64,6 +64,24 @@ def test_model_manager_persists_and_clears_memory_recall_model(tmp_path):
     assert reloaded.get_memory_recall_model_display_text() == "同主模型"
 
 
+def test_memory_recall_model_stays_cleared_after_reload(tmp_path):
+    manager = ModelManager(tmp_path)
+    models = manager.add_model("https://example.com", "key", ["main", "recall"])
+    recall_key = models[1].key
+
+    assert manager.set_memory_recall_model_by_key(recall_key)
+
+    manager2 = ModelManager(tmp_path)
+    assert manager2.delete_model_by_key(recall_key)
+
+    manager3 = ModelManager(tmp_path)
+    assert manager3.get_memory_recall_model() is None
+    assert manager3.get_memory_recall_model_display_text() == "同主模型"
+
+    saved = json.loads((tmp_path / "model_config.json").read_text(encoding="utf-8"))
+    assert saved["memory_recall_model"] is None
+
+
 def test_model_manager_preserves_unknown_top_level_fields(tmp_path):
     config_file = tmp_path / "model_config.json"
     config_file.write_text(json.dumps({
@@ -138,13 +156,25 @@ def test_model_manager_does_not_overwrite_null_top_level_config(tmp_path):
 
 def test_create_memory_recall_llm_client_uses_configured_model_and_falls_back():
     recall_model = ModelConfig("https://example.com", "key", "recall-model")
+    current_model = ModelConfig("https://example.com", "key", "current-model")
 
-    with patch("utils.llm_client.get_model_manager", return_value=Mock(get_memory_recall_model=lambda: recall_model)):
+    mock_manager = Mock()
+    mock_manager.get_memory_recall_model.return_value = recall_model
+    with patch("utils.llm_client.get_model_manager", return_value=mock_manager):
         client = create_memory_recall_llm_client()
-
     assert client.model == "recall-model"
 
-    with patch("utils.llm_client.get_model_manager", return_value=Mock(get_memory_recall_model=lambda: None)):
+    mock_manager2 = Mock()
+    mock_manager2.get_memory_recall_model.return_value = None
+    mock_manager2.get_current_model.return_value = current_model
+    with patch("utils.llm_client.get_model_manager", return_value=mock_manager2):
+        fallback_client = create_memory_recall_llm_client()
+    assert fallback_client.model == "current-model"
+
+    mock_manager3 = Mock()
+    mock_manager3.get_memory_recall_model.return_value = None
+    mock_manager3.get_current_model.return_value = None
+    with patch("utils.llm_client.get_model_manager", return_value=mock_manager3):
         assert create_memory_recall_llm_client() is None
 
 
