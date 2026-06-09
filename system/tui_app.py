@@ -26,6 +26,7 @@ from system.tui_types import (
 from system.tui_modals import (
     AddModelModal,
     ChoiceModal,
+    CopyContentModal,
     InfoPanelModal,
     LayoutModal,
     McpSwitchModal,
@@ -126,6 +127,18 @@ class TuiBridge:
             app.open_info_panel_modal(title, content, future)
         else:
             app.call_from_thread(app.open_info_panel_modal, title, content, future)
+        return future.result()
+
+    def show_copy_content(self, messages: list[dict[str, str]]) -> str:
+        with self._lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_copy_content_modal(messages, future)
+        else:
+            app.call_from_thread(app.open_copy_content_modal, messages, future)
         return future.result()
 
     def manage_models(self, model_manager: Any) -> str:
@@ -581,6 +594,7 @@ class MakeCodeTuiApp(App[None]):
                 yield Button("⚙️ 记忆配置", id="quick-memory-config", classes="quick-panel-button")
                 yield Button("🧩 布局", id="quick-layout", classes="quick-panel-button")
                 yield Button("🔀 MCP配置", id="quick-mcp-config", classes="quick-panel-button")
+                yield Button("📝 复制", id="quick-copy", classes="quick-panel-button")
         with Horizontal(id="main-grid"):
             with Vertical(id="left-column"):
                 with Vertical(id="content-pane", classes="pane"):
@@ -890,6 +904,15 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(InfoPanelModal(title, content), _done)
 
+    def open_copy_content_modal(self, messages: list[dict[str, str]], future: Future[str]) -> None:
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "<cancelled>")
+
+        self._modal_active = True
+        self.push_screen(CopyContentModal(messages), _done)
+
     def open_model_manager_modal(self, model_manager: Any, future: Future[str]) -> None:
         def _done(value: str | None) -> None:
             self._modal_active = False
@@ -1184,6 +1207,7 @@ class MakeCodeTuiApp(App[None]):
             "quick-memory-config": "/memory-config",
             "quick-layout": "/layout",
             "quick-mcp-config": "/mcp-switch",
+            "quick-copy": "/copy",
         }
         command = quick_commands.get(button_id or "")
         if command is not None:
@@ -1390,6 +1414,10 @@ def choose_mcp_switch_tui(server_switches: list[dict[str, Any]], mcp_manager: An
 
 def show_info_panel_tui(title: str, content: RenderableType) -> str:
     return TUI_BRIDGE.show_info_panel(title, content)
+
+
+def show_copy_content_tui(messages: list[dict[str, str]]) -> str:
+    return TUI_BRIDGE.show_copy_content(messages)
 
 
 def choose_add_model_tui() -> dict[str, str] | None:

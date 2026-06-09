@@ -9,7 +9,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog
+from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, TextArea
 
 from system.tui_types import (
     LAYOUT_DEFAULT_RATIOS,
@@ -21,7 +21,7 @@ from system.tui_types import (
 
 class ChoiceModal(ModalScreen[str]):
     CSS = """
-    ChoiceModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal {
+    ChoiceModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal {
         align: center middle;
     }
 
@@ -64,6 +64,33 @@ class ChoiceModal(ModalScreen[str]):
     }
 
     #info-close {
+        width: 16;
+    }
+
+    #copy-dialog {
+        width: 88%;
+        height: 86%;
+        border: round #38bdf8;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #copy-title {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #copy-text {
+        height: 1fr;
+        margin-top: 1;
+    }
+
+    #copy-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #copy-close {
         width: 16;
     }
 
@@ -410,6 +437,78 @@ class InfoPanelModal(ModalScreen[str]):
 
     def action_close(self) -> None:
         self.dismiss("closed")
+
+
+class CopyContentModal(ModalScreen[str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "close", "Close", priority=True),
+    ]
+
+    def __init__(self, messages: list[dict[str, str]]) -> None:
+        super().__init__()
+        self._messages = messages
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="copy-dialog"):
+            yield Label(
+                "📝 对话内容（只读）\nc 复制选中文本（无选区则复制全部）· q 关闭",
+                id="copy-title",
+            )
+            yield TextArea(
+                self._build_text(),
+                id="copy-text",
+                read_only=True,
+                show_line_numbers=False,
+            )
+            with Horizontal(id="copy-actions"):
+                yield Button("关闭", id="copy-close", variant="primary")
+
+    def on_mount(self) -> None:
+        text_area = self.query_one("#copy-text", TextArea)
+        text_area.focus()
+        # Scroll to end
+        last_line = text_area.document.line_count - 1
+        last_col = len(text_area.document.get_line(last_line)) if last_line >= 0 else 0
+        text_area.move_cursor((last_line, last_col))
+        text_area.scroll_cursor_visible()
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "c":
+            text_area = self.query_one("#copy-text", TextArea)
+            selected = text_area.selected_text
+            text_to_copy = selected if selected else text_area.text
+            self.app.copy_to_clipboard(text_to_copy)
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "q":
+            # Don't close if TextArea has selection (let it handle q normally)
+            text_area = self.query_one("#copy-text", TextArea)
+            if text_area.selected_text:
+                return
+            self.action_close()
+            event.stop()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "copy-close":
+            self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss("closed")
+
+    def _build_text(self) -> str:
+        parts: list[str] = []
+        for msg in self._messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                parts.append(f"{'─' * 8} User {'─' * 8}\n{content}")
+            elif role == "assistant":
+                parts.append(f"{'─' * 4} Assistant {'─' * 4}\n{content}")
+        return "\n\n".join(parts)
 
 
 class McpSwitchModal(ModalScreen[str | dict]):

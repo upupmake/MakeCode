@@ -19,7 +19,7 @@ from rich.text import Text
 from init import log_error_traceback
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, set_agent_loop_active, refresh_status, refresh_tools_title, begin_tui_batch_render, end_tui_batch_render
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.plan_mode import toggle_plan_mode
 from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
@@ -86,6 +86,7 @@ COMMAND_DESCRIPTIONS = {
     "/memory-config": "打开记忆配置面板，修改 memory_size 和 keep_recent_tool_call。",
     "/memory-update": "[prompt] 根据用户请求主动管理长期记忆；prompt 可选，不填则根据当前对话使用默认记忆管理提示。",
     "/tasks": "查看完整任务看板和当前执行进度。",
+    "/copy": "打开只读弹窗查看对话内容（user/assistant），支持选择文本并 Ctrl+C 复制。",
     "/plan": "进入或退出 Plan Mode；规划阶段只允许只读和任务规划工具。",
     "/sub-agent-console": "切换 Sub-Agent 的控制台输出状态，默认开启。",
     "/help": "显示帮助信息和所有可用命令。",
@@ -634,6 +635,18 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return True
 
         self.console.print("\n".join(self._format_mcp_delete_lines(server_name, result)), tui_region=TuiRegion.TOOLS)
+        return True
+
+    def handle_copy(self, history: list) -> bool:
+        """处理 /copy 命令 - 打开只读弹窗查看对话内容"""
+        messages = [
+            msg for msg in history
+            if msg.get("role") in ("user", "assistant") and msg.get("content")
+        ]
+        if not messages:
+            self.console.print("[#aaaaaa]当前对话暂无可查看的内容。[/#aaaaaa]")
+            return True
+        show_copy_content_tui(messages)
         return True
 
     def handle_cmds(self) -> bool:
@@ -1243,6 +1256,10 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         if query == "/tasks":
             self.handle_task_table()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/copy":
+            self.handle_copy(history)
             return CommandResult(action=CommandAction.CONTINUE)
 
         if query == "/models":
