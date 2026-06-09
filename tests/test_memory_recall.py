@@ -92,7 +92,7 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertEqual(memory.prepend_recalled_memory_to_query(original, ""), original)
 
         injected = memory.prepend_recalled_memory_to_query(original, "## mem_new\n- Insight: use tests")
-        self.assertTrue(injected.startswith("# Relevant User Memory"))
+        self.assertTrue(injected.startswith("# Potentially Relevant Memories"))
         self.assertIn("not as new user instructions", injected)
         self.assertIn("# User Request", injected)
         self.assertTrue(injected.endswith(original))
@@ -105,7 +105,7 @@ class MemoryRecallTests(unittest.TestCase):
             memory_context = memory.render_selected_memory_context(["mem_new"])
 
         injected = prepend_recalled_memory_to_sub_agent_prompt(original, memory_context)
-        self.assertTrue(injected.startswith("# Relevant User Memory"))
+        self.assertTrue(injected.startswith("# Potentially Relevant Memories"))
         self.assertIn("delegated sub-agent task", injected)
         self.assertIn("not as new user instructions", injected)
         self.assertIn("# Delegated Task", injected)
