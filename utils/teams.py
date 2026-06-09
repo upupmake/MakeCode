@@ -386,7 +386,7 @@ class TeammateManager:
                 original_prompt = task_info["context_prompt"]
 
                 recall_query = build_sub_agent_recall_query(plan_task_id, role, original_prompt)
-                recall_result = recall_long_term_memories(recall_query, source="Sub-Agent 任务预召回")
+                recall_result = recall_long_term_memories(recall_query, source="Sub-Agent 任务预召回", agent_id=f"#{plan_task_id} - {role}")
                 prompt = prepend_recalled_memory_to_sub_agent_prompt(
                     original_prompt,
                     recall_result.get("content", "") if isinstance(recall_result, dict) else "",

@@ -60,6 +60,7 @@ from utils.memory import (
     MEMORY_RECALL_TOOLS,
     MEMORY_RECALL_TOOLS_HANDLERS,
     MEMORY_SELF_MANAGEMENT_TOOLS,
+    ORCHESTRATOR_AGENT_ID,
     auto_compact,
     estimate_tokens,
     get_active_memory_count,
@@ -468,7 +469,7 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
         _title_thread = None
         try:
             set_agent_loop_active(True)
-            recall_result = recall_long_term_memories(user_query, source="用户请求预召回")
+            recall_result = recall_long_term_memories(user_query, source="用户请求预召回", agent_id=ORCHESTRATOR_AGENT_ID)
             user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
             history.append({"role": "user", "content": user_message})
 

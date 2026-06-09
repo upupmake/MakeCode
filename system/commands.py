@@ -29,10 +29,12 @@ from utils.memory import (
     get_active_memory_count,
     get_checkpoint_title,
     get_keep_recent_tool_call,
+    get_memory_recall_window_size,
     get_memory_size,
     list_long_term_memories,
     manual_memory_update,
     set_keep_recent_tool_call,
+    set_memory_recall_window_size,
     set_memory_size,
 )
 from system.updater import check_update, download_update
@@ -985,6 +987,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         current_values = {
             "memory_size": get_memory_size(),
             "keep_recent_tool_call": get_keep_recent_tool_call(),
+            "memory_recall_window_size": get_memory_recall_window_size(),
             "memory_recall_model_key": model_manager.memory_recall_model_key if model_manager else None,
             "memory_recall_model_display": model_manager.get_memory_recall_model_display_text() if model_manager else "同主模型",
         }
@@ -1018,6 +1021,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         set_memory_size(result["memory_size"])
         set_keep_recent_tool_call(result["keep_recent_tool_call"])
+        set_memory_recall_window_size(result["memory_recall_window_size"])
         if model_manager is not None:
             model_manager.set_memory_recall_model_by_key(result.get("memory_recall_model_key"))
         refresh_tools_title()
@@ -1027,6 +1031,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             f"  memory_size: {result['memory_size']} "
             f"[#aaaaaa](当前 active：{get_active_memory_count()})[/#aaaaaa]\n"
             f"  keep_recent_tool_call: {result['keep_recent_tool_call']}\n"
+            f"  memory_recall_window_size: {result['memory_recall_window_size']}\n"
             f"  memory_recall_model: {recall_model_text}",
             tui_region=TuiRegion.TOOLS,
         )

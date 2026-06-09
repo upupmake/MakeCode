@@ -10,6 +10,7 @@ env/
 nul
 # Environment variables
 .env
+test.env
 *.exe
 # Test/cache artifacts
 .pytest_cache/
@@ -33,10 +34,6 @@ dist/
 # Playwright MCP
 .playwright-mcp/
 t.py
-tests/*
-!tests/
-!tests/test_mcp_commands.py
-!tests/test_platform_memory_config.py
 .github_token
 .ftp_config
 ts_cache/libs

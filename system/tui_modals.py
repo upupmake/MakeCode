@@ -1064,6 +1064,10 @@ class MemoryConfigModal(ModalScreen[str | dict[str, Any]]):
             "label": "近期工具调用结果保留数量",
             "input_id": "memory-config-keep-recent-tool-call",
         },
+        "memory_recall_window_size": {
+            "label": "记忆召回抑制窗口大小",
+            "input_id": "memory-config-memory-recall-window-size",
+        },
     }
 
     def __init__(self, values: dict[str, Any]) -> None:

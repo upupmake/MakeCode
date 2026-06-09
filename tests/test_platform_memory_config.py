@@ -190,6 +190,35 @@ def test_select_relevant_memory_ids_prefers_recall_client_over_global_client():
     assert selected == ["mem_a"]
     assert recall_client.generate_calls == 1
     assert global_client.generate_calls == 0
+    memory._MEMORY_RECALL_WINDOWS = {}
+
+
+def test_memory_recall_window_size_config_preserves_existing_fields(tmp_path):
+    memory.refresh_workspace_paths()
+    original_config_file = memory.MEMORY_CONFIG_FILE
+    original_cache = memory._MEMORY_CONFIG_CACHE
+    try:
+        memory.MEMORY_CONFIG_FILE = tmp_path / "memory_config.json"
+        memory._MEMORY_CONFIG_CACHE = None
+        memory.MEMORY_CONFIG_FILE.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
+
+        assert memory.get_memory_recall_window_size() == 3
+        assert memory.set_memory_recall_window_size(5) == 5
+
+        saved = json.loads(memory.MEMORY_CONFIG_FILE.read_text(encoding="utf-8"))
+        assert saved["memory_size"] == 9
+        assert saved["memory_recall_window_size"] == 5
+    finally:
+        memory.MEMORY_CONFIG_FILE = original_config_file
+        memory._MEMORY_CONFIG_CACHE = original_cache
+
+
+def test_memory_config_modal_includes_recall_window_size_field():
+    fields = MemoryConfigModal._FIELDS
+
+    assert "memory_size" in fields
+    assert "keep_recent_tool_call" in fields
+    assert fields["memory_recall_window_size"]["input_id"] == "memory-config-memory-recall-window-size"
 
 
 def test_window_attention_is_noop_on_non_windows():
