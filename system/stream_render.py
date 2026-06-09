@@ -177,7 +177,7 @@ class StreamRenderer:
     def _handle_reasoning(self, content: str, reasoning_content: str, reasoning_buffer: str, is_started: bool):
         if not is_started:
             self._set_active(TuiRegion.REASONING, True)
-            post_tui(TuiRegion.REASONING, "[bold cyan]💭 Reasoning...[/bold cyan]")
+            post_tui(TuiRegion.REASONING, "\n[bold cyan]🧠 Reasoning...[/bold cyan]")
 
         reasoning_buffer += content
         reasoning_buffer, emitted_chunk = self._process_block_commit(reasoning_content, reasoning_buffer, region=TuiRegion.REASONING)
@@ -199,7 +199,7 @@ class StreamRenderer:
         self._set_active(TuiRegion.CONTENT, True)
         if reasoning_started:
             post_tui(TuiRegion.CONTENT, "")
-        post_tui(TuiRegion.CONTENT, f"[bold cyan]💬 {name} Content...[/bold cyan]")
+        post_tui(TuiRegion.CONTENT, f"\n[bold cyan]📝 {name} Content...[/bold cyan]")
 
     def _process_block_commit(self, full_text: str, current_buffer: str, region: TuiRegion = TuiRegion.CONTENT) -> tuple[str, str]:
         """

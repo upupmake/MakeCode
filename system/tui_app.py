@@ -1078,6 +1078,7 @@ class MakeCodeTuiApp(App[None]):
         self._hide_slash_hints()
         from system.console_render import render_content_user_message
 
+        post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
         self.handle_tui_event(TuiEvent(TuiRegion.CONTENT, render_content_user_message(text)))
         if self._submit_handler is not None:
             threading.Thread(target=self._run_submit_handler, args=(text,), daemon=True).start()
