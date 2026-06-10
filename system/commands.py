@@ -639,12 +639,22 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
     def handle_copy(self, history: list) -> bool:
         """处理 /copy 命令 - 打开只读弹窗查看对话内容"""
-        messages = [
-            msg for msg in history
-            if msg.get("role") in ("user", "assistant") and msg.get("content")
-        ]
+        messages = []
+        for msg in history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role in ("user", "assistant"):
+                has_content = bool(content)
+                has_terminal_cmd = any(
+                    tc.get("function", {}).get("name") == "RunTerminalCommand"
+                    for tc in msg.get("tool_calls", [])
+                )
+                if has_content or has_terminal_cmd:
+                    messages.append(msg)
+            elif role == "tool" and msg.get("name") == "RunTerminalCommand":
+                messages.append(msg)
         if not messages:
-            self.console.print("[#aaaaaa]当前对话暂无可查看的内容。[/#aaaaaa]")
+            self.console.print("[#aaaaaa]当前对话暂无可查看的内容。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
             return True
         show_copy_content_tui(messages)
         return True

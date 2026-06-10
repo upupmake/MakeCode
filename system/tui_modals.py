@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from pathlib import Path
 
@@ -462,6 +463,7 @@ class CopyContentModal(ModalScreen[str]):
                 read_only=True,
                 show_line_numbers=False,
             )
+            yield Label("", id="copy-status")
             with Horizontal(id="copy-actions"):
                 yield Button("关闭", id="copy-close", variant="primary")
 
@@ -480,6 +482,7 @@ class CopyContentModal(ModalScreen[str]):
             selected = text_area.selected_text
             text_to_copy = selected if selected else text_area.text
             self.app.copy_to_clipboard(text_to_copy)
+            self.query_one("#copy-status", Label).update("📋 已复制文本到剪贴板。")
             event.stop()
             event.prevent_default()
             return
@@ -507,7 +510,26 @@ class CopyContentModal(ModalScreen[str]):
             if role == "user":
                 parts.append(f"{'─' * 8} User {'─' * 8}\n{content}")
             elif role == "assistant":
-                parts.append(f"{'─' * 4} Assistant {'─' * 4}\n{content}")
+                section_parts = []
+                if content:
+                    section_parts.append(content)
+                for tc in msg.get("tool_calls", []):
+                    func = tc.get("function", {})
+                    if func.get("name") == "RunTerminalCommand":
+                        try:
+                            raw_args = func.get("arguments", "{}")
+                            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                            cmd = args.get("command", "")
+                            if cmd:
+                                section_parts.append(f"[RunTerminalCommand] $ {cmd}")
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                if section_parts:
+                    parts.append(f"{'─' * 4} Assistant {'─' * 4}\n" + "\n".join(section_parts))
+            elif role == "tool" and msg.get("name") == "RunTerminalCommand":
+                output = content.strip() if content else ""
+                if output:
+                    parts.append(f"{'─' * 4} Terminal Output {'─' * 4}\n{output}")
         return "\n\n".join(parts)
 
 

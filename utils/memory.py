@@ -518,7 +518,11 @@ def _get_memory_recall_messages(query: str, candidates: str) -> list[dict]:
                 "so you MUST include all relevant memory IDs in that single call. "
                 "Base your selection on relevance to the query; indirect or potential associations also count. "
                 "Do not recall memories that are clearly irrelevant. "
-                "Use an empty memory_ids list only when absolutely no candidate is relevant. "
+                "Return an empty memory_ids list when: "
+                "(1) no candidate is relevant, or "
+                "(2) the query is a continuation request (e.g. 'continue', 'go on', 'proceed', 'carry on', 'resume', "
+                "or equivalent phrases in any language asking to resume/continue previous work) — "
+                "continuation requests do not need memory recall. "
                 "Do not answer the user request."
             ),
         },
