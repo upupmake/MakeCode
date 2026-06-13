@@ -132,7 +132,7 @@ Do NOT use RunTerminalCommand when a dedicated tool exists:
  - To EDIT files: use FileEdit (not sed, awk, or terminal editors)
  - To CREATE files: use FileCreate (not echo >>, cat heredoc)
  - To SEARCH file content: use ContentSearch (not grep, rg, findstr)
- - To SEARCH files by name/pattern: use FileSearch (not find, ls, dir)
+ - To SEARCH files by path regex: use FileSearch (not find, ls, dir)
  - Reserve RunTerminalCommand EXCLUSIVELY for: builds, tests, git, package management, system info
 
 Runtime terminal is fixed at startup: {terminal_label} (source={terminal_source}).

@@ -1,6 +1,5 @@
 import datetime
 import difflib
-import fnmatch
 import json
 import locale
 import os
@@ -46,27 +45,8 @@ def _is_binary_file(filepath: Path) -> bool:
         return True
 
 
-def _split_filename_patterns(filename_pattern: str) -> list[str]:
-    patterns = [p.strip() for p in filename_pattern.split("|") if p.strip()]
-    return patterns or ["*"]
-
-
-def _matches_filename_pattern(rel_path: Path, patterns: list[str]) -> bool:
-    if patterns == ["*"]:
-        return True
-
-    rel_posix = rel_path.as_posix()
-    name = rel_path.name
-    for pattern in patterns:
-        pattern = pattern.replace("\\", "/")
-        if pattern.startswith("**/"):
-            pattern = pattern[3:]
-        if "/" in pattern:
-            if fnmatch.fnmatch(rel_posix, pattern):
-                return True
-        elif fnmatch.fnmatch(name, pattern):
-            return True
-    return False
+def _normalized_search_path(path: Path) -> str:
+    return path.resolve().as_posix()
 
 
 def _is_excluded_dir_path(rel_path: Path, is_dir: bool, exclude_dirs: set[str]) -> bool:
@@ -132,7 +112,7 @@ class RunTerminalCommand(BaseModel):
     PREFERRED APPROACH:
     - For file read/write/edit: Use File tools (FileRead/FileCreate/FileEdit)
     - For file content search: Use ContentSearch (not grep, rg, findstr)
-    - For file name/pattern search: Use FileSearch (not find, ls, dir)
+    - For file path regex search: Use FileSearch (not find, ls, dir)
     - Use this tool ONLY for: builds, tests, git, package management, system info
 
     TIMEOUT: 120 seconds hard limit.
@@ -694,47 +674,51 @@ class ContentSearch(BaseModel):
 
     LIMITS:
     - Maximum 500 matches returned (truncated if exceeded)
-    - For large codebases, use specific target_dir to narrow scope
+    - For large codebases, use specific search_dir to narrow scope
     """
 
-    content_pattern: str = Field(
+    content_regex: str = Field(
         ...,
-        description="The Regex pattern or string to search for in the file contents.",
+        description="Python regex pattern to search for in the file contents.",
     )
-    target_dir: str = Field(
+    search_dir: str = Field(
         default=".",
         description="Directory to search in, relative to workspace by default. Paths outside workspace require user permission. Pinpoint specific source folders (e.g., 'src', 'app') to avoid scanning dependency directories.",
     )
-    filename_pattern: str = Field(
-        default="*",
-        description="File name pattern to filter files. Supports glob patterns with pipe separation for multiple patterns, e.g., '*.py', '*.py|*.js|*.vue'. Defaults to '*' (all text files).",
+    filename_regex: str = Field(
+        default=".*",
+        description="Python regex pattern matched against each file's absolute normalized path. Defaults to '.*'.",
     )
 
 
 def content_search(
-        content_pattern: str,
-        target_dir: str = ".",
-        filename_pattern: str = "*",
+        content_regex: str,
+        search_dir: str = ".",
+        filename_regex: str = ".*",
 ) -> str:
     try:
-        regex = re.compile(content_pattern)
+        regex = re.compile(content_regex)
     except re.error as e:
-        log_error_traceback("ContentSearch regex compile", e)
-        return f"Error: Invalid regex pattern '{content_pattern}': {e}"
+        log_error_traceback("ContentSearch content regex compile", e)
+        return f"Error: Invalid content_regex '{content_regex}': {e}"
 
-    patterns = _split_filename_patterns(filename_pattern)
+    try:
+        path_regex = re.compile(filename_regex)
+    except re.error as e:
+        log_error_traceback("ContentSearch filename regex compile", e)
+        return f"Error: Invalid filename_regex '{filename_regex}': {e}"
 
     results = {}
     total_matches = 0
     MAX_MATCHES = 500
 
     try:
-        base_dir = safe_path(target_dir, "ContentSearch")
+        base_dir = safe_path(search_dir, "ContentSearch")
         if not base_dir.is_dir():
-            return f"Error: Target directory '{target_dir}' not found or is not a directory."
+            return f"Error: Search directory '{search_dir}' not found or is not a directory."
     except Exception as e:
-        log_error_traceback("ContentSearch resolve target dir", e)
-        return f"Error resolving target directory: {e}"
+        log_error_traceback("ContentSearch resolve search dir", e)
+        return f"Error resolving search directory: {e}"
 
     EXCLUDE_DIRS = {
         "build", "dist", "__pycache__", "node_modules", "target",
@@ -752,7 +736,7 @@ def content_search(
                 except ValueError:
                     continue
 
-                if not _matches_filename_pattern(rel_path, patterns):
+                if not path_regex.search(_normalized_search_path(filepath)):
                     continue
 
                 rel_path_str = rel_path.as_posix()
@@ -784,10 +768,10 @@ def content_search(
 
     except Exception as e:
         log_error_traceback("ContentSearch walk execution", e)
-        return f"Error during grep search: {e}"
+        return f"Error during content search: {e}"
 
     if not results:
-        return f"No matches found for '{content_pattern}' in dir '{target_dir}' matching {patterns}."
+        return f"No matches found for content_regex '{content_regex}' in search_dir '{search_dir}' matching filename_regex '{filename_regex}'."
 
     output_blocks = []
     if base_dir != _workdir():
@@ -808,7 +792,7 @@ def content_search(
 
 class FileSearch(BaseModel):
     """
-    Search for files and/or directories matching a glob pattern.
+    Search for files and/or directories matching a regex pattern against absolute normalized paths.
 
     AUTO-EXCLUDED:
     - Hidden directories (starting with '.')
@@ -816,17 +800,14 @@ class FileSearch(BaseModel):
 
     LIMITS:
     - Maximum 500 items returned (truncated if exceeded)
-    - For large codebases, use specific target_dir to narrow scope
+    - For large codebases, use specific search_dir to narrow scope
     """
 
-    filename_pattern: str = Field(
-        default="*",
-        description=(
-            "Glob pattern to match file names. Supports multiple patterns separated by '|'. "
-            "Examples: '*.py', '*.py|*.js|*.vue'. Defaults to '*' (all files)."
-        ),
+    path_regex: str = Field(
+        default=".*",
+        description="Python regex pattern matched against each item's absolute normalized path. Defaults to '.*'.",
     )
-    target_dir: str = Field(
+    search_dir: str = Field(
         default=".",
         description=(
             "Directory to search in, relative to workspace by default. Paths outside workspace require user permission. "
@@ -843,8 +824,8 @@ class FileSearch(BaseModel):
 
 
 def file_search(
-        filename_pattern: str = "*",
-        target_dir: str = ".",
+        path_regex: str = ".*",
+        search_dir: str = ".",
         type: str = "all",
 ) -> str:
     EXCLUDE_DIRS = {
@@ -857,18 +838,22 @@ def file_search(
     if type not in ("file", "dir", "all"):
         return f"Error: Invalid type '{type}'. Must be 'file', 'dir', or 'all'."
 
-    patterns = _split_filename_patterns(filename_pattern)
+    try:
+        regex = re.compile(path_regex)
+    except re.error as e:
+        log_error_traceback("FileSearch path regex compile", e)
+        return f"Error: Invalid path_regex '{path_regex}': {e}"
 
     # Determine item type label for output
     type_label = {"file": "file(s)", "dir": "director(ies)", "all": "item(s)"}[type]
 
     try:
-        base_dir = safe_path(target_dir, "FileSearch")
+        base_dir = safe_path(search_dir, "FileSearch")
         if not base_dir.is_dir():
-            return f"Error: Target directory '{target_dir}' not found or is not a directory."
+            return f"Error: Search directory '{search_dir}' not found or is not a directory."
     except Exception as e:
-        log_error_traceback("FileSearch resolve target dir", e)
-        return f"Error resolving target directory: {e}"
+        log_error_traceback("FileSearch resolve search dir", e)
+        return f"Error resolving search directory: {e}"
 
     try:
         matched_files = set()
@@ -895,7 +880,7 @@ def file_search(
                 if _is_excluded_dir_path(rel_path, is_dir, EXCLUDE_DIRS):
                     continue
 
-                if not _matches_filename_pattern(rel_path, patterns):
+                if not regex.search(_normalized_search_path(item)):
                     continue
 
                 rel_str = rel_path.as_posix()
@@ -909,7 +894,7 @@ def file_search(
 
         total_count = len(matched_files) + len(matched_dirs)
         if total_count == 0:
-            return f"No {type_label} found matching pattern '{filename_pattern}' in directory '{target_dir}'."
+            return f"No {type_label} found matching path_regex '{path_regex}' in search_dir '{search_dir}'."
 
         # Format output: directories always with [DIR] prefix and trailing /
         sorted_files = sorted(matched_files)
@@ -917,9 +902,9 @@ def file_search(
         lines = [f"[DIR] {d}/" for d in sorted_dirs] + list(sorted_files)
 
         if base_dir == _workdir():
-            output = f"Found {total_count} {type_label} matching '{filename_pattern}' in '{target_dir}':\n\n"
+            output = f"Found {total_count} {type_label} matching path_regex '{path_regex}' in search_dir '{search_dir}':\n\n"
         else:
-            output = f"Found {total_count} {type_label} matching '{filename_pattern}' in '{target_dir}' (paths relative to {base_dir.as_posix()}):\n\n"
+            output = f"Found {total_count} {type_label} matching path_regex '{path_regex}' in search_dir '{search_dir}' (paths relative to {base_dir.as_posix()}):\n\n"
         output += "\n".join(lines)
 
         if total_count >= MAX_ITEMS:
@@ -929,7 +914,7 @@ def file_search(
 
     except Exception as e:
         log_error_traceback("FileSearch execution", e)
-        return f"Error during glob search: {e}"
+        return f"Error during file search: {e}"
 
 
 class GetSystemTime(BaseModel):
