@@ -1,3 +1,4 @@
+import copy
 import json
 from abc import ABC, abstractmethod
 from typing import Union, Generator
@@ -28,6 +29,42 @@ def _extract_tool_info(raw_tool):
         params = raw_tool.get("inputSchema", {})
 
     return name, desc, params
+
+
+def _inline_schema_refs(schema):
+    schema = copy.deepcopy(schema)
+    root = copy.deepcopy(schema)
+
+    def resolve_ref(ref):
+        if not isinstance(ref, str) or not ref.startswith("#/"):
+            return {"$ref": ref}
+
+        current = root
+        for part in ref[2:].split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(current, dict) or part not in current:
+                return {"$ref": ref}
+            current = current[part]
+        return walk(copy.deepcopy(current))
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                resolved = resolve_ref(node["$ref"])
+                siblings = {k: walk(v) for k, v in node.items() if k != "$ref"}
+                if isinstance(resolved, dict):
+                    resolved.update(siblings)
+                return resolved
+            return {
+                k: walk(v)
+                for k, v in node.items()
+                if k not in {"$defs", "definitions"}
+            }
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    return walk(schema)
 
 
 class BaseLLMClient(ABC):
@@ -280,8 +317,7 @@ class ChatAPIClient(BaseLLMClient):
         messages.append(msg_dict)
 
     def format_tools(self, pydantic_tools: list) -> list:
-        # Standard format doesn't need flattening, but it doesn't support "namespace" tools
-        # We must extract all functions into a flat list
+        # Standard format doesn't support "namespace" tools, so extract all functions into a flat list.
         result = []
         for t in pydantic_tools:
             if isinstance(t, dict) and t.get("type") == "namespace":
@@ -290,7 +326,7 @@ class ChatAPIClient(BaseLLMClient):
                     func_def = {
                         "name": name,
                         "description": desc,
-                        "parameters": params,
+                        "parameters": _inline_schema_refs(params),
                     }
                     if "function" in inner_t:
                         func_def["strict"] = True
@@ -300,7 +336,7 @@ class ChatAPIClient(BaseLLMClient):
                 func_def = {
                     "name": name,
                     "description": desc,
-                    "parameters": params,
+                    "parameters": _inline_schema_refs(params),
                 }
                 if "function" in t:
                     func_def["strict"] = True
