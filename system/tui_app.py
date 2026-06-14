@@ -44,20 +44,35 @@ class TuiBridge:
         self._app: MakeCodeTuiApp | None = None
         self._app_thread_id: int | None = None
         self._pending: Queue[TuiEvent] = Queue()
-        self._lock = threading.Lock()
+        self._app_lock = threading.Lock()
+        content_lock = threading.Lock()
+        tools_lock = threading.Lock()
+        task_lock = threading.Lock()
+        background_lock = threading.Lock()
+        sub_agent_lock = threading.Lock()
+        self._region_locks = {
+            TuiRegion.CONTENT: content_lock,
+            TuiRegion.REASONING: content_lock,
+            TuiRegion.TOOLS: tools_lock,
+            TuiRegion.TASK: task_lock,
+            TuiRegion.BACKGROUND: background_lock,
+            TuiRegion.SUB_AGENT: sub_agent_lock,
+            TuiRegion.STATUS: background_lock,
+            TuiRegion.RUNTIME_INFO: background_lock,
+        }
 
     def bind(self, app: "MakeCodeTuiApp") -> None:
-        with self._lock:
+        with self._app_lock:
             self._app = app
             self._app_thread_id = threading.get_ident()
             pending: list[TuiEvent] = []
             while not self._pending.empty():
                 pending.append(self._pending.get())
         for event in pending:
-            self._dispatch_event(app, event)
+            self._dispatch_event_locked(app, event)
 
     def unbind(self, app: "MakeCodeTuiApp") -> None:
-        with self._lock:
+        with self._app_lock:
             if self._app is app:
                 self._app = None
                 self._app_thread_id = None
@@ -74,15 +89,15 @@ class TuiBridge:
         active: bool | None = None,
     ) -> None:
         event = TuiEvent(TuiRegion(region), payload, clear, tool_result_delta, reset_tool_result_count, tail, active)
-        with self._lock:
+        with self._app_lock:
             app = self._app
             if app is None:
                 self._pending.put(event)
                 return
-        self._dispatch_event(app, event)
+        self._dispatch_event_locked(app, event)
 
     def choose(self, title: str, options: list[str], *, allow_custom: bool = False) -> str:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
@@ -94,7 +109,7 @@ class TuiBridge:
         return future.result()
 
     def choose_add_model(self) -> dict[str, str] | None:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return None
@@ -106,7 +121,7 @@ class TuiBridge:
         return future.result()
 
     def choose_mcp_switch(self, server_switches: list[dict[str, Any]], mcp_manager: Any) -> str | dict:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return {"action": "cancel"}
@@ -118,7 +133,7 @@ class TuiBridge:
         return future.result()
 
     def show_info_panel(self, title: str, content: RenderableType) -> str:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
@@ -130,7 +145,7 @@ class TuiBridge:
         return future.result()
 
     def show_copy_content(self, messages: list[dict[str, str]]) -> str:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
@@ -142,7 +157,7 @@ class TuiBridge:
         return future.result()
 
     def manage_models(self, model_manager: Any) -> str:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
@@ -154,7 +169,7 @@ class TuiBridge:
         return future.result()
 
     def manage_layout(self) -> str | dict[str, int]:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
@@ -166,7 +181,7 @@ class TuiBridge:
         return future.result()
 
     def manage_memories(self, memory_provider: Any) -> list[str]:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return []
@@ -178,7 +193,7 @@ class TuiBridge:
         return future.result()
 
     def manage_memory_config(self, values: dict[str, Any]) -> str | dict[str, Any]:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
@@ -190,7 +205,7 @@ class TuiBridge:
         return future.result()
 
     def choose_recall_model(self, options: list[str]) -> str:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
@@ -201,6 +216,10 @@ class TuiBridge:
             app.call_from_thread(app.open_recall_model_picker_modal, options, future)
         return future.result()
 
+    def _dispatch_event_locked(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
+        with self._region_locks[event.region]:
+            self._dispatch_event(app, event)
+
     def _dispatch_event(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
         if self._is_app_thread():
             app.handle_tui_event(event)
@@ -208,11 +227,10 @@ class TuiBridge:
             app.call_from_thread(app.handle_tui_event, event)
 
     def _is_app_thread(self) -> bool:
-        with self._lock:
-            return self._app_thread_id == threading.get_ident()
+        return self._app_thread_id == threading.get_ident()
 
     def set_agent_loop_active(self, active: bool) -> None:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return
@@ -222,7 +240,7 @@ class TuiBridge:
             app.call_from_thread(app.set_agent_loop_active, active)
 
     def refresh_status(self) -> None:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return
@@ -232,7 +250,7 @@ class TuiBridge:
             app.call_from_thread(app.refresh_status)
 
     def refresh_tools_title(self) -> None:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return
@@ -242,7 +260,7 @@ class TuiBridge:
             app.call_from_thread(app.refresh_tools_title)
 
     def begin_batch_render(self) -> None:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return
@@ -252,7 +270,7 @@ class TuiBridge:
             app.call_from_thread(app.begin_batch_render)
 
     def end_batch_render(self) -> None:
-        with self._lock:
+        with self._app_lock:
             app = self._app
         if app is None:
             return
@@ -1376,7 +1394,7 @@ def end_tui_batch_render() -> None:
 
 
 def choose_model_panel_tui(title: str, options: list[str]) -> str:
-    with TUI_BRIDGE._lock:
+    with TUI_BRIDGE._app_lock:
         app = TUI_BRIDGE._app
     if app is None:
         return "<cancelled>"

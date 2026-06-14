@@ -48,6 +48,11 @@ def refresh_workspace_paths() -> None:
     MEMORY_JSONL_FILE = paths.workspace_memory_jsonl_file()
     MEMORY_CONFIG_FILE = paths.workspace_memory_config_file()
     _MEMORY_CONFIG_CACHE = None
+    reset_memory_recall_windows()
+
+
+def reset_memory_recall_windows() -> None:
+    global _MEMORY_RECALL_WINDOWS
     _MEMORY_RECALL_WINDOWS = {}
 
 

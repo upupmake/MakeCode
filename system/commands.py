@@ -33,6 +33,7 @@ from utils.memory import (
     get_memory_size,
     list_long_term_memories,
     manual_memory_update,
+    reset_memory_recall_windows,
     set_keep_recent_tool_call,
     set_memory_recall_window_size,
     set_memory_size,
@@ -842,6 +843,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
     def handle_new(self, history: list, current_checkpoint: Optional[Path]) -> tuple:
         """处理 /new 命令，返回 (should_continue, new_checkpoint)"""
         refresh_task_workspace_paths()
+        reset_memory_recall_windows()
         self._reset_hitl_session()
         self._reset_conversation_view(history)
         self.console.print(
@@ -922,6 +924,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 reason=reason,
                 system_prompt_fn=self.get_system_prompt_fn,
             )
+            reset_memory_recall_windows()
             self.console.print(
                 "\n[bold green]✨ 当前对话上下文已成功压缩并保存！[/bold green]"
             )
@@ -1105,10 +1108,13 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return history, current_checkpoint
 
         try:
-            loaded = self.load_checkpoint(Path(selected_path))
+            selected_checkpoint = Path(selected_path)
+            current_checkpoint_path = current_checkpoint.resolve() if current_checkpoint else None
+            is_different_checkpoint = current_checkpoint_path is None or selected_checkpoint.resolve() != current_checkpoint_path
+            loaded = self.load_checkpoint(selected_checkpoint)
             if loaded and loaded[0].get("role") == "system":
                 loaded[0]["content"] = self.get_system_prompt_fn()
-            new_checkpoint = Path(selected_path)
+            new_checkpoint = selected_checkpoint
 
             for region in (
                 TuiRegion.CONTENT,
@@ -1131,6 +1137,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 tui_region=TuiRegion.TOOLS,
             )
             refresh_status()
+            if is_different_checkpoint:
+                reset_memory_recall_windows()
             hitl_mod.SESSION_WHITELIST.clear()
             hitl_mod.PATH_WHITELIST.clear()
         except Exception as exc:

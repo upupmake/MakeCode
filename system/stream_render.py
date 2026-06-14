@@ -226,7 +226,7 @@ class StreamRenderer:
             if last_update is not None and now - last_update < self.tail_update_interval:
                 return
             self._last_tail_update_at[region] = now
-        post_tui(region, Markdown(buffer) if buffer.strip() else "", tail=True)
+        post_tui(region, Text(buffer) if buffer.strip() else "", tail=True)
 
     def _clear_tail(self, region: TuiRegion = TuiRegion.CONTENT):
         self._last_tail_update_at.pop(region, None)
