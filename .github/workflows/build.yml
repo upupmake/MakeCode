@@ -70,13 +70,14 @@ jobs:
           dist = Path("dist")
           release_assets = Path("release-assets")
 
-          # Always provide a zip with the full dist directory for this platform.
-          shutil.make_archive(str(release_assets / f"MakeCode-{suffix}"), "zip", dist)
-
-          # Windows users usually expect a directly downloadable .exe asset.
           exe = dist / "MakeCode.exe"
           if runner_os == "Windows" and exe.exists():
+              # Windows users usually expect a directly downloadable .exe asset.
+              # Do not also upload a Windows zip to the Release; it mostly duplicates the exe.
               shutil.copy2(exe, release_assets / f"MakeCode-{suffix}.exe")
+          else:
+              # macOS/Linux do not use a file extension for executables, so package the dist directory.
+              shutil.make_archive(str(release_assets / f"MakeCode-{suffix}"), "zip", dist)
           PY
 
       - name: Upload build artifacts
@@ -87,6 +88,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload release assets for release job
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: release-assets-${{ runner.os }}-${{ runner.arch }}
