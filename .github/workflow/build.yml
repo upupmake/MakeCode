@@ -1,0 +1,67 @@
+name: Build PyInstaller
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+          - ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build updater
+        run: pyinstaller updater.spec
+
+      - name: Prepare updater resource on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          # MakeCode.spec currently packages dist/updater.exe into the main app.
+          # PyInstaller emits dist/updater on macOS/Linux, so provide the expected resource name.
+          cp dist/updater dist/updater.exe
+
+      - name: Build MakeCode
+        run: pyinstaller MakeCode.spec
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp -R dist/* artifacts/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MakeCode-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
