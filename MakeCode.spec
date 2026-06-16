@@ -4,7 +4,7 @@ import os
 import glob
 
 # 1. 在文件开头引入 copy_metadata 模块
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 # --- Custom logic to collect ts_cache files ---
 ts_cache_datas = []
@@ -21,19 +21,19 @@ if os.path.exists(ts_cache_dir):
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=[os.getcwd()],
     binaries=[],
     # 2. 将原来的 datas 列表与 copy_metadata 的结果相加
     datas=[('tiktoken_cache', 'tiktoken_cache')] + ts_cache_datas + copy_metadata('fastmcp') + [('dist/updater.exe', '.')],
     hiddenimports=[
-        'tiktoken_ext.openai_public', 
-        'tiktoken_ext', 
+        'tiktoken_ext.openai_public',
+        'tiktoken_ext',
         'rich',
         'textual',
         'pyzstd',
         'tree_sitter',
         'tree_sitter_language_pack'
-    ],
+    ] + collect_submodules('system') + collect_submodules('tools') + collect_submodules('utils'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
