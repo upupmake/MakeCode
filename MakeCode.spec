@@ -1,7 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import sys
 import glob
+
+project_root = os.path.abspath(SPECPATH)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # 1. 在文件开头引入 copy_metadata 模块
 from PyInstaller.utils.hooks import collect_submodules, copy_metadata
@@ -21,11 +26,12 @@ if os.path.exists(ts_cache_dir):
 
 a = Analysis(
     ['main.py'],
-    pathex=[os.getcwd()],
+    pathex=[project_root],
     binaries=[],
     # 2. 将原来的 datas 列表与 copy_metadata 的结果相加
     datas=[('tiktoken_cache', 'tiktoken_cache')] + ts_cache_datas + copy_metadata('fastmcp') + [('dist/updater.exe', '.')],
     hiddenimports=[
+        'utils.common',
         'tiktoken_ext.openai_public',
         'tiktoken_ext',
         'rich',
@@ -53,7 +59,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,

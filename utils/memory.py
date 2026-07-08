@@ -1006,7 +1006,7 @@ def auto_compact(
     memory_agent_loop(
         conversation_text=conversation_text,
         summary=summary,
-        reason=reason,
+        reason="Automatic memory extraction during context compaction. Extract durable, cross-session memories from the conversation if any valuable ones are found; skip if none.",
         current_memory_content=render_long_term_memory_markdown(),
         tools=LONG_TERM_MEMORY_TOOLS,
     )

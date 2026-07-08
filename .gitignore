@@ -39,3 +39,4 @@ t.py
 ts_cache/libs
 *.dll
 ts_cache/.extracted_parsers-windows-x86_64.tar.zst
+*.txt

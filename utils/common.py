@@ -54,6 +54,17 @@ def _is_excluded_dir_path(rel_path: Path, is_dir: bool, exclude_dirs: set[str]) 
     return any(part.startswith(".") or part in exclude_dirs for part in dir_parts)
 
 
+def truncate_output(text: str, max_chars: int = 10000) -> str:
+    if len(text) <= max_chars:
+        return text
+
+    head_chars = max_chars // 2
+    tail_chars = max_chars - head_chars
+    omitted = len(text) - max_chars
+    marker = f"\n\n[...此处省略{omitted}字符...]\n\n"
+    return text[:head_chars] + marker + text[-tail_chars:]
+
+
 def sanitize_title(title: str, max_len: int = 50) -> str | None:
     """Sanitize a title string for safe use in filenames.
 
@@ -132,13 +143,14 @@ class RunTerminalCommand(BaseModel):
 
 
 def _build_terminal_argv(terminal_type: str, command: str) -> list[str]:
-    if terminal_type == "powershell":
-        return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-    if terminal_type == "pwsh":
-        return ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command]
-    if terminal_type == "cmd":
-        return ["cmd", "/d", "/s", "/c", command]
-    if terminal_type in {"bash", "sh"}:
+    shell = os.path.basename(terminal_type).lower()
+    if shell == "powershell":
+        return [terminal_type, "-NoProfile", "-NonInteractive", "-Command", command]
+    if shell == "pwsh":
+        return [terminal_type, "-NoProfile", "-NonInteractive", "-Command", command]
+    if shell == "cmd":
+        return [terminal_type, "/d", "/s", "/c", command]
+    if shell in {"bash", "sh", "zsh"}:
         return [terminal_type, "-lc", command]
     raise ValueError(f"Unsupported terminal type: {terminal_type}")
 
@@ -174,17 +186,7 @@ def run_terminal_command(command: str) -> str:
                 continue
         if out is None:
             out = raw_output.decode('utf-8', errors='replace').strip()
-        # 智能截断：保留开头50行 + 结尾250行，避免丢失关键信息
-        HEAD_LINES = 50
-        TAIL_LINES = 250
-        lines = out.splitlines()
-        if len(lines) > HEAD_LINES + TAIL_LINES:
-            omitted = len(lines) - HEAD_LINES - TAIL_LINES
-            out = (
-                "\n".join(lines[:HEAD_LINES])
-                + f"\n\n... (省略 {omitted} 行) ...\n\n"
-                + "\n".join(lines[-TAIL_LINES:])
-            )
+        out = truncate_output(out)
         terminal_meta = f"{resolved_terminal}, source={STARTUP_TERMINAL_SOURCE}"
         return (
             out
@@ -252,7 +254,8 @@ class FileRead(BaseModel):
     """
 
     path: str = Field(
-        ..., description="Path to the file to read, relative to workspace by default. Paths outside workspace require user permission."
+        ...,
+        description="Path to the file to read, relative to workspace by default. Paths outside workspace require user permission."
     )
     regions: list[ReadBlock] = Field(
         ...,
@@ -283,14 +286,14 @@ class FileRead(BaseModel):
 def merge_intervals(intervals: list[list[int]]) -> list[list[int]]:
     """
     合并重叠或相邻的区间
-    
+
     算法：排序 + 贪心合并
     时间复杂度：O(n log n)
     空间复杂度：O(n)
-    
+
     Args:
         intervals: 区间列表，每个区间为 [start, end]
-    
+
     Returns:
         合并后的区间列表
     """
@@ -374,7 +377,7 @@ def file_read(
         # 格式化输出
         formatted_lines = [f"{n}: {lines[n - 1]}" for n in line_numbers]
 
-        return f"File: {path}, Total lines: {total_lines}\n" + "\n".join(formatted_lines)
+        return truncate_output(f"File: {path}, Total lines: {total_lines}\n" + "\n".join(formatted_lines))
     except Exception as e:
         log_error_traceback("FileRead execution", e)
         return f"Error: {e}"
@@ -393,7 +396,8 @@ class FileCreate(BaseModel):
     """
 
     path: str = Field(
-        ..., description="Path to the file to write, relative to workspace by default. Paths outside workspace require user permission."
+        ...,
+        description="Path to the file to write, relative to workspace by default. Paths outside workspace require user permission."
     )
     content: str = Field(..., description="The content to write to the file.")
 
@@ -604,6 +608,7 @@ def apply_edit_block(file_text: str, search: str, replace: str) -> tuple[bool, s
         f"IMPORTANT: The file may have been modified since your last read. Please call FileRead again to get the latest content before retrying the edit."
     )
 
+
 def file_edit(path: str, edits: Any, agent_access=None) -> str:
     try:
         try:
@@ -787,7 +792,7 @@ def content_search(
             f"\n[!] Notice: Output truncated to first {MAX_MATCHES} matched lines to prevent context overflow."
         )
 
-    return "\n".join(output_blocks).strip()
+    return truncate_output("\n".join(output_blocks).strip())
 
 
 class FileSearch(BaseModel):
@@ -910,7 +915,7 @@ def file_search(
         if total_count >= MAX_ITEMS:
             output += f"\n\n[!] Notice: Output truncated to first {MAX_ITEMS} items."
 
-        return output
+        return truncate_output(output)
 
     except Exception as e:
         log_error_traceback("FileSearch execution", e)
