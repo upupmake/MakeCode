@@ -1152,9 +1152,7 @@ class MakeCodeTuiApp(App[None]):
         input_box.focus()
 
     def _update_header_status(self) -> None:
-        mode_text = "📋 Plan" if self._mode_label == "PLAN" else "🎬 Act"
-        agent_text = "⚙️ Agent Running" if self._agent_loop_active else "Ready"
-        parts = [mode_text, agent_text]
+        parts = []
         if self._header_info_provider is not None:
             try:
                 header_info = self._header_info_provider()

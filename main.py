@@ -1,6 +1,7 @@
 import json
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -550,6 +551,10 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         return format_runtime_info(tokens, THRESHOLD)
 
     def header_info_provider() -> str:
+        workdir = paths.workdir()
+        workdir_str = str(workdir)
+        if len(workdir_str) > 60 and len(workdir.parts) > 6:
+            workdir_str = str(Path(*workdir.parts[:3], "...", *workdir.parts[-3:]))
         session_turns = sum(1 for message in history if message.get("role") == "user")
         try:
             memory_count = get_active_memory_count()
@@ -566,7 +571,7 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         except Exception:
             server_count = 0
             tool_count = 0
-        return f"💬 {session_turns} · 🧠 {memory_count} · 📚 Skills {skills_count} · MCP {server_count}S/{tool_count}T"
+        return f"📂 {workdir_str} · 💬 {session_turns} · 🧠 {memory_count} · 📚 Skills {skills_count} · MCP {server_count}S/{tool_count}T"
 
     app = MakeCodeTuiApp(
         submit_handler=submit_handler,
