@@ -1262,6 +1262,10 @@ class MakeCodeTuiApp(App[None]):
             return []
         from system.commands import COMMAND_DESCRIPTIONS
 
+        # 输入已是完整命令时不再弹出候选，避免抢占上下键的历史导航
+        if stripped in COMMAND_DESCRIPTIONS:
+            return []
+
         return [
             (command, description)
             for command, description in COMMAND_DESCRIPTIONS.items()
