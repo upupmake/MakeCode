@@ -553,8 +553,8 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
     def header_info_provider() -> str:
         workdir = paths.workdir()
         workdir_str = str(workdir)
-        if len(workdir_str) > 60 and len(workdir.parts) > 6:
-            workdir_str = str(Path(*workdir.parts[:3], "...", *workdir.parts[-3:]))
+        if len(workdir_str) > 60 and len(workdir.parts) > 5:
+            workdir_str = str(Path(*workdir.parts[:3], "...", *workdir.parts[-2:]))
         session_turns = sum(1 for message in history if message.get("role") == "user")
         try:
             memory_count = get_active_memory_count()
