@@ -48,6 +48,24 @@ def _mark_ts_unavailable(message: str) -> None:
         _TS_VALIDATOR_WARNING_PRINTED = True
 
 
+def _configure_cache_dir(cache_dir: Path) -> bool:
+    if not configure:
+        return True
+    try:
+        configure(cache_dir=str(cache_dir))
+        return True
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            _mark_ts_unavailable(f"解析器缓存配置失败：{exc}")
+            return False
+    try:
+        configure(str(cache_dir))
+        return True
+    except Exception as exc:
+        _mark_ts_unavailable(f"解析器缓存配置失败：{exc}")
+        return False
+
+
 def init_ts_cache():
     """
     初始化 tree-sitter 语言包缓存。
@@ -90,8 +108,8 @@ def init_ts_cache():
     os.environ["TS_PACK_OFFLINE"] = "1"
 
     # 如果库已加载，必须调用其官方 configure API 通知它刷新缓存路径
-    if configure:
-        configure(cache_dir=str(libs_dir))
+    if not _configure_cache_dir(libs_dir):
+        return
 
     if not pyzstd:
         _mark_ts_unavailable("pyzstd 不可用，语法校验解析器缓存无法解压。")
