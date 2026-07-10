@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from typing import Any
 from pathlib import Path
@@ -22,7 +20,7 @@ from system.tui_types import (
 
 class ChoiceModal(ModalScreen[str]):
     CSS = """
-    ChoiceModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal {
         align: center middle;
     }
 
@@ -102,6 +100,75 @@ class ChoiceModal(ModalScreen[str]):
         border: round #f59e0b;
         background: $surface;
         padding: 1 2;
+    }
+
+    #delegate-dialog {
+        width: 82%;
+        height: auto;
+        max-height: 86%;
+        border: round #38bdf8;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #delegate-title {
+        height: auto;
+        color: #e2e8f0;
+    }
+
+    #delegate-subtitle {
+        height: auto;
+        margin-bottom: 1;
+        color: #94a3b8;
+    }
+
+    #delegate-tasks {
+        height: auto;
+        max-height: 20;
+        padding: 0 1 0 0;
+    }
+
+    #delegate-tasks-content {
+        width: 1fr;
+        height: auto;
+    }
+
+    .delegate-card {
+        width: 1fr;
+        height: auto;
+        margin-bottom: 1;
+        padding: 1 2;
+        border: round #334155;
+        background: #111827;
+    }
+
+    .delegate-card-heading {
+        width: 1fr;
+        height: auto;
+        color: #7dd3fc;
+    }
+
+    .delegate-card-summary {
+        width: 1fr;
+        height: auto;
+        margin-top: 1;
+        color: #cbd5e1;
+    }
+
+    #delegate-action-help {
+        height: auto;
+        margin-top: 1;
+        color: #94a3b8;
+    }
+
+    #delegate-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    .delegate-action {
+        width: 1fr;
+        margin: 0 1;
     }
 
     #layout-dialog {
@@ -323,6 +390,67 @@ class ChoiceModal(ModalScreen[str]):
 
     def action_cancel(self) -> None:
         self.dismiss("<cancelled>")
+
+
+class DelegateTasksModal(ModalScreen[str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "cancel", "Cancel", priority=True),
+        Binding("escape", "cancel", "Cancel", priority=True),
+    ]
+
+    def __init__(self, tasks: list[dict[str, str]]) -> None:
+        super().__init__()
+        self._tasks = tasks
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="delegate-dialog"):
+            yield Label("子智能体委派确认", id="delegate-title", markup=False)
+            yield Label(
+                f"本批包含 {len(self._tasks)} 个独立任务。请选择由子智能体并行处理，或交回主智能体顺序执行。",
+                id="delegate-subtitle",
+                markup=False,
+            )
+            with VerticalScroll(id="delegate-tasks"):
+                with Vertical(id="delegate-tasks-content"):
+                    for task in self._tasks:
+                        with Vertical(classes="delegate-card"):
+                            yield Label(
+                                f"TASK #{task['task_id']}  ·  {task['role_name']}",
+                                classes="delegate-card-heading",
+                                markup=False,
+                            )
+                            yield Label(
+                                task["summary"],
+                                classes="delegate-card-summary",
+                                markup=False,
+                            )
+            yield Label(
+                "批准委派：并行启动子智能体  ·  主智能体执行：不启动子智能体  ·  取消：停止本次操作",
+                id="delegate-action-help",
+                markup=False,
+            )
+            with Horizontal(id="delegate-actions"):
+                yield Button("批准委派", id="delegate-approve", variant="success", classes="delegate-action")
+                yield Button("主智能体执行", id="delegate-orchestrator", variant="primary", classes="delegate-action")
+                yield Button("取消", id="delegate-cancel", variant="warning", classes="delegate-action")
+
+    def on_mount(self) -> None:
+        self.query_one("#delegate-approve", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        actions = {
+            "delegate-approve": "approve",
+            "delegate-orchestrator": "orchestrator",
+            "delegate-cancel": "cancel",
+        }
+        action = actions.get(event.button.id)
+        if action:
+            self.dismiss(action)
+
+    def action_cancel(self) -> None:
+        self.dismiss("cancel")
 
 
 class StartupWorkdirModal(ModalScreen[str]):

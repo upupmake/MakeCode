@@ -25,7 +25,8 @@ from system.console_render import (
     _render_tool_output,
     get_sub_agent_console,
 )
-from system.tui_app import TuiRegion, post_tui
+from system.tui_app import TuiRegion, choose_delegate_tasks_tui, post_tui
+from system.window_attention import request_window_attention
 
 
 def print_formatted_text(value):
@@ -43,7 +44,7 @@ from utils.common import (
     file_edit,
 )
 from utils.file_access import AgentFileAccess
-from utils.hitl import check_permission, current_agent_role
+from utils.hitl import current_agent_role
 from utils.llm_client import AsyncChatAPIClient
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
@@ -136,20 +137,24 @@ class DelegateTasks(BaseModel):
     2) You MUST call GetRunnableTasks immediately before this tool.
     3) Every item.task_id MUST be in the current runnable frontier.
     4) Non-runnable task IDs are rejected.
-    5) Use this tool only when tasks are fully independent and truly parallel-safe:
+    5) DelegateTasks requires at least two tasks. Execute single tasks, serial task chains, and batches of trivial tasks directly in the Orchestrator.
+    6) Use this tool only when the batch has enough complexity or parallel benefit to justify delegation and every task is fully independent and truly parallel-safe:
        - no inter-task ordering dependency
        - no shared mutable file/state requiring serialization
        - each task can complete end-to-end without waiting on sibling tasks
        - MUST NOT batch tasks that may edit the same file — concurrent writes cause conflicts and data corruption.
-         If multiple tasks need to edit the same file, establish explicit topology dependencies (via depend_on) first.
-    6) Sub-agents are stateless executors and cannot use memory tools. Each context_prompt must be complete and self-contained, including the user request/goal, limits and constraints, allowed scope and disallowed actions, relevant files/context, expected output, verification evidence, and any project conventions already known from the current conversation. The system runs one long-term memory pre-recall before each sub-agent starts and prepends any relevant memory context to that delegated task.
+         If multiple tasks need to edit the same file, establish explicit topology dependencies (via depend_on) and execute them directly in the Orchestrator.
+    7) Sub-agents are stateless executors and cannot use memory tools. Each context_prompt must be complete and self-contained, including the user request/goal, limits and constraints, allowed scope and disallowed actions, relevant files/context, expected output, verification evidence, and any project conventions already known from the current conversation. The system runs one long-term memory pre-recall before each sub-agent starts and prepends any relevant memory context to that delegated task.
+    8) Calling this tool opens a dedicated confirmation dialog. The user may approve delegation, assign the batch to the Orchestrator for direct execution, or cancel without executing it.
     """
 
     tasks: list[TaskSpec] = Field(
         ...,
+        min_length=2,
         description=(
-            "Runnable tasks to delegate concurrently. "
-            "Use only for fully independent, parallel-safe tasks. "
+            "At least two runnable tasks to delegate concurrently. "
+            "Use only for a worthwhile batch of fully independent, parallel-safe tasks with enough complexity "
+            "or parallel benefit to justify delegation. Execute single, serial, or trivial tasks directly. "
             "Do not pass a string; pass a list of task objects."
         ),
     )
@@ -343,19 +348,29 @@ class TeammateManager:
             log_error_traceback("DelegateTasks preflight validation", e)
             return f"Error: {e}"
 
-        # HITL 人工拦截：在委派子智能体前请求用户确认
-        delegation_summary_lines = []
-        for t in tasks:
-            delegation_summary_lines.append(
-                f"  Task #{t['task_id']} → Role: {t['role_name']}"
+        # 使用子智能体专用确认窗口，不进入通用 HITL 审批队列
+        delegation_items = []
+        for task in tasks:
+            summary = " ".join(task["context_prompt"].split())
+            if len(summary) > 240:
+                summary = f"{summary[:237]}..."
+            delegation_items.append(
+                {
+                    "task_id": task["task_id"],
+                    "role_name": task["role_name"],
+                    "summary": summary,
+                }
             )
-        delegation_details = (
-                f"即将并发委派 {len(tasks)} 个子智能体任务:\n"
-                + "\n".join(delegation_summary_lines)
-        )
-        allowed, reason = check_permission("tool", "DelegateTasks", delegation_details)
-        if not allowed:
-            return f"User Denied Execution. Reason: {reason}"
+        with console_lock:
+            request_window_attention()
+            delegation_action = choose_delegate_tasks_tui(delegation_items)
+        if delegation_action == "orchestrator":
+            return (
+                "Sub-agent delegation declined: the user chose to have the Orchestrator "
+                "execute these tasks directly. Do not call DelegateTasks again for this batch."
+            )
+        if delegation_action != "approve":
+            return "Sub-agent delegation cancelled by the user."
         post_tui(TuiRegion.SUB_AGENT, active=True)
         post_tui(TuiRegion.BACKGROUND, active=True)
         # 1. 创建本次调用的专属文件夹
@@ -817,15 +832,19 @@ TEAM_NAMESPACE = {
     "type": "namespace",
     "name": "Team",
     "description": (
-        "Sub-agent delegation tools. DelegateTasks must be called only after TaskManager topology planning "
-        "and a fresh GetRunnableTasks query. Each delegated item must include a runnable task_id. "
-        "Only delegate when tasks are fully independent and safe to run in parallel. "
-        "Do not delegate tasks that may write the same file in the same batch; enforce topology order first. "
+        "Sub-agent delegation tools. DelegateTasks requires a worthwhile batch of at least two tasks and must "
+        "be called only after TaskManager topology planning and a fresh GetRunnableTasks query. Each delegated "
+        "item must include a runnable task_id. Delegate only when all tasks are fully independent, safe to run "
+        "in parallel, and have enough complexity or parallel benefit to justify delegation. Execute single tasks, "
+        "serial task chains, and batches of trivial tasks directly in the Orchestrator. Do not delegate tasks that "
+        "may write the same file in the same batch; enforce topology order and execute them directly. "
         "Sub-agents are stateless executors and cannot use memory tools, so each context_prompt must be "
         "complete and self-contained with the user request/goal, limits and constraints, allowed scope and "
         "disallowed actions, relevant files/context, expected output, verification evidence, and any project "
         "conventions already known from the current conversation. The system runs one long-term memory "
-        "pre-recall before each sub-agent starts and prepends any relevant memory context to that delegated task."
+        "pre-recall before each sub-agent starts and prepends any relevant memory context to that delegated task. "
+        "Calling DelegateTasks opens a dedicated confirmation dialog where the user can approve delegation, "
+        "assign the batch to the Orchestrator, or cancel it without execution."
     ),
     "tools": TEAM_NAMESPACE_TOOLS,
 }

@@ -65,7 +65,7 @@ def truncate_output(text: str, max_chars: int = 10000) -> str:
     return text[:head_chars] + marker + text[-tail_chars:]
 
 
-def sanitize_title(title: str, max_len: int = 50) -> str | None:
+def sanitize_title(title: str) -> str | None:
     """Sanitize a title string for safe use in filenames.
 
     Scans from the end of the string backwards. When an invalid character is
@@ -96,8 +96,6 @@ def sanitize_title(title: str, max_len: int = 50) -> str | None:
     if last_invalid >= 0:
         title = title[last_invalid + 1:]
 
-    # Truncate to max_len
-    title = title[:max_len]
     return title if title else None
 
 
@@ -674,7 +672,7 @@ class ContentSearch(BaseModel):
 
     AUTO-EXCLUDED:
     - Binary files (detected by null bytes)
-    - Hidden directories (starting with '.')
+    - Hidden directories (starting with '.'), unless the hidden directory itself is specified as search_dir
     - Build/dependency dirs: build, dist, __pycache__, node_modules, target, venv, site-packages, htmlcov
 
     LIMITS:
@@ -800,7 +798,7 @@ class FileSearch(BaseModel):
     Search for files and/or directories matching a regex pattern against absolute normalized paths.
 
     AUTO-EXCLUDED:
-    - Hidden directories (starting with '.')
+    - Hidden directories (starting with '.'), unless the hidden directory itself is specified as search_dir
     - Build/dependency dirs: build, dist, __pycache__, node_modules, target, venv, site-packages, htmlcov
 
     LIMITS:

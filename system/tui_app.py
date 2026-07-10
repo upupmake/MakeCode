@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -27,6 +25,7 @@ from system.tui_modals import (
     AddModelModal,
     ChoiceModal,
     CopyContentModal,
+    DelegateTasksModal,
     InfoPanelModal,
     LayoutModal,
     McpSwitchModal,
@@ -106,6 +105,18 @@ class TuiBridge:
             app.open_choice_modal(title, options, allow_custom, future)
         else:
             app.call_from_thread(app.open_choice_modal, title, options, allow_custom, future)
+        return future.result()
+
+    def choose_delegate_tasks(self, tasks: list[dict[str, str]]) -> str:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "cancel"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_delegate_tasks_modal(tasks, future)
+        else:
+            app.call_from_thread(app.open_delegate_tasks_modal, tasks, future)
         return future.result()
 
     def choose_add_model(self) -> dict[str, str] | None:
@@ -890,6 +901,19 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(ChoiceModal(title, options, allow_custom), _done)
 
+    def open_delegate_tasks_modal(
+        self,
+        tasks: list[dict[str, str]],
+        future: Future[str],
+    ) -> None:
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "cancel")
+
+        self._modal_active = True
+        self.push_screen(DelegateTasksModal(tasks), _done)
+
     def open_model_panel_modal(
         self,
         title: str,
@@ -1406,6 +1430,10 @@ def choose_model_panel_tui(title: str, options: list[str]) -> str:
     else:
         app.call_from_thread(app.open_model_panel_modal, title, options, future)
     return future.result()
+
+
+def choose_delegate_tasks_tui(tasks: list[dict[str, str]]) -> str:
+    return TUI_BRIDGE.choose_delegate_tasks(tasks)
 
 
 def manage_models_tui(model_manager: Any) -> str:

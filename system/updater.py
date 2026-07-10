@@ -1,7 +1,6 @@
 """
 自动更新模块 — 提供版本检查、下载、校验与升级启动功能。
 """
-from __future__ import annotations
 
 import hashlib
 import json

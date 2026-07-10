@@ -1,8 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+project_root = os.path.abspath(SPECPATH)
+
 a = Analysis(
-    ['updater.py'],
-    pathex=[],
+    [os.path.join(project_root, 'updater.py')],
+    pathex=[project_root],
     binaries=[],
     datas=[],
     hiddenimports=[],
