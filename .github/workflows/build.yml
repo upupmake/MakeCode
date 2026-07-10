@@ -31,27 +31,73 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: pip
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
+
+      - name: Run tests
+        env:
+          MAKECODE_NON_INTERACTIVE: '1'
+        run: >-
+          python -m pytest
+          tests/test_delegate_confirmation.py
+          tests/test_prompts.py
+          tests/test_platform_memory_config.py
+          -q
 
       - name: Build updater
-        run: pyinstaller updater.spec
-
-      - name: Prepare updater resource on Unix
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          # MakeCode.spec currently packages dist/updater.exe into the main app.
-          # PyInstaller emits dist/updater on macOS/Linux, so provide the expected resource name.
-          cp dist/updater dist/updater.exe
+        if: runner.os == 'Windows'
+        run: pyinstaller --clean --noconfirm updater.spec
 
       - name: Build MakeCode
-        run: pyinstaller MakeCode.spec
+        run: pyinstaller --clean --noconfirm MakeCode.spec
+
+      - name: Verify bundled project modules
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          expected = {"init", "prompts", "settings", "version"}
+          for package in ("system", "tools", "utils"):
+              for source in Path(package).rglob("*.py"):
+                  parts = source.with_suffix("").parts
+                  if parts[-1] == "__init__":
+                      parts = parts[:-1]
+                  expected.add(".".join(parts))
+
+          toc_path = Path("build/MakeCode/PYZ-00.toc")
+          if not toc_path.is_file():
+              raise SystemExit(f"Missing PyInstaller module manifest: {toc_path}")
+          toc = toc_path.read_text(encoding="utf-8")
+          missing = sorted(
+              module for module in expected
+              if not re.search(rf"\('{re.escape(module)}',", toc)
+          )
+          if missing:
+              raise SystemExit(f"Project modules missing from bundle: {', '.join(missing)}")
+
+          warning_path = Path("build/MakeCode/warn-MakeCode.txt")
+          warnings = warning_path.read_text(encoding="utf-8")
+          project_prefixes = ("init", "prompts", "settings", "version", "system", "tools", "utils")
+          missing_warning = []
+          for line in warnings.splitlines():
+              match = re.search(r"missing module named ['\"]?([^'\" ]+)", line)
+              if match and any(
+                  match.group(1) == prefix or match.group(1).startswith(f"{prefix}.")
+                  for prefix in project_prefixes
+              ):
+                  missing_warning.append(line)
+          if missing_warning:
+              raise SystemExit("Project module warnings:\n" + "\n".join(missing_warning))
+
+          print(f"Verified {len(expected)} bundled project modules")
+          PY
 
       - name: Package build outputs
         shell: bash

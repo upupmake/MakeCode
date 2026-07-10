@@ -19,6 +19,7 @@ from version import CURRENT_VERSION, VERSION_CHECK_URL, DOWNLOAD_URL
 logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 8192
+AUTO_UPDATE_SUPPORTED = sys.platform == "win32"
 
 
 def _parse_version(v: str) -> tuple:
@@ -132,6 +133,9 @@ def launch_updater(new_exe_path: Path) -> None:
         --new-file <新版本文件路径>
         --pid <当前进程PID>
     """
+    if not AUTO_UPDATE_SUPPORTED:
+        raise RuntimeError("当前平台不支持应用内自动更新，请从 GitHub Release 下载对应平台版本")
+
     # 定位 updater.exe：优先 PyInstaller 打包资源，其次 importlib.resources
     updater_path = _extract_updater_resource()
 

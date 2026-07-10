@@ -38,7 +38,7 @@ from utils.memory import (
     set_memory_recall_window_size,
     set_memory_size,
 )
-from system.updater import check_update, download_update
+from system.updater import AUTO_UPDATE_SUPPORTED, check_update, download_update
 
 
 class CommandAction(Enum):
@@ -712,6 +712,9 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         if not getattr(sys, 'frozen', False):
             self.console.print("[bold yellow]⚠️ 开发环境下不支持自动更新，请使用 pyinstaller 打包后再试。[/bold yellow]")
+            return None
+        if not AUTO_UPDATE_SUPPORTED:
+            self.console.print("[bold yellow]⚠️ 当前平台不支持应用内自动更新，请从 GitHub Release 下载对应平台版本。[/bold yellow]")
             return None
 
         set_agent_loop_active(True)

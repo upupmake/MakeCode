@@ -35,7 +35,7 @@ from system.console_render import (
     format_runtime_info,
     console,
 )
-from system.updater import check_update, launch_updater
+from system.updater import AUTO_UPDATE_SUPPORTED, check_update, launch_updater
 from utils.plan_mode import (
     is_plan_mode,
     is_plan_mode_command_allowed,
@@ -592,8 +592,8 @@ if __name__ == "__main__":
     _render_env_customization_hint()
     render_current_workdir()
 
-    # 后台检查更新（仅打包环境）
-    if getattr(sys, 'frozen', False):
+    # 后台检查更新（仅支持自动更新的打包环境）
+    if getattr(sys, 'frozen', False) and AUTO_UPDATE_SUPPORTED:
         threading.Thread(target=_background_update_check, daemon=True).start()
 
     # 后台初始化 tree-sitter 语言包缓存

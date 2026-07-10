@@ -2,7 +2,7 @@ import json
 from unittest.mock import Mock, patch
 
 from system.models import ModelConfig, ModelManager
-from system import ts_validator, window_attention
+from system import ts_validator, updater, window_attention
 from system.tui_modals import ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal
 from utils import memory
 from utils.llm_client import create_memory_recall_llm_client
@@ -224,6 +224,12 @@ def test_memory_config_modal_includes_recall_window_size_field():
 def test_window_attention_is_noop_on_non_windows():
     with patch.object(window_attention.sys, "platform", "linux"):
         window_attention.request_window_attention()
+
+
+def test_launch_updater_rejects_unsupported_platform(tmp_path):
+    with patch.object(updater, "AUTO_UPDATE_SUPPORTED", False):
+        with pytest.raises(RuntimeError, match="不支持应用内自动更新"):
+            updater.launch_updater(tmp_path / "MakeCode")
 
 
 def test_ts_validator_platform_key_detection(monkeypatch):

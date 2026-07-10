@@ -2,7 +2,7 @@
 
 import os
 import sys
-import glob
+import platform
 
 from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
@@ -20,24 +20,33 @@ project_hiddenimports = [
 for package in ('system', 'tools', 'utils'):
     project_hiddenimports.extend(collect_submodules(package))
 
-# --- Custom logic to collect ts_cache files ---
+# --- Custom logic to collect the current platform's ts_cache file ---
 ts_cache_datas = []
 ts_cache_dir = os.path.join(project_root, 'ts_cache')
-if os.path.exists(ts_cache_dir):
-    # Only collect .tar.zst files
-    for file in glob.glob(os.path.join(ts_cache_dir, '*.tar.zst')):
-        ts_cache_datas.append((file, 'ts_cache'))
+machine = platform.machine().lower()
+arch = 'x86_64' if machine in {'amd64', 'x86_64'} else 'aarch64' if machine in {'arm64', 'aarch64'} else None
+system_name = 'windows' if sys.platform == 'win32' else 'linux' if sys.platform.startswith('linux') else 'macos' if sys.platform == 'darwin' else None
+if system_name and arch:
+    platform_key = 'macos-arm64' if system_name == 'macos' and arch == 'aarch64' else f'{system_name}-{arch}'
+    parser_archive = os.path.join(ts_cache_dir, f'parsers-{platform_key}.tar.zst')
+    if os.path.isfile(parser_archive):
+        ts_cache_datas.append((parser_archive, 'ts_cache'))
+    else:
+        print(f'WARNING: tree-sitter parser archive not found for {platform_key}; syntax validation will fail open')
 
-    manifest_path = os.path.join(ts_cache_dir, 'manifest.json')
-    if os.path.exists(manifest_path):
-        ts_cache_datas.append((manifest_path, 'ts_cache'))
-# ----------------------------------------------
+manifest_path = os.path.join(ts_cache_dir, 'manifest.json')
+if os.path.isfile(manifest_path):
+    ts_cache_datas.append((manifest_path, 'ts_cache'))
+# -------------------------------------------------------------------
 
-updater_path = os.path.join(project_root, 'dist', 'updater.exe')
-if not os.path.isfile(updater_path):
-    raise FileNotFoundError(
-        'dist/updater.exe does not exist; run pyinstaller updater.spec first'
-    )
+updater_datas = []
+if sys.platform == 'win32':
+    updater_path = os.path.join(project_root, 'dist', 'updater.exe')
+    if not os.path.isfile(updater_path):
+        raise FileNotFoundError(
+            'dist/updater.exe does not exist; run pyinstaller updater.spec first'
+        )
+    updater_datas.append((updater_path, '.'))
 
 icon_path = os.path.join(project_root, 'assets', 'logo.ico')
 if not os.path.isfile(icon_path):
@@ -49,8 +58,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (os.path.join(project_root, 'tiktoken_cache'), 'tiktoken_cache'),
-        (updater_path, '.'),
-    ] + ts_cache_datas + copy_metadata('fastmcp'),
+    ] + updater_datas + ts_cache_datas + copy_metadata('fastmcp'),
     hiddenimports=project_hiddenimports + [
         'tiktoken_ext.openai_public',
         'tiktoken_ext',
@@ -88,5 +96,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=[icon_path],
+    icon=[icon_path] if sys.platform == 'win32' else None,
 )
