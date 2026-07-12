@@ -18,7 +18,7 @@ from pathlib import Path
 CONFIG_FILE = Path(__file__).parent / ".ftp_config"
 
 FILES = [
-    "dist/MakeCode.exe",
+    "dist/MakeCode-Windows-X64.zip",
     "dist/version.json",
 ]
 

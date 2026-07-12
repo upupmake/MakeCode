@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -584,6 +585,8 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
 
 
 if __name__ == "__main__":
+    update_ready_file = os.environ.pop("MAKECODE_UPDATE_READY_FILE", None)
+
     startup_workdir = resolve_startup_workdir()
     _apply_workdir(startup_workdir)
     prompt_for_workdir = should_prompt_for_workdir()
@@ -615,6 +618,9 @@ if __name__ == "__main__":
         auto_compact_fn=auto_compact,
         apply_workdir_fn=_apply_workdir,
     )
+
+    if update_ready_file:
+        Path(update_ready_file).touch()
 
     try:
         _run_textual_main(history, command_handler, prompt_for_workdir)

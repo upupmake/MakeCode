@@ -149,7 +149,7 @@ def get_release_body(version_path: Path) -> str:
             pass
 
     lines.append("### 下载")
-    lines.append("- `MakeCode.exe` — 主程序")
+    lines.append("- `MakeCode-Windows-X64.zip` — Windows 完整应用目录")
     lines.append("- `version.json` — 版本信息文件")
 
     return "\n".join(lines)
@@ -161,11 +161,11 @@ def main():
     tag = f"v{CURRENT_VERSION}"
     dist_dir = Path("dist")
 
-    exe_path = dist_dir / "MakeCode.exe"
+    archive_path = dist_dir / "MakeCode-Windows-X64.zip"
     version_path = dist_dir / "version.json"
 
-    if not exe_path.exists():
-        print(f"❌ 找不到 {exe_path}，请先运行 pyinstaller MakeCode.spec")
+    if not archive_path.exists():
+        print(f"❌ 找不到 {archive_path}，请先运行 python release.py")
         sys.exit(1)
 
     if not version_path.exists():
@@ -193,9 +193,9 @@ def main():
 
     upload_url = release["upload_url"]
 
-    # 上传 MakeCode.exe
-    print(f"[上传] MakeCode.exe ({exe_path.stat().st_size / 1024 / 1024:.1f} MB)...")
-    upload_asset(token, upload_url, exe_path)
+    # 上传 Windows 完整更新包
+    print(f"[上传] {archive_path.name} ({archive_path.stat().st_size / 1024 / 1024:.1f} MB)...")
+    upload_asset(token, upload_url, archive_path)
     print("   [OK] 上传完成")
 
     # 上传 version.json

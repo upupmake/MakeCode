@@ -10,6 +10,8 @@ project_root = os.path.abspath(SPECPATH)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from version import CURRENT_VERSION
+
 # Keep every runtime module owned by this project, including modules imported lazily.
 project_hiddenimports = [
     'init',
@@ -80,9 +82,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='MakeCode',
     debug=False,
     bootloader_ignore_signals=False,
@@ -98,3 +99,25 @@ exe = EXE(
     entitlements_file=None,
     icon=[icon_path] if sys.platform == 'win32' else None,
 )
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='MakeCode',
+)
+
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='MakeCode.app',
+        bundle_identifier='com.forwardforever.makecode',
+        info_plist={
+            'CFBundleName': 'MakeCode',
+            'CFBundleDisplayName': 'MakeCode',
+            'CFBundleShortVersionString': CURRENT_VERSION,
+        },
+    )

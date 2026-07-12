@@ -138,14 +138,22 @@ jobs:
           dist = Path("dist")
           release_assets = Path("release-assets")
 
-          exe = dist / "MakeCode.exe"
-          if runner_os == "Windows" and exe.exists():
-              # Windows users usually expect a directly downloadable .exe asset.
-              # Do not also upload a Windows zip to the Release; it mostly duplicates the exe.
-              shutil.copy2(exe, release_assets / f"MakeCode-{suffix}.exe")
+          if runner_os == "Windows":
+              app = dist / "MakeCode"
+              if not (app / "MakeCode.exe").is_file() or not (app / "_internal").is_dir():
+                  raise SystemExit("Invalid Windows onedir output")
+              if not (app / "_internal" / "updater.exe").is_file():
+                  raise SystemExit("Bundled updater.exe is missing")
+              shutil.make_archive(
+                  str(release_assets / f"MakeCode-{suffix}"), "zip", dist, app.name
+              )
           else:
-              # macOS does not use a file extension for executables, so package the dist directory.
-              shutil.make_archive(str(release_assets / f"MakeCode-{suffix}"), "zip", dist)
+              app = dist / "MakeCode.app"
+              if not (app / "Contents" / "MacOS" / "MakeCode").is_file():
+                  raise SystemExit("Invalid macOS app bundle")
+              shutil.make_archive(
+                  str(release_assets / f"MakeCode-{suffix}"), "zip", dist, app.name
+              )
           PY
 
       - name: Upload build artifacts

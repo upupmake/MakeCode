@@ -5,6 +5,7 @@
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -32,16 +33,21 @@ def main():
         sys.exit(1)
     release_log = log_path.read_text(encoding="utf-8").strip()
 
-    exe_path = Path("dist") / "MakeCode.exe"
+    app_dir = Path("dist") / "MakeCode"
+    exe_path = app_dir / "MakeCode.exe"
     if not exe_path.exists():
         print(f"❌ 找不到 {exe_path}，请先运行 pyinstaller MakeCode.spec")
         sys.exit(1)
 
-    sha256 = get_sha256(exe_path)
+    archive = Path("dist") / "MakeCode-Windows-X64.zip"
+    archive.unlink(missing_ok=True)
+    shutil.make_archive(str(archive.with_suffix("")), "zip", app_dir.parent, app_dir.name)
+    sha256 = get_sha256(archive)
     version_info = {
         "version": CURRENT_VERSION,
-        "download_url": f"{UPDATE_SERVER_URL}/MakeCode.exe",
+        "download_url": f"{UPDATE_SERVER_URL}/{archive.name}",
         "sha256": sha256,
+        "size": archive.stat().st_size,
         "release_log": release_log,
     }
 
@@ -54,7 +60,7 @@ def main():
     print(f"   SHA256: {sha256}")
     print()
     print("请将 dist 目录下的文件上传到服务器:")
-    print(f"   1. MakeCode.exe  ->  {UPDATE_SERVER_URL}/MakeCode.exe")
+    print(f"   1. {archive.name}  ->  {UPDATE_SERVER_URL}/{archive.name}")
     print(f"   2. version.json  ->  {UPDATE_SERVER_URL}/version.json")
 
 

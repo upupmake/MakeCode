@@ -6,7 +6,6 @@ import hashlib
 import json
 import logging
 import os
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -42,12 +41,8 @@ def check_update(*, raise_errors: bool = False) -> dict | None:
     有更新返回版本信息字典，无更新返回 None。默认静默吞掉检查错误；raise_errors=True 时抛出异常。
     """
     try:
-        # 创建不验证 SSL 证书的上下文（解决打包后证书路径问题）
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(VERSION_CHECK_URL, headers={"User-Agent": "Agent-Updater/1.0"})
-        with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as resp:
+        req = urllib.request.Request(VERSION_CHECK_URL, headers={"User-Agent": "MakeCode-Updater/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         logger.warning("检查更新失败: %s", exc)
@@ -75,7 +70,7 @@ def check_update(*, raise_errors: bool = False) -> dict | None:
 
 def download_update(version_info: dict, progress_callback=None) -> Path | None:
     """
-    下载新版本 exe 到临时目录，校验 SHA256 后返回文件路径。
+    下载 Windows onedir 完整 ZIP，校验大小和 SHA256 后返回文件路径。
 
     Args:
         version_info: check_update() 返回的版本信息字典。
@@ -86,17 +81,20 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
     """
     url = version_info.get("download_url") or DOWNLOAD_URL
     expected_sha256 = version_info.get("sha256", "")
+    expected_size = version_info.get("size")
+    if not isinstance(url, str) or not url.lower().startswith("https://"):
+        raise ValueError("version.json 中的 download_url 必须使用 HTTPS")
+    if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+        raise ValueError("version.json 缺少有效的 sha256")
+    if not isinstance(expected_size, int) or expected_size <= 0:
+        raise ValueError("version.json 缺少有效的 size")
 
-    tmp_dir = tempfile.mkdtemp(prefix="agent_update_")
-    tmp_file = Path(tmp_dir) / "MakeCode_update.exe"
+    tmp_dir = tempfile.mkdtemp(prefix="makecode_update_")
+    tmp_file = Path(tmp_dir) / "MakeCode-Windows-X64.zip"
 
     try:
-        # 创建不验证 SSL 证书的上下文（解决打包后证书路径问题）
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers={"User-Agent": "Agent-Updater/1.0"})
-        with urllib.request.urlopen(req, timeout=300, context=ssl_ctx) as resp:
+        req = urllib.request.Request(url, headers={"User-Agent": "MakeCode-Updater/1.0"})
+        with urllib.request.urlopen(req, timeout=300) as resp:
             total = resp.headers.get("Content-Length")
             total = int(total) if total and total.isdigit() else None
             downloaded = 0
@@ -116,23 +114,21 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
         logger.error("下载更新失败: %s", exc)
         return None
 
-    if expected_sha256 and sha.hexdigest() != expected_sha256:
+    if downloaded != expected_size:
+        logger.error("文件大小校验失败: 期望 %d, 实际 %d", expected_size, downloaded)
+        tmp_file.unlink(missing_ok=True)
+        return None
+    if sha.hexdigest().lower() != expected_sha256.lower():
         logger.error("SHA256 校验失败: 期望 %s, 实际 %s", expected_sha256, sha.hexdigest())
+        tmp_file.unlink(missing_ok=True)
         return None
 
     logger.info("更新下载完成: %s", tmp_file)
     return tmp_file
 
 
-def launch_updater(new_exe_path: Path) -> None:
-    """
-    释放 updater.exe 到临时目录并启动，然后退出主程序。
-
-    updater.exe 接收参数：
-        --exe-path <当前exe路径>
-        --new-file <新版本文件路径>
-        --pid <当前进程PID>
-    """
+def launch_updater(update_archive: Path) -> None:
+    """释放内置 updater.exe，启动完整目录更新，然后退出整个主进程。"""
     if not AUTO_UPDATE_SUPPORTED:
         raise RuntimeError("当前平台不支持应用内自动更新，请从 GitHub Release 下载对应平台版本")
 
@@ -144,8 +140,8 @@ def launch_updater(new_exe_path: Path) -> None:
 
     cmd = [
         str(updater_path),
-        "--exe-path", str(current_exe),
-        "--new-file", str(new_exe_path),
+        "--install-dir", str(current_exe.parent),
+        "--archive", str(update_archive.resolve()),
         "--pid", str(pid),
     ]
 

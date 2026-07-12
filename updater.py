@@ -1,12 +1,16 @@
-"""独立的更新器程序，用于替换主程序 exe。"""
+"""独立更新器：安全解压并事务替换 Windows onedir 应用目录。"""
 
 import argparse
 import ctypes
 import logging
 import os
 import shutil
+import stat
+import subprocess
 import sys
 import time
+import zipfile
+from pathlib import Path, PurePosixPath
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,26 +26,19 @@ def wait_process_exit(pid: int, timeout: float) -> bool:
         return False
 
     if os.name == "nt":
-        from ctypes import wintypes
-
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        SYNCHRONIZE = 0x00100000
-
-        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
         if not handle:
             err = ctypes.get_last_error()
-            if err == 87:  # ERROR_INVALID_PARAMETER，PID 不存在
+            if err == 87:
                 return True
-            # error 5 = 拒绝访问，进程还在，降级到轮询
             log.warning("OpenProcess 失败 (error=%d)，降级到轮询等待", err)
         else:
             try:
-                result = kernel32.WaitForSingleObject(handle, int(timeout * 1000))
-                return result == 0  # WAIT_OBJECT_0
+                return kernel32.WaitForSingleObject(handle, int(timeout * 1000)) == 0
             finally:
                 kernel32.CloseHandle(handle)
 
-    # 非 Windows，或 Windows 下 OpenProcess 失败的降级方案
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -56,135 +53,133 @@ def wait_process_exit(pid: int, timeout: float) -> bool:
 
 def retry_file_op(func, retries=5, delay=1.0):
     """带重试的文件操作，对抗杀软文件锁定。"""
-    for i in range(retries):
+    for attempt in range(retries):
         try:
             return func()
-        except OSError as e:
-            if i == retries - 1:
+        except OSError as exc:
+            if attempt == retries - 1:
                 raise
-            log.warning("操作失败，%.1f秒后重试 (%s)", delay, e)
+            log.warning("操作失败，%.1f秒后重试 (%s)", delay, exc)
             time.sleep(delay)
 
 
-def replace_file_atomic(target: str, replacement: str, backup: str):
-    """使用 Windows ReplaceFileW 原子替换文件。"""
-    if not os.path.exists(replacement):
-        raise FileNotFoundError(f"新版本文件不存在: {replacement}")
+def extract_update_archive(archive: Path, staging_dir: Path) -> Path:
+    """安全解压更新包，返回包内唯一的 MakeCode 应用目录。"""
+    with zipfile.ZipFile(archive) as bundle:
+        members = bundle.infolist()
+        if not members:
+            raise ValueError("更新包为空")
 
-    # 目标不存在时直接安装
-    if not os.path.exists(target):
-        os.replace(replacement, target)
-        return
+        for member in members:
+            path = PurePosixPath(member.filename)
+            mode = member.external_attr >> 16
+            if (
+                path.is_absolute()
+                or not path.parts
+                or "\\" in member.filename
+                or ":" in member.filename
+                or ".." in path.parts
+                or path.parts[0] != "MakeCode"
+                or stat.S_ISLNK(mode)
+            ):
+                raise ValueError(f"更新包包含不安全路径: {member.filename}")
 
-    # ReplaceFileW 要求 backup 不能已存在
-    if os.path.exists(backup):
-        os.remove(backup)
+        bundle.extractall(staging_dir)
 
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    ok = kernel32.ReplaceFileW(
-        target, replacement, backup,
-        0x00000002,  # REPLACEFILE_IGNORE_MERGE_ERRORS
-        None, None,
-    )
-    if not ok:
-        raise OSError(ctypes.get_last_error(), "ReplaceFileW 失败")
+    app_dir = staging_dir / "MakeCode"
+    if not (app_dir / "MakeCode.exe").is_file() or not (app_dir / "_internal").is_dir():
+        raise ValueError("更新包结构无效：缺少 MakeCode.exe 或 _internal")
+    return app_dir
 
 
-def main():
-    parser = argparse.ArgumentParser(description="主程序更新器")
-    parser.add_argument("--exe-path", required=True, help="主程序 exe 的完整路径")
-    parser.add_argument("--new-file", required=True, help="下载的新版本 exe 临时路径")
-    parser.add_argument("--pid", required=True, type=int, help="主程序的进程 ID")
-    args = parser.parse_args()
+def wait_for_ready(process, ready_file: Path, timeout: float = 30) -> None:
+    """等待新版报告启动成功；提前退出或超时均视为失败。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if ready_file.is_file():
+            return
+        if process.poll() is not None:
+            raise RuntimeError(f"新版进程提前退出，退出码 {process.returncode}")
+        time.sleep(0.2)
+    process.terminate()
+    process.wait(timeout=5)
+    raise TimeoutError("新版启动确认超时")
 
-    exe_path = os.path.abspath(args.exe_path)
-    new_file = os.path.abspath(args.new_file)
-    pid = args.pid
 
-    log.info("更新器启动")
-    log.info("主程序路径: %s", exe_path)
-    log.info("新版本文件: %s", new_file)
-    log.info("主程序 PID: %d", pid)
+def install_update(archive: Path, install_dir: Path) -> None:
+    """用同级目录切换安装更新；任何失败都会恢复旧目录。"""
+    parent = install_dir.parent
+    staging_root = parent / f".{install_dir.name}.staging.{os.getpid()}"
+    backup_dir = parent / f".{install_dir.name}.backup.{os.getpid()}"
+    ready_file = parent / f".{install_dir.name}.ready.{os.getpid()}"
+    staged_app = None
+    old_install_moved = False
 
-    # 输入校验
-    if not os.path.isfile(new_file):
-        log.error("新版本文件不存在或不是文件: %s", new_file)
-        sys.exit(1)
-
-    exe_dir = os.path.dirname(exe_path)
-    if not os.path.isdir(exe_dir):
-        log.error("主程序目录不存在: %s", exe_dir)
-        sys.exit(1)
-
-    # 等待主程序退出
-    log.info("等待主程序 (PID %d) 退出，超时 30 秒...", pid)
-    if not wait_process_exit(pid, timeout=30):
-        log.error("等待主程序退出超时，更新中止")
-        sys.exit(1)
-    log.info("主程序已退出")
-    time.sleep(0.5)
-
-    # staging 文件：先复制到同目录临时文件，再原子替换
-    staging_path = os.path.join(
-        exe_dir, f".{os.path.basename(exe_path)}.new.{os.getpid()}.tmp"
-    )
-    backup_path = exe_path + ".old"
-    temp_dir = os.path.dirname(new_file)
+    if staging_root.exists() or backup_dir.exists() or ready_file.exists():
+        raise FileExistsError("更新暂存目录已存在")
 
     try:
-        # 1. 复制新版本到 staging
-        log.info("复制新版本到 staging: %s", staging_path)
-        retry_file_op(lambda: shutil.copy2(new_file, staging_path))
+        staging_root.mkdir()
+        staged_app = extract_update_archive(archive, staging_root)
+        retry_file_op(lambda: os.replace(install_dir, backup_dir))
+        old_install_moved = True
 
-        # 2. 原子替换主程序
-        log.info("替换主程序...")
-        if os.name == "nt":
-            retry_file_op(lambda: replace_file_atomic(exe_path, staging_path, backup_path))
-        else:
-            def do_replace():
-                if os.path.exists(backup_path):
-                    os.remove(backup_path)
-                if os.path.exists(exe_path):
-                    os.replace(exe_path, backup_path)
-                os.replace(staging_path, exe_path)
-            retry_file_op(do_replace)
+        user_data = backup_dir / ".makecode"
+        if user_data.exists():
+            retry_file_op(lambda: shutil.copytree(user_data, staged_app / ".makecode"))
 
-        log.info("已更新主程序: %s", exe_path)
+        retry_file_op(lambda: os.replace(staged_app, install_dir))
+        env = os.environ.copy()
+        env["MAKECODE_UPDATE_READY_FILE"] = str(ready_file)
+        process = subprocess.Popen(
+            [str(install_dir / "MakeCode.exe")], cwd=str(install_dir), close_fds=True, env=env
+        )
+        wait_for_ready(process, ready_file)
+    except Exception:
+        if old_install_moved:
+            if install_dir.exists():
+                shutil.rmtree(install_dir, ignore_errors=True)
+            if backup_dir.exists():
+                retry_file_op(lambda: os.replace(backup_dir, install_dir))
+        raise
+    else:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+    finally:
+        ready_file.unlink(missing_ok=True)
+        shutil.rmtree(staging_root, ignore_errors=True)
 
-    except Exception as e:
-        log.error("更新失败: %s", e)
-        # 清理 staging
-        if os.path.exists(staging_path):
-            try:
-                os.remove(staging_path)
-            except OSError:
-                pass
-        # 恢复备份
-        if not os.path.exists(exe_path) and os.path.exists(backup_path):
-            try:
-                os.replace(backup_path, exe_path)
-                log.info("已恢复旧版本")
-            except OSError:
-                log.error("恢复旧版本失败，主程序可能损坏")
-        sys.exit(1)
 
-    # 清理
-    for path, desc in [(new_file, "原始新版本文件"), (backup_path, "备份文件")]:
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-            except OSError:
-                log.warning("清理%s失败，不影响更新", desc)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="MakeCode 目录更新器")
+    parser.add_argument("--install-dir", required=True, type=Path, help="当前 MakeCode 应用目录")
+    parser.add_argument("--archive", required=True, type=Path, help="已校验的完整更新 ZIP")
+    parser.add_argument("--pid", required=True, type=int, help="主程序进程 ID")
+    args = parser.parse_args()
 
-    if os.path.isdir(temp_dir) and not os.listdir(temp_dir):
+    install_dir = args.install_dir.resolve()
+    archive = args.archive.resolve()
+    if not (install_dir / "MakeCode.exe").is_file():
+        parser.error("安装目录中缺少 MakeCode.exe")
+    if not archive.is_file():
+        parser.error("更新 ZIP 不存在")
+
+    log.info("等待主程序 (PID %d) 退出", args.pid)
+    if not wait_process_exit(args.pid, timeout=30):
+        raise SystemExit("等待主程序退出超时，更新中止")
+
+    try:
+        install_update(archive, install_dir)
+    except Exception:
+        log.exception("更新失败，已尝试恢复旧版本")
+        raise SystemExit(1)
+    finally:
         try:
-            os.rmdir(temp_dir)
+            archive.unlink(missing_ok=True)
+            archive.parent.rmdir()
         except OSError:
             pass
 
-    log.info("更新完成，更新器退出")
+    log.info("更新完成")
 
 
 if __name__ == "__main__":

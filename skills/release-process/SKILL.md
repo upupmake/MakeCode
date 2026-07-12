@@ -31,7 +31,7 @@ CURRENT_VERSION = "3.0.1"  # ← 修改此处
 
 UPDATE_SERVER_URL = "https://starvpn.forwardforever.top"
 VERSION_CHECK_URL = f"{UPDATE_SERVER_URL}/version.json"
-DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode.exe"
+DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode-Windows-X64.zip"
 ```
 
 ### 版本变更检查清单
@@ -77,22 +77,35 @@ pyinstaller updater.spec
 
 构建产物：`dist/updater.exe`
 
-### 2.4 构建主程序 MakeCode.exe
+### 2.4 构建主程序
 
 ```bash
 pyinstaller MakeCode.spec
 ```
 
-构建产物：`dist/MakeCode.exe`
+构建采用 `onedir`，不要改回 `onefile`：
 
-**注意**：`MakeCode.spec` 会自动将 `dist/updater.exe` 打包到主程序中，因此必须先构建 updater。
+- Windows：`dist/MakeCode/MakeCode.exe`，运行依赖位于 `dist/MakeCode/_internal/`
+- macOS：`dist/MakeCode.app`
+
+Windows 的 `dist/updater.exe` 会被收集为 `dist/MakeCode/_internal/updater.exe`，因此 Windows 必须先构建 updater。macOS 不构建 updater，也不支持应用内自动更新。
 
 ### 2.5 构建顺序
 
+Windows：
+
 ```
-1. pyinstaller updater.spec    → 生成 dist/updater.exe
-2. pyinstaller MakeCode.spec   → 生成 dist/MakeCode.exe（内含 updater）
+1. pyinstaller updater.spec    → dist/updater.exe
+2. pyinstaller MakeCode.spec   → dist/MakeCode/（_internal 内含 updater.exe）
 ```
+
+macOS：
+
+```
+pyinstaller MakeCode.spec      → dist/MakeCode.app
+```
+
+当前 GitHub Actions 只构建 Windows X64 和 macOS ARM64，不构建 Linux 应用。构建后只做 TOC、目录结构和警告日志静态检查，禁止启动 `dist` 下的程序。
 
 ---
 
@@ -108,14 +121,18 @@ pyinstaller MakeCode.spec
 python release.py --release_log RELEASE_LOG.md
 ```
 
-该脚本会：
-1. 检查 `dist/MakeCode.exe` 是否存在
-2. 计算 exe 文件的 SHA256 哈希值
-3. 生成 `dist/version.json`，内容包含：
+该脚本用于 Windows 自动更新资产，会：
+1. 检查 `dist/MakeCode/MakeCode.exe` 是否存在
+2. 将完整 `dist/MakeCode/` 打成 `dist/MakeCode-Windows-X64.zip`，ZIP 顶层必须是 `MakeCode/`
+3. 计算 ZIP 的大小和 SHA-256
+4. 生成 `dist/version.json`，内容包含：
    - `version`：当前版本号
-   - `download_url`：下载地址
-   - `sha256`：文件校验值
-   - `release_log`：发布日志（markdown 格式，用于 GitHub Release 和客户端更新通知展示）
+   - `download_url`：Windows 完整 ZIP 的 HTTPS 地址
+   - `sha256`：ZIP 校验值
+   - `size`：ZIP 字节数
+   - `release_log`：发布日志（markdown 格式，用于更新通知展示）
+
+`RELEASE_LOG.md` 是临时发布文件，保持在 `.gitignore` 中，不提交。补丁版本发布日志按项目既有聚合规则生成。
 
 ### 3.2 上传文件到服务器（可并行）
 
@@ -138,8 +155,8 @@ python ftp_release.py
 
 | 本地文件 | 服务器路径 | 用途 |
 |---------|-----------|------|
-| `dist/MakeCode.exe` | MakeCode.exe | 主程序下载 |
-| `dist/version.json` | version.json | 版本检查 |
+| `dist/MakeCode-Windows-X64.zip` | MakeCode-Windows-X64.zip | Windows 完整目录自动更新包 |
+| `dist/version.json` | version.json | Windows 版本检查与资产校验 |
 
 **FTP 配置**（存储在 `.ftp_config` 文件中）：
 ```json
@@ -167,7 +184,9 @@ python github_release.py
 该脚本会：
 1. 删除仓库中当前主版本线的现有 Releases 和对应 tags（例如发布 `4.0.0` 时只清理 `4.x.x`，保留 `3.x.x`）
 2. 创建新的 Release（tag 为 `v{版本号}`），body 包含版本和 commit 信息（markdown 格式）
-3. 上传 `MakeCode.exe` 和 `version.json`
+3. 上传 `MakeCode-Windows-X64.zip` 和 `version.json`
+
+标签触发的 GitHub Actions 则发布两个用户资产：`MakeCode-Windows-X64.zip` 与 `MakeCode-macOS-ARM64.zip`。macOS ZIP 内是完整 `MakeCode.app`，由用户手动下载替换。
 
 **GitHub 配置**：
 - 仓库：`upupmake/MakeCode`
@@ -183,10 +202,11 @@ python github_release.py
 
 - [ ] 版本号已确认（`version.py`）
 - [ ] **所有变更已提交**（`version.py` + 代码变更）— 构建前完成
-- [ ] updater.exe 已构建
-- [ ] MakeCode.exe 已构建
-- [ ] `python release.py` 已执行成功
-- [ ] `dist/version.json` 已生成且内容正确
+- [ ] Windows updater.exe 已先构建
+- [ ] Windows `dist/MakeCode/` 或 macOS `dist/MakeCode.app` 已构建
+- [ ] Windows `python release.py --release_log RELEASE_LOG.md` 已执行成功
+- [ ] `dist/MakeCode-Windows-X64.zip` 与 `dist/version.json` 已生成且相互匹配
+- [ ] ZIP 的顶层目录为 `MakeCode/`，并包含 `MakeCode.exe`、`_internal/` 和 `_internal/updater.exe`
 - [ ] FTP 上传完成
 - [ ] GitHub Release 上传完成
 - [ ] 验证服务器版本检查接口返回正确
@@ -201,26 +221,32 @@ python github_release.py
 用户端启动时会：
 1. 请求 `{UPDATE_SERVER_URL}/version.json` 获取最新版本信息
 2. 比较本地版本与服务器版本
-3. 如果有新版本，提示用户下载
+3. Windows 打包版可下载并安装更新；macOS 只提示用户从 GitHub Release 手动下载最新版
 
-### 4.2 更新执行流程
+下载必须使用 HTTPS 和系统证书验证。客户端要求 manifest 提供有效 `sha256` 与正整数 `size`，下载后同时校验大小和 SHA-256。
 
-updater.exe 负责执行更新：
+### 4.2 Windows 更新执行流程
+
+主程序将内置的 updater 释放到安装目录之外，随后用 `os._exit(0)` 退出整个进程。updater.exe 负责完整 onedir 更新：
 
 ```
-1. 接收参数：--exe-path, --new-file, --pid, --launch-args
+1. 接收 --install-dir、--archive、--pid
 2. 等待主程序退出（超时 30 秒）
-3. 备份旧版本为 .old 文件
-4. 用新版本替换主程序
-5. 清理备份文件和临时目录
-6. 退出更新器
+3. 拒绝路径穿越、绝对路径、盘符/反斜杠路径和符号链接
+4. 解压到安装目录同级 staging，并验证 MakeCode/MakeCode.exe 与 MakeCode/_internal/
+5. 将旧安装目录切换为 backup
+6. 将旧目录的 .makecode 用户配置复制到新版
+7. 将 staged MakeCode 目录切换为正式安装目录
+8. 启动新版并等待 ready-file 启动确认
+9. 确认成功后删除 backup；失败或超时则恢复旧目录
 ```
 
-### 4.3 更新失败恢复
+### 4.3 更新边界与迁移
 
-- 如果替换失败，updater 会尝试恢复备份
-- 如果恢复也失败，会提示主程序可能损坏
-- 用户可手动从 `.old` 备份文件恢复
+- macOS 暂不做应用内自动更新，因为可靠替换 `.app` 还涉及代码签名、公证和隔离属性；只提示手动下载。
+- 从旧 onefile 版本迁移到首个 onedir 版本应手动完成。安装 onedir 版本后，后续 Windows 版本才能使用完整目录自动更新。
+- `.makecode` 位于安装目录内，目录更新时必须保留。
+- 不得只替换 onedir 中的 `MakeCode.exe`，否则会造成 EXE 与 `_internal` 依赖版本混合。
 
 ---
 
@@ -232,14 +258,16 @@ updater.exe 负责执行更新：
 
 ### Q2: version.json 生成失败
 
-检查 `dist/MakeCode.exe` 是否存在，确保构建步骤已完成。
+检查 `dist/MakeCode/MakeCode.exe` 是否存在，确保 Windows onedir 构建步骤已完成。
 
-### Q3: 用户无法更新
+### Q3: Windows 用户无法更新
 
 检查：
 - 服务器上的 `version.json` 是否可访问
-- `MakeCode.exe` 下载链接是否正确
-- SHA256 是否匹配
+- `download_url` 是否是 `MakeCode-Windows-X64.zip` 的 HTTPS 地址
+- `sha256` 与 `size` 是否和服务器 ZIP 完全匹配
+- ZIP 顶层是否为唯一的 `MakeCode/`，内部是否包含 `MakeCode.exe` 与 `_internal/`
+- 当前客户端是否已经是 onedir 版本；旧 onefile 客户端需要手动迁移
 
 ### Q4: 版本号格式错误
 
@@ -263,11 +291,12 @@ FTP 使用两个通道：控制通道（端口 21）和数据通道。被动模�
 curl -s https://starvpn.forwardforever.top/version.json
 # 2. 对比本地 version.py，必要时更新版本号并提交所有变更
 git add -A && git commit -m "release: vX.Y.Z"
-# 3. 构建打包
+# 3. Windows 构建打包（macOS 只运行第二条）
 pyinstaller updater.spec
 pyinstaller MakeCode.spec
-# 4. 创建发布日志文件 RELEASE_LOG.md，写入 markdown 格式的发布内容
-# 5. 生成版本信息（--release_log 传入发布日志文件路径）
+# 不启动 dist 程序；检查 dist/MakeCode、TOC 和 warn-MakeCode.txt
+# 4. 创建临时发布日志 RELEASE_LOG.md，写入 markdown 格式发布内容
+# 5. 生成 Windows 完整 ZIP 与 version.json
 python release.py --release_log RELEASE_LOG.md
 # 6. 上传到服务器（可以使用一行命令同时进行，伪代码请根据终端环境调整）
 python ftp_release.py & python github_release.py
@@ -282,10 +311,10 @@ git status  # 应输出 "nothing to commit, working tree clean"
 | 文件 | 用途 |
 |------|------|
 | `version.py` | 版本号和服务器地址配置 |
-| `release.py` | 发布脚本，生成 version.json |
-| `MakeCode.spec` | 主程序 PyInstaller 打包配置 |
-| `updater.spec` | 更新器 PyInstaller 打包配置 |
-| `updater.py` | 更新器源码 |
+| `release.py` | 将 Windows onedir 打成 ZIP，并生成 version.json |
+| `MakeCode.spec` | Windows onedir 与 macOS BUNDLE 打包配置 |
+| `updater.spec` | Windows 独立更新器打包配置 |
+| `updater.py` | Windows 完整目录事务更新器源码 |
 | `ftp_release.py` | FTP 上传脚本（配置存储在 `.ftp_config`） |
 | `github_release.py` | GitHub Release 上传脚本（配置存储在 `.github_token`） |
 | `.ftp_config` | FTP 服务器配置（不提交远程） |
