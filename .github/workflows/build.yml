@@ -73,17 +73,27 @@ jobs:
       - name: Test and build Linux on glibc 2.34
         if: runner.os == 'Linux'
         env:
-          MANYLINUX_IMAGE: quay.io/pypa/manylinux_2_34_x86_64
+          ROCKY_IMAGE: rockylinux:9
         run: |
           docker run --rm \
             -e MAKECODE_NON_INTERACTIVE=1 \
             -e TS_PACK_OFFLINE=1 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
-            "$MANYLINUX_IMAGE" \
+            "$ROCKY_IMAGE" \
             /bin/bash -euxo pipefail -c '
-              PYTHON=/opt/python/cp312-cp312/bin/python
+              dnf install -y gcc gcc-c++ make curl tar gzip openssl-devel bzip2-devel libffi-devel zlib-devel xz-devel sqlite-devel readline-devel ncurses-devel gdbm-devel tk-devel libuuid-devel binutils
+              curl --fail --location --retry 3 --output /tmp/Python-3.12.13.tgz https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz
+              tar -xzf /tmp/Python-3.12.13.tgz -C /tmp
+              cd /tmp/Python-3.12.13
+              ./configure --prefix=/opt/python312 --enable-shared --with-ensurepip=install
+              make -j"$(nproc)"
+              make install
+              cd /workspace
+              export LD_LIBRARY_PATH=/opt/python312/lib
+              PYTHON=/opt/python312/bin/python3.12
               ldd --version | head -n 1
+              test -f /opt/python312/lib/libpython3.12.so.1.0
               "$PYTHON" -m pip install --upgrade pip
               "$PYTHON" -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
               "$PYTHON" -c "import subprocess,sys; result=subprocess.run([sys.executable,\"tools/verify_tree_sitter_offline.py\"],timeout=25); raise SystemExit(result.returncode)"
