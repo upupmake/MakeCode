@@ -22,7 +22,7 @@ jobs:
         os:
           - windows-latest
           - macos-latest
-          - ubuntu-latest
+          - ubuntu-22.04
 
     steps:
       - name: Checkout repository
@@ -70,10 +70,10 @@ jobs:
         if: runner.os != 'Linux'
         run: pyinstaller --clean --noconfirm MakeCode.spec
 
-      - name: Test and build Linux on glibc 2.17
+      - name: Test and build Linux on glibc 2.34
         if: runner.os == 'Linux'
         env:
-          MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64
+          MANYLINUX_IMAGE: quay.io/pypa/manylinux_2_34_x86_64
         run: |
           docker run --rm \
             -e MAKECODE_NON_INTERACTIVE=1 \
@@ -83,13 +83,13 @@ jobs:
             "$MANYLINUX_IMAGE" \
             /bin/bash -euxo pipefail -c '
               PYTHON=/opt/python/cp312-cp312/bin/python
-              ldd --version
-              "$PYTHON" -c "import re,subprocess; paths={line.rsplit(None,1)[-1] for line in open(\"/proc/self/maps\") if \"libpython\" in line and \".so\" in line}; assert len(paths)==1, paths; library=paths.pop(); output=subprocess.check_output([\"objdump\",\"-T\",library],text=True); versions=[tuple(map(int, match.split(\".\"))) for match in re.findall(r\"GLIBC_([0-9.]+)\",output)]; assert versions and max(versions) <= (2,17), (library,max(versions)); print(f\"{library} maximum GLIBC requirement: {max(versions)}\")"
+              ldd --version | head -n 1
               "$PYTHON" -m pip install --upgrade pip
               "$PYTHON" -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
               "$PYTHON" -c "import subprocess,sys; result=subprocess.run([sys.executable,\"tools/verify_tree_sitter_offline.py\"],timeout=25); raise SystemExit(result.returncode)"
               "$PYTHON" -m pytest tests/test_delegate_confirmation.py tests/test_prompts.py tests/test_platform_memory_config.py -q
               "$PYTHON" -m PyInstaller --clean --noconfirm MakeCode.spec
+              "$PYTHON" tools/verify_linux_glibc.py
               chmod -R a+rX build dist
             '
 
