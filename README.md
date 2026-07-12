@@ -100,7 +100,7 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 - **修改时间锁校验**：若文件在读取后被其他程序或智能体修改，`FileEdit` 会被拦截并提示重新读取。
 - **细粒度文件级锁**：多智能体并发读写时，采用文件级 `RLock` 而非全局锁，提升并发性能。
 - **时间戳诊断**：拦截错误信息包含精确的毫秒级 UTC 时间戳（Last modification / Last read），便于排查冲突。
-- **事务性依赖回滚**：`UpdateTaskDependencies` 在拓扑校验失败时自动回滚依赖列表，保持数据一致性。
+- **事务性依赖回滚**：`UpdateTasksDependencies` 在拓扑校验失败时自动回滚整个更新批次，保持数据一致性。
 
 ### 2.5 高危操作人工拦截（HITL）机制
 
@@ -120,8 +120,8 @@ TaskManager 提供：
 
 - `CreateTasks`（通过列表批量创建任务）
 - `UpdateTasksStatus`（通过列表批量更新任务状态）
-- `UpdateTaskDependencies`
-- `UpdateTaskContent`
+- `UpdateTasksDependencies`（通过列表原子更新任务依赖）
+- `UpdateTasksContent`（通过列表批量更新任务标题和描述）
 - `DeleteAllTasks`（带强制安全确认）
 - `GetRunnableTasks`
 - `GetTaskTable`
@@ -129,8 +129,8 @@ TaskManager 提供：
 关键特性：
 
 - 任务状态支持：`pending` / `completed`
-- 批量创建和批量状态更新会先校验完整批次，失败时不会保留部分修改。
-- 活跃任务执行 DAG 校验，避免循环依赖。
+- 批量创建、内容更新、状态更新和依赖更新会先校验完整批次，失败时不会保留部分修改。
+- 活跃任务执行 DAG 校验，批量依赖更新产生环时回滚整个批次。
 - 可执行任务定义为：状态为 `pending` 且所有依赖均已完成。
 - 每次运行的任务计划会写入工作区 `.makecode/tasks/`。
 - `DeleteAllTasks` 提供了一键清空重置任务拓扑的能力，方便在复杂场景下推翻重来。

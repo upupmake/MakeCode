@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from utils.tasks import TASK_MANAGER_TOOLS_HANDLERS, TOOLS, TaskManager
+from utils.llm_client import ChatAPIClient
+from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS, TOOLS, TaskManager
 
 
 def make_manager(tmp_path: Path) -> TaskManager:
@@ -26,6 +27,25 @@ def test_batch_tool_names_replace_single_task_tools() -> None:
     assert "UpdateTaskDependencies" not in names
     assert "UpdateTasksContent" in TASK_MANAGER_TOOLS_HANDLERS
     assert "UpdateTasksDependencies" in TASK_MANAGER_TOOLS_HANDLERS
+
+
+def test_batch_tool_schemas_use_tasks_arrays_without_refs() -> None:
+    formatted = ChatAPIClient(None, "test").format_tools(TASK_MANAGER_TOOLS)
+    tools = {tool["function"]["name"]: tool["function"] for tool in formatted}
+
+    for name in ("UpdateTasksContent", "UpdateTasksDependencies"):
+        parameters = tools[name]["parameters"]
+        assert parameters["required"] == ["tasks"]
+        assert parameters["properties"]["tasks"]["type"] == "array"
+        assert parameters["properties"]["tasks"]["minItems"] == 1
+        assert "$ref" not in str(parameters)
+        assert "$defs" not in parameters
+        assert "definitions" not in parameters
+
+    content_item = tools["UpdateTasksContent"]["parameters"]["properties"]["tasks"]["items"]
+    assert content_item["required"] == ["task_id", "subject", "description"]
+    dependency_item = tools["UpdateTasksDependencies"]["parameters"]["properties"]["tasks"]["items"]
+    assert dependency_item["required"] == ["task_id", "depend_on"]
 
 
 def test_update_tasks_content_updates_multiple_tasks(tmp_path: Path) -> None:

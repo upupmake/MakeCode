@@ -111,7 +111,7 @@ Implementation details:
   improving concurrency performance.
 - **Timestamp Diagnostics**: Block error messages include precise millisecond-level UTC timestamps (Last modification /
   Last read) for easier conflict troubleshooting.
-- **Transactional Dependency Rollback**: `UpdateTaskDependencies` automatically rolls back the dependency list on
+- **Transactional Dependency Rollback**: `UpdateTasksDependencies` automatically rolls back the entire update batch on
   topology validation failure, maintaining data consistency.
 
 ### 2.5 Human-In-The-Loop (HITL) Interceptor
@@ -139,8 +139,8 @@ TaskManager provides:
 
 - `CreateTasks` (creates tasks in batches from a list)
 - `UpdateTasksStatus` (updates task statuses in batches from a list)
-- `UpdateTaskDependencies`
-- `UpdateTaskContent`
+- `UpdateTasksDependencies` (atomically updates task dependencies from a list)
+- `UpdateTasksContent` (updates task subjects and descriptions from a list)
 - `DeleteAllTasks` (with forced safety confirmation)
 - `GetRunnableTasks`
 - `GetTaskTable`
@@ -148,8 +148,8 @@ TaskManager provides:
 Key characteristics:
 
 - Task states: `pending` / `completed`
-- Batch creation and batch status updates validate the entire batch first and leave no partial changes on failure
-- DAG validation for active tasks to prevent dependency cycles
+- Batch creation, content, status, and dependency updates validate the entire batch first and leave no partial changes on failure
+- DAG validation for active tasks rolls back the entire dependency batch when an update creates a cycle
 - A task is runnable when it is `pending` and all dependencies are completed
 - Each run writes a task-plan file under `.makecode/tasks/`
 - `DeleteAllTasks` provides a one-click topology reset capability, making it easy to start a fresh plan on complex
