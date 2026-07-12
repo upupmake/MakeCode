@@ -82,7 +82,7 @@ jobs:
             -w /workspace \
             "$ROCKY_IMAGE" \
             /bin/bash -euxo pipefail -c '
-              dnf install -y gcc gcc-c++ make curl tar gzip openssl-devel bzip2-devel libffi-devel zlib-devel xz-devel sqlite-devel readline-devel ncurses-devel gdbm-devel tk-devel libuuid-devel binutils
+              dnf install -y gcc gcc-c++ make curl tar gzip openssl-devel bzip2-devel libffi-devel zlib-devel xz-devel sqlite-devel readline-devel ncurses-devel tk-devel libuuid-devel binutils
               curl --fail --location --retry 3 --output /tmp/Python-3.12.13.tgz https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz
               tar -xzf /tmp/Python-3.12.13.tgz -C /tmp
               cd /tmp/Python-3.12.13
