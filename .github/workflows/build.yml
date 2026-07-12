@@ -84,7 +84,7 @@ jobs:
             /bin/bash -euxo pipefail -c '
               PYTHON=/opt/python/cp312-cp312/bin/python
               ldd --version
-              "$PYTHON" -c "import re,subprocess; output=subprocess.check_output([\"objdump\",\"-T\",\"/opt/python/cp312-cp312/lib/libpython3.12.so.1.0\"],text=True); versions=[tuple(map(int, match.split(\".\"))) for match in re.findall(r\"GLIBC_([0-9.]+)\",output)]; assert max(versions) <= (2,17), max(versions); print(f\"libpython maximum GLIBC requirement: {max(versions)}\")"
+              "$PYTHON" -c "import re,subprocess; paths={line.rsplit(None,1)[-1] for line in open(\"/proc/self/maps\") if \"libpython\" in line and \".so\" in line}; assert len(paths)==1, paths; library=paths.pop(); output=subprocess.check_output([\"objdump\",\"-T\",library],text=True); versions=[tuple(map(int, match.split(\".\"))) for match in re.findall(r\"GLIBC_([0-9.]+)\",output)]; assert versions and max(versions) <= (2,17), (library,max(versions)); print(f\"{library} maximum GLIBC requirement: {max(versions)}\")"
               "$PYTHON" -m pip install --upgrade pip
               "$PYTHON" -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
               "$PYTHON" -c "import subprocess,sys; result=subprocess.run([sys.executable,\"tools/verify_tree_sitter_offline.py\"],timeout=25); raise SystemExit(result.returncode)"
