@@ -118,18 +118,18 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 
 TaskManager 提供：
 
-- `CreateTask`
-- `UpdateTaskStatus`
+- `CreateTasks`（通过列表批量创建任务）
+- `UpdateTasksStatus`（通过列表批量更新任务状态）
 - `UpdateTaskDependencies`
-- `UpdateTaskContent` **(新增)**
-- `DeleteAllTasks` **(新增，带强制安全确认)**
-- `GetTask`
+- `UpdateTaskContent`
+- `DeleteAllTasks`（带强制安全确认）
 - `GetRunnableTasks`
 - `GetTaskTable`
 
 关键特性：
 
-- 任务状态支持：`pending` / `in_progress` / `completed`
+- 任务状态支持：`pending` / `completed`
+- 批量创建和批量状态更新会先校验完整批次，失败时不会保留部分修改。
 - 活跃任务执行 DAG 校验，避免循环依赖。
 - 可执行任务定义为：状态为 `pending` 且所有依赖均已完成。
 - 每次运行的任务计划会写入工作区 `.makecode/tasks/`。
@@ -141,8 +141,7 @@ Team 模块支持：
 
 - 仅接受来自最新 `GetRunnableTasks` 的任务进行委派。
 - 用线程池并发运行多个子智能体。
-- 子智能体执行前自动将计划任务置为 `in_progress`。
-- 执行完成后回写任务状态。
+- 执行完成后由编排器通过 `UpdateTasksStatus` 回写任务状态。
 - 为每个子智能体保存独立 JSONL trace。
 - 汇总本轮所有子智能体报告，返回统一报告文本。
 

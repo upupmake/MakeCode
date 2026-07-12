@@ -137,18 +137,18 @@ interception mechanism:
 
 TaskManager provides:
 
-- `CreateTask`
-- `UpdateTaskStatus`
+- `CreateTasks` (creates tasks in batches from a list)
+- `UpdateTasksStatus` (updates task statuses in batches from a list)
 - `UpdateTaskDependencies`
-- `UpdateTaskContent` **(New)**
-- `DeleteAllTasks` **(New, with forced safety confirmation)**
-- `GetTask`
+- `UpdateTaskContent`
+- `DeleteAllTasks` (with forced safety confirmation)
 - `GetRunnableTasks`
 - `GetTaskTable`
 
 Key characteristics:
 
-- Task states: `pending` / `in_progress` / `completed`
+- Task states: `pending` / `completed`
+- Batch creation and batch status updates validate the entire batch first and leave no partial changes on failure
 - DAG validation for active tasks to prevent dependency cycles
 - A task is runnable when it is `pending` and all dependencies are completed
 - Each run writes a task-plan file under `.makecode/tasks/`
@@ -161,8 +161,7 @@ The Team module supports:
 
 - accepting only tasks from the latest `GetRunnableTasks` frontier
 - running multiple sub-agents concurrently with a thread pool
-- marking plan tasks as `in_progress` before execution
-- syncing final task status back after execution
+- having the orchestrator sync final task statuses through `UpdateTasksStatus`
 - writing a dedicated JSONL trace per sub-agent
 - aggregating reports from one delegation batch into a combined report
 

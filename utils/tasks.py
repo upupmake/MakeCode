@@ -24,23 +24,7 @@ VALID_STATUS = {
 }
 
 
-class CreateTask(BaseModel):
-    """
-    Create one new task in the topology plan.
-
-    USAGE: Use this to add a single executable unit. task_id is auto-generated.
-
-    CONSTRAINTS:
-    - `subject` is required and cannot be empty.
-    - `depend_on` can only contain existing task IDs.
-    - MUST NOT create tasks that edit the same file without topology ordering.
-    - If multiple tasks edit the same file, use `depend_on` to enforce sequential execution.
-
-    BEST PRACTICES:
-    - Subject should start with a verb: "Create...", "Fix...", "Refactor..."
-    - Description should include: goal, constraints, file paths, expected output
-    """
-
+class TaskToCreate(BaseModel):
     subject: str = Field(
         ..., min_length=1, description="Task title, concise and action-oriented."
     )
@@ -94,17 +78,40 @@ class CreateTask(BaseModel):
         return v
 
 
-class UpdateTaskStatus(BaseModel):
+class CreateTasks(BaseModel):
     """
-    Update one task's status.
-    Constraints:
-    - task must exist
-    - status must be one of pending/completed
+    Create one or more new tasks in the topology plan.
+
+    CONSTRAINTS:
+    - `tasks` must contain at least one task.
+    - Each `subject` is required and cannot be empty.
+    - `depend_on` can only contain existing task IDs.
+    - MUST NOT create tasks that edit the same file without topology ordering.
     """
 
+    tasks: list[TaskToCreate] = Field(
+        ..., min_length=1, description="Tasks to create. task_id values are auto-generated."
+    )
+
+
+class TaskStatusUpdate(BaseModel):
     task_id: str = Field(..., min_length=1, description="Target task ID.")
     status: Literal["pending", "completed"] = Field(
         ..., description="New status for the task."
+    )
+
+
+class UpdateTasksStatus(BaseModel):
+    """
+    Update one or more task statuses atomically.
+    Constraints:
+    - `tasks` must contain at least one update
+    - every task must exist and occur only once
+    - each status must be one of pending/completed
+    """
+
+    tasks: list[TaskStatusUpdate] = Field(
+        ..., min_length=1, description="Task status updates."
     )
 
 
@@ -245,8 +252,8 @@ class TaskManager:
     """
     Agent-facing topology task manager.
     Per-task APIs:
-      1) create_task
-      2) update_task_status
+      1) create_tasks
+      2) update_tasks_status
       3) update_task_dependencies
       4) get_task
     Manager APIs:
@@ -386,74 +393,86 @@ class TaskManager:
             raise ValueError(f"Cycle detected among active tasks: {cycle_nodes}")
 
     # -------- Per-task APIs --------
-    def create_task(
-            self,
-            subject: str,
-            description: str = "",
-            depend_on: Any = None,
-            status: str = "pending",
-            **kwargs,
-    ) -> dict[str, Any]:
+    def create_tasks(self, tasks: Any, **kwargs) -> list[dict[str, Any]]:
         try:
-            validated_model = CreateTask.model_validate(
-                {
-                    "subject": subject,
-                    "description": description,
-                    "depend_on": depend_on or [],
-                    "status": status,
-                }
-            )
-            subject = validated_model.subject
-            description = validated_model.description
-            dep_input = validated_model.depend_on
-            status = validated_model.status
+            validated_model = CreateTasks.model_validate({"tasks": tasks})
+            validated_tasks = validated_model.tasks
+            prepared_tasks = []
+            next_id = self._data["next_id"]
+            for offset, item in enumerate(validated_tasks):
+                self._validate_status(item.status)
+                dep_ids = self._ensure_tasks_exist(item.depend_on)
+                task_id = str(next_id + offset)
+                if task_id in dep_ids:
+                    raise ValueError("Task cannot depend on itself")
+                prepared_tasks.append({
+                    "id": task_id,
+                    "subject": item.subject,
+                    "description": item.description,
+                    "status": item.status,
+                    "depend_on": sorted(set(dep_ids), key=self._id_sort_key),
+                })
         except Exception as exc:
-            from init import log_error_traceback
-            log_error_traceback("CreateTask validation", exc)
-            raise ValueError(f"CreateTask parameters invalid: {exc}") from exc
+            log_error_traceback("CreateTasks validation", exc)
+            raise ValueError(f"CreateTasks parameters invalid: {exc}") from exc
 
-        self._validate_status(status)
+        for task in prepared_tasks:
+            self._data["tasks"][task["id"]] = task
+        self._data["next_id"] += len(prepared_tasks)
 
-        dep_ids = self._ensure_tasks_exist(dep_input)
+        try:
+            self._validate_topology()
+        except ValueError:
+            for task in prepared_tasks:
+                del self._data["tasks"][task["id"]]
+            self._data["next_id"] -= len(prepared_tasks)
+            raise
 
-        task_id = str(self._data["next_id"])
-        if task_id in dep_ids:
-            raise ValueError("Task cannot depend on itself")
+        self._save()
+        return prepared_tasks
 
-        task = {
-            "id": task_id,
-            "subject": subject,
-            "description": description,
-            "status": status,
-            "depend_on": sorted(set(dep_ids), key=self._id_sort_key),
+    def update_tasks_status(self, tasks: Any, **kwargs) -> list[dict[str, Any]]:
+        try:
+            validated_model = UpdateTasksStatus.model_validate({"tasks": tasks})
+            updates = validated_model.tasks
+            task_ids = self._ensure_tasks_exist(
+                [self._id_str(item.task_id) for item in updates]
+            )
+            if len(task_ids) != len(updates):
+                raise ValueError("task_id cannot be empty")
+            if len(task_ids) != len(set(task_ids)):
+                raise ValueError("Each task_id can only occur once")
+        except Exception as exc:
+            log_error_traceback("UpdateTasksStatus validation", exc)
+            raise ValueError(f"UpdateTasksStatus parameters invalid: {exc}") from exc
+
+        old_statuses = {
+            task_id: self._data["tasks"][task_id]["status"] for task_id in task_ids
         }
-        self._data["tasks"][task_id] = task
-        self._data["next_id"] += 1
+        for item in updates:
+            self._data["tasks"][self._id_str(item.task_id)]["status"] = item.status
 
-        # Task count changed -> must validate topology.
-        self._validate_topology()
-        self._save()
-        return task
+        try:
+            for task_id in task_ids:
+                task = self._data["tasks"][task_id]
+                if task["status"] != "completed":
+                    continue
+                incomplete = [
+                    dep for dep in task.get("depend_on", [])
+                    if self._data["tasks"][dep]["status"] != "completed"
+                ]
+                if incomplete:
+                    raise ValueError(
+                        f"Cannot complete task '{task_id}': "
+                        f"dependencies {incomplete} are not completed."
+                    )
+        except ValueError:
+            for task_id, status in old_statuses.items():
+                self._data["tasks"][task_id]["status"] = status
+            raise
 
-    def update_task_status(
-            self, task_id: str | int, status: str, **kwargs
-    ) -> dict[str, Any]:
-        self._validate_status(status)
-        task = self._task(task_id)
-        if status == "completed":
-            tasks = self._data["tasks"]
-            incomplete = [
-                dep for dep in task.get("depend_on", [])
-                if dep in tasks and tasks[dep]["status"] != "completed"
-            ]
-            if incomplete:
-                raise ValueError(
-                    f"Cannot complete task '{task_id}': "
-                    f"dependencies {incomplete} are not completed."
-                )
-        task["status"] = status
         self._save()
-        return task
+        return [self._data["tasks"][task_id] for task_id in task_ids]
 
     def update_task_dependencies(
             self, task_id: str | int, depend_on: Any, **kwargs
@@ -642,9 +661,9 @@ def refresh_workspace_paths() -> None:
 
 
 TOOLS = [
-    pydantic_function_tool(CreateTask),
+    pydantic_function_tool(CreateTasks),
     pydantic_function_tool(UpdateTaskContent),
-    pydantic_function_tool(UpdateTaskStatus),
+    pydantic_function_tool(UpdateTasksStatus),
     pydantic_function_tool(UpdateTaskDependencies),
     pydantic_function_tool(DeleteAllTasks),
     pydantic_function_tool(GetRunnableTasks),
@@ -656,7 +675,7 @@ TASK_MANAGER_NAMESPACE = {
     "name": "TaskManager",
     "description": (
         "Task topology planning and execution state tools. "
-        "Recommended flow: CreateTask -> UpdateTaskDependencies -> GetRunnableTasks -> DelegateTasks "
+        "Recommended flow: CreateTasks -> UpdateTaskDependencies -> GetRunnableTasks -> DelegateTasks "
         "(DelegateTasks lives in Team tools and should only receive runnable task IDs). "
         "MUST NOT put tasks that edit the same file in the same batch — if multiple tasks need to edit the same file, "
         "establish explicit topology dependencies (via depend_on) so they execute sequentially."
@@ -671,9 +690,9 @@ TASK_MANAGER_TOOLS = [
 # Lazy lookup — resolve TASK_MANAGER at call time so that replacing the
 # module-level instance (e.g. when a title becomes available) is picked up.
 TASK_MANAGER_TOOLS_HANDLERS = {
-    "CreateTask": lambda **kw: TASK_MANAGER.create_task(**kw),
+    "CreateTasks": lambda **kw: TASK_MANAGER.create_tasks(**kw),
     "UpdateTaskContent": lambda **kw: TASK_MANAGER.update_task_content(**kw),
-    "UpdateTaskStatus": lambda **kw: TASK_MANAGER.update_task_status(**kw),
+    "UpdateTasksStatus": lambda **kw: TASK_MANAGER.update_tasks_status(**kw),
     "UpdateTaskDependencies": lambda **kw: TASK_MANAGER.update_task_dependencies(**kw),
     "DeleteAllTasks": lambda **kw: TASK_MANAGER.delete_all_tasks(**kw),
     "GetRunnableTasks": lambda **kw: TASK_MANAGER.get_runnable_tasks(**kw),

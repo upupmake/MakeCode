@@ -264,7 +264,7 @@ Blocked tools:
 Allowed tools:
  - FileRead, ContentSearch, FileSearch — file reading and searching
  - RunTerminalCommand — restricted to {_allowed_cmds}; other commands are blocked and allowed commands require confirmation
- - TaskManager planning tools (CreateTask, UpdateTaskContent, UpdateTaskStatus, UpdateTaskDependencies, GetRunnableTasks, GetTaskTable)
+ - TaskManager planning tools (CreateTasks, UpdateTaskContent, UpdateTasksStatus, UpdateTaskDependencies, GetRunnableTasks, GetTaskTable)
  - LoadSkill — load domain-specific skills
 
 Destructive plan reset:

@@ -133,7 +133,7 @@ class DelegateTasks(BaseModel):
     """
     Delegate multiple runnable TaskManager tasks to specialized sub-agents concurrently.
     HARD RULES:
-    1) You MUST use TaskManager topology planning first (CreateTask/UpdateTaskDependencies).
+    1) You MUST use TaskManager topology planning first (CreateTasks/UpdateTaskDependencies).
     2) You MUST call GetRunnableTasks immediately before this tool.
     3) Every item.task_id MUST be in the current runnable frontier.
     4) Non-runnable task IDs are rejected.
