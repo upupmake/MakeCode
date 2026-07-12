@@ -275,7 +275,7 @@ def agent_loop(messages: list):
                 break
             log_error_traceback("Orchestrator generation error", e)
             error_msg = f"智能体执行出错: {e}."
-            console.print(f"[bold red]⚠️ {error_msg}[/bold red]")
+            console.print(f"[bold red]⚠️ {escape(error_msg)}[/bold red]")
             break
 
         # 用户取消：丢弃部分模型回复，不执行工具调用，回到输入等待
@@ -354,7 +354,7 @@ def agent_loop(messages: list):
         except Exception as e:
             log_error_traceback("Orchestrator auto-compact error", e)
             error_msg = f"Error executing auto_compact: {e}."
-            console.print(f"[bold red]⚠️ {error_msg}[/bold red]")
+            console.print(f"[bold red]⚠️ {escape(error_msg)}[/bold red]")
 
 
 def _init_tree_sitter_cache(console: Console):
@@ -366,7 +366,7 @@ def _init_tree_sitter_cache(console: Console):
         post_tui(TuiRegion.BACKGROUND, "[bold green]🌳 语法解析器初始化完成[/bold green]")
     except Exception as e:
         log_error_traceback("tree-sitter cache init", e)
-        post_tui(TuiRegion.BACKGROUND, f"[bold red]⚠️ 语法解析器初始化失败: {e}[/bold red]")
+        post_tui(TuiRegion.BACKGROUND, f"[bold red]⚠️ 语法解析器初始化失败: {escape(str(e))}[/bold red]")
     finally:
         post_tui(TuiRegion.BACKGROUND, active=False)
 
@@ -490,7 +490,7 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
                             post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 对话标题生成结束：未生成可用标题[/#aaaaaa]")
                     except Exception as exc:
                         log_error_traceback("Failed to generate title", exc)
-                        post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题生成失败：{exc}[/bold red]")
+                        post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题生成失败：{escape(str(exc))}[/bold red]")
                     finally:
                         post_tui(TuiRegion.BACKGROUND, active=False)
 
@@ -499,7 +499,7 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
 
             agent_loop(history)
         except RuntimeError as exc:
-            console.print(f"[bold yellow]⚠️ {exc}[/bold yellow]")
+            console.print(f"[bold yellow]⚠️ {escape(str(exc))}[/bold yellow]")
         finally:
             set_agent_loop_active(False)
         if _title_thread is not None:

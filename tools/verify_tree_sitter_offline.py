@@ -65,9 +65,12 @@ def main() -> None:
             with tarfile.open(fileobj=compressed) as tar:
                 tar.extractall(cache_dir, filter="data")
 
-        parser_library = cache_dir / (
-            "tree_sitter_python.dll" if sys.platform == "win32" else "tree_sitter_python.so"
-        )
+        parser_library_name = {
+            "win32": "tree_sitter_python.dll",
+            "linux": "libtree_sitter_python.so",
+            "darwin": "libtree_sitter_python.dylib",
+        }["linux" if sys.platform.startswith("linux") else sys.platform]
+        parser_library = cache_dir / parser_library_name
         if not parser_library.is_file():
             raise FileNotFoundError(parser_library)
 
