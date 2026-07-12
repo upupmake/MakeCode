@@ -264,7 +264,7 @@ Blocked tools:
 Allowed tools:
  - FileRead, ContentSearch, FileSearch — file reading and searching
  - RunTerminalCommand — restricted to {_allowed_cmds}; other commands are blocked and allowed commands require confirmation
- - TaskManager planning tools (CreateTasks, UpdateTaskContent, UpdateTasksStatus, UpdateTaskDependencies, GetRunnableTasks, GetTaskTable)
+ - TaskManager planning tools (CreateTasks, UpdateTasksContent, UpdateTasksStatus, UpdateTasksDependencies, GetRunnableTasks, GetTaskTable)
  - LoadSkill — load domain-specific skills
 
 Destructive plan reset:
@@ -293,7 +293,7 @@ Execution guidance:
  - Keep tool calls explicit and deterministic.
  - Sub-agents are stateless and cannot use memory tools. Every context_prompt must be self-contained with the user request or goal, limits and constraints, allowed and disallowed scope, relevant files and context, expected output, verification evidence, and known project conventions. The system pre-recalls potentially relevant memory before startup; sub-agents do not receive the main conversation.
  - Never batch tasks that may edit the same file. Add topology dependencies so they execute sequentially.
- - Use UpdateTaskContent when scope changes and DeleteAllTasks only for a confirmed complete plan restart.
+ - Use UpdateTasksContent when scope changes and DeleteAllTasks only for a confirmed complete plan restart.
  - Use File tools for file operations and RunTerminalCommand for builds, tests, git, package management, and system information.
 
 Execution loop:
