@@ -22,27 +22,23 @@ jobs:
         os:
           - windows-latest
           - macos-latest
-          - ubuntu-22.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
-        if: runner.os != 'Linux'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
 
       - name: Install dependencies
-        if: runner.os != 'Linux'
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
 
       - name: Verify bundled tree-sitter parser cache
-        if: runner.os != 'Linux'
         env:
           MAKECODE_NON_INTERACTIVE: '1'
           TS_PACK_OFFLINE: '1'
@@ -52,7 +48,6 @@ jobs:
           raise SystemExit(result.returncode)"
 
       - name: Run tests
-        if: runner.os != 'Linux'
         env:
           MAKECODE_NON_INTERACTIVE: '1'
         run: >-
@@ -67,41 +62,7 @@ jobs:
         run: pyinstaller --clean --noconfirm updater.spec
 
       - name: Build MakeCode
-        if: runner.os != 'Linux'
         run: pyinstaller --clean --noconfirm MakeCode.spec
-
-      - name: Test and build Linux on glibc 2.34
-        if: runner.os == 'Linux'
-        env:
-          ROCKY_IMAGE: rockylinux:9
-        run: |
-          docker run --rm \
-            -e MAKECODE_NON_INTERACTIVE=1 \
-            -e TS_PACK_OFFLINE=1 \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            "$ROCKY_IMAGE" \
-            /bin/bash -euxo pipefail -c '
-              dnf install -y gcc gcc-c++ make curl tar gzip openssl-devel bzip2-devel libffi-devel zlib-devel xz-devel sqlite-devel readline-devel ncurses-devel tk-devel libuuid-devel binutils
-              curl --fail --location --retry 3 --output /tmp/Python-3.12.13.tgz https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz
-              tar -xzf /tmp/Python-3.12.13.tgz -C /tmp
-              cd /tmp/Python-3.12.13
-              ./configure --prefix=/opt/python312 --enable-shared --with-ensurepip=install
-              make -j"$(nproc)"
-              make install
-              cd /workspace
-              export LD_LIBRARY_PATH=/opt/python312/lib
-              PYTHON=/opt/python312/bin/python3.12
-              ldd --version | head -n 1
-              test -f /opt/python312/lib/libpython3.12.so.1.0
-              "$PYTHON" -m pip install --upgrade pip
-              "$PYTHON" -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
-              "$PYTHON" -c "import subprocess,sys; result=subprocess.run([sys.executable,\"tools/verify_tree_sitter_offline.py\"],timeout=25); raise SystemExit(result.returncode)"
-              "$PYTHON" -m pytest tests/test_delegate_confirmation.py tests/test_prompts.py tests/test_platform_memory_config.py -q
-              "$PYTHON" -m PyInstaller --clean --noconfirm MakeCode.spec
-              "$PYTHON" tools/verify_linux_glibc.py
-              chmod -R a+rX build dist
-            '
 
       - name: Verify bundled project modules
         shell: bash
@@ -136,7 +97,6 @@ jobs:
           runner_arch = os.environ["RUNNER_ARCH"]
           platform_key = {
               ("Windows", "X64"): "windows-x86_64",
-              ("Linux", "X64"): "linux-x86_64",
               ("macOS", "ARM64"): "macos-arm64",
           }.get((runner_os, runner_arch))
           if platform_key:
@@ -184,7 +144,7 @@ jobs:
               # Do not also upload a Windows zip to the Release; it mostly duplicates the exe.
               shutil.copy2(exe, release_assets / f"MakeCode-{suffix}.exe")
           else:
-              # macOS/Linux do not use a file extension for executables, so package the dist directory.
+              # macOS does not use a file extension for executables, so package the dist directory.
               shutil.make_archive(str(release_assets / f"MakeCode-{suffix}"), "zip", dist)
           PY
 
