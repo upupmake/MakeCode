@@ -1,5 +1,5 @@
-CURRENT_VERSION = "5.0.0"
+CURRENT_VERSION = "5.0.1"
 
-UPDATE_SERVER_URL = "https://starvpn.forwardforever.top"
-VERSION_CHECK_URL = f"{UPDATE_SERVER_URL}/version.json"
-DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode-Windows-X64.zip"
+GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
+VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
+DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"

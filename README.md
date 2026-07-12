@@ -435,7 +435,7 @@ MakeCode 支持智能体在不确定时主动向用户提问，而非盲目猜�
 
 ### 2.19 自动更新机制（`system/updater.py` + `updater.py`）
 
-MakeCode 内置了完整的自动更新系统，支持版本检查、增量下载与无缝升级。
+MakeCode 内置了完整的自动更新系统，支持版本检查、完整目录下载与事务升级。
 
 #### 核心组件
 
@@ -448,20 +448,20 @@ MakeCode 内置了完整的自动更新系统，支持版本检查、增量下�
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "4.2.2"
-UPDATE_SERVER_URL = "https://starvpn.forwardforever.top"
-VERSION_CHECK_URL = f"{UPDATE_SERVER_URL}/version.json"
-DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode.exe"
+CURRENT_VERSION = "5.0.0"
+GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
+VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
+DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 ```
 
 #### 更新流程
 
 1. 用户执行 `/update` 命令
-2. 系统从远程获取 `version.json` 并比较版本号
+2. 系统从 GitHub latest Release 获取 `version.json` 并比较版本号
 3. 若有新版本，展示版本号与更新说明，等待用户确认
-4. 下载新版本 exe 并显示实时进度
-5. SHA256 校验通过后，释放 `updater.exe` 并启动
-6. 主程序退出，更新器完成文件替换，用户需手动重启程序
+4. 下载完整的 Windows onedir ZIP 并显示实时进度
+5. 文件大小与 SHA256 校验通过后，释放 `updater.exe` 并启动
+6. 主程序退出，更新器事务替换完整安装目录并自动验证新版启动
 
 #### 相关组件
 

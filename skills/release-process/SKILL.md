@@ -29,9 +29,9 @@ MakeCode 使用**语义化版本号**（Semantic Versioning），格式为 `MAJO
 # version.py
 CURRENT_VERSION = "3.0.1"  # ← 修改此处
 
-UPDATE_SERVER_URL = "https://starvpn.forwardforever.top"
-VERSION_CHECK_URL = f"{UPDATE_SERVER_URL}/version.json"
-DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode-Windows-X64.zip"
+GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
+VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
+DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 ```
 
 ### 版本变更检查清单
@@ -42,7 +42,7 @@ DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode-Windows-X64.zip"
 - [ ] **MINOR 变更**：确认新功能已完整实现并通过测试
 - [ ] **PATCH 变更**：确认 Bug 已修复且不影响现有功能
 - [ ] 更新 `version.py` 中的 `CURRENT_VERSION`
-- [ ] 检查是否需要更新 `UPDATE_SERVER_URL`（服务器地址变更时）
+- [ ] 检查 GitHub Release 下载地址是否仍指向 `upupmake/MakeCode`
 
 ---
 
@@ -52,7 +52,7 @@ DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode-Windows-X64.zip"
 
 **这是整个发布流程的第一步。** 在做任何其他操作之前，先获取远程版本以判断是否需要版本变更：
 
-1. 请求 `https://starvpn.forwardforever.top/version.json` 获取远程当前已发布版本（这是首要步骤，决定后续所有操作）
+1. 请求 `https://github.com/upupmake/MakeCode/releases/latest/download/version.json` 获取远程当前已发布版本（这是首要步骤，决定后续所有操作）
 2. 对比本地 `version.py` 中的 `CURRENT_VERSION`
 3. 如果版本号相同 → 询问用户新版本号并更新 `version.py`
 4. 如果版本号已递增 → 直接进入下一步
@@ -111,82 +111,24 @@ pyinstaller MakeCode.spec      → dist/MakeCode.app
 
 ## 3. 发布流程
 
-### 3.1 生成版本信息文件
+### 3.1 准备发布日志
 
-运行发布脚本生成 `version.json`（`--release_log` 为必需参数，传入发布日志文件路径）：
+创建临时 `RELEASE_LOG.md`，写入 markdown 格式发布内容。该文件保持在 `.gitignore` 中，不提交；补丁版本日志按项目既有聚合规则生成。
 
-创建发布日志文件（如 `RELEASE_LOG.md`），写入 markdown 格式的发布内容，然后：
+### 3.2 创建 GitHub Release
 
-```bash
-python release.py --release_log RELEASE_LOG.md
-```
-
-该脚本用于 Windows 自动更新资产，会：
-1. 检查 `dist/MakeCode/MakeCode.exe` 是否存在
-2. 将完整 `dist/MakeCode/` 打成 `dist/MakeCode-Windows-X64.zip`，ZIP 顶层必须是 `MakeCode/`
-3. 计算 ZIP 的大小和 SHA-256
-4. 生成 `dist/version.json`，内容包含：
-   - `version`：当前版本号
-   - `download_url`：Windows 完整 ZIP 的 HTTPS 地址
-   - `sha256`：ZIP 校验值
-   - `size`：ZIP 字节数
-   - `release_log`：发布日志（markdown 格式，用于更新通知展示）
-
-`RELEASE_LOG.md` 是临时发布文件，保持在 `.gitignore` 中，不提交。补丁版本发布日志按项目既有聚合规则生成。
-
-### 3.2 上传文件到服务器（可并行）
-
-FTP 上传和 GitHub Release 上传相互独立，**可以使用一行命令同时执行**以加快发布速度：
-
-```bash
-# 同时执行 FTP 和 GitHub 上传（伪代码，请根据终端环境调整）
-python ftp_release.py & python github_release.py
-```
-
-或者分别执行：
-
-使用 FTP 上传脚本将构建产物上传到更新服务器：
-
-```bash
-python ftp_release.py
-```
-
-该脚本会将以下文件上传到 FTP 服务器：
-
-| 本地文件 | 服务器路径 | 用途 |
-|---------|-----------|------|
-| `dist/MakeCode-Windows-X64.zip` | MakeCode-Windows-X64.zip | Windows 完整目录自动更新包 |
-| `dist/version.json` | version.json | Windows 版本检查与资产校验 |
-
-**FTP 配置**（存储在 `.ftp_config` 文件中）：
-```json
-{
-    "host": "120.79.196.147",
-    "port": 21,
-    "user": "panel_ssl_site",
-    "pass": "******"
-}
-```
-
-**注意事项**：
-- `.ftp_config` 包含 FTP 凭据，已加入 `.gitignore`，不会提交到远程仓库
-- 脚本使用 `NatFTP` 类修复 NAT 环境下 PASV 返回内网 IP 的问题
-- 服务器需开放被动端口范围（39000-40000），否则数据通道会超时
-
-### 3.3 上传到 GitHub Release（可与 FTP 并行）
-
-使用 GitHub Release 脚本将构建产物发布到 GitHub，可与 FTP 上传同时执行（见 3.2 节的一行命令）：
+使用 GitHub Release 脚本读取 `RELEASE_LOG.md` 并创建 Release/tag：
 
 ```bash
 python github_release.py
 ```
 
 该脚本会：
-1. 删除仓库中当前主版本线的现有 Releases 和对应 tags（例如发布 `4.0.0` 时只清理 `4.x.x`，保留 `3.x.x`）
-2. 创建新的 Release（tag 为 `v{版本号}`），body 包含版本和 commit 信息（markdown 格式）
-3. 上传 `MakeCode-Windows-X64.zip` 和 `version.json`
+1. 删除仓库中当前主版本线的现有 Releases 和对应 tags（例如发布 `5.0.0` 时只清理 `5.x.x`，保留 `4.x.x`）
+2. 创建新的 Release（tag 为 `v{版本号}`），body 包含带固定标记的发布日志
+3. 不上传本地产物；创建 tag 后由 GitHub Actions 统一生成发布资产
 
-标签触发的 GitHub Actions 则发布两个用户资产：`MakeCode-Windows-X64.zip` 与 `MakeCode-macOS-ARM64.zip`。macOS ZIP 内是完整 `MakeCode.app`，由用户手动下载替换。
+GitHub Actions 自动构建 Windows/macOS ZIP。Release 汇总任务读取 Release body 中的日志，对最终 Windows ZIP 计算大小和 SHA-256，生成 `version.json`，并将三个资产统一附加到 Release：`MakeCode-Windows-X64.zip`、`MakeCode-macOS-ARM64.zip`、`version.json`。
 
 **GitHub 配置**：
 - 仓库：`upupmake/MakeCode`
@@ -198,18 +140,16 @@ python github_release.py
 - 发布新的主版本（如 `4.0.0`）时，必须保留上一主版本线的稳定版本（如 `3.x.x` 最后一个版本）
 - Token 权限不足会导致 404 错误，需确保勾选 `repo` 权限
 
-### 3.4 发布检查清单
+### 3.3 发布检查清单
 
 - [ ] 版本号已确认（`version.py`）
 - [ ] **所有变更已提交**（`version.py` + 代码变更）— 构建前完成
-- [ ] Windows updater.exe 已先构建
-- [ ] Windows `dist/MakeCode/` 或 macOS `dist/MakeCode.app` 已构建
-- [ ] Windows `python release.py --release_log RELEASE_LOG.md` 已执行成功
-- [ ] `dist/MakeCode-Windows-X64.zip` 与 `dist/version.json` 已生成且相互匹配
-- [ ] ZIP 的顶层目录为 `MakeCode/`，并包含 `MakeCode.exe`、`_internal/` 和 `_internal/updater.exe`
-- [ ] FTP 上传完成
-- [ ] GitHub Release 上传完成
-- [ ] 验证服务器版本检查接口返回正确
+- [ ] `RELEASE_LOG.md` 已准备并包含本次日志
+- [ ] GitHub Release/tag 已创建且指向本次发布提交
+- [ ] 标签触发的 Windows/macOS Actions 构建成功
+- [ ] Release 汇总任务已根据最终 Windows ZIP 生成 `version.json`
+- [ ] Release 包含 Windows ZIP、macOS ZIP 和 `version.json`
+- [ ] GitHub latest Release 的 `version.json` 可访问且哈希、大小与 Windows ZIP 匹配
 - [ ] **确认工作区干净**：运行 `git status` 确认无未提交的文件
 
 ---
@@ -219,7 +159,7 @@ python github_release.py
 ### 4.1 更新检查流程
 
 用户端启动时会：
-1. 请求 `{UPDATE_SERVER_URL}/version.json` 获取最新版本信息
+1. 请求 GitHub latest Release 的 `version.json` 获取最新版本信息
 2. 比较本地版本与服务器版本
 3. Windows 打包版可下载并安装更新；macOS 只提示用户从 GitHub Release 手动下载最新版
 
@@ -258,12 +198,12 @@ python github_release.py
 
 ### Q2: version.json 生成失败
 
-检查 `dist/MakeCode/MakeCode.exe` 是否存在，确保 Windows onedir 构建步骤已完成。
+检查 Release 汇总任务是否能找到 `MakeCode-Windows-X64.zip`，以及 GitHub Release body 是否包含发布日志起止标记。
 
 ### Q3: Windows 用户无法更新
 
 检查：
-- 服务器上的 `version.json` 是否可访问
+- GitHub latest Release 的 `version.json` 是否可访问
 - `download_url` 是否是 `MakeCode-Windows-X64.zip` 的 HTTPS 地址
 - `sha256` 与 `size` 是否和服务器 ZIP 完全匹配
 - ZIP 顶层是否为唯一的 `MakeCode/`，内部是否包含 `MakeCode.exe` 与 `_internal/`
@@ -273,14 +213,6 @@ python github_release.py
 
 确保使用 `MAJOR.MINOR.PATCH` 格式，如 `3.0.1`，不要添加前缀 `v`。
 
-### Q5: FTP 上传数据通道超时
-
-FTP 使用两个通道：控制通道（端口 21）和数据通道。被动模式下数据通道端口由服务器动态分配。
-
-解决方法：
-1. 确保服务器已开放被动端口范围（39000-40000）
-2. 如果服务器在 NAT 后面，`ftp_release.py` 中的 `NatFTP` 类会自动用公网 IP 替换 PASV 返回的内网 IP
-
 ---
 
 ## 6. 快速发布命令参考
@@ -288,19 +220,14 @@ FTP 使用两个通道：控制通道（端口 21）和数据通道。被动模�
 ```bash
 # 完整发布流程
 # 1. 获取远程已发布版本，判断是否需要版本变更（首要步骤）
-curl -s https://starvpn.forwardforever.top/version.json
+curl -L https://github.com/upupmake/MakeCode/releases/latest/download/version.json
 # 2. 对比本地 version.py，必要时更新版本号并提交所有变更
 git add -A && git commit -m "release: vX.Y.Z"
-# 3. Windows 构建打包（macOS 只运行第二条）
-pyinstaller updater.spec
-pyinstaller MakeCode.spec
-# 不启动 dist 程序；检查 dist/MakeCode、TOC 和 warn-MakeCode.txt
-# 4. 创建临时发布日志 RELEASE_LOG.md，写入 markdown 格式发布内容
-# 5. 生成 Windows 完整 ZIP 与 version.json
-python release.py --release_log RELEASE_LOG.md
-# 6. 上传到服务器（可以使用一行命令同时进行，伪代码请根据终端环境调整）
-python ftp_release.py & python github_release.py
-# 7. 确认工作区干净
+# 3. 创建临时发布日志 RELEASE_LOG.md，写入 markdown 格式发布内容
+# 4. 推送发布提交后创建 GitHub Release/tag
+python github_release.py
+# 5. 等待 GitHub Actions 构建双平台 ZIP 并生成 version.json
+# 6. 确认工作区干净
 git status  # 应输出 "nothing to commit, working tree clean"
 ```
 
@@ -310,12 +237,10 @@ git status  # 应输出 "nothing to commit, working tree clean"
 
 | 文件 | 用途 |
 |------|------|
-| `version.py` | 版本号和服务器地址配置 |
-| `release.py` | 将 Windows onedir 打成 ZIP，并生成 version.json |
+| `version.py` | 版本号和 GitHub latest Release 地址配置 |
+| `.github/workflows/build.yml` | 构建双平台 ZIP，并基于最终 Windows ZIP 生成 version.json |
 | `MakeCode.spec` | Windows onedir 与 macOS BUNDLE 打包配置 |
 | `updater.spec` | Windows 独立更新器打包配置 |
 | `updater.py` | Windows 完整目录事务更新器源码 |
-| `ftp_release.py` | FTP 上传脚本（配置存储在 `.ftp_config`） |
-| `github_release.py` | GitHub Release 上传脚本（配置存储在 `.github_token`） |
-| `.ftp_config` | FTP 服务器配置（不提交远程） |
+| `github_release.py` | 从 RELEASE_LOG.md 创建 GitHub Release/tag；所有资产由 Actions 生成 |
 | `.github_token` | GitHub Token（不提交远程） |

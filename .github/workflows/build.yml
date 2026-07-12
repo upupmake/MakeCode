@@ -187,8 +187,69 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Generate version manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          version = tag.removeprefix("v")
+          repository = os.environ["REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          archive = Path("release-assets/MakeCode-Windows-X64.zip")
+          if not archive.is_file():
+              raise SystemExit(f"Missing Windows release asset: {archive}")
+
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repository}/releases/tags/{tag}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              release = json.load(response)
+
+          body = release.get("body") or ""
+          start_marker = "<!-- makecode-release-log-start -->"
+          end_marker = "<!-- makecode-release-log-end -->"
+          if start_marker not in body or end_marker not in body:
+              raise SystemExit("Release body is missing release log markers")
+          release_log = body.split(start_marker, 1)[1].split(end_marker, 1)[0].strip()
+          if not release_log:
+              raise SystemExit("Release log is empty")
+
+          sha256 = hashlib.sha256()
+          with archive.open("rb") as stream:
+              for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                  sha256.update(chunk)
+
+          base_url = f"https://github.com/{repository}/releases/latest/download"
+          manifest = {
+              "version": version,
+              "download_url": f"{base_url}/{archive.name}",
+              "sha256": sha256.hexdigest(),
+              "size": archive.stat().st_size,
+              "release_log": release_log,
+          }
+          Path("release-assets/version.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          print(f"Generated version.json for {version}")
+          PY
+
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
-          generate_release_notes: true
+          generate_release_notes: false

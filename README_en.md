@@ -468,7 +468,7 @@ MakeCode allows agents to proactively ask users questions when uncertain, rather
 
 ### 2.19 Auto-Update Mechanism (`system/updater.py` + `updater.py`)
 
-MakeCode includes a complete built-in auto-update system supporting version checking, incremental downloading, and seamless upgrades.
+MakeCode includes a complete built-in auto-update system supporting version checks, complete directory downloads, and transactional upgrades.
 
 #### Core Components
 
@@ -481,20 +481,20 @@ MakeCode includes a complete built-in auto-update system supporting version chec
 #### Version Configuration (`version.py`)
 
 ```python
-CURRENT_VERSION = "4.2.2"
-UPDATE_SERVER_URL = "https://starvpn.forwardforever.top"
-VERSION_CHECK_URL = f"{UPDATE_SERVER_URL}/version.json"
-DOWNLOAD_URL = f"{UPDATE_SERVER_URL}/MakeCode.exe"
+CURRENT_VERSION = "5.0.0"
+GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
+VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
+DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 ```
 
 #### Update Flow
 
 1. User executes the `/update` command
-2. System fetches `version.json` from remote and compares version numbers
+2. System fetches `version.json` from the latest GitHub Release and compares version numbers
 3. If a new version is available, displays version number and release notes, awaiting user confirmation
-4. Downloads the new version exe with real-time progress display
-5. After SHA256 verification passes, releases `updater.exe` and launches it
-6. Main program exits; updater completes the file replacement; user must manually restart the program
+4. Downloads the complete Windows onedir ZIP with real-time progress display
+5. After size and SHA256 verification pass, releases `updater.exe` and launches it
+6. Main program exits; updater transactionally replaces the installation directory and verifies the new version starts
 
 #### Related Components
 

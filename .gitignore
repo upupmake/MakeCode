@@ -35,7 +35,6 @@ dist/
 .playwright-mcp/
 t.py
 .github_token
-.ftp_config
 ts_cache/libs
 *.dll
 ts_cache/.extracted_parsers-windows-x86_64.tar.zst

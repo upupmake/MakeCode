@@ -4,7 +4,6 @@ GitHub Release 上传脚本。
 
 需要设置环境变量 GITHUB_TOKEN，或在同目录下创建 .github_token 文件。
 """
-import json
 import os
 import sys
 from pathlib import Path
@@ -115,38 +114,19 @@ def create_release(token: str, tag: str, name: str, body: str) -> dict:
     return resp.json()
 
 
-def upload_asset(token: str, upload_url: str, file_path: Path) -> dict:
-    """上传文件到 Release。"""
-    url = upload_url.replace("{?name,label}", f"?name={file_path.name}")
-    headers = {
-        "Authorization": f"token {token}",
-        "Content-Type": "application/octet-stream",
-    }
-
-    with open(file_path, "rb") as f:
-        resp = requests.post(url, headers=headers, data=f)
-
-    resp.raise_for_status()
-    return resp.json()
-
-
-def get_release_body(version_path: Path) -> str:
+def get_release_body(log_path: Path) -> str:
     """生成 markdown 格式的 Release 介绍内容。"""
+    release_log = log_path.read_text(encoding="utf-8").strip()
     lines = [f"## MakeCode {CURRENT_VERSION}", ""]
-
-    # 从 version.json 读取 commit
-    if version_path.exists():
-        try:
-            with open(version_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            release_log = data.get("release_log")
-            if release_log:
-                lines.append(f"**发布日志**:")
-                lines.append("")
-                lines.append(release_log)
-                lines.append("")
-        except (json.JSONDecodeError, OSError):
-            pass
+    if release_log:
+        lines.extend([
+            "**发布日志**:",
+            "",
+            "<!-- makecode-release-log-start -->",
+            release_log,
+            "<!-- makecode-release-log-end -->",
+            "",
+        ])
 
     lines.append("### 下载")
     lines.append("- `MakeCode-Windows-X64.zip` — Windows 完整应用目录")
@@ -159,17 +139,10 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     token = get_token()
     tag = f"v{CURRENT_VERSION}"
-    dist_dir = Path("dist")
+    log_path = Path("RELEASE_LOG.md")
 
-    archive_path = dist_dir / "MakeCode-Windows-X64.zip"
-    version_path = dist_dir / "version.json"
-
-    if not archive_path.exists():
-        print(f"❌ 找不到 {archive_path}，请先运行 python release.py")
-        sys.exit(1)
-
-    if not version_path.exists():
-        print(f"❌ 找不到 {version_path}，请先运行 python release.py")
+    if not log_path.exists():
+        print(f"❌ 找不到 {log_path}")
         sys.exit(1)
 
     # 删除当前主版本线的旧 Release，保留其他主版本线的稳定版本
@@ -178,7 +151,7 @@ def main():
     delete_releases_for_major(token, major_version)
 
     # 生成 Release 介绍内容
-    body = get_release_body(version_path)
+    body = get_release_body(log_path)
 
     # 创建新 Release
     print(f"[创建] Release {tag}...")
@@ -190,18 +163,7 @@ def main():
     )
     print(f"   Release ID: {release['id']}")
     print(f"   URL: {release['html_url']}")
-
-    upload_url = release["upload_url"]
-
-    # 上传 Windows 完整更新包
-    print(f"[上传] {archive_path.name} ({archive_path.stat().st_size / 1024 / 1024:.1f} MB)...")
-    upload_asset(token, upload_url, archive_path)
-    print("   [OK] 上传完成")
-
-    # 上传 version.json
-    print("[上传] version.json...")
-    upload_asset(token, upload_url, version_path)
-    print("   [OK] 上传完成")
+    print("   Windows/macOS ZIP 和 version.json 将由 GitHub Actions 生成并上传")
 
     print()
     print(f"[OK] GitHub Release 发布成功！")

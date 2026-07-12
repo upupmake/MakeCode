@@ -532,6 +532,10 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
 from system.models import get_current_model_config, get_model_manager
 
 
+_cached_llm_client = None
+_cached_model_key = None
+
+
 def _create_chat_client(model_config):
     client = OpenAI(
         base_url=model_config.base_url,
@@ -544,10 +548,16 @@ def _create_chat_client(model_config):
 
 def _create_llm_client():
     """根据当前模型配置动态创建 LLM 客户端"""
+    global _cached_llm_client, _cached_model_key
     current_model = get_current_model_config()
     if current_model is None:
+        _cached_llm_client = None
+        _cached_model_key = None
         return None
-    return _create_chat_client(current_model)
+    if current_model.key != _cached_model_key:
+        _cached_llm_client = _create_chat_client(current_model)
+        _cached_model_key = current_model.key
+    return _cached_llm_client
 
 
 def create_memory_recall_llm_client():

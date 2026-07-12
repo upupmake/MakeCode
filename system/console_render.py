@@ -8,6 +8,7 @@ from typing import Any, List
 from rich import box
 from rich.console import Console, Group
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
@@ -19,7 +20,8 @@ from utils import paths
 
 
 def render_current_workdir(label: str = "当前工作目录") -> None:
-    post_tui(TuiRegion.CONTENT, f"[bold cyan]📂 {label}: {paths.workdir()}[/bold cyan]")
+    workdir = escape(str(paths.workdir()))
+    post_tui(TuiRegion.CONTENT, f"[bold cyan]📂 {label}: {workdir}[/bold cyan]")
 
 
 def render_current_task_plan(target_console: Console) -> None:

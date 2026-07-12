@@ -1,11 +1,22 @@
 import json
 from unittest.mock import Mock, patch
 
+from rich.text import Text
+
 from system.models import ModelConfig, ModelManager
-from system import ts_validator, updater, window_attention
+from system import console_render, ts_validator, updater, window_attention
 from system.tui_modals import ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal
-from utils import memory
-from utils.llm_client import create_memory_recall_llm_client
+from utils import llm_client as llm_client_module, memory
+from utils.llm_client import DynamicLLMClientProxy, create_memory_recall_llm_client
+
+
+def test_render_current_workdir_preserves_windows_drive_root():
+    with patch("system.console_render.paths.workdir", return_value="D:\\"), \
+            patch("system.console_render.post_tui") as post_tui:
+        console_render.render_current_workdir()
+
+    payload = post_tui.call_args.args[1]
+    assert Text.from_markup(payload).plain == "📂 当前工作目录: D:\\"
 
 
 MEMORY_RECORDS = [
@@ -152,6 +163,23 @@ def test_model_manager_does_not_overwrite_null_top_level_config(tmp_path):
     assert manager.load_error is not None
     assert manager.add_model("https://example.com", "key", ["main"]) == []
     assert config_file.read_text(encoding="utf-8") == original_content
+
+
+def test_dynamic_llm_client_proxy_reuses_client_until_model_changes():
+    first_model = ModelConfig("https://example.com", "key", "first")
+    second_model = ModelConfig("https://example.com", "key", "second")
+    created_clients = [Mock(), Mock()]
+    proxy = DynamicLLMClientProxy()
+
+    llm_client_module._cached_llm_client = None
+    llm_client_module._cached_model_key = None
+    with patch("utils.llm_client.get_current_model_config", side_effect=[first_model, first_model, second_model]), \
+            patch("utils.llm_client._create_chat_client", side_effect=created_clients) as create_client:
+        assert proxy.client is created_clients[0].client
+        assert proxy.client is created_clients[0].client
+        assert proxy.client is created_clients[1].client
+
+    assert create_client.call_count == 2
 
 
 def test_create_memory_recall_llm_client_uses_configured_model_and_falls_back():
