@@ -29,6 +29,13 @@ def test_batch_tool_names_replace_single_task_tools() -> None:
     assert "UpdateTasksDependencies" in TASK_MANAGER_TOOLS_HANDLERS
 
 
+def test_create_tasks_description_explains_same_batch_dependencies() -> None:
+    create_tool = next(tool["function"] for tool in TOOLS if tool["function"]["name"] == "CreateTasks")
+
+    assert "existed before this call" in create_tool["description"]
+    assert "UpdateTasksDependencies" in create_tool["description"]
+
+
 def test_batch_tool_schemas_use_tasks_arrays_without_refs() -> None:
     formatted = ChatAPIClient(None, "test").format_tools(TASK_MANAGER_TOOLS)
     tools = {tool["function"]["name"]: tool["function"] for tool in formatted}

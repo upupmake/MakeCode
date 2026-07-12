@@ -85,7 +85,10 @@ class CreateTasks(BaseModel):
     CONSTRAINTS:
     - `tasks` must contain at least one task.
     - Each `subject` is required and cannot be empty.
-    - `depend_on` can only contain existing task IDs.
+    - `depend_on` can only reference task IDs that existed before this call; tasks
+      created in the same batch do not have IDs yet and cannot depend on each other here.
+    - To add dependencies among tasks from the same batch, create them first, then call
+      UpdateTasksDependencies with their assigned IDs.
     - MUST NOT create tasks that edit the same file without topology ordering.
     """
 
