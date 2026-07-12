@@ -39,6 +39,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
 
+      - name: Verify bundled tree-sitter parser cache
+        env:
+          MAKECODE_NON_INTERACTIVE: '1'
+          TS_PACK_OFFLINE: '1'
+        run: >-
+          python -c "import subprocess,sys;
+          result=subprocess.run([sys.executable,'tools/verify_tree_sitter_offline.py'],timeout=25);
+          raise SystemExit(result.returncode)"
+
       - name: Run tests
         env:
           MAKECODE_NON_INTERACTIVE: '1'
@@ -60,6 +69,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import os
           import re
           from pathlib import Path
 
@@ -81,6 +91,20 @@ jobs:
           )
           if missing:
               raise SystemExit(f"Project modules missing from bundle: {', '.join(missing)}")
+
+          analysis_path = Path("build/MakeCode/Analysis-00.toc")
+          analysis = analysis_path.read_text(encoding="utf-8")
+          runner_os = os.environ["RUNNER_OS"]
+          runner_arch = os.environ["RUNNER_ARCH"]
+          platform_key = {
+              ("Windows", "X64"): "windows-x86_64",
+              ("Linux", "X64"): "linux-x86_64",
+              ("macOS", "ARM64"): "macos-arm64",
+          }.get((runner_os, runner_arch))
+          if platform_key:
+              parser_archive = f"parsers-{platform_key}.tar.zst"
+              if parser_archive not in analysis:
+                  raise SystemExit(f"Platform parser archive missing from bundle: {parser_archive}")
 
           warning_path = Path("build/MakeCode/warn-MakeCode.txt")
           warnings = warning_path.read_text(encoding="utf-8")

@@ -246,26 +246,33 @@ def test_ts_validator_platform_key_detection(monkeypatch):
     assert ts_validator._current_platform_key() == "macos-arm64"
 
 
-def test_ts_validator_configure_cache_dir_uses_keyword_api(monkeypatch, tmp_path):
+def test_ts_validator_configure_cache_dir_uses_pack_config(monkeypatch, tmp_path):
     configure_mock = Mock()
     monkeypatch.setattr(ts_validator, "configure", configure_mock)
 
     assert ts_validator._configure_cache_dir(tmp_path)
-    configure_mock.assert_called_once_with(cache_dir=str(tmp_path))
+    config = configure_mock.call_args.args[0]
+    assert isinstance(config, ts_validator.PackConfig)
+    assert config.cache_dir == str(tmp_path)
 
 
-def test_ts_validator_configure_cache_dir_falls_back_to_positional_api(monkeypatch, tmp_path):
-    calls = []
+def test_ts_validator_configure_cache_dir_fails_open(monkeypatch, tmp_path):
+    monkeypatch.setattr(ts_validator, "_TS_VALIDATOR_AVAILABLE", True)
+    monkeypatch.setattr(ts_validator, "configure", Mock(side_effect=RuntimeError("cache unavailable")))
 
-    def positional_only(*args, **kwargs):
-        calls.append((args, kwargs))
-        if kwargs:
-            raise TypeError("configure() got an unexpected keyword argument 'cache_dir'")
+    assert not ts_validator._configure_cache_dir(tmp_path)
+    assert not ts_validator._TS_VALIDATOR_AVAILABLE
 
-    monkeypatch.setattr(ts_validator, "configure", positional_only)
 
-    assert ts_validator._configure_cache_dir(tmp_path)
-    assert calls == [((), {"cache_dir": str(tmp_path)}), ((str(tmp_path),), {})]
+def test_ts_validator_does_not_load_uncached_language(monkeypatch):
+    get_parser_mock = Mock()
+    monkeypatch.setattr(ts_validator, "_TS_VALIDATOR_AVAILABLE", True)
+    monkeypatch.setattr(ts_validator, "_TS_CACHED_LANGUAGES", frozenset({"python"}))
+    monkeypatch.setattr(ts_validator, "detect_language_from_path", Mock(return_value="rust"))
+    monkeypatch.setattr(ts_validator, "get_parser", get_parser_mock)
+
+    assert ts_validator.validate_code("main.rs", "fn main() {}") == (True, "")
+    get_parser_mock.assert_not_called()
 
 
 def test_tui_modals_use_q_not_escape_for_cancel():

@@ -12,13 +12,16 @@ import pyzstd
 from tree_sitter_language_pack import (
     get_parser,
     detect_language_from_path,
+    downloaded_languages,
     process,
+    PackConfig,
     ProcessConfig,
     configure
 )
 
-_TS_VALIDATOR_AVAILABLE = True
+_TS_VALIDATOR_AVAILABLE = False
 _TS_VALIDATOR_WARNING_PRINTED = False
+_TS_CACHED_LANGUAGES = frozenset()
 
 
 def _current_platform_key() -> str | None:
@@ -49,17 +52,8 @@ def _mark_ts_unavailable(message: str) -> None:
 
 
 def _configure_cache_dir(cache_dir: Path) -> bool:
-    if not configure:
-        return True
     try:
-        configure(cache_dir=str(cache_dir))
-        return True
-    except TypeError as exc:
-        if "unexpected keyword argument" not in str(exc):
-            _mark_ts_unavailable(f"解析器缓存配置失败：{exc}")
-            return False
-    try:
-        configure(str(cache_dir))
+        configure(PackConfig(cache_dir=str(cache_dir)))
         return True
     except Exception as exc:
         _mark_ts_unavailable(f"解析器缓存配置失败：{exc}")
@@ -122,16 +116,19 @@ def init_ts_cache():
         return
 
     marker = dst_cache_dir / f".extracted_{zst_file.name}"
-    if marker.exists():
-        return
+    if not marker.exists():
+        try:
+            with pyzstd.open(zst_file, 'rb') as f:
+                with tarfile.open(fileobj=f) as tar:
+                    tar.extractall(path=libs_dir, filter='data')
+            marker.touch()
+        except Exception as e:
+            _mark_ts_unavailable(f"解析器包解压失败：{e}")
+            return
 
-    try:
-        with pyzstd.open(zst_file, 'rb') as f:
-            with tarfile.open(fileobj=f) as tar:
-                tar.extractall(path=libs_dir, filter='data')
-        marker.touch()
-    except Exception as e:
-        _mark_ts_unavailable(f"解析器包解压失败：{e}")
+    global _TS_VALIDATOR_AVAILABLE, _TS_CACHED_LANGUAGES
+    _TS_CACHED_LANGUAGES = frozenset(downloaded_languages())
+    _TS_VALIDATOR_AVAILABLE = True
 
 
 def validate_code(path: str, content: str) -> tuple[bool, str]:
@@ -159,7 +156,7 @@ def validate_code(path: str, content: str) -> tuple[bool, str]:
             return True, ""
 
         lang = detect_language_from_path(path)
-        if not lang:
+        if not lang or lang not in _TS_CACHED_LANGUAGES:
             return True, ""
 
         parser = get_parser(lang)
@@ -181,25 +178,15 @@ def validate_code(path: str, content: str) -> tuple[bool, str]:
                         diagnostics=True
                     )
                     result = process(content, config)
-                    diagnostics = result.get("diagnostics", [])
+                    diagnostics = result.diagnostics
 
                     if diagnostics:
                         error_msg += "\n\n详细错误信息："
                         # 限制最多显示前 3 个核心错误，避免撑爆大模型上下文
                         for diag in diagnostics[:3]:
-                            msg = diag.get("message", "Unknown error")
-                            span = diag.get("span", {})
-                            # 兼容不同版本的 span 格式返回 (利用 dict 强制转换消除 TypedDict 类型警告)
-                            span_dict = dict(span)
-                            start = span_dict.get("start", {}) if isinstance(span_dict.get("start"),
-                                                                             dict) else span_dict
-                            line = start.get("line", start.get("start_line", "?"))
-                            col = start.get("column", start.get("start_column", "?"))
-
-                            # 注意: tree-sitter 通常从 0 开始索引行号，为模型友好展示建议 +1
-                            line_disp = int(line) + 1 if isinstance(line, (int, str)) and str(line).isdigit() else line
-
-                            error_msg += f"\n- 行 {line_disp}, 列 {col}: {msg}"
+                            line = diag.span.start_line + 1
+                            col = diag.span.start_column
+                            error_msg += f"\n- 行 {line}, 列 {col}: {diag.message}"
 
                         if len(diagnostics) > 3:
                             error_msg += f"\n... (还有 {len(diagnostics) - 3} 个错误未显示)"

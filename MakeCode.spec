@@ -19,6 +19,7 @@ project_hiddenimports = [
 ]
 for package in ('system', 'tools', 'utils'):
     project_hiddenimports.extend(collect_submodules(package))
+language_pack_hiddenimports = collect_submodules('tree_sitter_language_pack')
 
 # --- Custom logic to collect the current platform's ts_cache file ---
 ts_cache_datas = []
@@ -58,15 +59,14 @@ a = Analysis(
     binaries=[],
     datas=[
         (os.path.join(project_root, 'tiktoken_cache'), 'tiktoken_cache'),
-    ] + updater_datas + ts_cache_datas + copy_metadata('fastmcp'),
-    hiddenimports=project_hiddenimports + [
+    ] + updater_datas + ts_cache_datas + copy_metadata('fastmcp') + copy_metadata('tree-sitter-language-pack'),
+    hiddenimports=project_hiddenimports + language_pack_hiddenimports + [
         'tiktoken_ext.openai_public',
         'tiktoken_ext',
         'rich',
         'textual',
         'pyzstd',
-        'tree_sitter',
-        'tree_sitter_language_pack'
+        'tree_sitter'
     ],
     hookspath=[],
     hooksconfig={},
