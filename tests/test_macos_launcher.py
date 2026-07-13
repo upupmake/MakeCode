@@ -1,6 +1,12 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
+
+
+pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="macOS launcher test")
 
 
 def test_macos_launcher_runs_bundled_onedir_binary(tmp_path):
