@@ -86,7 +86,7 @@ pyinstaller MakeCode.spec
 构建采用 `onedir`，不要改回 `onefile`：
 
 - Windows：`dist/MakeCode/MakeCode.exe`，运行依赖位于 `dist/MakeCode/_internal/`
-- macOS：`dist/MakeCode.app`
+- macOS：`dist/MakeCode/MakeCode`，运行依赖位于 `dist/MakeCode/_internal/`；发布 ZIP 顶层额外提供 `MakeCode.command`，用户双击该脚本在 Terminal 中启动
 
 Windows 的 `dist/updater.exe` 会被收集为 `dist/MakeCode/_internal/updater.exe`，因此 Windows 必须先构建 updater。macOS 不构建 updater，也不支持应用内自动更新。
 
@@ -102,10 +102,12 @@ Windows：
 macOS：
 
 ```
-pyinstaller MakeCode.spec      → dist/MakeCode.app
+pyinstaller MakeCode.spec      → dist/MakeCode/
 ```
 
-当前 GitHub Actions 只构建 Windows X64 和 macOS ARM64，不构建 Linux 应用。构建后只做 TOC、目录结构和警告日志静态检查，禁止启动 `dist` 下的程序。
+GitHub Actions 将 `assets/MakeCode.command` 与 `dist/MakeCode/` 一起打入 `MakeCode-macOS-ARM64.zip`。macOS 用户解压后双击顶层 `MakeCode.command`，不发布 `.app`。
+
+当前 GitHub Actions 只构建 Windows X64 和 macOS ARM64，不构建 Linux应用。构建后只做 TOC、目录结构和警告日志静态检查，禁止启动 `dist` 下的程序。
 
 ---
 
@@ -183,9 +185,9 @@ GitHub Actions 自动构建 Windows/macOS ZIP。Release 汇总任务读取 Relea
 
 ### 4.3 更新边界与迁移
 
-- macOS 暂不做应用内自动更新，因为可靠替换 `.app` 还涉及代码签名、公证和隔离属性；只提示手动下载。
+- macOS 暂不做应用内自动更新；发布包使用 `MakeCode.command + MakeCode/ onedir`，用户从 GitHub Release 手动下载并替换。
 - 从旧 onefile 版本迁移到首个 onedir 版本应手动完成。安装 onedir 版本后，后续 Windows 版本才能使用完整目录自动更新。
-- `.makecode` 位于安装目录内，目录更新时必须保留。
+- Windows 的 `.makecode` 位于安装目录内，目录更新时必须保留；macOS 打包版配置位于 `~/Library/Application Support/MakeCode`。
 - 不得只替换 onedir 中的 `MakeCode.exe`，否则会造成 EXE 与 `_internal` 依赖版本混合。
 
 ---
@@ -239,7 +241,7 @@ git status  # 应输出 "nothing to commit, working tree clean"
 |------|------|
 | `version.py` | 版本号和 GitHub latest Release 地址配置 |
 | `.github/workflows/build.yml` | 构建双平台 ZIP，并基于最终 Windows ZIP 生成 version.json |
-| `MakeCode.spec` | Windows onedir 与 macOS BUNDLE 打包配置 |
+| `MakeCode.spec` | Windows 与 macOS onedir 打包配置 |
 | `updater.spec` | Windows 独立更新器打包配置 |
 | `updater.py` | Windows 完整目录事务更新器源码 |
 | `github_release.py` | 从 RELEASE_LOG.md 创建 GitHub Release/tag；所有资产由 Actions 生成 |
