@@ -4,7 +4,10 @@ from pathlib import Path
 
 _is_frozen = getattr(sys, "frozen", False)
 _INSTALL_DIR = Path(sys.executable).parent if _is_frozen else Path(__file__).resolve().parent.parent
-_INSTALL_MAKECODE_DIR = _INSTALL_DIR / ".makecode"
+if _is_frozen and sys.platform == "darwin":
+    _INSTALL_MAKECODE_DIR = Path.home() / "Library" / "Application Support" / "MakeCode"
+else:
+    _INSTALL_MAKECODE_DIR = _INSTALL_DIR / ".makecode"
 _INSTALL_MAKECODE_DIR.mkdir(parents=True, exist_ok=True)
 
 _WORKDIR = Path.cwd().resolve()
