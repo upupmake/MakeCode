@@ -47,6 +47,10 @@ jobs:
           result=subprocess.run([sys.executable,'tools/verify_tree_sitter_offline.py'],timeout=25);
           raise SystemExit(result.returncode)"
 
+      - name: Restore macOS launcher permissions
+        if: runner.os == 'macOS'
+        run: chmod +x assets/MakeCode.command
+
       - name: Run tests
         env:
           MAKECODE_NON_INTERACTIVE: '1'
