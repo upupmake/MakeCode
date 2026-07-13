@@ -10,8 +10,6 @@ project_root = os.path.abspath(SPECPATH)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from version import CURRENT_VERSION
-
 # Keep every runtime module owned by this project, including modules imported lazily.
 project_hiddenimports = [
     'init',
@@ -109,15 +107,3 @@ coll = COLLECT(
     upx_exclude=[],
     name='MakeCode',
 )
-
-if sys.platform == 'darwin':
-    app = BUNDLE(
-        coll,
-        name='MakeCode.app',
-        bundle_identifier='com.forwardforever.makecode',
-        info_plist={
-            'CFBundleName': 'MakeCode',
-            'CFBundleDisplayName': 'MakeCode',
-            'CFBundleShortVersionString': CURRENT_VERSION,
-        },
-    )
