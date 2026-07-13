@@ -151,10 +151,23 @@ jobs:
               app = dist / "MakeCode.app"
               if not (app / "Contents" / "MacOS" / "MakeCode").is_file():
                   raise SystemExit("Invalid macOS app bundle")
-              shutil.make_archive(
-                  str(release_assets / f"MakeCode-{suffix}"), "zip", dist, app.name
+              framework = app / "Contents" / "Frameworks" / "Python.framework"
+              expected_links = (
+                  framework / "Python",
+                  framework / "Resources",
+                  framework / "Versions" / "Current",
               )
+              missing_links = [str(path) for path in expected_links if not path.is_symlink()]
+              if missing_links:
+                  raise SystemExit(
+                      "Invalid macOS Python.framework symlinks: " + ", ".join(missing_links)
+                  )
           PY
+
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            ditto -c -k --keepParent dist/MakeCode.app \
+              "release-assets/MakeCode-${RUNNER_OS}-${RUNNER_ARCH}.zip"
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
