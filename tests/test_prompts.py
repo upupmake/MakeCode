@@ -50,6 +50,14 @@ class PromptPolicyTests(unittest.TestCase):
         self.assertIn("must neither delegate nor execute that batch automatically", prompt)
         self.assertIn("return control to the user", prompt)
 
+    def test_act_mode_uses_task_manager_only_for_multi_step_planning(self):
+        prompt = self._orchestrator_prompt(plan_mode=False)
+
+        self.assertIn("Use TaskManager for tasks that require multi-step planning", prompt)
+        self.assertIn("execute simple single-step tasks directly without creating a task plan", prompt)
+        self.assertNotIn("Always plan work with TaskManager first", prompt)
+        self.assertIn("Execution loop for tasks that require multi-step planning", prompt)
+
     def test_orchestrator_prompt_limits_delegation_to_worthwhile_parallel_batches(self):
         prompt = self._orchestrator_prompt(plan_mode=False)
 
