@@ -55,6 +55,7 @@ jobs:
           tests/test_delegate_confirmation.py
           tests/test_prompts.py
           tests/test_platform_memory_config.py
+          tests/test_macos_launcher.py
           -q
 
       - name: Build updater
@@ -125,7 +126,6 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts release-assets
-          cp -R dist/* artifacts/
 
           python - <<'PY'
           import os
@@ -144,29 +144,28 @@ jobs:
                   raise SystemExit("Invalid Windows onedir output")
               if not (app / "_internal" / "updater.exe").is_file():
                   raise SystemExit("Bundled updater.exe is missing")
+              shutil.copytree(app, Path("artifacts") / app.name)
               shutil.make_archive(
                   str(release_assets / f"MakeCode-{suffix}"), "zip", dist, app.name
               )
           else:
-              app = dist / "MakeCode.app"
-              if not (app / "Contents" / "MacOS" / "MakeCode").is_file():
-                  raise SystemExit("Invalid macOS app bundle")
-              framework = app / "Contents" / "Frameworks" / "Python.framework"
-              expected_links = (
-                  framework / "Python",
-                  framework / "Resources",
-                  framework / "Versions" / "Current",
-              )
-              missing_links = [str(path) for path in expected_links if not path.is_symlink()]
-              if missing_links:
-                  raise SystemExit(
-                      "Invalid macOS Python.framework symlinks: " + ", ".join(missing_links)
-                  )
+              app = dist / "MakeCode"
+              if not (app / "MakeCode").is_file() or not (app / "_internal").is_dir():
+                  raise SystemExit("Invalid macOS onedir output")
+              launcher = Path("assets/MakeCode.command")
+              if not launcher.is_file() or not os.access(launcher, os.X_OK):
+                  raise SystemExit("macOS launcher is missing or not executable")
+              package = release_assets / "macos-package"
+              shutil.copytree(app, package / "MakeCode", symlinks=True)
+              shutil.copy2(launcher, package / launcher.name)
+              shutil.copytree(package / "MakeCode", Path("artifacts") / "MakeCode", symlinks=True)
+              shutil.copy2(package / launcher.name, Path("artifacts") / launcher.name)
           PY
 
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            ditto -c -k --keepParent dist/MakeCode.app \
+            ditto -c -k release-assets/macos-package \
               "release-assets/MakeCode-${RUNNER_OS}-${RUNNER_ARCH}.zip"
+            rm -r release-assets/macos-package
           fi
 
       - name: Upload build artifacts
