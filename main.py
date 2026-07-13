@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -584,7 +585,35 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
     app.run()
 
 
+def _launch_macos_terminal_if_needed() -> bool:
+    if (
+        sys.platform != "darwin"
+        or not getattr(sys, "frozen", False)
+        or os.environ.get("MAKECODE_TERMINAL_RELAUNCHED") == "1"
+        or sys.stdin.isatty()
+    ):
+        return False
+
+    script = """
+on run argv
+    set executablePath to item 1 of argv
+    tell application "Terminal"
+        activate
+        do script "env MAKECODE_TERMINAL_RELAUNCHED=1 " & quoted form of executablePath
+    end tell
+end run
+"""
+    subprocess.run(
+        ["/usr/bin/osascript", "-e", script, sys.executable],
+        check=True,
+    )
+    return True
+
+
 if __name__ == "__main__":
+    if _launch_macos_terminal_if_needed():
+        raise SystemExit(0)
+
     update_ready_file = os.environ.pop("MAKECODE_UPDATE_READY_FILE", None)
 
     startup_workdir = resolve_startup_workdir()
