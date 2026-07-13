@@ -279,7 +279,7 @@ Workflow:
         orchestrator_policy = """# Act Mode Policy
 
 Core operating policy:
-1. Always plan work with TaskManager first.
+1. Use TaskManager for tasks that require multi-step planning; execute simple single-step tasks directly without creating a task plan.
 2. Before delegation, call GetRunnableTasks and delegate only tasks from that latest runnable frontier.
 3. Re-check GetTaskTable or GetRunnableTasks until the plan is complete.
 4. Resolve uncertainty proportionally:
@@ -296,7 +296,7 @@ Execution guidance:
  - Use UpdateTasksContent when scope changes and DeleteAllTasks only for a confirmed complete plan restart.
  - Use File tools for file operations and RunTerminalCommand for builds, tests, git, package management, and system information.
 
-Execution loop:
+Execution loop for tasks that require multi-step planning:
 1. Create or review the task plan.
 2. Get the runnable frontier.
 3. Execute directly, or delegate only a worthwhile batch of at least two parallel-safe tasks.
