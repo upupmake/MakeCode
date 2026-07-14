@@ -10,6 +10,7 @@ from textual.events import Key
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, TextArea
 
+from system.models import REASONING_EFFORTS
 from system.tui_types import (
     LAYOUT_DEFAULT_RATIOS,
     LAYOUT_LEFT_KEYS,
@@ -900,6 +901,8 @@ class ModelManagerModal(ModalScreen[str]):
         Binding("q", "close", "Close", priority=True),
         Binding("f", "favorite", "Favorite", priority=True),
         Binding("d", "delete", "Delete", priority=True),
+        Binding("left", "decrease_effort", "Lower Effort", priority=True),
+        Binding("right", "increase_effort", "Higher Effort", priority=True),
         Binding("y", "confirm_delete", "Confirm Delete", priority=True),
         Binding("n", "cancel_delete", "Cancel Delete", priority=True),
     ]
@@ -913,8 +916,17 @@ class ModelManagerModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label("⚙️ 模型管理面板\nEnter 选择当前模型并关闭；f 切换常用；d 删除；选择添加模型可新增配置；q 关闭。", id="choice-title")
+            yield Label(self._title_text(), id="choice-title")
             yield ListView(id="choice-list")
+
+    @staticmethod
+    def _title_text() -> str:
+        efforts = " / ".join(REASONING_EFFORTS)
+        return (
+            "⚙️ 模型管理面板\n"
+            f"思考档位：{efforts}\n"
+            "Enter 选择当前模型并关闭；←/→ 调整档位；f 切换常用；d 删除；q 关闭。"
+        )
 
     def on_mount(self) -> None:
         self._reload_rows(0)
@@ -930,7 +942,7 @@ class ModelManagerModal(ModalScreen[str]):
         if model.is_favorite:
             markers.append("♥")
         marker_text = " ".join(markers) if markers else " "
-        return f"[{marker_text:^3}] {model.get_display_text()}"
+        return f"[{marker_text:^3}] {model.get_display_text()} · effort: {model.reasoning_effort}"
 
     def _reload_rows(self, selected_index: int | None = None) -> None:
         self._pending_delete_key = None
@@ -1004,6 +1016,16 @@ class ModelManagerModal(ModalScreen[str]):
             event.stop()
             event.prevent_default()
             return
+        if event.key == "left":
+            self.action_decrease_effort()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "right":
+            self.action_increase_effort()
+            event.stop()
+            event.prevent_default()
+            return
         if event.key == "y":
             self.action_confirm_delete()
             event.stop()
@@ -1031,8 +1053,39 @@ class ModelManagerModal(ModalScreen[str]):
             self._reload_rows(index)
             return
         selected_model = self._model_manager.models[target_index]
-        if self._model_manager.set_current_model_by_index(target_index):
-            self.dismiss(f"selected:{selected_model.get_display_text()}")
+        if self._model_manager.select_model(model_key, selected_model.reasoning_effort):
+            self.dismiss(
+                f"selected:{selected_model.get_display_text()} · effort: {selected_model.reasoning_effort}"
+            )
+
+    def action_decrease_effort(self) -> None:
+        self._change_reasoning_effort(-1)
+
+    def action_increase_effort(self) -> None:
+        self._change_reasoning_effort(1)
+
+    def _change_reasoning_effort(self, offset: int) -> None:
+        if self._pending_delete_key is not None:
+            return
+        index = self._selected_index()
+        if index == 0 or index == len(self._model_keys) - 1:
+            return
+        model_key = self._model_keys[index]
+        if model_key is None:
+            return
+        target_index = self._target_index(model_key)
+        if target_index is None:
+            self._reload_rows(index)
+            return
+        model = self._model_manager.models[target_index]
+        effort_index = REASONING_EFFORTS.index(model.reasoning_effort)
+        next_index = max(0, min(effort_index + offset, len(REASONING_EFFORTS) - 1))
+        if next_index == effort_index:
+            return
+        if self._model_manager.set_reasoning_effort(model_key, REASONING_EFFORTS[next_index]):
+            self._refresh_model_row_by_key(model_key)
+            if self._model_manager.current_model_key == model_key:
+                self.app.refresh_status()
 
     def action_favorite(self) -> None:
         index = self._selected_index()
@@ -1085,9 +1138,7 @@ class ModelManagerModal(ModalScreen[str]):
         choice_list.focus()
 
     def _reset_title(self) -> None:
-        self.query_one("#choice-title", Label).update(
-            "⚙️ 模型管理面板\nEnter 选择当前模型并关闭；f 切换常用；d 删除；选择添加模型可新增配置；q 关闭。"
-        )
+        self.query_one("#choice-title", Label).update(self._title_text())
 
     def action_close(self) -> None:
         self.dismiss("exit")
