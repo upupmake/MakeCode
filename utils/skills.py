@@ -11,8 +11,13 @@ from system.tui_app import TuiRegion, post_tui
 from utils import paths
 
 
-def _skills_dir() -> Path:
-    return paths.workspace_skills_dir()
+def _skills_dirs() -> list[Path]:
+    directories = [
+        paths.install_skills_dir(),
+        paths.workspace_skills_dir(),
+        paths.workspace_legacy_skills_dir(),
+    ]
+    return list(dict.fromkeys(directories))
 
 
 def print_formatted_text(value):
@@ -56,13 +61,13 @@ class LoadSkill(BaseModel):
 
 class SkillLoader:
     def __init__(self, skills_dir: Path | None = None):
-        self.skills_dir = skills_dir or _skills_dir()
+        self.skills_dirs = [skills_dir] if skills_dir else _skills_dirs()
         self.skills = {}
         self.is_enabled = DEFAULT_SKILLS_PROMPT_ENABLED
         self._load_all()
 
     def refresh_workspace(self) -> None:
-        self.skills_dir = _skills_dir()
+        self.skills_dirs = _skills_dirs()
         self._load_all()
 
     def toggle(self) -> str:
@@ -71,13 +76,19 @@ class SkillLoader:
 
     def _load_all(self):
         self.skills = {}
-        if not self.skills_dir.exists():
-            return
-        for f in sorted(self.skills_dir.rglob("SKILL.md")):
-            text = f.read_text(encoding="utf-8")
-            meta, body = self._parse_frontmatter(text)
-            name = str(meta.get("name", f.parent.name)).strip() or f.parent.name
-            self.skills[name] = {"meta": meta, "body": body, "path": str(f)}
+        for skills_dir in reversed(self.skills_dirs):
+            if not skills_dir.exists():
+                continue
+            for f in sorted(skills_dir.rglob("SKILL.md")):
+                text = f.read_text(encoding="utf-8")
+                meta, body = self._parse_frontmatter(text)
+                name = meta.get("name")
+                description = meta.get("description")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                if not isinstance(description, str) or not description.strip():
+                    continue
+                self.skills[name.strip()] = {"meta": meta, "body": body, "path": str(f)}
 
     @staticmethod
     def _parse_frontmatter(text: str) -> tuple:
@@ -109,12 +120,11 @@ class SkillLoader:
             elif tags:
                 tags_text = str(tags).strip()
 
-            path_text = Path(skill["path"]).parent.relative_to(self.skills_dir).as_posix()
             line = f"{i}. **{name}**"
             if tags_text:
                 line += f" [{tags_text}]"
             line += f"\n   - Description: {desc}"
-            line += f"\n   - Directory: skills/{path_text}"
+            line += f"\n   - Directory: {Path(skill['path']).parent.absolute().as_posix()}"
             lines.append(line)
         return "\n".join(lines)
 
@@ -129,19 +139,24 @@ class SkillLoader:
             )
 
         self._load_all()
-        skills_path = self.skills_dir.absolute().as_posix()
+        skills_paths = "\n".join(
+            f"  - `{skills_dir.absolute().as_posix()}`" for skills_dir in self.skills_dirs
+        )
+        default_install_path = paths.workspace_skills_dir().absolute().as_posix()
         if not self.skills:
             return (
                 "\n\n# Skills Catalog Status\n"
                 "- Status: ON\n"
-                f"- Source directory: `{skills_path}`\n"
+                f"- Source directories (highest priority first):\n{skills_paths}\n"
+                f"- Default installation directory for user skills: `{default_install_path}`\n"
                 "- No skills are currently available in this workspace."
             )
 
         return (
             "\n\n# Skills Catalog Status\n"
             "- Status: ON\n"
-            f"- Source directory: `{skills_path}`\n"
+            f"- Source directories (highest priority first):\n{skills_paths}\n"
+            f"- Default installation directory for user skills: `{default_install_path}`\n"
             "- The following skills are preloaded into context. When relevant, call `LoadSkill` directly using the exact skill name below.\n\n"
             "## Available Skills\n"
             f"{self.get_descriptions()}"
