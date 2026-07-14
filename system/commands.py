@@ -827,8 +827,13 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             self.console.print(f"\n[bold green]✅ 当前模型已切换为: {selected_text}[/bold green]", tui_region=TuiRegion.TOOLS)
 
         current_model = model_manager.get_current_model()
-        current_text = current_model.get_display_text() if current_model else "未选择"
+        current_text = (
+            f"{current_model.get_display_text()} · effort: {current_model.reasoning_effort}"
+            if current_model
+            else "未选择"
+        )
         self.console.print(f"\n[bold cyan]已退出模型面板，当前模型：[/bold cyan][bold green]{current_text}[/bold green]", tui_region=TuiRegion.TOOLS)
+        refresh_status()
         return True
 
     def handle_layout(self) -> bool:
