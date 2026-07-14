@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-from openai import AsyncOpenAI, pydantic_function_tool
+from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, ValidationError, model_validator, field_validator
 from rich.markup import escape
 
@@ -45,7 +45,7 @@ from utils.common import (
 )
 from utils.file_access import AgentFileAccess
 from utils.hitl import current_agent_role
-from utils.llm_client import AsyncChatAPIClient
+from utils.llm_client import _create_async_chat_client
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
 from utils.skills import (
@@ -387,15 +387,7 @@ class TeammateManager:
             current_model = get_current_model_config()
             if current_model is None:
                 raise RuntimeError("No model configured. Please use /models to configure a model first.")
-            async_client = AsyncOpenAI(
-                base_url=current_model.base_url, api_key=current_model.api_key, max_retries=3,
-                default_headers={"User-Agent": "MakeCode Agent"},
-            )
-            local_async_llm_client = AsyncChatAPIClient(
-                async_client,
-                current_model.model_id,
-                current_model.reasoning_effort,
-            )
+            local_async_llm_client = _create_async_chat_client(current_model)
 
             lock = asyncio.Lock()
 
