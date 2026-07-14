@@ -574,6 +574,31 @@ def test_llm_client_cache_changes_when_reasoning_effort_changes():
     assert create_client.call_count == 2
 
 
+def test_sync_llm_client_has_bounded_timeout_and_retries():
+    model = ModelConfig("https://example.com", "key", "main")
+
+    client = llm_client_module._create_chat_client(model)
+    try:
+        assert client.client.timeout.connect == 10
+        assert client.client.timeout.read == 120
+        assert client.client.max_retries == 2
+    finally:
+        client.client.close()
+
+
+@pytest.mark.anyio
+async def test_async_llm_client_has_bounded_timeout_and_retries():
+    model = ModelConfig("https://example.com", "key", "main")
+
+    client = llm_client_module._create_async_chat_client(model)
+    try:
+        assert client.client.timeout.connect == 10
+        assert client.client.timeout.read == 120
+        assert client.client.max_retries == 2
+    finally:
+        await client.client.close()
+
+
 def test_runtime_info_displays_current_reasoning_effort():
     model = ModelConfig("https://example.com", "key", "main", reasoning_effort="high")
 
