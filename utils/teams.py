@@ -391,7 +391,11 @@ class TeammateManager:
                 base_url=current_model.base_url, api_key=current_model.api_key, max_retries=3,
                 default_headers={"User-Agent": "MakeCode Agent"},
             )
-            local_async_llm_client = AsyncChatAPIClient(async_client, current_model.model_id)
+            local_async_llm_client = AsyncChatAPIClient(
+                async_client,
+                current_model.model_id,
+                current_model.reasoning_effort,
+            )
 
             lock = asyncio.Lock()
 
