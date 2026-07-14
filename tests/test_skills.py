@@ -103,17 +103,40 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertTrue(install_skills.is_dir())
             self.assertTrue(workspace_skills.is_dir())
             self.assertFalse(legacy_skills.exists())
+            self.assertEqual(install_skills, install_root / ".makecode" / "skills")
             self.assertEqual(workspace_skills, workspace_root / ".makecode" / "skills")
 
-    def test_uses_executable_directory_for_published_install_skills(self):
+    def test_uses_install_makecode_directory_for_published_install_skills(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             install_root = Path(temp_dir) / "published"
 
             with patch.object(paths, "_INSTALL_DIR", install_root):
                 install_skills = paths.install_skills_dir()
 
-            self.assertEqual(install_skills, install_root / "skills")
+            self.assertEqual(install_skills, install_root / ".makecode" / "skills")
             self.assertTrue(install_skills.is_dir())
+
+    def test_switching_workspace_does_not_load_previous_legacy_skills(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "install"
+            previous_workspace = root / "previous"
+            current_workspace = root / "current"
+            self._write_skill(previous_workspace / "skills", "previous-only", "previous-only")
+            self._write_skill(current_workspace / "skills", "current-only", "current-only")
+
+            with (
+                patch.object(paths, "_INSTALL_DIR", install_root),
+                patch.object(paths, "_WORKDIR", previous_workspace),
+            ):
+                loader = SkillLoader()
+                self.assertIn("previous-only", loader.skills)
+
+                paths.set_workdir(current_workspace)
+                loader.refresh_workspace()
+
+            self.assertNotIn("previous-only", loader.skills)
+            self.assertIn("current-only", loader.skills)
 
 
 if __name__ == "__main__":
