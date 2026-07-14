@@ -68,9 +68,15 @@ def _inline_schema_refs(schema):
 
 
 class BaseLLMClient(ABC):
-    def __init__(self, client: Union[OpenAI, AsyncOpenAI], model: str):
+    def __init__(
+        self,
+        client: Union[OpenAI, AsyncOpenAI],
+        model: str,
+        reasoning_effort: str = "medium",
+    ):
         self.client = client
         self.model = model
+        self.reasoning_effort = reasoning_effort
 
     @abstractmethod
     def generate(self, messages: list, tools: list = None):
@@ -154,13 +160,13 @@ class ChatAPIClient(BaseLLMClient):
     """Implementation for the standard OpenAI Chat Completions API standard."""
 
     def generate(self, messages: list, tools: list = None):
-        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": "medium"}
+        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = tools
         return self.client.chat.completions.create(**kwargs)
 
     def generate_stream(self, messages: list, tools: list = None):
-        kwargs = {"model": self.model, "messages": messages, "stream": True, "reasoning_effort": "medium"}
+        kwargs = {"model": self.model, "messages": messages, "stream": True, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = tools
 
@@ -349,7 +355,7 @@ class ChatAPIClient(BaseLLMClient):
             {"role": "user", "content": conversation_text},
             {"role": "user", "content": get_summary_user_prompt(reason)},
         ]
-        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": "medium"}
+        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = self.format_tools(tools)
         res = self.client.chat.completions.create(**kwargs)
@@ -400,7 +406,7 @@ class ChatAPIClient(BaseLLMClient):
             model=self.model,
             messages=messages,
             tools=self.format_tools(tools),
-            reasoning_effort="medium",
+            reasoning_effort=self.reasoning_effort,
         )
         return self.parse_response(res)
 
@@ -423,13 +429,13 @@ class ChatAPIClient(BaseLLMClient):
 
 class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
     async def generate(self, messages: list, tools: list = None):
-        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": "medium"}
+        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = tools
         return await self.client.chat.completions.create(**kwargs)
 
     async def generate_stream(self, messages: list, tools: list = None):
-        kwargs = {"model": self.model, "messages": messages, "stream": True, "reasoning_effort": "medium"}
+        kwargs = {"model": self.model, "messages": messages, "stream": True, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = tools
 
@@ -524,7 +530,7 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
             {"role": "user", "content": get_summary_user_prompt(reason)},
         ]
         res = await self.client.chat.completions.create(
-            model=self.model, messages=messages, reasoning_effort="medium"
+            model=self.model, messages=messages, reasoning_effort=self.reasoning_effort
         )
         return res.choices[0].message.content or ""
 
@@ -543,7 +549,7 @@ def _create_chat_client(model_config):
         max_retries=3,
         default_headers={"User-Agent": "MakeCode Agent"},
     )
-    return ChatAPIClient(client, model_config.model_id)
+    return ChatAPIClient(client, model_config.model_id, model_config.reasoning_effort)
 
 
 def _create_llm_client():
@@ -554,9 +560,9 @@ def _create_llm_client():
         _cached_llm_client = None
         _cached_model_key = None
         return None
-    if current_model.key != _cached_model_key:
+    if current_model.runtime_key != _cached_model_key:
         _cached_llm_client = _create_chat_client(current_model)
-        _cached_model_key = current_model.key
+        _cached_model_key = current_model.runtime_key
     return _cached_llm_client
 
 
@@ -564,7 +570,6 @@ def create_memory_recall_llm_client():
     manager = get_model_manager()
     if manager is None:
         return None
-    manager._reload_from_disk()
     recall_model = manager.get_memory_recall_model()
     if recall_model is None:
         current_model = manager.get_current_model()
