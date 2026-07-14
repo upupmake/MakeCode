@@ -552,7 +552,7 @@ class TeammateManager:
                 render_fn(**kwargs)
 
         # 辅助函数：实时追加日志
-        async def append_trace(event_type: str, data: any):
+        async def append_trace(event_type: str, data: Any):
             async with aiofiles.open(log_file, "a", encoding="utf-8") as f:
                 log_entry = {
                     "timestamp": datetime.now().isoformat(),
