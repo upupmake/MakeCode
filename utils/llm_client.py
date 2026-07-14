@@ -1,7 +1,7 @@
 import copy
 import json
 from abc import ABC, abstractmethod
-from typing import Union, Generator
+from typing import Any, Union, Generator
 
 from openai import OpenAI, AsyncOpenAI
 
@@ -92,7 +92,7 @@ class BaseLLMClient(ABC):
         pass
 
     @abstractmethod
-    def parse_response(self, response) -> tuple[str, list, any]:
+    def parse_response(self, response) -> tuple[str, list, Any]:
         """
         Parses the API response.
         Returns: (text_content, tool_calls_list, raw_message)
@@ -102,13 +102,13 @@ class BaseLLMClient(ABC):
 
     @abstractmethod
     def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: any
+            self, tool_call_id: str, tool_name: str, output: Any
     ) -> dict:
-        """Formats the result of a tool execution to be appended to messages."""
+        """Formats the result of the tool execution to be appended to messages."""
         pass
 
     @abstractmethod
-    def append_assistant_message(self, messages: list, raw_message: any):
+    def append_assistant_message(self, messages: list, raw_message: Any):
         """Appends the assistant's response (with tool calls if any) to the history."""
         pass
 
@@ -134,17 +134,17 @@ class AsyncBaseLLMClient(ABC):
         pass
 
     @abstractmethod
-    def parse_response(self, response) -> tuple[str, list, any]:
+    def parse_response(self, response) -> tuple[str, list, Any]:
         pass
 
     @abstractmethod
     def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: any
+            self, tool_call_id: str, tool_name: str, output: Any
     ) -> dict:
         pass
 
     @abstractmethod
-    def append_assistant_message(self, messages: list, raw_message: any):
+    def append_assistant_message(self, messages: list, raw_message: Any):
         pass
 
     @abstractmethod
@@ -284,7 +284,7 @@ class ChatAPIClient(BaseLLMClient):
         # 此时用已累积的数据构建 done 事件，避免 raw_message=None 崩溃
         yield _build_done_event()
 
-    def parse_response(self, response) -> tuple[str, list, any]:
+    def parse_response(self, response) -> tuple[str, list, Any]:
         message = response.choices[0].message
         text_content = message.content or ""
         tool_calls = []
@@ -302,7 +302,7 @@ class ChatAPIClient(BaseLLMClient):
         return text_content, tool_calls, message
 
     def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: any
+            self, tool_call_id: str, tool_name: str, output: Any
     ) -> dict:
         return {
             "role": "tool",
@@ -313,7 +313,7 @@ class ChatAPIClient(BaseLLMClient):
             else output,
         }
 
-    def append_assistant_message(self, messages: list, raw_message: any):
+    def append_assistant_message(self, messages: list, raw_message: Any):
         # Standard Chat API requires the assistant message to be appended exactly as it is (including tool_calls)
         msg_dict = (
             raw_message.model_dump()
@@ -394,7 +394,7 @@ class ChatAPIClient(BaseLLMClient):
             },
         ]
 
-    def get_memory_decision(self, conversation_text: str, summary: str, reason: str, current_memory_content: str, tools: list, mode: str = "compact") -> tuple[str, list, any]:
+    def get_memory_decision(self, conversation_text: str, summary: str, reason: str, current_memory_content: str, tools: list, mode: str = "compact") -> tuple[str, list, Any]:
         messages = self.get_memory_decision_messages(
             conversation_text,
             summary,
