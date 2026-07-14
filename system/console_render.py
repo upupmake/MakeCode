@@ -357,7 +357,11 @@ def format_runtime_info(tokens: int | None = None, threshold: int = 80000) -> st
 
     mode_text = "📋 Plan" if is_plan_mode() else "🎬 Act"
     current_model = get_current_model_config()
-    model_text = current_model.get_display_text() if current_model else "未选择"
+    model_text = (
+        f"{current_model.get_display_text()} · Effort: {current_model.reasoning_effort}"
+        if current_model
+        else "未选择"
+    )
     token_text = "N/A" if tokens is None else f"{tokens}/{threshold} ({(tokens / threshold) * 100:.1f}%)"
     hitl_text = "ON" if get_hitl_status() else "OFF"
     return f"{mode_text} | 🤖 Model: {model_text} | 📈 Tokens: {token_text} | 🛡️ HITL: {hitl_text}"
