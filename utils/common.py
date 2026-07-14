@@ -54,7 +54,7 @@ def _is_excluded_dir_path(rel_path: Path, is_dir: bool, exclude_dirs: set[str]) 
     return any(part.startswith(".") or part in exclude_dirs for part in dir_parts)
 
 
-def truncate_output(text: str, max_chars: int = 10000) -> str:
+def truncate_output(text: str, max_chars: int = 12000) -> str:
     if len(text) <= max_chars:
         return text
 
