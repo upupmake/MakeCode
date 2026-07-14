@@ -71,7 +71,19 @@ def workspace_team_runs_dir() -> Path:
     return workspace_team_dir() / "runs"
 
 
+def install_skills_dir() -> Path:
+    path = _INSTALL_DIR / "skills"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def workspace_skills_dir() -> Path:
+    path = workspace_makecode_dir() / "skills"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def workspace_legacy_skills_dir() -> Path:
     return _WORKDIR / "skills"
 
 
