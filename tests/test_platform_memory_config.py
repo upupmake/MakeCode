@@ -1,13 +1,13 @@
 import json
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from rich.text import Text
 
-from system.models import ModelConfig, ModelManager
+from system.models import ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
-from system.tui_modals import ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal
+from system.tui_modals import ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal, ModelManagerModal
 from utils import llm_client as llm_client_module, memory
-from utils.llm_client import DynamicLLMClientProxy, create_memory_recall_llm_client
+from utils.llm_client import ChatAPIClient, AsyncChatAPIClient, DynamicLLMClientProxy, create_memory_recall_llm_client
 
 
 def test_render_current_workdir_preserves_windows_drive_root():
@@ -328,12 +328,16 @@ class ChoiceModalHost(App):
         super().__init__()
         self._modal = modal
         self._on_dismiss = on_dismiss
+        self.status_refreshes = 0
 
     def compose(self) -> ComposeResult:
         yield Label("host")
 
     def on_mount(self) -> None:
         self.push_screen(self._modal, self._on_dismiss)
+
+    def refresh_status(self) -> None:
+        self.status_refreshes += 1
 
 
 @pytest.mark.anyio
@@ -440,3 +444,142 @@ async def test_choice_modal_q_cancels_when_not_in_input():
         await pilot.press("q")
         await pilot.pause()
     assert result == "<cancelled>"
+
+
+def test_model_reasoning_effort_defaults_only_when_missing_or_invalid(tmp_path):
+    config_file = tmp_path / "model_config.json"
+    config_file.write_text(json.dumps({
+        "models": [
+            {"base_url": "https://example.com", "api_key": "key", "model_id": "missing"},
+            {"base_url": "https://example.com", "api_key": "key", "model_id": "invalid", "reasoning_effort": "ultra"},
+            {"base_url": "https://example.com", "api_key": "key", "model_id": "saved", "reasoning_effort": "high"},
+        ]
+    }), encoding="utf-8")
+
+    manager = ModelManager(tmp_path)
+    efforts = {model.model_id: model.reasoning_effort for model in manager.models}
+
+    assert efforts == {"invalid": "medium", "missing": "medium", "saved": "high"}
+
+
+@pytest.mark.parametrize("reasoning_effort", REASONING_EFFORTS)
+def test_model_manager_persists_each_reasoning_effort(tmp_path, reasoning_effort):
+    manager = ModelManager(tmp_path)
+    model = manager.add_model("https://example.com", "key", ["main"])[0]
+
+    assert manager.select_model(model.key, reasoning_effort)
+    reloaded = ModelManager(tmp_path)
+
+    assert reloaded.get_current_model().reasoning_effort == reasoning_effort
+    saved = json.loads((tmp_path / "model_config.json").read_text(encoding="utf-8"))
+    assert saved["models"][0]["reasoning_effort"] == reasoning_effort
+
+
+def test_model_manager_updates_effort_without_selecting_another_model(tmp_path):
+    manager = ModelManager(tmp_path)
+    models = manager.add_model("https://example.com", "key", ["current", "other"])
+    current_key = manager.get_current_model().key
+    other_key = next(model.key for model in models if model.key != current_key)
+
+    assert manager.set_reasoning_effort(other_key, "max")
+    reloaded = ModelManager(tmp_path)
+
+    assert reloaded.get_current_model().key == current_key
+    assert next(model for model in reloaded.models if model.key == other_key).reasoning_effort == "max"
+
+
+def test_running_model_effort_is_process_local_until_explicitly_changed(tmp_path):
+    setup_manager = ModelManager(tmp_path)
+    model_key = setup_manager.add_model("https://example.com", "key", ["main"])[0].key
+    first_process = ModelManager(tmp_path)
+    second_process = ModelManager(tmp_path)
+
+    assert second_process.set_reasoning_effort(model_key, "high")
+    assert second_process.get_current_model().reasoning_effort == "high"
+    assert first_process.get_current_model().reasoning_effort == "medium"
+
+    assert first_process._reload_from_disk()
+    assert next(model for model in first_process.models if model.key == model_key).reasoning_effort == "high"
+    assert first_process.get_current_model().reasoning_effort == "medium"
+
+
+def test_model_config_save_is_atomic(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"])
+
+    saved = json.loads((tmp_path / "model_config.json").read_text(encoding="utf-8"))
+
+    assert saved["models"][0]["model_id"] == "main"
+    assert list(tmp_path.glob(".model_config.json.*.tmp")) == []
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_shows_efforts_and_changes_current_model_with_arrow_keys(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"])
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        title = str(modal.query_one("#choice-title", Label).render())
+        assert "low / medium / high / xhigh / max" in title
+
+        choice_list = modal.query_one("#choice-list")
+        choice_list.index = 1
+        await pilot.press("right")
+        await pilot.pause()
+
+        row = choice_list.children[1].query_one(Label)
+        assert "effort: high" in str(row.render())
+        assert app.status_refreshes == 1
+
+    reloaded = ModelManager(tmp_path)
+    assert reloaded.get_current_model().reasoning_effort == "high"
+
+
+def test_chat_client_uses_configured_reasoning_effort():
+    raw_client = Mock()
+    raw_client.chat.completions.create.return_value = object()
+    client = ChatAPIClient(raw_client, "test-model", "xhigh")
+
+    client.generate([{"role": "user", "content": "hello"}])
+
+    assert raw_client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "xhigh"
+
+
+@pytest.mark.anyio
+async def test_async_chat_client_uses_configured_reasoning_effort():
+    raw_client = Mock()
+    raw_client.chat.completions.create = AsyncMock(return_value=object())
+    client = AsyncChatAPIClient(raw_client, "test-model", "max")
+
+    await client.generate([{"role": "user", "content": "hello"}])
+
+    assert raw_client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "max"
+
+
+def test_llm_client_cache_changes_when_reasoning_effort_changes():
+    medium_model = ModelConfig("https://example.com", "key", "same", reasoning_effort="medium")
+    high_model = ModelConfig("https://example.com", "key", "same", reasoning_effort="high")
+    created_clients = [Mock(), Mock()]
+
+    llm_client_module._cached_llm_client = None
+    llm_client_module._cached_model_key = None
+    with patch("utils.llm_client.get_current_model_config", side_effect=[medium_model, high_model]), \
+            patch("utils.llm_client._create_chat_client", side_effect=created_clients) as create_client:
+        assert llm_client_module._create_llm_client() is created_clients[0]
+        assert llm_client_module._create_llm_client() is created_clients[1]
+
+    assert create_client.call_count == 2
+
+
+def test_runtime_info_displays_current_reasoning_effort():
+    model = ModelConfig("https://example.com", "key", "main", reasoning_effort="high")
+
+    with patch("system.models.get_current_model_config", return_value=model), \
+            patch("utils.hitl.get_hitl_status", return_value=True), \
+            patch("utils.plan_mode.is_plan_mode", return_value=False):
+        runtime_info = console_render.format_runtime_info()
+
+    assert "Model: main (example.com) · Effort: high" in runtime_info
