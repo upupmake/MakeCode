@@ -72,7 +72,7 @@ def workspace_team_runs_dir() -> Path:
 
 
 def install_skills_dir() -> Path:
-    path = _INSTALL_DIR / "skills"
+    path = _INSTALL_DIR / ".makecode" / "skills"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
