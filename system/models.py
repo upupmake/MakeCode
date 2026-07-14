@@ -2,11 +2,21 @@
 模型管理模块 - 负责管理 LLM 模型配置
 """
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+
+
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_REASONING_EFFORT = "medium"
+
+
+def normalize_reasoning_effort(value: object) -> str:
+    return value if isinstance(value, str) and value in REASONING_EFFORTS else DEFAULT_REASONING_EFFORT
 
 
 @dataclass
@@ -17,10 +27,15 @@ class ModelConfig:
     model_id: str
     is_favorite: bool = False
     max_context: int = 128  # 单位: k (千tokens)
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT
 
     @property
     def key(self) -> tuple[str, str, str]:
         return (self.base_url, self.api_key, self.model_id)
+
+    @property
+    def runtime_key(self) -> tuple[str, str, str, str]:
+        return (*self.key, self.reasoning_effort)
 
     def get_display_name(self) -> str:
         """获取域名前缀用于显示"""
@@ -68,6 +83,7 @@ class ModelConfig:
             model_id=data.get("model_id", ""),
             is_favorite=data.get("is_favorite", False),
             max_context=data.get("max_context", 128),
+            reasoning_effort=normalize_reasoning_effort(data.get("reasoning_effort")),
         )
 
 
@@ -208,8 +224,24 @@ class ModelManager:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self._sort_models()
         payload = self._build_save_payload()
-        with open(self.config_file, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=4)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self.config_dir,
+                prefix=f".{self.config_file.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+                json.dump(payload, temp_file, ensure_ascii=False, indent=4)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, self.config_file)
+        finally:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink()
         self._raw_config = payload.copy()
         self.load_error = None
         return True
@@ -246,13 +278,30 @@ class ModelManager:
         return self._save_config()
 
     def set_current_model_by_index(self, index: int) -> bool:
-        if not self._ensure_config_loaded_for_save():
-            return False
         if not (0 <= index < len(self.models)):
             return False
+        return self.select_model(self.models[index].key, self.models[index].reasoning_effort)
 
-        self._set_current_model(self.models[index])
-        self.last_selected_key = self.current_model_key
+    def select_model(self, key: tuple[str, str, str], reasoning_effort: str) -> bool:
+        if not self._reload_from_disk():
+            return False
+        model = self._get_model_by_key(key)
+        if model is None or reasoning_effort not in REASONING_EFFORTS:
+            return False
+        model.reasoning_effort = reasoning_effort
+        self._set_current_model(model)
+        self.last_selected_key = model.key
+        return self._save_config()
+
+    def set_reasoning_effort(self, key: tuple[str, str, str], reasoning_effort: str) -> bool:
+        if not self._reload_from_disk():
+            return False
+        model = self._get_model_by_key(key)
+        if model is None or reasoning_effort not in REASONING_EFFORTS:
+            return False
+        model.reasoning_effort = reasoning_effort
+        if self.current_model_key == key:
+            self._set_current_model(model)
         return self._save_config()
 
     def add_model(
