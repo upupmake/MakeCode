@@ -3,14 +3,18 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, Union, Generator
 
-from openai import OpenAI, AsyncOpenAI
+from openai import OpenAI, AsyncOpenAI, Timeout
 
-# Monkey-patch OpenAI SDK 重试策略：重试3次，等待 10s → 20s → 30s
+# Monkey-patch OpenAI SDK 重试策略：重试2次，等待 10s → 20s
 import openai._constants as _openai_consts
 _openai_consts.INITIAL_RETRY_DELAY = 10
 _openai_consts.MAX_RETRY_DELAY = 30
 
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
+
+
+_LLM_TIMEOUT = Timeout(120, connect=10)
+_LLM_MAX_RETRIES = 2
 
 
 def _extract_tool_info(raw_tool):
@@ -546,10 +550,22 @@ def _create_chat_client(model_config):
     client = OpenAI(
         base_url=model_config.base_url,
         api_key=model_config.api_key,
-        max_retries=3,
+        timeout=_LLM_TIMEOUT,
+        max_retries=_LLM_MAX_RETRIES,
         default_headers={"User-Agent": "MakeCode Agent"},
     )
     return ChatAPIClient(client, model_config.model_id, model_config.reasoning_effort)
+
+
+def _create_async_chat_client(model_config):
+    client = AsyncOpenAI(
+        base_url=model_config.base_url,
+        api_key=model_config.api_key,
+        timeout=_LLM_TIMEOUT,
+        max_retries=_LLM_MAX_RETRIES,
+        default_headers={"User-Agent": "MakeCode Agent"},
+    )
+    return AsyncChatAPIClient(client, model_config.model_id, model_config.reasoning_effort)
 
 
 def _create_llm_client():
