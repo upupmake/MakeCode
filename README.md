@@ -755,6 +755,7 @@ python main.py
 | `/pwd`               | 在 Content 区展示当前工作目录                                            |
 | `/cd <path>`         | 切换当前工作目录并开启全新会话，支持绝对/相对/带引号路径                       |
 | `/layout`            | 打开面板布局面板，调整 Content/Tools/Task/Background/Sub-Agent 面板比例      |
+| `/flush`             | 完整刷新 TUI 屏幕，不改变任何面板中已有的内容                                |
 | `/memory-list`       | 列出当前 active 长期记忆                                                |
 | `/memory-panel`      | 打开长期记忆面板（按 `updated_at` 升序展示）                            |
 | `/memory-delete`     | 按 ID 删除一条或多条长期记忆                                            |
