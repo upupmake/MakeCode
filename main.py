@@ -55,7 +55,7 @@ from utils.common import (
     file_create,
 )
 from utils.file_access import AgentFileAccess
-from utils.llm_client import llm_client
+from utils.llm_client import close_llm_client, create_current_llm_client, llm_client
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
 from utils.memory import (
@@ -182,12 +182,16 @@ def _parse_arguments(arguments: Any) -> dict:
 
 def generate_title(user_query: str) -> str:
     """Generate a short title for the conversation based on the first user query."""
+    title_client = None
     try:
+        title_client = create_current_llm_client()
+        if title_client is None:
+            return None
         messages = [
             {"role": "system", "content": get_title_generation_system_prompt()},
             {"role": "user", "content": user_query},
         ]
-        response = llm_client.generate(messages)
+        response = title_client.generate(messages)
         # Parse response based on client type
         if hasattr(response, 'choices'):  # Chat API
             return response.choices[0].message.content.strip()
@@ -199,6 +203,9 @@ def generate_title(user_query: str) -> str:
                     ).strip()
     except Exception as exc:
         log_error_traceback("Failed to generate title", exc)
+    finally:
+        if title_client is not None:
+            close_llm_client(title_client)
     return None
 
 
@@ -470,6 +477,7 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
     if command_result.action == CommandAction.RUN_AGENT:
         user_query = command_result.payload
         _title_thread = None
+        should_generate_title = False
         try:
             set_agent_loop_active(True)
             recall_result = recall_long_term_memories(user_query, source="用户请求预召回", agent_id=ORCHESTRATOR_AGENT_ID)
@@ -478,7 +486,11 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
 
             if CURRENT_CHECKPOINT is None and any(msg['role'] == 'user' for msg in history):
                 CURRENT_CHECKPOINT = save_checkpoint(history)
+                should_generate_title = True
 
+            agent_loop(history)
+
+            if should_generate_title:
                 def _title_worker():
                     global _pending_title
                     post_tui(TuiRegion.BACKGROUND, active=True)
@@ -498,8 +510,6 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
 
                 _title_thread = threading.Thread(target=_title_worker, daemon=True)
                 _title_thread.start()
-
-            agent_loop(history)
         except RuntimeError as exc:
             console.print(f"[bold yellow]⚠️ {escape(str(exc))}[/bold yellow]")
         finally:

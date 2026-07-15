@@ -19,7 +19,7 @@ from system.console_render import (
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion, post_tui
 from utils.common import sanitize_title
-from utils.llm_client import create_memory_recall_llm_client, llm_client
+from utils.llm_client import close_llm_client, create_memory_recall_llm_client, llm_client
 from settings import KEEP_RECENT_TOOL_CALL, MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_MAX_ITERATIONS, MEMORY_RECALL_WINDOW_SIZE
 from utils import paths
 
@@ -553,36 +553,41 @@ def select_relevant_memory_ids(query: str, agent_id: str = ORCHESTRATOR_AGENT_ID
         return []
 
     messages = _get_memory_recall_messages(query, candidates)
-    recall_client = create_memory_recall_llm_client() or llm_client
-    tools = recall_client.format_tools(MEMORY_RECALL_SELECTION_TOOLS)
-    for round_index in range(max_iterations):
-        post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 记忆召回选择中：{agent_id} 第 {round_index + 1}/{max_iterations} 轮[/#aaaaaa]")
-        response = recall_client.generate(messages, tools)  # todo 改为 generate_stream
-        text_content, tool_calls, raw_message = recall_client.parse_response(response)
-        if raw_message is not None:
-            recall_client.append_assistant_message(messages, raw_message)
+    recall_client = create_memory_recall_llm_client()
+    owns_recall_client = recall_client is not None
+    recall_client = recall_client or llm_client
+    try:
+        tools = recall_client.format_tools(MEMORY_RECALL_SELECTION_TOOLS)
+        for round_index in range(max_iterations):
+            post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 记忆召回选择中：{agent_id} 第 {round_index + 1}/{max_iterations} 轮[/#aaaaaa]")
+            response = recall_client.generate(messages, tools)  # todo 改为 generate_stream
+            text_content, tool_calls, raw_message = recall_client.parse_response(response)
+            if raw_message is not None:
+                recall_client.append_assistant_message(messages, raw_message)
 
-        for tool_call in tool_calls:
-            if tool_call.get("name") != "SelectRelevantMemories":
-                continue
-            arguments = _parse_tool_arguments(tool_call.get("arguments"))
-            selected_ids = normalize_memory_ids(arguments.get("memory_ids", []))
-            _append_memory_recall_window(agent_id, selected_ids)
-            return selected_ids
+            for tool_call in tool_calls:
+                if tool_call.get("name") != "SelectRelevantMemories":
+                    continue
+                arguments = _parse_tool_arguments(tool_call.get("arguments"))
+                selected_ids = normalize_memory_ids(arguments.get("memory_ids", []))
+                _append_memory_recall_window(agent_id, selected_ids)
+                return selected_ids
 
-        remaining_rounds = max_iterations - round_index - 1
-        if remaining_rounds > 0:
-            post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 召回选择器未调用 SelectRelevantMemories，继续要求工具选择。[/#aaaaaa]")
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"[auto generated] You did not call SelectRelevantMemories. "
-                    f"Remaining rounds: {remaining_rounds}. You must call SelectRelevantMemories exactly once. "
-                    "Use memory_ids=[] if no candidate memory is relevant."
-                ),
-            })
-
-    return []
+            remaining_rounds = max_iterations - round_index - 1
+            if remaining_rounds > 0:
+                post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 召回选择器未调用 SelectRelevantMemories，继续要求工具选择。[/#aaaaaa]")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"[auto generated] You did not call SelectRelevantMemories. "
+                        f"Remaining rounds: {remaining_rounds}. You must call SelectRelevantMemories exactly once. "
+                        "Use memory_ids=[] if no candidate memory is relevant."
+                    ),
+                })
+        return []
+    finally:
+        if owns_recall_client:
+            close_llm_client(recall_client)
 
 
 def recall_long_term_memories(query: str, source: str = "RecallLongTermMemory", agent_id: str = ORCHESTRATOR_AGENT_ID) -> dict:

@@ -35,6 +35,7 @@ from system.tui_modals import (
     ModelPanelModal,
     RecallModelPickerModal,
     StartupWorkdirModal,
+    TaskPanelModal,
 )
 
 
@@ -44,6 +45,9 @@ class TuiBridge:
         self._app_thread_id: int | None = None
         self._pending: Queue[TuiEvent] = Queue()
         self._app_lock = threading.Lock()
+        self._client_request_lock = threading.Lock()
+        self._client_request_count = 0
+        self._client_request_retries: dict[int, tuple[int, int]] = {}
         content_lock = threading.Lock()
         tools_lock = threading.Lock()
         task_lock = threading.Lock()
@@ -69,6 +73,7 @@ class TuiBridge:
                 pending.append(self._pending.get())
         for event in pending:
             self._dispatch_event_locked(app, event)
+        self._sync_client_request_state(app)
 
     def unbind(self, app: "MakeCodeTuiApp") -> None:
         with self._app_lock:
@@ -95,16 +100,30 @@ class TuiBridge:
                 return
         self._dispatch_event_locked(app, event)
 
-    def choose(self, title: str, options: list[str], *, allow_custom: bool = False) -> str:
+    def choose(
+        self,
+        title: str,
+        options: list[str],
+        *,
+        allow_custom: bool = False,
+        delete_handler: Callable[[str], None] | None = None,
+    ) -> str:
         with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
         future: Future[str] = Future()
         if self._is_app_thread():
-            app.open_choice_modal(title, options, allow_custom, future)
+            app.open_choice_modal(title, options, allow_custom, delete_handler, future)
         else:
-            app.call_from_thread(app.open_choice_modal, title, options, allow_custom, future)
+            app.call_from_thread(
+                app.open_choice_modal,
+                title,
+                options,
+                allow_custom,
+                delete_handler,
+                future,
+            )
         return future.result()
 
     def choose_delegate_tasks(self, tasks: list[dict[str, str]]) -> str:
@@ -153,6 +172,18 @@ class TuiBridge:
             app.open_info_panel_modal(title, content, future)
         else:
             app.call_from_thread(app.open_info_panel_modal, title, content, future)
+        return future.result()
+
+    def manage_tasks(self, task_manager: Any) -> str:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_task_panel_modal(task_manager, future)
+        else:
+            app.call_from_thread(app.open_task_panel_modal, task_manager, future)
         return future.result()
 
     def show_copy_content(self, messages: list[dict[str, str]]) -> str:
@@ -249,6 +280,53 @@ class TuiBridge:
             app.set_agent_loop_active(active)
         else:
             app.call_from_thread(app.set_agent_loop_active, active)
+
+    def _client_request_state_locked(self) -> tuple[bool, int, int]:
+        request_active = self._client_request_count > 0
+        retry_count, max_retries = max(
+            self._client_request_retries.values(), default=(0, 0)
+        )
+        return request_active, retry_count, max_retries
+
+    def _sync_client_request_state(self, app: "MakeCodeTuiApp") -> None:
+        with self._client_request_lock:
+            request_active, retry_count, max_retries = self._client_request_state_locked()
+        app.set_client_request_active(request_active, retry_count, max_retries)
+
+    def _dispatch_client_request_state(self) -> None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            self._sync_client_request_state(app)
+        else:
+            app.call_from_thread(self._sync_client_request_state, app)
+
+    def set_client_request_active(self, active: bool, request_id: int | None = None) -> None:
+        with self._client_request_lock:
+            previous_state = self._client_request_state_locked()
+            if active:
+                self._client_request_count += 1
+                if request_id is not None:
+                    self._client_request_retries[request_id] = (0, 0)
+            else:
+                self._client_request_count = max(0, self._client_request_count - 1)
+                if request_id is not None:
+                    self._client_request_retries.pop(request_id, None)
+            request_state = self._client_request_state_locked()
+        if request_state != previous_state:
+            self._dispatch_client_request_state()
+
+    def set_client_request_retry(self, request_id: int, retry_count: int, max_retries: int) -> None:
+        with self._client_request_lock:
+            if request_id not in self._client_request_retries:
+                return
+            previous_state = self._client_request_state_locked()
+            self._client_request_retries[request_id] = (retry_count, max_retries)
+            request_state = self._client_request_state_locked()
+        if request_state != previous_state:
+            self._dispatch_client_request_state()
 
     def refresh_status(self) -> None:
         with self._app_lock:
@@ -594,6 +672,9 @@ class MakeCodeTuiApp(App[None]):
         self._startup_workdir_handler = startup_workdir_handler
         self._mode_label = "ACT"
         self._agent_loop_active = False
+        self._client_request_active = False
+        self._client_retry_count = 0
+        self._client_max_retries = 0
         self._slash_matches: list[tuple[str, str]] = []
         self._slash_match_index = 0
         self._slash_hint_visible = False
@@ -904,6 +985,7 @@ class MakeCodeTuiApp(App[None]):
         title: str,
         options: list[str],
         allow_custom: bool,
+        delete_handler: Callable[[str], None] | None,
         future: Future[str],
     ) -> None:
         def _done(value: str | None) -> None:
@@ -912,7 +994,9 @@ class MakeCodeTuiApp(App[None]):
                 future.set_result(value or "<cancelled>")
 
         self._modal_active = True
-        self.push_screen(ChoiceModal(title, options, allow_custom), _done)
+        self.push_screen(
+            ChoiceModal(title, options, allow_custom, delete_handler), _done
+        )
 
     def open_delegate_tasks_modal(
         self,
@@ -958,6 +1042,15 @@ class MakeCodeTuiApp(App[None]):
 
         self._modal_active = True
         self.push_screen(InfoPanelModal(title, content), _done)
+
+    def open_task_panel_modal(self, task_manager: Any, future: Future[str]) -> None:
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "<cancelled>")
+
+        self._modal_active = True
+        self.push_screen(TaskPanelModal(task_manager), _done)
 
     def open_copy_content_modal(self, messages: list[dict[str, str]], future: Future[str]) -> None:
         def _done(value: str | None) -> None:
@@ -1178,6 +1271,14 @@ class MakeCodeTuiApp(App[None]):
             self._scroll_bottom_panes_after_refresh()
         self._update_runtime_info()
 
+    def set_client_request_active(
+        self, active: bool, retry_count: int = 0, max_retries: int = 0
+    ) -> None:
+        self._client_request_active = active
+        self._client_retry_count = retry_count
+        self._client_max_retries = max_retries
+        self._update_runtime_info()
+
     def _update_input_visibility(self) -> None:
         bottom_grid = self.query_one("#bottom-grid", Vertical)
         input_box = self.query_one("#input-box", MakeCodeInput)
@@ -1290,8 +1391,15 @@ class MakeCodeTuiApp(App[None]):
         except Exception:
             return
         runtime_info = self.query_one("#runtime-info-bar", Static)
-        if self._agent_loop_active:
-            value = f"⚙️ Agent: RUNNING  | {value}"
+        if self._client_request_active:
+            if self._client_retry_count:
+                client_state = (
+                    "🌐 Client: REQUESTING · "
+                    f"RETRY {self._client_retry_count}/{self._client_max_retries}"
+                )
+            else:
+                client_state = "🌐 Client: REQUESTING"
+            value = f"{client_state}  | {value}"
         runtime_info.update(value)
 
     def _get_slash_matches(self, text: str) -> list[tuple[str, str]]:
@@ -1417,6 +1525,14 @@ def set_agent_loop_active(active: bool) -> None:
     TUI_BRIDGE.set_agent_loop_active(active)
 
 
+def set_client_request_active(active: bool, request_id: int | None = None) -> None:
+    TUI_BRIDGE.set_client_request_active(active, request_id=request_id)
+
+
+def set_client_request_retry(request_id: int, retry_count: int, max_retries: int) -> None:
+    TUI_BRIDGE.set_client_request_retry(request_id, retry_count, max_retries)
+
+
 def refresh_status() -> None:
     TUI_BRIDGE.refresh_status()
 
@@ -1482,6 +1598,10 @@ def show_info_panel_tui(title: str, content: RenderableType) -> str:
     return TUI_BRIDGE.show_info_panel(title, content)
 
 
+def manage_tasks_tui(task_manager: Any) -> str:
+    return TUI_BRIDGE.manage_tasks(task_manager)
+
+
 def show_copy_content_tui(messages: list[dict[str, str]]) -> str:
     return TUI_BRIDGE.show_copy_content(messages)
 
@@ -1490,5 +1610,16 @@ def choose_add_model_tui() -> dict[str, str] | None:
     return TUI_BRIDGE.choose_add_model()
 
 
-def choose_tui(title: str, options: list[str], *, allow_custom: bool = False) -> str:
-    return TUI_BRIDGE.choose(title, options, allow_custom=allow_custom)
+def choose_tui(
+    title: str,
+    options: list[str],
+    *,
+    allow_custom: bool = False,
+    delete_handler: Callable[[str], None] | None = None,
+) -> str:
+    return TUI_BRIDGE.choose(
+        title,
+        options,
+        allow_custom=allow_custom,
+        delete_handler=delete_handler,
+    )

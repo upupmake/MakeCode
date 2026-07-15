@@ -134,6 +134,7 @@ TaskManager 提供：
 - 活跃任务执行 DAG 校验，批量依赖更新产生环时回滚整个批次。
 - 可执行任务定义为：状态为 `pending` 且所有依赖均已完成。
 - 每次运行的任务计划会写入工作区 `.makecode/tasks/`。
+- `/tasks` 保留完整任务表格视图，并支持选中任务后按 `d` 发起删除、再按 `y`/`n` 确认或取消；删除任务时会同步移除其他任务对该任务的依赖引用。
 - `DeleteAllTasks` 提供了一键清空重置任务拓扑的能力，方便在复杂场景下推翻重来。
 
 ### 2.7 并发子智能体（`utils/teams.py`）
@@ -238,6 +239,7 @@ Team 模块支持：
   输入、AI 文本、Tool 调用意图及 Tool 执行结果）。
 - **配置防污染**：在加载历史 Checkpoint 时，系统会自动同步最新的 System Prompt 和全局配置（如当前日期、MCP/Skills
   开关状态），防止被旧数据覆盖。
+- Checkpoint 选择列表支持选中后按 `d` 发起删除、再按 `y`/`n` 确认或取消；若删除的是当前绑定 Checkpoint，会同步清空绑定，避免后续保存重新创建已删除文件。
 - 对于子智能体历史，仅当任务看板成功加载后才提示加载。若任务看板中所有任务已全部完成，则自动跳过询问。
 
 ### 2.12 会话标题自动生成
@@ -365,7 +367,7 @@ MakeCode 采用 **Textual** 构建的多面板 TUI，将智能体输出路由到
 - **Task**：任务看板专用面板，实时展示 TaskManager 状态、Runnable Frontier 与执行进度。
 - **Background**：后台活动区，用于展示长期记忆召回/写入、后台检查等不需打断主对话的事件。
 - **Sub-Agent**：子智能体控制台输出，默认关闭，可通过 `/sub-agent-console` 切换。
-- **Status / RuntimeInfo**：顶部状态栏，展示当前模式（Plan/Act）、模型、Token 使用量等运行时指标。
+- **Status / RuntimeInfo**：顶部状态栏，展示当前模式（Plan/Act）、模型、Token 使用量等运行时指标；任一 LLM 请求进行中时显示 `Client: REQUESTING`，实际发生 SDK 重试时追加 `RETRY n/2`，全部请求结束后自动清除。运行栏不再显示 `Agent: RUNNING`，智能体活动状态仍用于输入区显隐等交互控制。
 
 面板布局比例可通过 `/layout` 命令定制，配置保存到安装目录下的 `.makecode/layout_config.json`。为延续旧配置设计上保留 `reasoning` 键名的兼容读取，迁移后统一使用 `task` 键。
 
@@ -458,7 +460,7 @@ MakeCode 内置了完整的自动更新系统，支持版本检查、完整目�
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "5.0.7"
+CURRENT_VERSION = "5.1.0"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -518,7 +520,9 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 - **统一客户端创建**：主智能体使用同步客户端，子智能体通过 `_create_async_chat_client()` 复用相同的端点、认证、超时与重试配置。
 - **超时配置**：请求总超时为 120 秒，连接超时为 10 秒，避免连接或响应无限挂起。
-- **重试策略**：最多重试 2 次，重试等待从 10 秒递增到 20 秒。
+- **重试策略**：最多重试 2 次，重试等待从 10 秒递增到 20 秒；实际发生重试时，运行栏显示 `Client: REQUESTING · RETRY 1/2` 或 `RETRY 2/2`。
+- **请求状态生命周期**：所有同步、异步和流式请求在实际网络调用前增加线程安全计数，运行栏显示 `Client: REQUESTING`；成功、异常、超时或流式取消均在 `finally` 中清理，最后一个并发请求结束后取消标识。并发请求的重试状态按请求独立追踪。
+- **请求隔离与资源释放**：长期记忆预召回和标题生成使用独立临时 client 并在完成后关闭；首次标题生成延后到主对话请求结束后启动，避免与主流式请求共享或竞争 client 连接。
 - **推理强度下发与缓存**：客户端从 `ModelConfig.reasoning_effort` 读取推理强度；主客户端缓存键包含该字段，调整后会重建客户端并应用新值。
 
 ## 3. 项目结构与架构
@@ -776,12 +780,12 @@ python main.py
 | `/mcp-add`           | 使用 `<name> [options] -- <cmd> [args...]` 语法添加 MCP 服务；远程服务使用 `--url`；默认 disabled |
 | `/mcp-delete`        | 删除指定 MCP 服务配置，并安全停用运行中的实例（需二次确认）                  |
 | `/mcp-help`          | 显示 MCP 相关命令的使用介绍                                                |
-| `/load`              | 列出历史 checkpoint 并选择加载                                          |
+| `/load`              | 列出历史 checkpoint，可选择加载或经二次确认删除                                |
 | `/skills-switch`     | 切换 skills 目录摘要注入状态 (开启/关闭)                                     |
 | `/skills-list`       | 列出当前工作区可用的 skills                                              |
 | `/compact [prompt]`  | 压缩当前对话上下文，prompt 可选                                            |
 | `/tools`             | 列出当前可用工具详细信息                                                   |
-| `/tasks`              | 查看任务看板和当前执行进度                                                  |
+| `/tasks`              | 查看完整任务表格，并支持经二次确认删除选中任务                                  |
 | `/plan`               | 进入/退出 Plan Mode — 规划阶段只允许只读和任务规划工具                             |
 | `/status`            | 汇报系统状态、已完成任务和下一步计划                                             |
 | `/help`              | 显示使用帮助和自我介绍                                                    |

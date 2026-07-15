@@ -68,6 +68,56 @@ def test_flush_screen_clears_terminal_and_requests_full_repaint():
     app.refresh.assert_called_once_with(repaint=True, layout=True)
 
 
+def test_load_can_delete_current_checkpoint_and_clear_binding(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
+    checkpoint.write_text("[]", encoding="utf-8")
+    handler = make_handler()
+    handler.console = Mock()
+    handler.list_checkpoints = lambda: [checkpoint]
+
+    def choose_checkpoint(checkpoints, title=None, delete_handler=None):
+        assert checkpoints == [checkpoint]
+        assert delete_handler is not None
+        delete_handler(checkpoint)
+        return "abort"
+
+    monkeypatch.setattr("system.commands.interactive_choose_checkpoint", choose_checkpoint)
+
+    history = [{"role": "system", "content": "system"}]
+    loaded_history, current_checkpoint = handler.handle_load(
+        history,
+        checkpoint,
+        render_banner_fn=lambda: None,
+        render_hint_fn=lambda: None,
+        render_history_fn=lambda messages: None,
+    )
+
+    assert loaded_history is history
+    assert current_checkpoint is None
+    assert not checkpoint.exists()
+
+
+def test_tasks_command_opens_task_management_panel(monkeypatch):
+    manager = Mock()
+    manager.get_task_table.return_value = {
+        "rows": [
+            {
+                "id": "7",
+                "subject": "Delete me",
+                "status": "pending",
+                "is_runnable": True,
+            }
+        ]
+    }
+    manage_tasks = Mock(return_value="closed")
+
+    monkeypatch.setattr("utils.tasks.TASK_MANAGER", manager)
+    monkeypatch.setattr("system.commands.manage_tasks_tui", manage_tasks)
+
+    assert make_handler().handle_task_table() is True
+    manage_tasks.assert_called_once_with(manager)
+
+
 @pytest.mark.anyio
 async def test_submitting_flush_preserves_existing_pane_content():
     submitted = []

@@ -1,6 +1,10 @@
 import copy
+import inspect
+import itertools
 import json
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Union, Generator
 
 from openai import OpenAI, AsyncOpenAI, Timeout
@@ -15,6 +19,94 @@ from prompts import get_memory_decision_system_prompt, get_summary_system_prompt
 
 _LLM_TIMEOUT = Timeout(120, connect=10)
 _LLM_MAX_RETRIES = 2
+_CLIENT_REQUEST_IDS = itertools.count(1)
+_CURRENT_CLIENT_REQUEST_ID: ContextVar[int | None] = ContextVar(
+    "current_client_request_id", default=None
+)
+
+
+def _set_client_request_retry(retry_count: int, max_retries: int) -> None:
+    request_id = _CURRENT_CLIENT_REQUEST_ID.get()
+    if request_id is None:
+        return
+    try:
+        from system.tui_app import set_client_request_retry
+
+        set_client_request_retry(request_id, retry_count, max_retries)
+    except Exception:
+        pass
+
+
+class _TrackedOpenAI(OpenAI):
+    def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
+        _set_client_request_retry(retries_taken + 1, max_retries)
+        super()._sleep_for_retry(
+            retries_taken=retries_taken,
+            max_retries=max_retries,
+            options=options,
+            response=response,
+        )
+
+
+class _TrackedAsyncOpenAI(AsyncOpenAI):
+    async def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
+        _set_client_request_retry(retries_taken + 1, max_retries)
+        await super()._sleep_for_retry(
+            retries_taken=retries_taken,
+            max_retries=max_retries,
+            options=options,
+            response=response,
+        )
+
+
+@contextmanager
+def _client_request_active():
+    request_id = next(_CLIENT_REQUEST_IDS)
+    request_token = _CURRENT_CLIENT_REQUEST_ID.set(request_id)
+    active_started = False
+    try:
+        from system.tui_app import set_client_request_active
+
+        set_client_request_active(True, request_id=request_id)
+        active_started = True
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        if active_started:
+            try:
+                from system.tui_app import set_client_request_active
+
+                set_client_request_active(False, request_id=request_id)
+            except Exception:
+                pass
+        _CURRENT_CLIENT_REQUEST_ID.reset(request_token)
+
+
+def _tracked_sync_stream(create_stream):
+    with _client_request_active():
+        stream = create_stream()
+        try:
+            yield from stream
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
+
+
+async def _tracked_async_stream(create_stream):
+    with _client_request_active():
+        stream = await create_stream()
+        try:
+            async for chunk in stream:
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
 
 
 def _extract_tool_info(raw_tool):
@@ -167,14 +259,17 @@ class ChatAPIClient(BaseLLMClient):
         kwargs = {"model": self.model, "messages": messages, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = tools
-        return self.client.chat.completions.create(**kwargs)
+        with _client_request_active():
+            return self.client.chat.completions.create(**kwargs)
 
     def generate_stream(self, messages: list, tools: list = None):
         kwargs = {"model": self.model, "messages": messages, "stream": True, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = tools
 
-        stream = self.client.chat.completions.create(**kwargs)
+        stream = _tracked_sync_stream(
+            lambda: self.client.chat.completions.create(**kwargs)
+        )
 
         # 累积所有 delta，最终拼合为完整的 raw_message
         # 原理：stream 返回的每个 chunk.choices[0].delta 是 message 的一个片段，
@@ -254,39 +349,41 @@ class ChatAPIClient(BaseLLMClient):
 
         from system.stream_cancel import stream_cancel_event
 
-        for chunk in stream:
-            # ESC 取消检查：用户按下 ESC 后立即中断流式读取
-            if stream_cancel_event.is_set():
-                break
+        done_event = None
+        try:
+            for chunk in stream:
+                # ESC 取消检查：用户按下 ESC 后立即中断流式读取
+                if stream_cancel_event.is_set():
+                    break
 
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
 
-            # 保存 delta 用于最终拼合
-            response_deltas.append(delta)
+                # 保存 delta，用于最终拼合
+                response_deltas.append(delta)
 
-            # 实时 yield 文本片段（用于流式渲染）
-            if delta.content:
-                yield {"type": "text", "content": delta.content}
+                # 实时 yield 文本片段（用于流式渲染）
+                if delta.content:
+                    yield {"type": "text", "content": delta.content}
 
-            # 实时 yield reasoning 片段（用于思考过程流式渲染）
-            reasoning_val = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            if reasoning_val:
-                yield {"type": "reasoning", "content": reasoning_val}
+                # 实时 yield reasoning 片段（用于思考过程流式渲染）
+                reasoning_val = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if reasoning_val:
+                    yield {"type": "reasoning", "content": reasoning_val}
 
-            if getattr(delta, "tool_calls", None):
-                yield {"type": "tool_calls", "content": None}
+                if getattr(delta, "tool_calls", None):
+                    yield {"type": "tool_calls", "content": None}
 
-            # 流结束：统一解析所有累积的 delta，构建 done 事件
-            if choice.finish_reason in ("tool_calls", "stop"):
-                yield _build_done_event()
-                return
+                # 流结束：统一解析所有累积的 delta，构建 done 事件
+                if choice.finish_reason in ("tool_calls", "stop"):
+                    done_event = _build_done_event()
+                    break
+        finally:
+            stream.close()
 
-        # 安全兜底：流 EOF 但未收到 finish_reason（如 finish_reason='length'）
-        # 此时用已累积的数据构建 done 事件，避免 raw_message=None 崩溃
-        yield _build_done_event()
+        yield done_event or _build_done_event()
 
     def parse_response(self, response) -> tuple[str, list, Any]:
         message = response.choices[0].message
@@ -359,10 +456,8 @@ class ChatAPIClient(BaseLLMClient):
             {"role": "user", "content": conversation_text},
             {"role": "user", "content": get_summary_user_prompt(reason)},
         ]
-        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": self.reasoning_effort}
-        if tools:
-            kwargs["tools"] = self.format_tools(tools)
-        res = self.client.chat.completions.create(**kwargs)
+        formatted_tools = self.format_tools(tools) if tools else None
+        res = self.generate(messages, formatted_tools)
         text, tool_calls, raw_message = self.parse_response(res)
         if tools:
             return text, tool_calls, raw_message
@@ -406,12 +501,7 @@ class ChatAPIClient(BaseLLMClient):
             current_memory_content,
             mode=mode,
         )
-        res = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=self.format_tools(tools),
-            reasoning_effort=self.reasoning_effort,
-        )
+        res = self.generate(messages, self.format_tools(tools))
         return self.parse_response(res)
 
     def get_memory_decision_stream(self, conversation_text: str, summary: str, reason: str, current_memory_content: str, tools: list, mode: str = "compact"):
@@ -436,14 +526,17 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
         kwargs = {"model": self.model, "messages": messages, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = tools
-        return await self.client.chat.completions.create(**kwargs)
+        with _client_request_active():
+            return await self.client.chat.completions.create(**kwargs)
 
     async def generate_stream(self, messages: list, tools: list = None):
         kwargs = {"model": self.model, "messages": messages, "stream": True, "reasoning_effort": self.reasoning_effort}
         if tools:
             kwargs["tools"] = tools
 
-        stream = await self.client.chat.completions.create(**kwargs)
+        stream = _tracked_async_stream(
+            lambda: self.client.chat.completions.create(**kwargs)
+        )
         response_deltas = []
 
         def _build_done_event():
@@ -506,26 +599,30 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
 
             return {"type": "done", "content": (text, tool_calls, raw_message)}
 
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
+        done_event = None
+        try:
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
 
-            response_deltas.append(delta)
+                response_deltas.append(delta)
 
-            if delta.content:
-                yield {"type": "text", "content": delta.content}
+                if delta.content:
+                    yield {"type": "text", "content": delta.content}
 
-            reasoning_val = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            if reasoning_val:
-                yield {"type": "reasoning", "content": reasoning_val}
+                reasoning_val = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if reasoning_val:
+                    yield {"type": "reasoning", "content": reasoning_val}
 
-            if choice.finish_reason in ("tool_calls", "stop"):
-                yield _build_done_event()
-                return
+                if choice.finish_reason in ("tool_calls", "stop"):
+                    done_event = _build_done_event()
+                    break
+        finally:
+            await stream.aclose()
 
-        yield _build_done_event()
+        yield done_event or _build_done_event()
 
     async def get_summary(self, conversation_text: str, reason: str) -> str:
         messages = [
@@ -533,9 +630,7 @@ class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
             {"role": "user", "content": conversation_text},
             {"role": "user", "content": get_summary_user_prompt(reason)},
         ]
-        res = await self.client.chat.completions.create(
-            model=self.model, messages=messages, reasoning_effort=self.reasoning_effort
-        )
+        res = await self.generate(messages)
         return res.choices[0].message.content or ""
 
 
@@ -547,7 +642,7 @@ _cached_model_key = None
 
 
 def _create_chat_client(model_config):
-    client = OpenAI(
+    client = _TrackedOpenAI(
         base_url=model_config.base_url,
         api_key=model_config.api_key,
         timeout=_LLM_TIMEOUT,
@@ -558,7 +653,7 @@ def _create_chat_client(model_config):
 
 
 def _create_async_chat_client(model_config):
-    client = AsyncOpenAI(
+    client = _TrackedAsyncOpenAI(
         base_url=model_config.base_url,
         api_key=model_config.api_key,
         timeout=_LLM_TIMEOUT,
@@ -582,10 +677,25 @@ def _create_llm_client():
     return _cached_llm_client
 
 
+def close_llm_client(client) -> None:
+    raw_client = getattr(client, "client", None)
+    close = getattr(raw_client, "close", None)
+    if close is not None:
+        close()
+
+
+def create_current_llm_client():
+    current_model = get_current_model_config()
+    if current_model is None:
+        return None
+    return _create_chat_client(current_model)
+
+
 def create_memory_recall_llm_client():
     manager = get_model_manager()
     if manager is None:
         return None
+    manager._reload_from_disk()
     recall_model = manager.get_memory_recall_model()
     if recall_model is None:
         current_model = manager.get_current_model()

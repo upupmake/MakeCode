@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, Callable
 from pathlib import Path
 
 from rich.console import RenderableType
@@ -8,7 +8,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, TextArea
+from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, TextArea, DataTable
 
 from system.models import REASONING_EFFORTS
 from system.tui_types import (
@@ -21,7 +21,7 @@ from system.tui_types import (
 
 class ChoiceModal(ModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal {
         align: center middle;
     }
 
@@ -49,6 +49,34 @@ class ChoiceModal(ModalScreen[str]):
         border: round #f59e0b;
         background: $surface;
         padding: 1 2;
+    }
+
+    #task-dialog {
+        width: 88%;
+        height: auto;
+        max-height: 86%;
+        border: round #f59e0b;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #task-title {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #task-table {
+        height: auto;
+        max-height: 24;
+    }
+
+    #task-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #task-close {
+        width: 16;
     }
 
     #info-content {
@@ -324,17 +352,33 @@ class ChoiceModal(ModalScreen[str]):
     BINDINGS = [
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "confirm", "Confirm", priority=True),
+        Binding("d", "delete", "Delete", priority=True),
+        Binding("y", "confirm_delete", "Confirm Delete", priority=True),
+        Binding("n", "cancel_delete", "Cancel Delete", priority=True),
     ]
 
-    def __init__(self, title: str, options: list[str], allow_custom: bool = False) -> None:
+    def __init__(
+        self,
+        title: str,
+        options: list[str],
+        allow_custom: bool = False,
+        delete_handler: Callable[[str], None] | None = None,
+    ) -> None:
         super().__init__()
         self._title = title
         self._options = options
         self._allow_custom = allow_custom
+        self._delete_handler = delete_handler
+        self._pending_delete_index: int | None = None
+
+    def _title_text(self) -> str:
+        if self._delete_handler is None:
+            return self._title
+        return f"{self._title}\nd 删除选中项 · y 确认删除 · n 取消删除"
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label(self._title, id="choice-title")
+            yield Label(self._title_text(), id="choice-title")
             if self._options:
                 yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
             if self._allow_custom:
@@ -352,9 +396,23 @@ class ChoiceModal(ModalScreen[str]):
             self.query_one("#custom-input", Input).focus()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if self._pending_delete_index is not None:
+            return
         self.dismiss(self._options[event.list_view.index or 0])
 
     def _on_key(self, event: Key) -> None:
+        if self._delete_handler is not None and not isinstance(self.focused, Input):
+            key_actions = {
+                "d": self.action_delete,
+                "y": self.action_confirm_delete,
+                "n": self.action_cancel_delete,
+            }
+            action = key_actions.get(event.key)
+            if action is not None:
+                action()
+                event.stop()
+                event.prevent_default()
+                return
         if event.key == "enter":
             self.action_confirm()
             event.stop()
@@ -376,6 +434,8 @@ class ChoiceModal(ModalScreen[str]):
             return
 
     def action_confirm(self) -> None:
+        if self._pending_delete_index is not None:
+            return
         focused = self.focused
         if isinstance(focused, Input):
             value = focused.value.strip()
@@ -388,6 +448,58 @@ class ChoiceModal(ModalScreen[str]):
         elif self._allow_custom:
             value = self.query_one("#custom-input", Input).value.strip()
             self.dismiss(value if value else "<empty_input>")
+
+    def action_delete(self) -> None:
+        if self._delete_handler is None or not self._options:
+            return
+        choice_list = self.query_one("#choice-list", ListView)
+        index = choice_list.index if choice_list.index is not None else 0
+        self._pending_delete_index = index
+        self.query_one("#choice-title", Label).update(
+            "⚠️ 确认删除选中项？\n"
+            f"{self._options[index]}\n"
+            "该操作不可撤销。按 y 确认删除，按 n 取消。"
+        )
+
+    def action_confirm_delete(self) -> None:
+        if self._delete_handler is None or self._pending_delete_index is None:
+            return
+        index = self._pending_delete_index
+        option = self._options[index]
+        try:
+            self._delete_handler(option)
+        except Exception as exc:
+            self.query_one("#choice-title", Label).update(
+                f"❌ 删除失败：{exc}\n按 n 返回面板。"
+            )
+            return
+
+        self._options.pop(index)
+        self._pending_delete_index = None
+        if not self._options:
+            self.dismiss("<empty>")
+            return
+
+        choice_list = self.query_one("#choice-list", ListView)
+        choice_list.clear()
+
+        def _mount_rows() -> None:
+            choice_list.extend(ListItem(Label(option)) for option in self._options)
+            choice_list.index = min(index, len(self._options) - 1)
+            choice_list.focus()
+            self.query_one("#choice-title", Label).update(self._title_text())
+
+        self.call_after_refresh(_mount_rows)
+
+    def action_cancel_delete(self) -> None:
+        if self._pending_delete_index is None:
+            return
+        index = self._pending_delete_index
+        self._pending_delete_index = None
+        self.query_one("#choice-title", Label).update(self._title_text())
+        choice_list = self.query_one("#choice-list", ListView)
+        choice_list.index = index
+        choice_list.focus()
 
     def action_cancel(self) -> None:
         self.dismiss("<cancelled>")
@@ -529,6 +641,115 @@ class StartupWorkdirModal(ModalScreen[str]):
             marker = "❯" if index == self._selected_index else " "
             lines.append(f"  {marker} {text}")
         self.query_one("#startup-title", Label).update("\n".join(lines))
+
+
+class TaskPanelModal(ModalScreen[str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "close", "Close", priority=True),
+        Binding("d", "delete", "Delete", priority=True),
+        Binding("y", "confirm_delete", "Confirm Delete", priority=True),
+        Binding("n", "cancel_delete", "Cancel Delete", priority=True),
+    ]
+
+    def __init__(self, task_manager: Any) -> None:
+        super().__init__()
+        self._task_manager = task_manager
+        self._pending_delete_id: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="task-dialog"):
+            yield Label(self._title_text(), id="task-title")
+            yield DataTable(id="task-table", cursor_type="row")
+            with Horizontal(id="task-actions"):
+                yield Button("关闭", id="task-close", variant="primary")
+
+    def _title_text(self) -> str:
+        return "当前任务计划\nd 删除选中任务 · y 确认删除 · n 取消删除 · q 关闭"
+
+    def on_mount(self) -> None:
+        table = self.query_one("#task-table", DataTable)
+        table.add_columns("ID", "Subject", "Status", "Runnable")
+        self._reload_rows()
+        table.focus()
+
+    def _reload_rows(self) -> None:
+        table = self.query_one("#task-table", DataTable)
+        previous_row = table.cursor_row
+        table.clear(columns=False)
+        rows = self._task_manager.get_task_table().get("rows", [])
+        for row in rows:
+            table.add_row(
+                str(row["id"]),
+                row["subject"],
+                row["status"],
+                "✓" if row.get("is_runnable") else "",
+                key=str(row["id"]),
+            )
+        if rows:
+            table.move_cursor(row=min(previous_row, len(rows) - 1), column=0)
+
+    def _selected_task_id(self) -> str | None:
+        table = self.query_one("#task-table", DataTable)
+        if table.row_count == 0:
+            return None
+        return str(table.get_row_at(table.cursor_row)[0])
+
+    def _on_key(self, event: Key) -> None:
+        key_actions = {
+            "d": self.action_delete,
+            "y": self.action_confirm_delete,
+            "n": self.action_cancel_delete,
+            "q": self.action_close,
+        }
+        action = key_actions.get(event.key)
+        if action is None:
+            return
+        action()
+        event.stop()
+        event.prevent_default()
+
+    def action_delete(self) -> None:
+        task_id = self._selected_task_id()
+        if task_id is None:
+            return
+        task = self._task_manager.get_task(task_id)
+        self._pending_delete_id = task_id
+        self.query_one("#task-title", Label).update(
+            "⚠️ 确认删除任务？\n"
+            f"{task_id} · {task['subject']}\n"
+            "依赖该任务的其他任务将同步移除此依赖。按 y 确认删除，按 n 取消。"
+        )
+
+    def action_confirm_delete(self) -> None:
+        if self._pending_delete_id is None:
+            return
+        task_id = self._pending_delete_id
+        try:
+            self._task_manager.delete_task(task_id)
+        except Exception as exc:
+            self.query_one("#task-title", Label).update(
+                f"❌ 删除任务失败：{exc}\n按 n 返回面板。"
+            )
+            return
+        self._pending_delete_id = None
+        self.query_one("#task-title", Label).update(self._title_text())
+        self._reload_rows()
+
+    def action_cancel_delete(self) -> None:
+        if self._pending_delete_id is None:
+            return
+        self._pending_delete_id = None
+        self.query_one("#task-title", Label).update(self._title_text())
+        self.query_one("#task-table", DataTable).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "task-close":
+            self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss("closed")
 
 
 class InfoPanelModal(ModalScreen[str]):

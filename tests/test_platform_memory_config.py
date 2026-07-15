@@ -1,13 +1,16 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from rich.text import Text
 
 from system.models import ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
-from system.tui_modals import ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal, ModelManagerModal
+from system.commands import CommandAction, CommandResult
+from system.tui_modals import ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal, ModelManagerModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.llm_client import ChatAPIClient, AsyncChatAPIClient, DynamicLLMClientProxy, create_memory_recall_llm_client
+import main as main_module
 
 
 def test_render_current_workdir_preserves_windows_drive_root():
@@ -446,6 +449,120 @@ async def test_choice_modal_q_cancels_when_not_in_input():
     assert result == "<cancelled>"
 
 
+@pytest.mark.anyio
+async def test_choice_modal_deletes_only_after_confirmation():
+    deleted = []
+    modal = ChoiceModal(
+        "测试",
+        ["选项A", "选项B"],
+        delete_handler=deleted.append,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        assert deleted == []
+        assert "确认删除" in str(modal.query_one("#choice-title", Label).render())
+
+        await pilot.press("n")
+        await pilot.press("d")
+        await pilot.press("y")
+        await pilot.pause()
+
+        assert deleted == ["选项A"]
+        assert modal._options == ["选项B"]
+        assert "d 删除选中项" in str(modal.query_one("#choice-title", Label).render())
+
+
+@pytest.mark.anyio
+async def test_task_panel_deletes_selected_task_after_confirmation():
+    manager = Mock()
+    manager.get_task_table.return_value = {
+        "rows": [
+            {
+                "id": "7",
+                "subject": "Delete me",
+                "status": "pending",
+                "is_runnable": True,
+            }
+        ]
+    }
+    manager.get_task.return_value = {"id": "7", "subject": "Delete me"}
+    modal = TaskPanelModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        manager.delete_task.assert_not_called()
+        assert "确认删除任务" in str(modal.query_one("#task-title", Label).render())
+
+        await pilot.press("y")
+        await pilot.pause()
+
+    manager.delete_task.assert_called_once_with("7")
+
+
+def test_tracked_openai_reports_actual_retry_number():
+    client = llm_client_module._TrackedOpenAI(
+        base_url="https://example.com",
+        api_key="key",
+    )
+    try:
+        with patch("system.tui_app.set_client_request_active"), \
+                patch("system.tui_app.set_client_request_retry") as set_retry, \
+                patch.object(llm_client_module.OpenAI, "_sleep_for_retry"):
+            with llm_client_module._client_request_active():
+                client._sleep_for_retry(
+                    retries_taken=0,
+                    max_retries=2,
+                    options=Mock(),
+                    response=None,
+                )
+                client._sleep_for_retry(
+                    retries_taken=1,
+                    max_retries=2,
+                    options=Mock(),
+                    response=None,
+                )
+
+        assert [call.args[1:] for call in set_retry.call_args_list] == [(1, 2), (2, 2)]
+    finally:
+        client.close()
+
+
+@pytest.mark.anyio
+async def test_tracked_async_openai_reports_actual_retry_number():
+    client = llm_client_module._TrackedAsyncOpenAI(
+        base_url="https://example.com",
+        api_key="key",
+    )
+    try:
+        with patch("system.tui_app.set_client_request_active"), \
+                patch("system.tui_app.set_client_request_retry") as set_retry, \
+                patch.object(llm_client_module.AsyncOpenAI, "_sleep_for_retry", new=AsyncMock()):
+            with llm_client_module._client_request_active():
+                await client._sleep_for_retry(
+                    retries_taken=0,
+                    max_retries=2,
+                    options=Mock(),
+                    response=None,
+                )
+                await client._sleep_for_retry(
+                    retries_taken=1,
+                    max_retries=2,
+                    options=Mock(),
+                    response=None,
+                )
+
+        assert [call.args[1:] for call in set_retry.call_args_list] == [(1, 2), (2, 2)]
+    finally:
+        await client.close()
+
+
 def test_model_reasoning_effort_defaults_only_when_missing_or_invalid(tmp_path):
     config_file = tmp_path / "model_config.json"
     config_file.write_text(json.dumps({
@@ -543,9 +660,57 @@ def test_chat_client_uses_configured_reasoning_effort():
     raw_client.chat.completions.create.return_value = object()
     client = ChatAPIClient(raw_client, "test-model", "xhigh")
 
-    client.generate([{"role": "user", "content": "hello"}])
+    with patch("system.tui_app.set_client_request_active") as set_request_active:
+        client.generate([{"role": "user", "content": "hello"}])
 
     assert raw_client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "xhigh"
+    assert [call.args[0] for call in set_request_active.call_args_list] == [True, False]
+
+
+def test_chat_client_clears_request_state_after_error():
+    raw_client = Mock()
+    raw_client.chat.completions.create.side_effect = RuntimeError("request failed")
+    client = ChatAPIClient(raw_client, "test-model")
+
+    with patch("system.tui_app.set_client_request_active") as set_request_active, \
+            pytest.raises(RuntimeError, match="request failed"):
+        client.generate([{"role": "user", "content": "hello"}])
+
+    assert [call.args[0] for call in set_request_active.call_args_list] == [True, False]
+
+
+class _ClosableSyncStream:
+    def __init__(self):
+        self.closed = False
+
+    def __iter__(self):
+        delta = SimpleNamespace(
+            content="partial",
+            reasoning_content=None,
+            reasoning=None,
+            tool_calls=None,
+        )
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=delta, finish_reason=None)]
+        )
+
+    def close(self):
+        self.closed = True
+
+
+def test_chat_stream_clears_request_state_when_closed_early():
+    raw_stream = _ClosableSyncStream()
+    raw_client = Mock()
+    raw_client.chat.completions.create.return_value = raw_stream
+    client = ChatAPIClient(raw_client, "test-model")
+
+    with patch("system.tui_app.set_client_request_active") as set_request_active:
+        events = client.generate_stream([{"role": "user", "content": "hello"}])
+        next(events)
+        events.close()
+
+    assert raw_stream.closed is True
+    assert [call.args[0] for call in set_request_active.call_args_list] == [True, False]
 
 
 @pytest.mark.anyio
@@ -554,9 +719,80 @@ async def test_async_chat_client_uses_configured_reasoning_effort():
     raw_client.chat.completions.create = AsyncMock(return_value=object())
     client = AsyncChatAPIClient(raw_client, "test-model", "max")
 
-    await client.generate([{"role": "user", "content": "hello"}])
+    with patch("system.tui_app.set_client_request_active") as set_request_active:
+        await client.generate([{"role": "user", "content": "hello"}])
 
     assert raw_client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "max"
+    assert [call.args[0] for call in set_request_active.call_args_list] == [True, False]
+
+
+def test_select_relevant_memory_ids_closes_temporary_recall_client():
+    recall_client = FakeRecallClient()
+    recall_client.client = Mock()
+
+    with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
+            patch.object(memory, "create_memory_recall_llm_client", return_value=recall_client):
+        selected = memory.select_relevant_memory_ids("query")
+
+    assert selected == ["mem_a"]
+    recall_client.client.close.assert_called_once_with()
+    memory._MEMORY_RECALL_WINDOWS = {}
+
+
+def test_first_title_request_starts_after_agent_loop_returns():
+    events = []
+
+    class FakeThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            events.append("title_start")
+
+        def join(self, timeout=None):
+            events.append("title_join")
+
+    command_handler = Mock()
+    command_handler.process_command.return_value = CommandResult(
+        action=CommandAction.RUN_AGENT,
+        payload="hello",
+    )
+
+    def run_agent_loop(history):
+        events.append("agent_loop_start")
+        events.append("agent_loop_end")
+
+    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
+            patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "recall_long_term_memories", return_value={"content": ""}), \
+            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module, "agent_loop", side_effect=run_agent_loop), \
+            patch.object(main_module.threading, "Thread", FakeThread), \
+            patch.object(main_module, "_apply_pending_title"), \
+            patch.object(main_module, "refresh_status"):
+        main_module._process_user_query(
+            "hello",
+            [{"role": "system", "content": "system"}],
+            command_handler,
+        )
+
+    assert events[:3] == ["agent_loop_start", "agent_loop_end", "title_start"]
+
+
+def test_generate_title_uses_and_closes_independent_client():
+    title_client = Mock()
+    title_client.client = Mock()
+    title_client.generate.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="title"))]
+    )
+
+    with patch.object(main_module, "create_current_llm_client", return_value=title_client), \
+            patch.object(main_module, "close_llm_client") as close_client:
+        title = main_module.generate_title("hello")
+
+    assert title == "title"
+    close_client.assert_called_once_with(title_client)
 
 
 def test_llm_client_cache_changes_when_reasoning_effort_changes():

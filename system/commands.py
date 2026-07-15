@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 
 from rich import box
 from rich.console import Console, Group
@@ -19,7 +19,7 @@ from rich.text import Text
 from init import log_error_traceback
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.plan_mode import toggle_plan_mode
 from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
@@ -109,6 +109,7 @@ COMMAND_DESCRIPTIONS = {
 def interactive_choose_checkpoint(
         checkpoints: list,
         title: str = "\n📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
+        delete_handler: Callable[[Path], None] | None = None,
 ) -> str:
     """交互式选择 checkpoint"""
     if not checkpoints:
@@ -150,7 +151,16 @@ def interactive_choose_checkpoint(
         choices.append(desc)
         lookup[desc] = path_value
 
-    selected = choose_tui(title.strip(), choices)
+    def _delete_choice(label: str) -> None:
+        path = Path(lookup[label])
+        if delete_handler is not None:
+            delete_handler(path)
+
+    selected = choose_tui(
+        title.strip(),
+        choices,
+        delete_handler=_delete_choice if delete_handler is not None else None,
+    )
     return lookup.get(selected, "abort")
 
 
@@ -688,20 +698,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 self.console.print(content)
             return True
 
-        tbl = Table(title="当前任务计划", show_lines=False, box=box.ROUNDED, expand=True)
-        tbl.add_column("ID", style="cyan", width=4)
-        tbl.add_column("Subject", style="white")
-        tbl.add_column("Status", style="green")
-        tbl.add_column("Runnable", style="yellow", width=8)
-        for row in rows:
-            tbl.add_row(
-                str(row["id"]),
-                row["subject"],
-                row["status"],
-                "✓" if row.get("is_runnable") else "",
-            )
-        if show_info_panel_tui("当前任务计划", tbl) == "<cancelled>":
-            self.console.print(tbl)
+        manage_tasks_tui(TASK_MANAGER)
         return True
 
     def handle_update(self) -> Path | None:
@@ -1106,8 +1103,17 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         if len(history) > 1 and current_checkpoint is None:
             current_checkpoint = self.save_checkpoint(history)
 
+        def _delete_checkpoint(path: Path) -> None:
+            nonlocal current_checkpoint
+            path.unlink()
+            if current_checkpoint is not None and path.resolve() == current_checkpoint.resolve():
+                current_checkpoint = None
+
         try:
-            selected_path = interactive_choose_checkpoint(checkpoints)
+            selected_path = interactive_choose_checkpoint(
+                checkpoints,
+                delete_handler=_delete_checkpoint,
+            )
         except Exception as exc:
             log_error_traceback("commands handle_load checkpoint", exc)
             selected_path = "abort"

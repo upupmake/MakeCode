@@ -153,6 +153,7 @@ Key characteristics:
 - DAG validation for active tasks rolls back the entire dependency batch when an update creates a cycle
 - A task is runnable when it is `pending` and all dependencies are completed
 - Each run writes a task-plan file under `.makecode/tasks/`
+- `/tasks` retains the full task-table view and lets users select a task, press `d`, then confirm or cancel with `y`/`n`; deleting a task also removes references to it from other tasks' dependency lists.
 - `DeleteAllTasks` provides a one-click topology reset capability, making it easy to start a fresh plan on complex
   failures.
 
@@ -263,6 +264,7 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - **Configuration Anti-Pollution**: When loading a historical Checkpoint, the system automatically syncs the latest
   System Prompt and global configurations (such as the current date, MCP/Skills toggle status) to prevent them from
   being overwritten by old data.
+- The Checkpoint picker lets users select an item, press `d`, then confirm or cancel with `y`/`n`; deleting the currently bound Checkpoint also clears the binding so a later save does not recreate the deleted file.
 - For sub-agent histories, the system only prompts for loading after the task plan is successfully loaded. If all tasks
   in the plan are already completed, it automatically skips the prompt.
 
@@ -397,7 +399,7 @@ Orchestrator output is semantically dispatched to the following independent pane
 - **Task**: dedicated task-board pane showing TaskManager state, the runnable frontier, and execution progress in real time.
 - **Background**: background activity pane for long-term memory recall/write, background checks, and other events that should not interrupt the main conversation.
 - **Sub-Agent**: sub-agent console output, disabled by default and toggled via `/sub-agent-console`.
-- **Status / RuntimeInfo**: top status bar showing the current mode (Plan/Act), model, token usage, and other runtime indicators.
+- **Status / RuntimeInfo**: top status bar showing the current mode (Plan/Act), model, token usage, and other runtime indicators; it shows `Client: REQUESTING` while any LLM request is active, appends `RETRY n/2` when an SDK retry actually occurs, and clears the state after all requests finish. `Agent: RUNNING` is no longer rendered; agent activity still controls input visibility and other interaction behavior.
 
 Pane ratios can be customized via the `/layout` command and persisted to `.makecode/layout_config.json` under the installation directory. For backward compatibility, the old `reasoning` key is still read; new configurations use the unified `task` key.
 
@@ -490,7 +492,7 @@ MakeCode includes a complete built-in auto-update system supporting version chec
 #### Version Configuration (`version.py`)
 
 ```python
-CURRENT_VERSION = "5.0.7"
+CURRENT_VERSION = "5.1.0"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -550,7 +552,9 @@ To centrally manage workspace paths and install-directory global configuration, 
 
 - **Unified Client Creation**: The orchestrator uses a synchronous client, while sub-agents use `_create_async_chat_client()` with the same endpoint, authentication, timeout, and retry settings.
 - **Timeouts**: The total request timeout is 120 seconds and the connection timeout is 10 seconds, preventing connections or responses from hanging indefinitely.
-- **Retry Policy**: Requests are retried at most twice, with retry waits increasing from 10 to 20 seconds.
+- **Retry Policy**: Requests are retried at most twice, with retry waits increasing from 10 to 20 seconds; when a retry actually occurs, the runtime bar shows `Client: REQUESTING · RETRY 1/2` or `RETRY 2/2`.
+- **Request State Lifecycle**: All synchronous, asynchronous, and streaming requests increment a thread-safe counter before the actual network call, showing `Client: REQUESTING` in the runtime bar; success, failure, timeout, and stream cancellation all clean up in `finally`, and the indicator clears after the final concurrent request ends. Retry state is tracked independently per concurrent request.
+- **Request Isolation and Resource Cleanup**: Long-term-memory pre-recall and title generation use independent temporary clients that are closed after completion; first-session title generation starts only after the main conversation request ends, avoiding shared-client connection contention with the main stream.
 - **Reasoning Effort and Caching**: Clients read `ModelConfig.reasoning_effort`; the main client cache key includes this field, so changing it rebuilds the client and applies the new value.
 
 ---
@@ -814,12 +818,12 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/mcp-add`           | Add an MCP service using `<name> [options] -- <cmd> [args...]` syntax; remote services use `--url`; written as disabled by default               |
 | `/mcp-delete`        | Delete a specific MCP service configuration and safely shut down the running instance (requires confirmation)                                    |
 | `/mcp-help`          | Show an introduction to MCP-related commands                                                                                                     |
-| `/load`              | List historical checkpoints and select one to load                                                                                               |
+| `/load`              | List historical checkpoints and select one to load or delete with confirmation                                                                  |
 | `/skills-switch`     | Toggle skills catalog injection status (On/Off)                                                                                                  |
 | `/skills-list`       | List available skills in the current workspace                                                                                                   |
 | `/compact [prompt]`  | Compact the current conversation context; prompt is optional                                                                                     |
 | `/tools`             | List detailed information of available tools                                                                                                     |
-| `/tasks`              | View the task board and current execution progress                                                                                               |
+| `/tasks`              | View the full task table and delete a selected task with confirmation                                                                             |
 | `/plan`               | Enter/exit Plan Mode — only read-only and planning tools are allowed in the planning phase                                                       |
 | `/status`            | Report system status, completed tasks, and next steps                                                                                            |
 | `/help`              | Show usage help and self-introduction                                                                                                            |
