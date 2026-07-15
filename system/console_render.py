@@ -5,6 +5,7 @@ import json
 import threading
 from typing import Any, List
 
+from markdown_it import MarkdownIt
 from rich import box
 from rich.console import Console, Group
 from rich.markdown import Markdown
@@ -115,9 +116,21 @@ def render_content_user_message(text: str) -> Panel:
     )
 
 
+def render_model_markdown(text: str) -> Markdown:
+    markdown = Markdown(text)
+    markdown.parsed = (
+        MarkdownIt()
+        .disable(["html_block", "html_inline"])
+        .enable("strikethrough")
+        .enable("table")
+        .parse(text)
+    )
+    return markdown
+
+
 def render_content_assistant_message(text: str, identity: str = "Assistant") -> Panel:
     return _content_panel(
-        Markdown(text),
+        render_model_markdown(text),
         f"[bold #a78bfa]{identity}[/bold #a78bfa]",
         "#a78bfa",
     )
@@ -169,43 +182,39 @@ def _format_readable_ui(data: Any, indent_level: int = 0, decode_ansi: bool = Fa
     indent = "  " * indent_level
     make_text = _terminal_output_text if decode_ansi else Text
 
+    def key_value_text(prefix: str, value: Any) -> Text:
+        line = Text()
+        line.append_text(make_text(prefix, style="green"))
+        line.append_text(make_text(str(value), style="white"))
+        return line
+
     if isinstance(data, dict):
         for key, value in data.items():
             if isinstance(value, str) and '\n' in value:
-                renderables.append(make_text(f"{indent}❖ {key}:", style="bold yellow"))
+                renderables.append(make_text(f"{indent}❖ {key}:", style="green"))
                 lines = value.split('\n')
-                # 构造类似引用的代码块
                 block_text = make_text("\n".join(f"{indent}{line}" for line in lines), style="white")
                 renderables.append(block_text)
 
             elif isinstance(value, (dict, list)):
-                # 遇到嵌套结构（如 edits 列表）：递归展开
-                renderables.append(make_text(f"{indent}❖ {key}:", style="bold yellow"))
+                renderables.append(make_text(f"{indent}❖ {key}:", style="green"))
                 renderables.extend(_format_readable_ui(value, indent_level + 1, decode_ansi))
 
-            elif decode_ansi:
-                # 工具结果可能包含终端控制序列，解析为纯文本后再渲染
-                line = _terminal_output_text(f"{indent}❖ {key}: ", style="bold yellow")
-                line.append_text(_terminal_output_text(value))
-                renderables.append(line)
-
             else:
-                # 单行普通数值/字符串：直接键值对高亮显示
-                renderables.append(Text.assemble(
-                    (f"{indent}❖ {key}: ", "bold yellow"),
-                    (str(value), "default")
-                ))
+                renderables.append(key_value_text(f"{indent}❖ {key}: ", value))
 
     elif isinstance(data, list):
         for i, item in enumerate(data):
             if isinstance(item, (dict, list)):
-                renderables.append(Text(f"{indent}• [Item {i + 1}]", style="bold cyan"))
+                renderables.append(Text(f"{indent}• [Item {i + 1}]", style="blue"))
                 renderables.extend(_format_readable_ui(item, indent_level + 1, decode_ansi))
             else:
-                renderables.append(make_text(f"{indent}• {item}", style="default"))
+                line = Text(f"{indent}• ", style="blue")
+                line.append_text(make_text(str(item), style="white"))
+                renderables.append(line)
 
     else:
-        renderables.append(make_text(f"{indent}{data}", style="default"))
+        renderables.append(make_text(f"{indent}{data}", style="white"))
 
     return renderables
 

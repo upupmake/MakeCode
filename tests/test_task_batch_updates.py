@@ -123,26 +123,3 @@ def test_update_tasks_dependencies_rolls_back_cycle(tmp_path: Path) -> None:
 
     assert manager._data["tasks"]["1"]["depend_on"] == []
     assert manager._data["tasks"]["2"]["depend_on"] == []
-
-
-def test_delete_task_removes_dependency_references(tmp_path: Path) -> None:
-    manager = make_manager(tmp_path)
-    manager._data["tasks"]["2"]["depend_on"] = ["1"]
-    manager._data["tasks"]["3"]["depend_on"] = ["1", "2"]
-
-    deleted = manager.delete_task("1")
-
-    assert deleted["id"] == "1"
-    assert set(manager._data["tasks"]) == {"2", "3"}
-    assert manager._data["tasks"]["2"]["depend_on"] == []
-    assert manager._data["tasks"]["3"]["depend_on"] == ["2"]
-
-
-def test_delete_task_rejects_unknown_id_without_changes(tmp_path: Path) -> None:
-    manager = make_manager(tmp_path)
-    original = {task_id: task.copy() for task_id, task in manager._data["tasks"].items()}
-
-    with pytest.raises(ValueError, match="Task missing not found"):
-        manager.delete_task("missing")
-
-    assert manager._data["tasks"] == original

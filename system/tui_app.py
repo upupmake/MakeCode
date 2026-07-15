@@ -7,7 +7,9 @@ from typing import Any
 
 from rich.console import RenderableType
 from rich.cells import cell_len
+from rich.errors import MarkupError
 from rich.markup import escape
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -970,7 +972,10 @@ class MakeCodeTuiApp(App[None]):
             return
         if event.payload is not None and event.region in {TuiRegion.CONTENT, TuiRegion.REASONING, TuiRegion.TASK, TuiRegion.TOOLS, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
             should_scroll_end = self._is_log_at_bottom(log)
-            log.write(event.payload, expand=True, shrink=True, scroll_end=should_scroll_end)
+            try:
+                log.write(event.payload, expand=True, shrink=True, scroll_end=should_scroll_end)
+            except MarkupError:
+                log.write(Text(str(event.payload)), expand=True, shrink=True, scroll_end=should_scroll_end)
             if should_scroll_end:
                 if self._batch_render_depth > 0:
                     self._batch_scroll_regions.add(event.region)

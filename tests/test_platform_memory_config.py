@@ -317,7 +317,7 @@ def test_tui_modals_use_q_not_escape_for_cancel():
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Input, Label
+from textual.widgets import DataTable, Input, Label
 
 
 @pytest.fixture
@@ -477,33 +477,29 @@ async def test_choice_modal_deletes_only_after_confirmation():
 
 
 @pytest.mark.anyio
-async def test_task_panel_deletes_selected_task_after_confirmation():
+async def test_task_panel_is_read_only():
     manager = Mock()
     manager.get_task_table.return_value = {
         "rows": [
             {
                 "id": "7",
-                "subject": "Delete me",
+                "subject": "Read only",
                 "status": "pending",
                 "is_runnable": True,
             }
         ]
     }
-    manager.get_task.return_value = {"id": "7", "subject": "Delete me"}
     modal = TaskPanelModal(manager)
     app = ChoiceModalHost(modal)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("d")
+        assert "只读" in str(modal.query_one("#task-title", Label).render())
+        await pilot.press("d", "y")
         await pilot.pause()
-        manager.delete_task.assert_not_called()
-        assert "确认删除任务" in str(modal.query_one("#task-title", Label).render())
+        assert modal.query_one("#task-table", DataTable).row_count == 1
 
-        await pilot.press("y")
-        await pilot.pause()
-
-    manager.delete_task.assert_called_once_with("7")
+    manager.delete_task.assert_not_called()
 
 
 def test_tracked_openai_reports_actual_retry_number():

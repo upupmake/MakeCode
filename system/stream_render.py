@@ -1,9 +1,9 @@
 import time
 from typing import Iterator, Tuple, List, Any
 
-from rich.markdown import Markdown
 from rich.text import Text
 
+from system.console_render import render_model_markdown
 from system.stream_cancel import is_cancelled
 from system.tui_app import TuiRegion, post_tui
 
@@ -214,7 +214,7 @@ class StreamRenderer:
             if len(parts) == 2:
                 complete_blocks, remaining_buffer = parts
                 self._clear_tail(region)
-                post_tui(region, Markdown(complete_blocks))
+                post_tui(region, render_model_markdown(complete_blocks))
                 return remaining_buffer, f"{complete_blocks}\n\n"
 
         return current_buffer, ""
@@ -238,12 +238,12 @@ class StreamRenderer:
     def _safe_cleanup(self, buffer: str, region: TuiRegion = TuiRegion.CONTENT):
         """流结束时输出剩余内容。"""
         if buffer.strip():
-            post_tui(region, Markdown(buffer))
+            post_tui(region, render_model_markdown(buffer))
 
     def _handle_fallback(self, name: str, content: str, reasoning_started: bool, text_started: bool):
         if not text_started and content.strip():
             self._start_text_section(name, reasoning_started)
-            post_tui(TuiRegion.CONTENT, Markdown(content))
+            post_tui(TuiRegion.CONTENT, render_model_markdown(content))
             self._set_active(TuiRegion.CONTENT, False)
         elif not reasoning_started and not text_started:
             post_tui(TuiRegion.CONTENT, "")

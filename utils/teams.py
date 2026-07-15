@@ -487,7 +487,7 @@ class TeammateManager:
                 coroutines = [worker(t) for t in tasks]
                 return await asyncio.gather(*coroutines, return_exceptions=True)
             finally:
-                await async_client.close()
+                await local_async_llm_client.client.close()
 
         try:
             raw_results = asyncio.run(_run_all())

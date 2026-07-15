@@ -1,7 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -97,6 +98,34 @@ class DelegateConfirmationTests(unittest.TestCase):
 
         run.assert_not_called()
         self.assertEqual("Sub-agent delegation cancelled by the user.", result)
+
+    def test_approved_delegation_closes_async_client(self):
+        run_dir = Path(self.temp_dir.name) / "runs"
+        run_dir.mkdir()
+        raw_client = SimpleNamespace(close=AsyncMock())
+        llm_client = SimpleNamespace(client=raw_client)
+
+        with (
+            patch.object(self.manager, "_validate_delegation_tasks", return_value=self.tasks),
+            patch.object(
+                self.manager,
+                "_sub_agent_loop",
+                AsyncMock(return_value={"report": "COMPLETION_STATUS: completed"}),
+            ),
+            patch("utils.teams.choose_delegate_tasks_tui", return_value="approve"),
+            patch("utils.teams.request_window_attention"),
+            patch("utils.teams.post_tui"),
+            patch("utils.teams.print_formatted_text"),
+            patch("utils.teams._runs_dir", return_value=run_dir),
+            patch("utils.teams._workdir", return_value=Path(self.temp_dir.name)),
+            patch("utils.teams.get_current_model_config", return_value=object()),
+            patch("utils.teams._create_async_chat_client", return_value=llm_client),
+            patch("utils.teams.recall_long_term_memories", return_value={}),
+        ):
+            result = self.manager.delegate_concurrently(self.tasks)
+
+        self.assertIn("Sub-Agents Execution Reports", result)
+        raw_client.close.assert_awaited_once_with()
 
 
 class DelegateModalHost(App):

@@ -68,7 +68,7 @@ def test_flush_screen_clears_terminal_and_requests_full_repaint():
     app.refresh.assert_called_once_with(repaint=True, layout=True)
 
 
-def test_load_can_delete_current_checkpoint_and_clear_binding(tmp_path, monkeypatch):
+def test_load_cannot_delete_current_checkpoint(tmp_path, monkeypatch):
     checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
     checkpoint.write_text("[]", encoding="utf-8")
     handler = make_handler()
@@ -78,7 +78,8 @@ def test_load_can_delete_current_checkpoint_and_clear_binding(tmp_path, monkeypa
     def choose_checkpoint(checkpoints, title=None, delete_handler=None):
         assert checkpoints == [checkpoint]
         assert delete_handler is not None
-        delete_handler(checkpoint)
+        with pytest.raises(ValueError, match="当前 checkpoint 正在使用"):
+            delete_handler(checkpoint)
         return "abort"
 
     monkeypatch.setattr("system.commands.interactive_choose_checkpoint", choose_checkpoint)
@@ -93,8 +94,53 @@ def test_load_can_delete_current_checkpoint_and_clear_binding(tmp_path, monkeypa
     )
 
     assert loaded_history is history
-    assert current_checkpoint is None
-    assert not checkpoint.exists()
+    assert current_checkpoint == checkpoint
+    assert checkpoint.exists()
+
+
+def test_load_task_plan_list_cannot_delete_current_plan(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
+    checkpoint.write_text("[]", encoding="utf-8")
+    current_plan = tmp_path / "task_plan_current_abcd1234.json"
+    current_plan.write_text("{}", encoding="utf-8")
+    other_plan = tmp_path / "task_plan_other_efgh5678.json"
+    other_plan.write_text("{}", encoding="utf-8")
+    handler = make_handler()
+    handler.console = Mock()
+    handler.list_checkpoints = lambda: [checkpoint]
+    handler.load_checkpoint = lambda path: [{"role": "system", "content": "system"}]
+    chooser_calls = 0
+
+    def choose_checkpoint(checkpoints, title=None, delete_handler=None):
+        nonlocal chooser_calls
+        chooser_calls += 1
+        if chooser_calls == 1:
+            return str(checkpoint)
+        assert checkpoints == [current_plan, other_plan]
+        assert "Select a Task Plan to Load" in title
+        assert delete_handler is not None
+        with pytest.raises(ValueError, match="当前 Task Plan 正在使用"):
+            delete_handler(current_plan)
+        delete_handler(other_plan)
+        return "abort"
+
+    monkeypatch.setattr("system.commands.interactive_choose_checkpoint", choose_checkpoint)
+    monkeypatch.setattr("system.commands.list_task_plans", lambda: [current_plan, other_plan])
+    monkeypatch.setattr("system.commands.TASK_MANAGER", Mock(path=current_plan))
+    monkeypatch.setattr("system.commands.render_current_task_plan", lambda console: None)
+
+    loaded_history, loaded_checkpoint = handler.handle_load(
+        [{"role": "system", "content": "system"}],
+        checkpoint,
+        render_banner_fn=lambda: None,
+        render_hint_fn=lambda: None,
+        render_history_fn=lambda messages: None,
+    )
+
+    assert loaded_history == [{"role": "system", "content": ""}]
+    assert loaded_checkpoint == checkpoint
+    assert current_plan.exists()
+    assert not other_plan.exists()
 
 
 def test_tasks_command_opens_task_management_panel(monkeypatch):
@@ -136,6 +182,21 @@ async def test_submitting_flush_preserves_existing_pane_content():
 
         assert list(content_log.lines) == before
         assert submitted == ["/flush"]
+
+
+@pytest.mark.anyio
+async def test_tui_displays_invalid_rich_markup_as_plain_text():
+    app = MakeCodeTuiApp()
+    payload = "Expected markup value (found '=True, width=80) for s in samples]`')"
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, payload))
+        await pilot.pause()
+
+        content_log = app._logs[TuiRegion.CONTENT]
+        rendered = "\n".join(line.text for line in content_log.lines)
+        assert payload in rendered
 
 
 def test_parse_mcp_add_stdio_command_parts_and_env():

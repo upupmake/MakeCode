@@ -648,15 +648,11 @@ class TaskPanelModal(ModalScreen[str]):
 
     BINDINGS = [
         Binding("q", "close", "Close", priority=True),
-        Binding("d", "delete", "Delete", priority=True),
-        Binding("y", "confirm_delete", "Confirm Delete", priority=True),
-        Binding("n", "cancel_delete", "Cancel Delete", priority=True),
     ]
 
     def __init__(self, task_manager: Any) -> None:
         super().__init__()
         self._task_manager = task_manager
-        self._pending_delete_id: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="task-dialog"):
@@ -666,7 +662,7 @@ class TaskPanelModal(ModalScreen[str]):
                 yield Button("关闭", id="task-close", variant="primary")
 
     def _title_text(self) -> str:
-        return "当前任务计划\nd 删除选中任务 · y 确认删除 · n 取消删除 · q 关闭"
+        return "当前任务计划（只读）\nq 关闭"
 
     def on_mount(self) -> None:
         table = self.query_one("#task-table", DataTable)
@@ -689,60 +685,6 @@ class TaskPanelModal(ModalScreen[str]):
             )
         if rows:
             table.move_cursor(row=min(previous_row, len(rows) - 1), column=0)
-
-    def _selected_task_id(self) -> str | None:
-        table = self.query_one("#task-table", DataTable)
-        if table.row_count == 0:
-            return None
-        return str(table.get_row_at(table.cursor_row)[0])
-
-    def _on_key(self, event: Key) -> None:
-        key_actions = {
-            "d": self.action_delete,
-            "y": self.action_confirm_delete,
-            "n": self.action_cancel_delete,
-            "q": self.action_close,
-        }
-        action = key_actions.get(event.key)
-        if action is None:
-            return
-        action()
-        event.stop()
-        event.prevent_default()
-
-    def action_delete(self) -> None:
-        task_id = self._selected_task_id()
-        if task_id is None:
-            return
-        task = self._task_manager.get_task(task_id)
-        self._pending_delete_id = task_id
-        self.query_one("#task-title", Label).update(
-            "⚠️ 确认删除任务？\n"
-            f"{task_id} · {task['subject']}\n"
-            "依赖该任务的其他任务将同步移除此依赖。按 y 确认删除，按 n 取消。"
-        )
-
-    def action_confirm_delete(self) -> None:
-        if self._pending_delete_id is None:
-            return
-        task_id = self._pending_delete_id
-        try:
-            self._task_manager.delete_task(task_id)
-        except Exception as exc:
-            self.query_one("#task-title", Label).update(
-                f"❌ 删除任务失败：{exc}\n按 n 返回面板。"
-            )
-            return
-        self._pending_delete_id = None
-        self.query_one("#task-title", Label).update(self._title_text())
-        self._reload_rows()
-
-    def action_cancel_delete(self) -> None:
-        if self._pending_delete_id is None:
-            return
-        self._pending_delete_id = None
-        self.query_one("#task-title", Label).update(self._title_text())
-        self.query_one("#task-table", DataTable).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "task-close":

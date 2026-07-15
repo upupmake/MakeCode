@@ -550,19 +550,6 @@ class TaskManager:
         self._save()
         return [self._data["tasks"][task_id] for task_id in task_ids]
 
-    def delete_task(self, task_id: str | int) -> dict[str, Any]:
-        task_id = self._ensure_task_exists(task_id)
-        deleted = self._data["tasks"].pop(task_id)
-        for task in self._data["tasks"].values():
-            task["depend_on"] = [
-                dependency
-                for dependency in task.get("depend_on", [])
-                if dependency != task_id
-            ]
-        self._validate_topology()
-        self._save()
-        return deleted
-
     def delete_all_tasks(self, confirm: bool = False, **kwargs) -> dict[str, Any]:
         if not confirm:
             raise ValueError("DANGER: Deletion aborted. You must explicitly pass confirm=True to delete all tasks.")

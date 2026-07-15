@@ -22,7 +22,7 @@ from system.models import get_model_manager
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.plan_mode import toggle_plan_mode
-from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
+from utils.tasks import TASK_MANAGER, list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
 from utils.teams import list_team_histories, load_team_history, get_history_title
 from utils.memory import (
     delete_long_term_memory,
@@ -1104,10 +1104,9 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             current_checkpoint = self.save_checkpoint(history)
 
         def _delete_checkpoint(path: Path) -> None:
-            nonlocal current_checkpoint
-            path.unlink()
             if current_checkpoint is not None and path.resolve() == current_checkpoint.resolve():
-                current_checkpoint = None
+                raise ValueError("当前 checkpoint 正在使用，不能删除。")
+            path.unlink()
 
         try:
             selected_path = interactive_choose_checkpoint(
@@ -1169,10 +1168,16 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 tui_region=TuiRegion.TOOLS,
             )
 
+            def _delete_task_plan(path: Path) -> None:
+                if path.resolve() == TASK_MANAGER.path.resolve():
+                    raise ValueError("当前 Task Plan 正在使用，不能删除。")
+                path.unlink()
+
             try:
                 selected_task_path = interactive_choose_checkpoint(
                     task_plans,
                     title="\n📌 Select a Task Plan to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
+                    delete_handler=_delete_task_plan,
                 )
             except Exception as exc:
                 log_error_traceback("commands handle_load task plan", exc)
