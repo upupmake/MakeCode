@@ -140,6 +140,16 @@ def _stringify_output(output: Any) -> str:
     return json.dumps(output, ensure_ascii=False, indent=2)
 
 
+_TERMINAL_CONTROL_TRANSLATION = dict.fromkeys(
+    code for code in (*range(0x20), *range(0x7F, 0xA0)) if code not in {0x09, 0x0A}
+)
+
+
+def _terminal_output_text(value: Any, style: str = "") -> Text:
+    plain = Text.from_ansi(str(value)).plain.translate(_TERMINAL_CONTROL_TRANSLATION)
+    return Text(plain, style=style)
+
+
 def _extract_message_text(msg: dict) -> str:
     """从消息字典中提取文本内容"""
     content = msg.get("content")
@@ -153,24 +163,31 @@ def _extract_message_text(msg: dict) -> str:
     return "\n\n".join(chunks).strip()
 
 
-def _format_readable_ui(data: Any, indent_level: int = 0) -> List[Text]:
+def _format_readable_ui(data: Any, indent_level: int = 0, decode_ansi: bool = False) -> List[Text]:
     """递归解析结构化数据，将其转换为符合人类直觉的 Rich 组件列表"""
     renderables = []
     indent = "  " * indent_level
+    make_text = _terminal_output_text if decode_ansi else Text
 
     if isinstance(data, dict):
         for key, value in data.items():
             if isinstance(value, str) and '\n' in value:
-                renderables.append(Text(f"{indent}❖ {key}:", style="bold yellow"))
+                renderables.append(make_text(f"{indent}❖ {key}:", style="bold yellow"))
                 lines = value.split('\n')
                 # 构造类似引用的代码块
-                block_text = Text("\n".join(f"{indent}{line}" for line in lines), style="white")
+                block_text = make_text("\n".join(f"{indent}{line}" for line in lines), style="white")
                 renderables.append(block_text)
 
             elif isinstance(value, (dict, list)):
                 # 遇到嵌套结构（如 edits 列表）：递归展开
-                renderables.append(Text(f"{indent}❖ {key}:", style="bold yellow"))
-                renderables.extend(_format_readable_ui(value, indent_level + 1))
+                renderables.append(make_text(f"{indent}❖ {key}:", style="bold yellow"))
+                renderables.extend(_format_readable_ui(value, indent_level + 1, decode_ansi))
+
+            elif decode_ansi:
+                # 工具结果可能包含终端控制序列，解析为纯文本后再渲染
+                line = _terminal_output_text(f"{indent}❖ {key}: ", style="bold yellow")
+                line.append_text(_terminal_output_text(value))
+                renderables.append(line)
 
             else:
                 # 单行普通数值/字符串：直接键值对高亮显示
@@ -183,12 +200,12 @@ def _format_readable_ui(data: Any, indent_level: int = 0) -> List[Text]:
         for i, item in enumerate(data):
             if isinstance(item, (dict, list)):
                 renderables.append(Text(f"{indent}• [Item {i + 1}]", style="bold cyan"))
-                renderables.extend(_format_readable_ui(item, indent_level + 1))
+                renderables.extend(_format_readable_ui(item, indent_level + 1, decode_ansi))
             else:
-                renderables.append(Text(f"{indent}• {item}", style="default"))
+                renderables.append(make_text(f"{indent}• {item}", style="default"))
 
     else:
-        renderables.append(Text(f"{indent}{data}", style="default"))
+        renderables.append(make_text(f"{indent}{data}", style="default"))
 
     return renderables
 
@@ -276,10 +293,10 @@ def _render_tool_output(
     # 渲染 UI
     if is_complex:
         # 复用之前写的结构化 UI 生成器
-        ui_items = _format_readable_ui(display_data)
+        ui_items = _format_readable_ui(display_data, decode_ansi=True)
         body = Group(*ui_items)
     else:
-        body = Text(text)
+        body = _terminal_output_text(text)
 
     console.print(
         Panel(
