@@ -1,6 +1,6 @@
 # 🚀 MakeCode · 项目说明
 
-🌐 语言切换：**简体中文** | [English](README_en.md) | [📦 Releases](https://github.com/cockmake/MakeCode/releases)
+🌐 语言切换：**简体中文** | [English](README_en.md) | [📦 Releases](https://github.com/upupmake/MakeCode/releases)
 
 > 一个多智能体命令行编排器。
 >
@@ -20,6 +20,7 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
 - **File Access Control** 模块提供强制读取后编辑、修改时间锁校验与细粒度文件级并发锁。
 - **Prompt 集中管理** 将所有 LLM Prompt 统一维护，便于扩展与参数化。
 - **集中路径模块（`utils/paths.py`）** 统一管理工作区目录与安装目录派生路径，所有模块统一通过共享 getter 访问 `.makecode/` 子目录。
+- **跨平台打包支持** 提供 Windows X64 与 macOS ARM64 发布包；macOS 通过顶层 `MakeCode.command` 在 Terminal 中启动。
 - **Textual 多区 TUI** 将主智能体输出分发到 `Content / Tools / Task / Background / Sub-Agent / Status` 等独立面板，并支持自定义面板比例。
 
 这个项目的目标不是只回答问题，而是让智能体具备**可规划、可执行、可追踪、可扩展**的工程工作流能力。
@@ -160,11 +161,17 @@ Team 模块支持：
 支持：
 
 - `LoadSkill`：按精确名称加载某个技能全文
-- Skills Catalog 注入：将当前工作区 `skills/` 中可用技能的名称、说明、标签与目录摘要拼接到主智能体和子智能体的
+- Skills Catalog 注入：将安装目录与工作区技能源中可用技能的名称、说明、标签与绝对目录摘要拼接到主智能体和子智能体的
   `system prompt` 末尾
 - Skills Catalog 开关：
 
-技能存放位置：`skills/<name>/SKILL.md`。工作区启动后，将自定义技能放入该目录即可被自动发现。
+技能按以下优先级从三个目录加载（同名技能由高优先级目录覆盖）：
+
+1. 安装目录 `install_dir/.makecode/skills/<name>/SKILL.md`（内置技能）
+2. 工作区 `workdir/.makecode/skills/<name>/SKILL.md`（用户技能的默认安装位置）
+3. 工作区旧路径 `workdir/skills/<name>/SKILL.md`（向后兼容）
+
+工作区启动后，将自定义技能放入 `workdir/.makecode/skills/` 即可被自动发现。`SKILL.md` 的 frontmatter 必须包含有效的 `name` 与 `description` 才会被加载。
 
 默认行为：skills 摘要注入默认开启。关闭后，系统会显示 `skills已关闭`，并停止把技能目录摘要拼接到主/子智能体的`system prompt`
 后面。
@@ -319,10 +326,11 @@ MakeCode 提供可视化的模型配置管理功能，支持多模型切换和�
 
 #### 核心功能
 
-- **磁盘持久化**：模型配置自动保存到安装目录下的 `.makecode/model_config.json`，跨会话保留。模型配置、MCP 配置、面板布局配置（`layout_config.json`）及错误日志统一存储在安装目录（非工作区目录），路径由 `utils/paths.py` 统一提供，确保多项目共享同一套配置。
+- **磁盘持久化**：模型配置自动保存到平台共享配置目录的 `model_config.json`，跨会话保留。模型配置、MCP 配置、面板布局配置（`layout_config.json`）及错误日志均不存放在工作区，路径由 `utils/paths.py` 统一提供：Windows 与源码运行使用 `install_dir/.makecode/`，macOS 打包版使用 `~/Library/Application Support/MakeCode/`，确保多项目共享同一套配置。
 - **多模型支持**：可同时管理多个 API 端点和模型 ID
 - **收藏管理**：支持标记收藏模型，优先排序显示
 - **上下文配置**：每个模型可独立设置 `max_context`（单位：千 tokens）
+- **推理强度配置**：每个模型可独立设置 `reasoning_effort`（`low` / `medium` / `high` / `xhigh` / `max`，默认 `medium`）；模型面板使用左右方向键调整，模型显示文本同步展示当前值
 - **智能显示**：自动提取域名前缀，在面板中显示为 `model_id (域名)` 格式
 
 #### ModelConfig 数据结构
@@ -330,12 +338,12 @@ MakeCode 提供可视化的模型配置管理功能，支持多模型切换和�
 ```python
 @dataclass
 class ModelConfig:
-    base_url: str          # API 端点
-    api_key: str           # API 密钥
-    model_id: str          # 模型标识
-    is_favorite: bool      # 是否收藏
-    selected: bool         # 是否选中
-    max_context: int       # 最大上下文 (k)
+    base_url: str                    # API 端点
+    api_key: str                     # API 密钥
+    model_id: str                    # 模型标识
+    is_favorite: bool = False        # 是否收藏
+    max_context: int = 128           # 最大上下文 (k)
+    reasoning_effort: str = "medium" # 推理强度
 ```
 
 #### 相关组件
@@ -437,18 +445,20 @@ MakeCode 支持智能体在不确定时主动向用户提问，而非盲目猜�
 
 MakeCode 内置了完整的自动更新系统，支持版本检查、完整目录下载与事务升级。
 
+> **平台限制**：应用内自动更新当前仅支持 Windows。macOS 会提示用户前往 GitHub Release 手动下载并替换最新版。
+
 #### 核心组件
 
 - **版本检查**（`system/updater.py`）：从远程服务器获取 `version.json`，与本地 `CURRENT_VERSION` 比较，判断是否有可用更新
 - **下载与校验**：支持带进度回调的分块下载（8KB/块），下载完成后自动进行 SHA256 完整性校验
-- **独立更新器**（`updater.py`）：采用「独立更新器」方案 — 主程序将新版 exe 下载到临时目录后，释放 `updater.exe` 并退出；更新器等待主程序进程退出后，用新文件替换旧 exe，完成无缝升级
+- **独立更新器**（`updater.py`，仅 Windows）：采用「独立更新器」方案 — 主程序将新版 exe 下载到临时目录后，释放 `updater.exe` 并退出；更新器等待主程序进程退出后，用新文件替换旧 exe，完成无缝升级
 - **进度显示**：下载过程中实时显示可视化进度条（`█░` 填充动画）、百分比和 MB 数
 - **启动时后台检查**：程序启动时自动在后台检查更新，若有新版本会在终端提示用户
 
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "5.0.0"
+CURRENT_VERSION = "5.0.7"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -466,7 +476,7 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 #### 相关组件
 
 - `system/updater.py`：核心更新逻辑（版本检查、下载、校验、启动更新器）
-- `updater.py`：独立更新器程序，负责等待主程序退出后替换 exe
+- `updater.py`：Windows 独立更新器程序，负责等待主程序退出后替换 exe
 - `version.py`：版本号与更新服务器地址配置
 - `system/commands.py`：`/update` 命令处理与交互确认
 
@@ -476,18 +486,22 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 #### 路径分层
 
-- **安装目录（Install Dir）**：`MakeCode.exe` 或源码所在目录，存放跨项目共享的配置与日志。
-    - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 均位于 `install_dir/.makecode/`。
+- **安装目录（Install Dir）**：Windows 下为 `MakeCode.exe` 所在目录，macOS 打包版为 `MakeCode/MakeCode` 所在目录；源码运行时为源码根目录。
+    - Windows 与源码运行时的共享配置位于 `install_dir/.makecode/`。
+    - macOS 打包版的共享配置位于 `~/Library/Application Support/MakeCode/`，避免升级替换应用目录时丢失配置。
+    - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 均位于对应的共享配置目录。
 - **工作区目录（Workdir）**：用户当前交互选择的工程目录，存放会话/任务相关的状态。
     - `tasks/`、`team/runs/`、`memory/memory.jsonl`、`memory/memory_config.json`、`transcripts/`、`checkpoint/` 均位于 `workdir/.makecode/`。
-    - `skills/` 位于 `workdir/skills/`。
+    - 用户技能默认位于 `workdir/.makecode/skills/`，旧路径 `workdir/skills/` 仍兼容。
 
 #### 核心 API
 
-- `paths.install_dir()` / `paths.install_makecode_dir()`：返回安装目录与其 `.makecode` 子目录。
+- `paths.install_dir()` / `paths.install_makecode_dir()`：分别返回程序安装目录与共享配置目录；macOS 打包版的后者返回 `~/Library/Application Support/MakeCode`。
 - `paths.workdir()` / `paths.workspace_makecode_dir()`：返回当前工作区与其 `.makecode` 子目录。
 - `paths.set_workdir(path)`：切换工作区时代替手动拼接，`/cd` 命令内部调用该函数。
-- 面向任务/记忆/技能/转录/检查点/MCP/模型配置的各级 getter（如 `workspace_tasks_dir()`、`workspace_memory_jsonl_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
+- `paths.install_skills_dir()`：返回安装目录内的内置技能目录 `install_dir/.makecode/skills/`。
+- `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`：分别返回 `workdir/.makecode/skills/` 与兼容旧路径 `workdir/skills/`。
+- 面向任务/记忆/转录/检查点/MCP/模型配置的各级 getter（如 `workspace_tasks_dir()`、`workspace_memory_jsonl_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
 
 #### 设计收益
 
@@ -500,6 +514,13 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 - `/pwd`：在 Content 区展示当前工作目录；启动时、工作区切换后、`/new` 清空会话后也会自动调用。
 - `/cd <路径>`：切换工作目录并开启全新会话。支持绝对/相对/带引号路径；切换后会完整重置五区 UI、重建 history、重置 HITL 白名单、清空 `visited_files`、重置 checkpoint，并使用 `paths.set_workdir(...)` 同步路径状态。`/new` 与 `/cd` 共用同一套会话重置逻辑。
 
+### 2.22 LLM 客户端适配与请求健壮性（`utils/llm_client.py`）（新增）
+
+- **统一客户端创建**：主智能体使用同步客户端，子智能体通过 `_create_async_chat_client()` 复用相同的端点、认证、超时与重试配置。
+- **超时配置**：请求总超时为 120 秒，连接超时为 10 秒，避免连接或响应无限挂起。
+- **重试策略**：最多重试 2 次，重试等待从 10 秒递增到 20 秒。
+- **推理强度下发与缓存**：客户端从 `ModelConfig.reasoning_effort` 读取推理强度；主客户端缓存键包含该字段，调整后会重建客户端并应用新值。
+
 ## 3. 项目结构与架构
 
 ### 3.1 目录结构
@@ -510,10 +531,12 @@ Agent/
 ├─ init.py                  # 工作区选择、模型配置初始化
 ├─ prompts.py               # 集中管理所有 LLM Prompt
 ├─ version.py               # 版本号与更新服务器地址配置
-├─ updater.py               # 独立更新器程序（等待主程序退出后替换 exe）
+├─ updater.py               # Windows 独立更新器（主程序退出后替换 exe）
 ├─ requirements.txt         # 项目依赖
 ├─ README.md
 ├─ README_en.md
+├─ assets/
+│  └─ MakeCode.command       # macOS 打包版 Terminal 启动脚本
 ├─ tools/
 │  ├─ todo.py               # 子智能体内部 Todo 管理工具
 │  └─ ask_user.py            # Agent 主动向用户提问工具
@@ -556,13 +579,17 @@ Agent/
 - `.makecode/transcripts/`：压缩前会话转录
 - `.makecode/memory/`：长期记忆数据与容量配置
 - `.makecode/checkpoint/`：会话 Checkpoint 记录（供 `/load` 恢复）
+- `.makecode/skills/`：当前工作区的用户技能（兼容工作区根目录旧 `skills/`）
 
 以及安装目录下的（跨项目共享）：
 
 - `<install_dir>/.makecode/model_config.json`：模型配置
 - `<install_dir>/.makecode/mcp_config.json`：MCP 服务配置
 - `<install_dir>/.makecode/layout_config.json`：面板布局比例
+- `<install_dir>/.makecode/skills/`：随安装提供的内置技能
 - `<install_dir>/.makecode/mcp_stderr.log`、`error.log`：MCP/系统错误日志
+
+> macOS 打包版的共享配置文件位于 `~/Library/Application Support/MakeCode/`，但内置技能仍从应用目录内的 `.makecode/skills/` 加载。
 
 ### 3.2 架构图（Mermaid）
 
@@ -593,14 +620,14 @@ flowchart TD
     C --> W["工作区文件"]
     C --> X["终端命令执行"]
 
-    S --> SK["skills/*/SKILL.md"]
+    S --> SK["install/workdir .makecode/skills\nlegacy workdir/skills"]
     MM --> TR[".makecode/transcripts/"]
     MM --> LTM[".makecode/memory/memory.jsonl"]
     TM --> TP[".makecode/tasks/"]
     T --> TH[".makecode/team/"]
-    MCP --> MC["mcp_config.json\ninstall .makecode/"]
+    MCP --> MC["mcp_config.json\nshared config dir"]
     MCP --> MT["MCP Services\nExternal Tools"]
-    PA --> ID["install_dir/.makecode/"]
+    PA --> ID["shared config\ninstall .makecode / macOS App Support"]
     PA --> WD["workdir/.makecode/"]
     TUI --> R1["Content / Tools / Task\nBackground / Sub-Agent"]
 
@@ -636,7 +663,8 @@ flowchart TD
 - `utils/file_access.py` 实现文件访问控制机制：强制读取后编辑、修改时间锁校验、细粒度文件级并发锁。
 - `utils/tasks.py` 维护任务 DAG、状态流转与 runnable frontier。
 - `utils/teams.py` 负责把最新可执行任务并发委派给子智能体，回收结果，并支持失败上下文恢复。
-- `utils/skills.py` 提供技能发现和技能内容加载。
+- `utils/skills.py` 从安装目录、工作区 `.makecode/skills/` 和工作区旧 `skills/` 目录按优先级发现并加载技能。
+- `utils/llm_client.py` 统一创建主/子智能体 LLM 客户端，传递 `reasoning_effort`，并配置 120 秒总超时、10 秒连接超时与最多 2 次重试。
 - `utils/memory.py` 负责长会话压缩、长期记忆管理与转录保存。
 - `utils/mcp_manager.py` 负责 MCP 服务配置加载、客户端生命周期管理、工具提取与注册，支持动态启用/禁用服务。
 - `utils/paths.py` 集中提供安装目录与工作区目录下的路径派生，所有消费者通过共享 getter 访问；PyInstaller 冻结与源码运行环境自动适配。
@@ -649,11 +677,11 @@ flowchart TD
 - `system/tui_app.py` 是 Textual TUI 主应用，负责面板布局、事件分发、状态栏与快捷键绑定。
 - `system/tui_modals.py` 提供统一的 TUI 弹窗/面板（模型、记忆、MCP、布局、信息面板等）。
 - `system/tui_types.py` 定义 TUI 区柚枚 `TuiRegion`（Content / Reasoning / Task / Tools / Background / Sub-Agent / Status / RuntimeInfo）与默认布局比例。
-- `system/models.py` 提供模型配置管理，支持多模型配置持久化、收藏管理与 max_context 设置。
+- `system/models.py` 提供模型配置管理，支持多模型配置持久化、收藏、`max_context` 与 `reasoning_effort` 设置。
 - `tools/todo.py` 供子智能体在多步骤任务中维护内部待办。
 - `tools/ask_user.py` 允许智能体在不确定时主动向用户提问，支持选项列表与自定义输入，基于 TUI 交互面板实现。
-- `system/updater.py` 实现自动更新逻辑：版本检查、带进度下载、SHA256 校验、启动独立更新器完成无缝升级。
-- `updater.py` 是独立更新器程序，在主程序退出后替换 exe 文件完成升级。
+- `system/updater.py` 实现 Windows 应用内自动更新逻辑：版本检查、带进度下载、SHA256 校验、启动独立更新器完成无缝升级；macOS 仅提示手动下载。
+- `updater.py` 是 Windows 独立更新器程序，在主程序退出后替换 exe 文件完成升级。
 - `version.py` 管理版本号与更新服务器地址配置。
 
 ---
@@ -675,7 +703,8 @@ flowchart TD
 
 ## 5. 环境要求
 
-- Python 3.10+
+- 支持平台：Windows X64、macOS ARM64；当前不提供 Linux 打包版
+- 源码运行需要 Python 3.10+
 - 可用的 OpenAI 兼容接口
 - 模型支持 Chat Completions API 或 Responses API
 
@@ -709,17 +738,22 @@ pip install -r requirements.txt
 MakeCode 采用严格的工作区（Workspace）隔离机制，因此**不建议**在 MakeCode 源码目录直接运行任务。请在你实际要处理的项目目录（即你希望
 Agent 工作的目录）中，准备以下内容：
 
-1. **自定义技能库 `skills/`（可选）**：
-   如果你的项目需要特定的专家技能，请在你的目标工作区根目录下创建一个 `skills` 文件夹。
-   目录结构如：`skills/<skill-name>/SKILL.md`。MakeCode 会严格仅从该目录下加载技能。
+1. **自定义技能库 `.makecode/skills/`（可选）**：
+   如果你的项目需要特定的专家技能，请在目标工作区根目录下创建 `.makecode/skills` 文件夹。
+   目录结构如：`.makecode/skills/<skill-name>/SKILL.md`。旧路径 `skills/<skill-name>/SKILL.md` 仍向后兼容；同名技能按安装目录、工作区新路径、工作区旧路径的优先级加载。
 
 ### 6.3 启动
 
-在 MakeCode 的源码目录下运行以下命令启动 CLI：
+源码运行时，在 MakeCode 的源码目录下执行：
 
 ```bash
 python main.py
 ```
+
+打包版启动方式：
+
+- **Windows X64**：解压 `MakeCode-Windows-X64.zip` 后运行 `MakeCode.exe`。
+- **macOS ARM64**：解压 `MakeCode-macOS-ARM64.zip` 后双击顶层 `MakeCode.command`；脚本会在 Terminal 中启动 `MakeCode/MakeCode`。直接启动无 TTY 的冻结程序时也会自动重新拉起 Terminal。
 
 启动后会进入向导流程：
 
@@ -790,11 +824,12 @@ python main.py
 
 ### 8.1 新增技能
 
-1. 新建目录 `skills/<name>/`
+1. 新建目录 `.makecode/skills/<name>/`（推荐）；旧路径 `skills/<name>/` 仍兼容
 2. 添加 `SKILL.md`
-3. 可在 frontmatter 中声明：
+3. 在 frontmatter 中声明以下必填字段：
     - `name`
     - `description`
+   还可选填：
     - `tags`
 4. 新技能会在后续构建 system prompt 时自动被扫描并汇总到 Skills Catalog 中；如需临时关闭摘要注入，可使用 `/skills-switch`
    进行切换

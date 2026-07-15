@@ -1,6 +1,6 @@
 # 🚀 MakeCode · Project Documentation
 
-🌐 Language: [简体中文](README.md) | **English** | [📦 Releases](https://github.com/cockmake/MakeCode/releases)
+🌐 Language: [简体中文](README.md) | **English** | [📦 Releases](https://github.com/upupmake/MakeCode/releases)
 
 > A multi-agent command-line orchestrator.
 >
@@ -22,6 +22,7 @@ MakeCode is an Agent CLI designed for engineering workflows. It follows an **Orc
   concurrency locks.
 - **Centralized Prompt Management** unifies all LLM prompts for easier maintenance and parameterization.
 - The **Centralized Path Module (`utils/paths.py`)** unifies workspace and install-directory path derivation; all consumers access `.makecode/` subpaths through shared getters.
+- **Cross-platform packaging** provides Windows X64 and macOS ARM64 releases; macOS starts in Terminal through the top-level `MakeCode.command` launcher.
 - The **Textual multi-pane TUI** dispatches orchestrator output into independent panes (`Content / Tools / Task / Background / Sub-Agent / Status`), with customizable pane ratios.
 
 The goal is not just to answer questions, but to provide an agent workflow that is **plannable, executable, traceable,
@@ -182,12 +183,17 @@ Runtime artifacts include:
 Supports:
 
 - `LoadSkill`: load the full content of a skill by exact name
-- Skills Catalog injection: append a summary of available workspace skills (name, description, tags, and directory) to
+- Skills Catalog injection: append a summary of available skills from install-directory and workspace sources (name, description, tags, and absolute directory) to
   the end of both orchestrator and sub-agent system prompts
 - Skills Catalog toggle:
 
-Skill location: `skills/<name>/SKILL.md`. Place your custom skills in this directory within your workspace, and they
-will be automatically discovered at startup.
+Skills are loaded from three directories in the following priority order (higher-priority directories override lower-priority skills with the same name):
+
+1. `install_dir/.makecode/skills/<name>/SKILL.md` (bundled skills)
+2. `workdir/.makecode/skills/<name>/SKILL.md` (default location for user skills)
+3. Legacy `workdir/skills/<name>/SKILL.md` (backward compatibility)
+
+After workspace startup, place custom skills in `workdir/.makecode/skills/` for automatic discovery. A `SKILL.md` frontmatter block must contain valid `name` and `description` fields before the skill is loaded.
 
 Default behavior: the skills summary injection is enabled by default. When disabled, the UI shows `skills已关闭`, and
 the skills catalog is no longer appended to orchestrator/sub-agent system prompts.
@@ -352,10 +358,11 @@ MakeCode provides a visual model configuration management interface with multi-m
 
 #### Core Features
 
-- **Disk Persistence**: Model configurations are automatically saved to `.makecode/model_config.json` under the installation directory, persisting across sessions. Model configuration, MCP configuration, pane layout configuration (`layout_config.json`), and error logs are all stored in the installation directory (not the workspace directory), with paths supplied uniformly by `utils/paths.py` so that multiple projects share one configuration set.
+- **Disk Persistence**: Model configuration is saved to `model_config.json` in the platform-specific shared configuration directory and persists across sessions. Model configuration, MCP configuration, pane layout configuration (`layout_config.json`), and error logs stay outside the workspace, with paths supplied uniformly by `utils/paths.py`: Windows and source runs use `install_dir/.makecode/`, while packaged macOS builds use `~/Library/Application Support/MakeCode/`, allowing multiple projects to share one configuration set.
 - **Multi-Model Support**: Can manage multiple API endpoints and model IDs simultaneously
 - **Favorite Management**: Supports marking favorite models with priority sorting
 - **Context Configuration**: Each model can independently set `max_context` (in thousand tokens)
+- **Reasoning Effort Configuration**: Each model can independently set `reasoning_effort` (`low` / `medium` / `high` / `xhigh` / `max`, default `medium`); use the left and right arrow keys in the model panel to adjust it, and the model display text shows the current value
 - **Smart Display**: Automatically extracts domain prefix, displaying in `model_id (domain)` format
 
 #### ModelConfig Data Structure
@@ -363,12 +370,12 @@ MakeCode provides a visual model configuration management interface with multi-m
 ```python
 @dataclass
 class ModelConfig:
-    base_url: str          # API endpoint
-    api_key: str           # API key
-    model_id: str          # Model identifier
-    is_favorite: bool      # Is favorite
-    selected: bool         # Is selected
-    max_context: int       # Max context (k)
+    base_url: str                     # API endpoint
+    api_key: str                      # API key
+    model_id: str                     # Model identifier
+    is_favorite: bool = False         # Is favorite
+    max_context: int = 128            # Max context (k)
+    reasoning_effort: str = "medium" # Reasoning effort
 ```
 
 #### Related Components
@@ -470,18 +477,20 @@ MakeCode allows agents to proactively ask users questions when uncertain, rather
 
 MakeCode includes a complete built-in auto-update system supporting version checks, complete directory downloads, and transactional upgrades.
 
+> **Platform limitation**: In-app auto-update currently supports Windows only. On macOS, MakeCode directs users to GitHub Releases to download and replace the application manually.
+
 #### Core Components
 
 - **Version Checking** (`system/updater.py`): Fetches `version.json` from a remote server and compares it with the local `CURRENT_VERSION` to determine if an update is available
 - **Download & Verification**: Supports chunked downloading (8KB/chunk) with progress callbacks, followed by automatic SHA256 integrity verification
-- **Standalone Updater** (`updater.py`): Uses a "standalone updater" approach — after downloading the new exe to a temporary directory, the main program releases `updater.exe` and exits; the updater waits for the main process to exit, then replaces the old exe with the new file for a seamless upgrade
+- **Standalone Updater** (`updater.py`, Windows only): Uses a "standalone updater" approach — after downloading the new exe to a temporary directory, the main program releases `updater.exe` and exits; the updater waits for the main process to exit, then replaces the old exe with the new file for a seamless upgrade
 - **Progress Display**: Real-time visual progress bar (`█░` fill animation), percentage, and MB count during download
 - **Background Check on Startup**: Automatically checks for updates in the background at startup; notifies the user in the terminal if a new version is available
 
 #### Version Configuration (`version.py`)
 
 ```python
-CURRENT_VERSION = "5.0.0"
+CURRENT_VERSION = "5.0.7"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -499,7 +508,7 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 #### Related Components
 
 - `system/updater.py`: Core update logic (version check, download, verification, updater launch)
-- `updater.py`: Standalone updater program, responsible for replacing the exe after the main program exits
+- `updater.py`: Windows standalone updater, responsible for replacing the exe after the main program exits
 - `version.py`: Version number and update server URL configuration
 - `system/commands.py`: `/update` command handling and interactive confirmation
 
@@ -509,18 +518,22 @@ To centrally manage workspace paths and install-directory global configuration, 
 
 #### Path Layers
 
-- **Install Directory**: The directory containing `MakeCode.exe` or the source code root. Cross-project shared config and logs live here.
-    - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, `error.log` reside under `install_dir/.makecode/`.
+- **Install Directory**: On Windows, this is the directory containing `MakeCode.exe`; in the packaged macOS release, it is the directory containing `MakeCode/MakeCode`; for source runs, it is the source root.
+    - On Windows and in source runs, shared configuration lives under `install_dir/.makecode/`.
+    - In the packaged macOS release, shared configuration lives under `~/Library/Application Support/MakeCode/`, preventing application replacement during upgrades from deleting configuration.
+    - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, and `error.log` live in the corresponding shared configuration directory.
 - **Workspace Directory (Workdir)**: The user's chosen working directory. Session- and task-related state lives here.
-    - `tasks/`, `team/runs/`, `memory/memory.jsonl`, `memory/memory_config.json`, `transcripts/`, `checkpoint/` reside under `workdir/.makecode/`.
-    - `skills/` resides under `workdir/skills/`.
+    - `tasks/`, `team/runs/`, `memory/memory.jsonl`, `memory/memory_config.json`, `transcripts/`, and `checkpoint/` reside under `workdir/.makecode/`.
+    - User skills default to `workdir/.makecode/skills/`; legacy `workdir/skills/` remains supported.
 
 #### Core API
 
-- `paths.install_dir()` / `paths.install_makecode_dir()`: return the install directory and its `.makecode` subdirectory.
+- `paths.install_dir()` / `paths.install_makecode_dir()`: return the program install directory and shared configuration directory respectively; for packaged macOS builds, the latter returns `~/Library/Application Support/MakeCode`.
 - `paths.workdir()` / `paths.workspace_makecode_dir()`: return the current workspace and its `.makecode` subdirectory.
 - `paths.set_workdir(path)`: switch workspace at runtime, used internally by the `/cd` command.
-- Task/memory/skills/transcript/checkpoint/MCP/model-config getters are all unified here (`workspace_tasks_dir()`, `workspace_memory_jsonl_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
+- `paths.install_skills_dir()`: return the bundled-skill directory at `install_dir/.makecode/skills/`.
+- `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`: return `workdir/.makecode/skills/` and the legacy `workdir/skills/` respectively.
+- Task/memory/transcript/checkpoint/MCP/model-config getters are all unified here (`workspace_tasks_dir()`, `workspace_memory_jsonl_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
 
 #### Design Benefits
 
@@ -533,6 +546,13 @@ To centrally manage workspace paths and install-directory global configuration, 
 - `/pwd`: display the current working directory in the Content pane; also displayed automatically on startup, after workspace switching, and after `/new`.
 - `/cd <path>`: switch the working directory and start a fresh session. Supports absolute, relative, and quoted paths. Switching triggers a full reset: clears all five panes, rebuilds history, resets the HITL directory allowlist, clears `visited_files`, and resets the checkpoint. Uses `paths.set_workdir(...)` to synchronize path state. Both `/new` and `/cd` share the same session-reset logic.
 
+### 2.22 LLM Client Adaptation and Request Resilience (`utils/llm_client.py`) (New)
+
+- **Unified Client Creation**: The orchestrator uses a synchronous client, while sub-agents use `_create_async_chat_client()` with the same endpoint, authentication, timeout, and retry settings.
+- **Timeouts**: The total request timeout is 120 seconds and the connection timeout is 10 seconds, preventing connections or responses from hanging indefinitely.
+- **Retry Policy**: Requests are retried at most twice, with retry waits increasing from 10 to 20 seconds.
+- **Reasoning Effort and Caching**: Clients read `ModelConfig.reasoning_effort`; the main client cache key includes this field, so changing it rebuilds the client and applies the new value.
+
 ---
 
 ## 3. Project Structure
@@ -543,10 +563,12 @@ Agent/
 ├─ init.py                  # workspace selection, model config init
 ├─ prompts.py               # centralized management of all LLM prompts
 ├─ version.py               # version number and update server URL configuration
-├─ updater.py               # standalone updater program (replaces exe after main program exits)
+├─ updater.py               # Windows standalone updater (replaces exe after main exits)
 ├─ requirements.txt         # project dependencies
 ├─ README.md
 ├─ README_en.md
+├─ assets/
+│  └─ MakeCode.command       # Terminal launcher for the packaged macOS release
 ├─ tools/
 │  ├─ todo.py               # internal todo manager for sub-agents
 │  └─ ask_user.py            # agent proactive questioning tool
@@ -589,13 +611,17 @@ Runtime-generated directories:
 - `.makecode/transcripts/`: transcripts saved before compaction
 - `.makecode/memory/`: long-term memory data and capacity settings
 - `.makecode/checkpoint/`: session checkpoints (for `/load` to restore from)
+- `.makecode/skills/`: user skills for the current workspace (with legacy workspace-root `skills/` compatibility)
 
 Additionally, under the install directory (cross-project shared):
 
 - `<install_dir>/.makecode/model_config.json`: model configuration
 - `<install_dir>/.makecode/mcp_config.json`: MCP service configuration
 - `<install_dir>/.makecode/layout_config.json`: pane layout ratios
+- `<install_dir>/.makecode/skills/`: bundled skills provided with the installation
 - `<install_dir>/.makecode/mcp_stderr.log`, `error.log`: MCP / system error logs
+
+> In packaged macOS builds, shared configuration files live under `~/Library/Application Support/MakeCode/`, while bundled skills are still loaded from `.makecode/skills/` inside the application directory.
 
 ### 3.2 Architecture Diagram (Mermaid)
 
@@ -626,14 +652,14 @@ flowchart TD
     C --> W["Workspace Files"]
     C --> X["Terminal Command Execution"]
 
-    S --> SK["skills/*/SKILL.md"]
+    S --> SK["install/workdir .makecode/skills\nlegacy workdir/skills"]
     MM --> TR[".makecode/transcripts/"]
     MM --> LTM[".makecode/memory/memory.jsonl"]
     TM --> TP[".makecode/tasks/"]
     T --> TH[".makecode/team/"]
-    MCP --> MC["mcp_config.json\ninstall .makecode/"]
+    MCP --> MC["mcp_config.json\nshared config dir"]
     MCP --> MT["MCP Services\nExternal Tools"]
-    PA --> ID["install_dir/.makecode/"]
+    PA --> ID["shared config\ninstall .makecode / macOS App Support"]
     PA --> WD["workdir/.makecode/"]
     TUI --> R1["Content / Tools / Task\nBackground / Sub-Agent"]
 
@@ -672,7 +698,8 @@ flowchart TD
 - `utils/tasks.py` maintains task DAG, state transitions, and runnable frontier.
 - `utils/teams.py` delegates the latest runnable tasks to sub-agents concurrently, collects results, and supports
   failure context recovery.
-- `utils/skills.py` provides skill discovery and content loading.
+- `utils/skills.py` discovers and loads skills by priority from the install directory, workspace `.makecode/skills/`, and legacy workspace `skills/` directory.
+- `utils/llm_client.py` creates orchestrator and sub-agent LLM clients consistently, propagates `reasoning_effort`, and configures a 120-second total timeout, 10-second connection timeout, and at most two retries.
 - `utils/memory.py` handles long-session compaction, long-term memory management, and transcript storage.
 - `utils/mcp_manager.py` manages MCP service configuration loading, client lifecycle, tool extraction and
   registration, with support for dynamic enable/disable.
@@ -686,11 +713,11 @@ flowchart TD
 - `system/tui_app.py` is the Textual TUI main application responsible for pane layout, event dispatch, status bar, and key binding.
 - `system/tui_modals.py` provides unified TUI dialogs/panels (model, memory, MCP, layout, info panels, etc.).
 - `system/tui_types.py` defines the `TuiRegion` enum (Content / Reasoning / Task / Tools / Background / Sub-Agent / Status / RuntimeInfo) and default layout ratios, with backward-compatible `reasoning→task` key migration.
-- `system/models.py` provides model configuration management with multi-model persistence, favorites, and max_context settings.
+- `system/models.py` provides model configuration management with multi-model persistence, favorites, `max_context`, and `reasoning_effort` settings.
 - `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
 - `tools/ask_user.py` allows agents to proactively ask users questions when uncertain, supporting option lists and custom input via a TUI interactive panel.
-- `system/updater.py` implements auto-update logic: version checking, download with progress, SHA256 verification, and launching the standalone updater for seamless upgrades.
-- `updater.py` is the standalone updater program that replaces the exe file after the main program exits.
+- `system/updater.py` implements Windows in-app auto-update logic: version checking, download with progress, SHA256 verification, and launching the standalone updater; macOS only prompts for a manual download.
+- `updater.py` is the Windows standalone updater that replaces the exe file after the main program exits.
 - `version.py` manages version number and update server URL configuration.
 
 ---
@@ -713,7 +740,8 @@ A typical flow looks like this:
 
 ## 5. Requirements
 
-- Python 3.10+
+- Supported platforms: Windows X64 and macOS ARM64; no packaged Linux application is currently provided
+- Source runs require Python 3.10+
 - Access to an OpenAI-compatible endpoint
 - A model that supports the Chat Completions API or Responses API
 
@@ -748,19 +776,22 @@ MakeCode employs a strict Workspace isolation mechanism. It is **not recommended
 source directory. Instead, prepare the following in your actual project directory (the directory where you want the
 Agent to work):
 
-1. **Custom Skills Library `skills/` (Optional)**:
-   If your project requires specific expert skills, create a `skills` folder in the root of your target workspace
-   directory.
-   The structure should look like this: `skills/<skill-name>/SKILL.md`. MakeCode will strictly load skills only from
-   this directory.
+1. **Custom Skills Library `.makecode/skills/` (Optional)**:
+   If your project requires specific expert skills, create `.makecode/skills` under the target workspace root.
+   Use `.makecode/skills/<skill-name>/SKILL.md`. The legacy `skills/<skill-name>/SKILL.md` path remains supported; same-name skills follow the install-directory, new workspace path, then legacy workspace path priority order.
 
 ### 6.3 Start
 
-Run the following command in the MakeCode source directory to start the CLI:
+For a source run, execute the following command in the MakeCode source directory:
 
 ```bash
 python main.py
 ```
+
+For packaged releases:
+
+- **Windows X64**: Extract `MakeCode-Windows-X64.zip`, then run `MakeCode.exe`.
+- **macOS ARM64**: Extract `MakeCode-macOS-ARM64.zip`, then double-click the top-level `MakeCode.command`; it starts `MakeCode/MakeCode` in Terminal. Starting the frozen executable without a TTY also relaunches it in Terminal automatically.
 
 After startup, you will enter a wizard flow:
 
@@ -835,11 +866,12 @@ Important built-in rules include:
 
 ### 8.1 Add a Skill
 
-1. Create `skills/<name>/`
+1. Create `.makecode/skills/<name>/` (recommended); legacy `skills/<name>/` remains supported
 2. Add `SKILL.md`
-3. Optionally include frontmatter fields:
+3. Include these required frontmatter fields:
     - `name`
     - `description`
+   You may also include:
     - `tags`
 4. New skills are automatically rescanned and summarized into the Skills Catalog the next time system prompts are built;
    use `/skills-switch` to toggle that injection temporarily
