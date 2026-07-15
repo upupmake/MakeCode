@@ -796,6 +796,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/pwd`               | Show the current working directory in the Content pane                                                                                           |
 | `/cd <path>`         | Switch the current working directory and start a fresh session; supports absolute / relative / quoted paths                                       |
 | `/layout`            | Open the layout panel to adjust Content / Tools / Task / Background / Sub-Agent pane ratios                                                       |
+| `/flush`             | Fully repaint the TUI screen without changing existing content in any pane                                                                        |
 | `/memory-list`       | List current active long-term memories                                                                                                           |
 | `/memory-panel`      | Open the long-term memory panel (sorted by `updated_at` ascending)                                                                               |
 | `/memory-delete`     | Delete one or more long-term memories by ID                                                                                                       |
