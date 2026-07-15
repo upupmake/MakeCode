@@ -19,7 +19,7 @@ from rich.text import Text
 from init import log_error_traceback
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, begin_tui_batch_render, end_tui_batch_render
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.plan_mode import toggle_plan_mode
 from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
@@ -71,6 +71,7 @@ COMMAND_DESCRIPTIONS = {
     "/cmds": "列出所有可用内置命令和功能描述。",
     "/models": "打开模型管理面板，可添加、删除、标记常用、选择当前模型。",
     "/layout": "调整 TUI 面板高度比例：左侧 Content/Tools，右侧 Task/Background/Sub-Agent。",
+    "/flush": "完整刷新 TUI 屏幕，不改变任何面板中已有的内容。",
     "/mcp-view": "查看当前已加载的 MCP 服务器和工具。",
     "/mcp-help": "显示 MCP 相关命令介绍。",
     "/mcp-add": "<name> 添加 MCP 服务配置；stdio 示例：/mcp-add fs -- npx -y @server/pkg；HTTP 示例：/mcp-add api --url https://example.com/mcp --header X-Api-Key=xxx。服务名已存在时请先 /mcp-delete <name>。",
@@ -1245,6 +1246,11 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 "\n[bold yellow]👋 正在退出 MakeCode CLI。再见！[/bold yellow]"
             )
             return CommandResult(action=CommandAction.EXIT)
+
+        # /flush - 完整重绘 TUI，不修改面板内容
+        if query == "/flush":
+            flush_tui_screen()
+            return CommandResult(action=CommandAction.CONTINUE)
 
         # MCP 相关命令
         if query == "/mcp-help":
