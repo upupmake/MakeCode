@@ -489,11 +489,9 @@ class MakeCodeTuiApp(App[None]):
         display: block;
     }
 
-    #content-pane {
-        height: 1fr;
-    }
-
+    #content-pane,
     #tools-pane {
+        min-width: 86;
         height: 1fr;
     }
 
