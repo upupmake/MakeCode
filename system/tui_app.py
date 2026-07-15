@@ -270,6 +270,16 @@ class TuiBridge:
         else:
             app.call_from_thread(app.refresh_tools_title)
 
+    def flush_screen(self) -> None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            app.flush_screen()
+        else:
+            app.call_from_thread(app.flush_screen)
+
     def begin_batch_render(self) -> None:
         with self._app_lock:
             app = self._app
@@ -773,6 +783,11 @@ class MakeCodeTuiApp(App[None]):
         self._tool_result_keep_limit = self._load_tool_result_keep_limit()
         self._update_tools_title()
 
+    def flush_screen(self) -> None:
+        self._driver.write("\x1b[2J\x1b[H")
+        self._driver.flush()
+        self.refresh(repaint=True, layout=True)
+
     def _set_pane_active(self, region: TuiRegion, active: bool) -> None:
         pane = self._panes.get(region)
         if pane is None:
@@ -1141,10 +1156,11 @@ class MakeCodeTuiApp(App[None]):
         self._slash_matches = []
         self._slash_match_index = 0
         self._hide_slash_hints()
-        from system.console_render import render_content_user_message
+        if text != "/flush":
+            from system.console_render import render_content_user_message
 
-        post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
-        self.handle_tui_event(TuiEvent(TuiRegion.CONTENT, render_content_user_message(text)))
+            post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
+            self.handle_tui_event(TuiEvent(TuiRegion.CONTENT, render_content_user_message(text)))
         if self._submit_handler is not None:
             threading.Thread(target=self._run_submit_handler, args=(text,), daemon=True).start()
 
@@ -1409,6 +1425,10 @@ def refresh_status() -> None:
 
 def refresh_tools_title() -> None:
     TUI_BRIDGE.refresh_tools_title()
+
+
+def flush_tui_screen() -> None:
+    TUI_BRIDGE.flush_screen()
 
 
 def begin_tui_batch_render() -> None:
