@@ -1,6 +1,11 @@
+from unittest.mock import Mock
+
+import pytest
 from rich.console import Console
 
 from system.commands import COMMAND_DESCRIPTIONS, CommandHandler
+from system.tui_app import MakeCodeInput, MakeCodeTuiApp
+from system.tui_types import TuiEvent, TuiRegion
 from utils.mcp_manager import GlobalMCPManager
 
 
@@ -30,6 +35,57 @@ def make_handler():
 
 def test_mcp_help_command_registered():
     assert COMMAND_DESCRIPTIONS["/mcp-help"] == "显示 MCP 相关命令介绍。"
+
+
+def test_flush_command_registered_and_does_not_run_agent(monkeypatch):
+    handler = make_handler()
+    flushed = []
+    monkeypatch.setattr("system.commands.flush_tui_screen", lambda: flushed.append(True))
+
+    result = handler.process_command(
+        "/flush",
+        history=[],
+        current_checkpoint=None,
+        render_banner_fn=lambda: None,
+        render_hint_fn=lambda: None,
+        render_history_fn=lambda history: None,
+    )
+
+    assert COMMAND_DESCRIPTIONS["/flush"] == "完整刷新 TUI 屏幕，不改变任何面板中已有的内容。"
+    assert result.action.name == "CONTINUE"
+    assert flushed == [True]
+
+
+def test_flush_screen_clears_terminal_and_requests_full_repaint():
+    app = MakeCodeTuiApp.__new__(MakeCodeTuiApp)
+    app._driver = Mock()
+    app.refresh = Mock()
+
+    app.flush_screen()
+
+    app._driver.write.assert_called_once_with("\x1b[2J\x1b[H")
+    app._driver.flush.assert_called_once_with()
+    app.refresh.assert_called_once_with(repaint=True, layout=True)
+
+
+@pytest.mark.anyio
+async def test_submitting_flush_preserves_existing_pane_content():
+    submitted = []
+    app = MakeCodeTuiApp(submit_handler=lambda text: submitted.append(text))
+
+    async with app.run_test() as pilot:
+        app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, "existing content"))
+        await pilot.pause()
+        content_log = app._logs[TuiRegion.CONTENT]
+        before = list(content_log.lines)
+
+        input_box = app.query_one("#input-box", MakeCodeInput)
+        input_box.load_text("/flush")
+        app.submit_current_input()
+        await pilot.pause()
+
+        assert list(content_log.lines) == before
+        assert submitted == ["/flush"]
 
 
 def test_parse_mcp_add_stdio_command_parts_and_env():
