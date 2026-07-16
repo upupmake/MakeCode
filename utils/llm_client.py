@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Union, Generator
 
+import httpx
 from openai import OpenAI, AsyncOpenAI, Timeout
 
 # Monkey-patch OpenAI SDK 重试策略：重试2次，等待 10s → 20s
@@ -18,7 +19,7 @@ from prompts import get_memory_decision_system_prompt, get_summary_system_prompt
 
 
 _LLM_TIMEOUT = Timeout(120, connect=10)
-_LLM_MAX_RETRIES = 2
+_LLM_MAX_RETRIES = 3
 _CLIENT_REQUEST_IDS = itertools.count(1)
 _CURRENT_CLIENT_REQUEST_ID: ContextVar[int | None] = ContextVar(
     "current_client_request_id", default=None
@@ -38,6 +39,12 @@ def _set_client_request_retry(retry_count: int, max_retries: int) -> None:
 
 
 class _TrackedOpenAI(OpenAI):
+    def _should_retry(self, response: httpx.Response) -> bool:
+        # 中转场景下 404 多为上游瞬时路由失败（部分渠道缺模型），计入重试
+        if response.status_code == 404:
+            return True
+        return super()._should_retry(response)
+
     def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
         _set_client_request_retry(retries_taken + 1, max_retries)
         super()._sleep_for_retry(
@@ -49,6 +56,12 @@ class _TrackedOpenAI(OpenAI):
 
 
 class _TrackedAsyncOpenAI(AsyncOpenAI):
+    def _should_retry(self, response: httpx.Response) -> bool:
+        # 中转场景下 404 多为上游瞬时路由失败（部分渠道缺模型），计入重试
+        if response.status_code == 404:
+            return True
+        return super()._should_retry(response)
+
     async def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
         _set_client_request_retry(retries_taken + 1, max_retries)
         await super()._sleep_for_retry(
