@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 from rich.text import Text
 
 from system.models import ModelConfig, ModelManager, REASONING_EFFORTS
@@ -813,7 +814,8 @@ def test_sync_llm_client_has_bounded_timeout_and_retries():
     try:
         assert client.client.timeout.connect == 10
         assert client.client.timeout.read == 120
-        assert client.client.max_retries == 2
+        assert client.client.max_retries == 5
+        assert client.client._should_retry(httpx.Response(404)) is True
     finally:
         client.client.close()
 
@@ -826,7 +828,8 @@ async def test_async_llm_client_has_bounded_timeout_and_retries():
     try:
         assert client.client.timeout.connect == 10
         assert client.client.timeout.read == 120
-        assert client.client.max_retries == 2
+        assert client.client.max_retries == 5
+        assert client.client._should_retry(httpx.Response(404)) is True
     finally:
         await client.client.close()
 
