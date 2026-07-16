@@ -2,6 +2,7 @@ import copy
 import inspect
 import itertools
 import json
+import re
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -649,9 +650,16 @@ _cached_llm_client = None
 _cached_model_key = None
 
 
+def _normalize_base_url(base_url: str) -> str:
+    base_url = base_url.rstrip("/")
+    if not re.search(r"/v[0-9]+$", base_url):
+        return f"{base_url}/v1"
+    return base_url
+
+
 def _create_chat_client(model_config):
     client = _TrackedOpenAI(
-        base_url=model_config.base_url,
+        base_url=_normalize_base_url(model_config.base_url),
         api_key=model_config.api_key,
         timeout=_LLM_TIMEOUT,
         max_retries=_LLM_MAX_RETRIES,
@@ -662,7 +670,7 @@ def _create_chat_client(model_config):
 
 def _create_async_chat_client(model_config):
     client = _TrackedAsyncOpenAI(
-        base_url=model_config.base_url,
+        base_url=_normalize_base_url(model_config.base_url),
         api_key=model_config.api_key,
         timeout=_LLM_TIMEOUT,
         max_retries=_LLM_MAX_RETRIES,
