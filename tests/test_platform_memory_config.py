@@ -807,11 +807,28 @@ def test_llm_client_cache_changes_when_reasoning_effort_changes():
     assert create_client.call_count == 2
 
 
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("https://example.com", "https://example.com/v1"),
+        ("https://example.com/", "https://example.com/v1"),
+        ("https://example.com/v1", "https://example.com/v1"),
+        ("https://example.com/v9", "https://example.com/v9"),
+        ("https://example.com/v10", "https://example.com/v10"),
+        ("https://example.com/v2026", "https://example.com/v2026"),
+        ("https://example.com/version1", "https://example.com/version1/v1"),
+    ],
+)
+def test_normalize_base_url_adds_default_version(base_url, expected):
+    assert llm_client_module._normalize_base_url(base_url) == expected
+
+
 def test_sync_llm_client_has_bounded_timeout_and_retries():
     model = ModelConfig("https://example.com", "key", "main")
 
     client = llm_client_module._create_chat_client(model)
     try:
+        assert str(client.client.base_url) == "https://example.com/v1/"
         assert client.client.timeout.connect == 10
         assert client.client.timeout.read == 120
         assert client.client.max_retries == 5
@@ -826,6 +843,7 @@ async def test_async_llm_client_has_bounded_timeout_and_retries():
 
     client = llm_client_module._create_async_chat_client(model)
     try:
+        assert str(client.client.base_url) == "https://example.com/v1/"
         assert client.client.timeout.connect == 10
         assert client.client.timeout.read == 120
         assert client.client.max_retries == 5
