@@ -10,16 +10,11 @@ from typing import Any, Union, Generator
 import httpx
 from openai import OpenAI, AsyncOpenAI, Timeout
 
-# Monkey-patch OpenAI SDK 重试策略：重试2次，等待 10s → 20s
-import openai._constants as _openai_consts
-_openai_consts.INITIAL_RETRY_DELAY = 10
-_openai_consts.MAX_RETRY_DELAY = 30
-
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
 
 
 _LLM_TIMEOUT = Timeout(120, connect=10)
-_LLM_MAX_RETRIES = 3
+_LLM_MAX_RETRIES = 5
 _CLIENT_REQUEST_IDS = itertools.count(1)
 _CURRENT_CLIENT_REQUEST_ID: ContextVar[int | None] = ContextVar(
     "current_client_request_id", default=None
