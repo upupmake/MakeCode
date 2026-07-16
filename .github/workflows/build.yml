@@ -22,6 +22,7 @@ jobs:
         os:
           - windows-latest
           - macos-latest
+          - ubuntu-22.04
 
     steps:
       - name: Checkout repository
@@ -103,6 +104,7 @@ jobs:
           platform_key = {
               ("Windows", "X64"): "windows-x86_64",
               ("macOS", "ARM64"): "macos-arm64",
+              ("Linux", "X64"): "linux-x86_64",
           }.get((runner_os, runner_arch))
           if platform_key:
               parser_archive = f"parsers-{platform_key}.tar.zst"
@@ -152,7 +154,7 @@ jobs:
               shutil.make_archive(
                   str(release_assets / f"MakeCode-{suffix}"), "zip", dist, app.name
               )
-          else:
+          elif runner_os == "macOS":
               app = dist / "MakeCode"
               if not (app / "MakeCode").is_file() or not (app / "_internal").is_dir():
                   raise SystemExit("Invalid macOS onedir output")
@@ -164,12 +166,22 @@ jobs:
               shutil.copy2(launcher, package / launcher.name)
               shutil.copytree(package / "MakeCode", Path("artifacts") / "MakeCode", symlinks=True)
               shutil.copy2(package / launcher.name, Path("artifacts") / launcher.name)
+          elif runner_os == "Linux":
+              app = dist / "MakeCode"
+              if not (app / "MakeCode").is_file() or not (app / "_internal").is_dir():
+                  raise SystemExit("Invalid Linux onedir output")
+              shutil.copytree(app, Path("artifacts") / app.name, symlinks=True)
+          else:
+              raise SystemExit(f"Unsupported runner OS: {runner_os}")
           PY
 
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             ditto -c -k release-assets/macos-package \
               "release-assets/MakeCode-${RUNNER_OS}-${RUNNER_ARCH}.zip"
             rm -r release-assets/macos-package
+          elif [[ "$RUNNER_OS" == "Linux" ]]; then
+            (cd dist && zip -qry \
+              "../release-assets/MakeCode-${RUNNER_OS}-${RUNNER_ARCH}.zip" MakeCode)
           fi
 
       - name: Upload build artifacts
@@ -220,9 +232,6 @@ jobs:
           version = tag.removeprefix("v")
           repository = os.environ["REPOSITORY"]
           token = os.environ["GH_TOKEN"]
-          archive = Path("release-assets/MakeCode-Windows-X64.zip")
-          if not archive.is_file():
-              raise SystemExit(f"Missing Windows release asset: {archive}")
 
           request = urllib.request.Request(
               f"https://api.github.com/repos/{repository}/releases/tags/{tag}",
@@ -244,18 +253,35 @@ jobs:
           if not release_log:
               raise SystemExit("Release log is empty")
 
-          sha256 = hashlib.sha256()
-          with archive.open("rb") as stream:
-              for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                  sha256.update(chunk)
-
           base_url = f"https://github.com/{repository}/releases/latest/download"
+          asset_names = {
+              "windows-x86_64": "MakeCode-Windows-X64.zip",
+              "macos-arm64": "MakeCode-macOS-ARM64.zip",
+              "linux-x86_64": "MakeCode-Linux-X64.zip",
+          }
+          platforms = {}
+          for platform_key, asset_name in asset_names.items():
+              asset = Path("release-assets") / asset_name
+              if not asset.is_file():
+                  raise SystemExit(f"Missing release asset: {asset}")
+              digest = hashlib.sha256()
+              with asset.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              platforms[platform_key] = {
+                  "download_url": f"{base_url}/{asset_name}",
+                  "sha256": digest.hexdigest(),
+                  "size": asset.stat().st_size,
+              }
+
+          windows = platforms["windows-x86_64"]
           manifest = {
               "version": version,
-              "download_url": f"{base_url}/{archive.name}",
-              "sha256": sha256.hexdigest(),
-              "size": archive.stat().st_size,
+              "download_url": windows["download_url"],
+              "sha256": windows["sha256"],
+              "size": windows["size"],
               "release_log": release_log,
+              "platforms": platforms,
           }
           Path("release-assets/version.json").write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2),
