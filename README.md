@@ -20,7 +20,7 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
 - **File Access Control** 模块提供强制读取后编辑、修改时间锁校验与细粒度文件级并发锁。
 - **Prompt 集中管理** 将所有 LLM Prompt 统一维护，便于扩展与参数化。
 - **集中路径模块（`utils/paths.py`）** 统一管理工作区目录与安装目录派生路径，所有模块统一通过共享 getter 访问 `.makecode/` 子目录。
-- **跨平台打包支持** 提供 Windows X64 与 macOS ARM64 发布包；macOS 通过顶层 `MakeCode.command` 在 Terminal 中启动。
+- **跨平台打包支持** 提供 Windows X64、macOS ARM64 与 Linux X64 发布包；macOS 通过顶层 `MakeCode.command` 启动，Linux 直接运行 `MakeCode/MakeCode`。
 - **Textual 多区 TUI** 将主智能体输出分发到 `Content / Tools / Task / Background / Sub-Agent / Status` 等独立面板，并支持自定义面板比例。
 
 这个项目的目标不是只回答问题，而是让智能体具备**可规划、可执行、可追踪、可扩展**的工程工作流能力。
@@ -707,7 +707,7 @@ flowchart TD
 
 ## 5. 环境要求
 
-- 支持平台：Windows X64、macOS ARM64；当前不提供 Linux 打包版
+- 支持平台：Windows X64、macOS ARM64、Linux X64（GLIBC 2.35+）
 - 源码运行需要 Python 3.10+
 - 可用的 OpenAI 兼容接口
 - 模型支持 Chat Completions API 或 Responses API
@@ -758,6 +758,7 @@ python main.py
 
 - **Windows X64**：解压 `MakeCode-Windows-X64.zip` 后运行 `MakeCode.exe`。
 - **macOS ARM64**：解压 `MakeCode-macOS-ARM64.zip` 后双击顶层 `MakeCode.command`；脚本会在 Terminal 中启动 `MakeCode/MakeCode`。直接启动无 TTY 的冻结程序时也会自动重新拉起 Terminal。
+- **Linux X64**：解压 `MakeCode-Linux-X64.zip` 后运行 `./MakeCode/MakeCode`。若解压工具未保留执行权限，先运行 `chmod +x MakeCode/MakeCode`。
 
 启动后会进入向导流程：
 
