@@ -88,7 +88,7 @@ pyinstaller MakeCode.spec
 - Windows：`dist/MakeCode/MakeCode.exe`，运行依赖位于 `dist/MakeCode/_internal/`
 - macOS：`dist/MakeCode/MakeCode`，运行依赖位于 `dist/MakeCode/_internal/`；发布 ZIP 顶层额外提供 `MakeCode.command`，用户双击该脚本在 Terminal 中启动
 
-Windows 的 `dist/updater.exe` 会被收集为 `dist/MakeCode/_internal/updater.exe`，因此 Windows 必须先构建 updater。macOS 不构建 updater，也不支持应用内自动更新。
+Windows 的 `dist/updater.exe` 会被收集为 `dist/MakeCode/_internal/updater.exe`，因此 Windows 必须先构建 updater。macOS 和 Linux 不构建 updater，也不支持应用内自动更新。
 
 ### 2.5 构建顺序
 
@@ -105,9 +105,17 @@ macOS：
 pyinstaller MakeCode.spec      → dist/MakeCode/
 ```
 
+Linux：
+
+```
+pyinstaller MakeCode.spec      → dist/MakeCode/
+```
+
 GitHub Actions 将 `assets/MakeCode.command` 与 `dist/MakeCode/` 一起打入 `MakeCode-macOS-ARM64.zip`。macOS 用户解压后双击顶层 `MakeCode.command`，不发布 `.app`。
 
-当前 GitHub Actions 只构建 Windows X64 和 macOS ARM64，不构建 Linux应用。构建后只做 TOC、目录结构和警告日志静态检查，禁止启动 `dist` 下的程序。
+GitHub Actions 将 `dist/MakeCode/` 打入 `MakeCode-Linux-X64.zip`。Linux 用户解压后直接运行 `./MakeCode/MakeCode`；若执行权限未保留，先运行 `chmod +x MakeCode/MakeCode`。
+
+当前 GitHub Actions 构建 Windows X64、macOS ARM64 和 Linux X64。Linux runner 固定为 `ubuntu-22.04`，发布包支持基线为 GLIBC 2.35+，避免 `ubuntu-latest` 升级后无意提高最低系统要求。构建后只做 TOC、目录结构和警告日志静态检查，禁止启动 `dist` 下的程序。
 
 ---
 
@@ -130,7 +138,7 @@ python github_release.py
 2. 创建新的 Release（tag 为 `v{版本号}`），body 包含带固定标记的发布日志
 3. 不上传本地产物；创建 tag 后由 GitHub Actions 统一生成发布资产
 
-GitHub Actions 自动构建 Windows/macOS ZIP。Release 汇总任务读取 Release body 中的日志，对最终 Windows ZIP 计算大小和 SHA-256，生成 `version.json`，并将三个资产统一附加到 Release：`MakeCode-Windows-X64.zip`、`MakeCode-macOS-ARM64.zip`、`version.json`。
+GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务读取 Release body 中的日志，为三个平台 ZIP 分别计算大小和 SHA-256，生成向后兼容的 `version.json`（顶层字段继续描述 Windows 资产，`platforms` 字段包含所有平台），并将四个资产统一附加到 Release：`MakeCode-Windows-X64.zip`、`MakeCode-macOS-ARM64.zip`、`MakeCode-Linux-X64.zip`、`version.json`。
 
 **GitHub 配置**：
 - 仓库：`upupmake/MakeCode`
@@ -148,10 +156,10 @@ GitHub Actions 自动构建 Windows/macOS ZIP。Release 汇总任务读取 Relea
 - [ ] **所有变更已提交**（`version.py` + 代码变更）— 构建前完成
 - [ ] `RELEASE_LOG.md` 已准备并包含本次日志
 - [ ] GitHub Release/tag 已创建且指向本次发布提交
-- [ ] 标签触发的 Windows/macOS Actions 构建成功
-- [ ] Release 汇总任务已根据最终 Windows ZIP 生成 `version.json`
-- [ ] Release 包含 Windows ZIP、macOS ZIP 和 `version.json`
-- [ ] GitHub latest Release 的 `version.json` 可访问且哈希、大小与 Windows ZIP 匹配
+- [ ] 标签触发的 Windows/macOS/Linux Actions 构建成功
+- [ ] Release 汇总任务已为三个平台 ZIP 生成带 `platforms` 字段的 `version.json`
+- [ ] Release 包含 Windows ZIP、macOS ZIP、Linux ZIP 和 `version.json`
+- [ ] GitHub latest Release 的 `version.json` 可访问，顶层哈希、大小与 Windows ZIP 匹配，各 `platforms` 条目与对应 ZIP 匹配
 - [ ] **确认工作区干净**：运行 `git status` 确认无未提交的文件
 
 ---
@@ -161,9 +169,9 @@ GitHub Actions 自动构建 Windows/macOS ZIP。Release 汇总任务读取 Relea
 ### 4.1 更新检查流程
 
 用户端启动时会：
-1. 请求 GitHub latest Release 的 `version.json` 获取最新版本信息
-2. 比较本地版本与服务器版本
-3. Windows 打包版可下载并安装更新；macOS 只提示用户从 GitHub Release 手动下载最新版
+1. Windows 请求 GitHub latest Release 的 `version.json` 获取最新版本信息
+2. Windows 比较本地版本与服务器版本，并可下载、校验和安装更新
+3. macOS 和 Linux 不支持应用内自动更新，用户需从 GitHub Release 手动下载最新版
 
 下载必须使用 HTTPS 和系统证书验证。客户端要求 manifest 提供有效 `sha256` 与正整数 `size`，下载后同时校验大小和 SHA-256。
 
@@ -228,7 +236,7 @@ git add -A && git commit -m "release: vX.Y.Z"
 # 3. 创建临时发布日志 RELEASE_LOG.md，写入 markdown 格式发布内容
 # 4. 推送发布提交后创建 GitHub Release/tag
 python github_release.py
-# 5. 等待 GitHub Actions 构建双平台 ZIP 并生成 version.json
+# 5. 等待 GitHub Actions 构建三平台 ZIP 并生成 version.json
 # 6. 确认工作区干净
 git status  # 应输出 "nothing to commit, working tree clean"
 ```
@@ -240,8 +248,9 @@ git status  # 应输出 "nothing to commit, working tree clean"
 | 文件 | 用途 |
 |------|------|
 | `version.py` | 版本号和 GitHub latest Release 地址配置 |
-| `.github/workflows/build.yml` | 构建双平台 ZIP，并基于最终 Windows ZIP 生成 version.json |
-| `MakeCode.spec` | Windows 与 macOS onedir 打包配置 |
+| `.github/workflows/build.yml` | 构建 Windows、macOS、Linux ZIP，并生成包含各平台哈希与大小的 version.json |
+| `MakeCode.spec` | Windows、macOS 与 Linux onedir 打包配置 |
+| `assets/MakeCode.command` | macOS 发布包顶层启动器 |
 | `updater.spec` | Windows 独立更新器打包配置 |
 | `updater.py` | Windows 完整目录事务更新器源码 |
 | `github_release.py` | 从 RELEASE_LOG.md 创建 GitHub Release/tag；所有资产由 Actions 生成 |
