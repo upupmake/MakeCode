@@ -22,7 +22,7 @@ MakeCode is an Agent CLI designed for engineering workflows. It follows an **Orc
   concurrency locks.
 - **Centralized Prompt Management** unifies all LLM prompts for easier maintenance and parameterization.
 - The **Centralized Path Module (`utils/paths.py`)** unifies workspace and install-directory path derivation; all consumers access `.makecode/` subpaths through shared getters.
-- **Cross-platform packaging** provides Windows X64 and macOS ARM64 releases; macOS starts in Terminal through the top-level `MakeCode.command` launcher.
+- **Cross-platform packaging** provides Windows X64, macOS ARM64, and Linux X64 releases; macOS uses the top-level `MakeCode.command` launcher, while Linux runs `MakeCode/MakeCode` directly.
 - The **Textual multi-pane TUI** dispatches orchestrator output into independent panes (`Content / Tools / Task / Background / Sub-Agent / Status`), with customizable pane ratios.
 
 The goal is not just to answer questions, but to provide an agent workflow that is **plannable, executable, traceable,
@@ -744,7 +744,7 @@ A typical flow looks like this:
 
 ## 5. Requirements
 
-- Supported platforms: Windows X64 and macOS ARM64; no packaged Linux application is currently provided
+- Supported platforms: Windows X64, macOS ARM64, and Linux X64 (GLIBC 2.35+)
 - Source runs require Python 3.10+
 - Access to an OpenAI-compatible endpoint
 - A model that supports the Chat Completions API or Responses API
@@ -796,6 +796,7 @@ For packaged releases:
 
 - **Windows X64**: Extract `MakeCode-Windows-X64.zip`, then run `MakeCode.exe`.
 - **macOS ARM64**: Extract `MakeCode-macOS-ARM64.zip`, then double-click the top-level `MakeCode.command`; it starts `MakeCode/MakeCode` in Terminal. Starting the frozen executable without a TTY also relaunches it in Terminal automatically.
+- **Linux X64**: Extract `MakeCode-Linux-X64.zip`, then run `./MakeCode/MakeCode`. If your extraction tool does not preserve executable permissions, first run `chmod +x MakeCode/MakeCode`.
 
 After startup, you will enter a wizard flow:
 
