@@ -2,6 +2,7 @@
 控制台渲染模块：提供所有与控制台输出相关的渲染函数。
 """
 import json
+import re
 import threading
 from typing import Any, List
 
@@ -159,7 +160,13 @@ _TERMINAL_CONTROL_TRANSLATION = dict.fromkeys(
 
 
 def _terminal_output_text(value: Any, style: str = "") -> Text:
-    plain = Text.from_ansi(str(value)).plain.translate(_TERMINAL_CONTROL_TRANSLATION)
+    terminal_text = str(value).replace("\r\n", "\n")
+    terminal_text = re.sub(
+        r"\r(?=(?:\x1b\[[0-?]*[ -/]*[@-~])*\n)",
+        "",
+        terminal_text,
+    ).replace("\r", "\n")
+    plain = Text.from_ansi(terminal_text).plain.translate(_TERMINAL_CONTROL_TRANSLATION)
     return Text(plain, style=style)
 
 

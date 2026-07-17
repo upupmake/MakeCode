@@ -6,6 +6,7 @@ from rich.console import Console
 from system.console_render import (
     _format_readable_ui,
     _render_tool_output,
+    _terminal_output_text,
     render_content_assistant_message,
     render_model_markdown,
 )
@@ -43,6 +44,14 @@ def test_structured_tool_output_does_not_emit_terminal_screen_control_sequences(
     assert "after" in rendered
     assert "\x1b[2J" not in rendered
     assert "\x1b[10;10H" not in rendered
+
+
+def test_terminal_output_preserves_text_before_carriage_return_control_sequences():
+    rendered = _terminal_output_text(
+        "session manager\r\x1b[2K\nstarted\r\x1b[2K\nshutting down"
+    ).plain
+
+    assert rendered == "session manager\nstarted\nshutting down"
 
 
 def test_structured_tool_output_uses_distinct_key_and_value_colors():

@@ -199,6 +199,31 @@ async def test_tui_displays_invalid_rich_markup_as_plain_text():
         assert payload in rendered
 
 
+@pytest.mark.anyio
+async def test_long_tool_result_scrolls_to_result_start():
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        app.handle_tui_event(TuiEvent(TuiRegion.TOOLS, "tool call"))
+        await pilot.pause()
+        tools_log = app._logs[TuiRegion.TOOLS]
+        result_start_y = len(tools_log.lines)
+
+        app.handle_tui_event(
+            TuiEvent(
+                TuiRegion.TOOLS,
+                "\n".join(f"result line {index}" for index in range(20)),
+                tool_result_delta=1,
+            )
+        )
+        await pilot.pause()
+        await pilot.pause()
+
+        assert tools_log.scroll_y == result_start_y
+        assert tools_log.scroll_y < tools_log.max_scroll_y
+
+
 def test_parse_mcp_add_stdio_command_parts_and_env():
     handler = make_handler()
 

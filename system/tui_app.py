@@ -900,7 +900,10 @@ class MakeCodeTuiApp(App[None]):
         return bool(log.is_vertical_scroll_end or log.scroll_y >= log.max_scroll_y - 1)
 
     def _scroll_log_end_after_refresh(self, log: RichLog) -> None:
-        self.call_after_refresh(lambda: log.scroll_end(animate=False))
+        self.call_after_refresh(lambda: log.scroll_end(animate=False, x_axis=False))
+
+    def _scroll_log_to_after_refresh(self, log: RichLog, y: int) -> None:
+        self.call_after_refresh(lambda: log.scroll_to(y=y, animate=False))
 
     def _scroll_bottom_panes_after_refresh(self) -> None:
         for log in self._logs.values():
@@ -972,11 +975,14 @@ class MakeCodeTuiApp(App[None]):
             return
         if event.payload is not None and event.region in {TuiRegion.CONTENT, TuiRegion.REASONING, TuiRegion.TASK, TuiRegion.TOOLS, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
             should_scroll_end = self._is_log_at_bottom(log)
+            result_start_y = len(log.lines) if event.region == TuiRegion.TOOLS and event.tool_result_delta else None
             try:
-                log.write(event.payload, expand=True, shrink=True, scroll_end=should_scroll_end)
+                log.write(event.payload, expand=True, shrink=True, scroll_end=should_scroll_end and result_start_y is None)
             except MarkupError:
-                log.write(Text(str(event.payload)), expand=True, shrink=True, scroll_end=should_scroll_end)
-            if should_scroll_end:
+                log.write(Text(str(event.payload)), expand=True, shrink=True, scroll_end=should_scroll_end and result_start_y is None)
+            if result_start_y is not None:
+                self._scroll_log_to_after_refresh(log, result_start_y)
+            elif should_scroll_end:
                 if self._batch_render_depth > 0:
                     self._batch_scroll_regions.add(event.region)
                 else:
