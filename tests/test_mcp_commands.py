@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 from rich.console import Console
 
-from system.commands import COMMAND_DESCRIPTIONS, CommandHandler
+from system.commands import COMMAND_DESCRIPTIONS, CommandHandler, _checkpoint_preview, _task_plan_preview
 from system.tui_app import MakeCodeInput, MakeCodeTuiApp
 from system.tui_types import TuiEvent, TuiRegion
 from utils.mcp_manager import GlobalMCPManager
@@ -35,6 +35,39 @@ def make_handler():
 
 def test_mcp_help_command_registered():
     assert COMMAND_DESCRIPTIONS["/mcp-help"] == "显示 MCP 相关命令介绍。"
+
+
+def test_checkpoint_preview_only_contains_user_messages():
+    preview = _checkpoint_preview([
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+    ])
+
+    assert "first question" in preview.plain
+    assert "second question" in preview.plain
+    assert "system prompt" not in preview.plain
+    assert "first answer" not in preview.plain
+
+
+def test_task_plan_preview_contains_summary_and_tasks():
+    preview = _task_plan_preview({
+        "epic_id": "abcd1234",
+        "tasks": {
+            "1": {"subject": "Inspect code", "status": "completed", "depend_on": []},
+            "2": {"subject": "Add preview", "status": "pending", "depend_on": ["1"]},
+        },
+    })
+    console = Console(record=True, width=100)
+    console.print(preview)
+    rendered = console.export_text()
+
+    assert "任务总数: 2" in rendered
+    assert "已完成: 1" in rendered
+    assert "Inspect code" in rendered
+    assert "Add preview" in rendered
+    assert "1" in rendered
 
 
 def test_flush_command_registered_and_does_not_run_agent(monkeypatch):
@@ -75,9 +108,10 @@ def test_load_cannot_delete_current_checkpoint(tmp_path, monkeypatch):
     handler.console = Mock()
     handler.list_checkpoints = lambda: [checkpoint]
 
-    def choose_checkpoint(checkpoints, title=None, delete_handler=None):
+    def choose_checkpoint(checkpoints, title=None, delete_handler=None, preview_handler=None):
         assert checkpoints == [checkpoint]
         assert delete_handler is not None
+        assert preview_handler is not None
         with pytest.raises(ValueError, match="当前 checkpoint 正在使用"):
             delete_handler(checkpoint)
         return "abort"
@@ -111,9 +145,10 @@ def test_load_task_plan_list_cannot_delete_current_plan(tmp_path, monkeypatch):
     handler.load_checkpoint = lambda path: [{"role": "system", "content": "system"}]
     chooser_calls = 0
 
-    def choose_checkpoint(checkpoints, title=None, delete_handler=None):
+    def choose_checkpoint(checkpoints, title=None, delete_handler=None, preview_handler=None):
         nonlocal chooser_calls
         chooser_calls += 1
+        assert preview_handler is not None
         if chooser_calls == 1:
             return str(checkpoint)
         assert checkpoints == [current_plan, other_plan]
@@ -124,9 +159,11 @@ def test_load_task_plan_list_cannot_delete_current_plan(tmp_path, monkeypatch):
         delete_handler(other_plan)
         return "abort"
 
+    reset_task_plan = Mock()
     monkeypatch.setattr("system.commands.interactive_choose_checkpoint", choose_checkpoint)
     monkeypatch.setattr("system.commands.list_task_plans", lambda: [current_plan, other_plan])
-    monkeypatch.setattr("system.commands.TASK_MANAGER", Mock(path=current_plan))
+    monkeypatch.setattr("utils.tasks.TASK_MANAGER", Mock(path=current_plan))
+    monkeypatch.setattr("system.commands.refresh_task_workspace_paths", reset_task_plan)
     monkeypatch.setattr("system.commands.render_current_task_plan", lambda console: None)
 
     loaded_history, loaded_checkpoint = handler.handle_load(
@@ -141,6 +178,76 @@ def test_load_task_plan_list_cannot_delete_current_plan(tmp_path, monkeypatch):
     assert loaded_checkpoint == checkpoint
     assert current_plan.exists()
     assert not other_plan.exists()
+    reset_task_plan.assert_called_once_with()
+
+
+def test_load_without_saved_task_plans_resets_current_plan(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
+    checkpoint.write_text("[]", encoding="utf-8")
+    handler = make_handler()
+    handler.console = Mock()
+    handler.list_checkpoints = lambda: [checkpoint]
+    handler.load_checkpoint = lambda path: [{"role": "system", "content": "system"}]
+    reset_task_plan = Mock()
+
+    monkeypatch.setattr(
+        "system.commands.interactive_choose_checkpoint",
+        lambda checkpoints, title=None, delete_handler=None, preview_handler=None: str(checkpoint),
+    )
+    monkeypatch.setattr("system.commands.list_task_plans", lambda: [])
+    monkeypatch.setattr("system.commands.refresh_task_workspace_paths", reset_task_plan)
+    monkeypatch.setattr("system.commands.render_current_task_plan", lambda console: None)
+
+    loaded_history, loaded_checkpoint = handler.handle_load(
+        [{"role": "system", "content": "system"}],
+        checkpoint,
+        render_banner_fn=lambda: None,
+        render_hint_fn=lambda: None,
+        render_history_fn=lambda messages: None,
+    )
+
+    assert loaded_history == [{"role": "system", "content": ""}]
+    assert loaded_checkpoint == checkpoint
+    reset_task_plan.assert_called_once_with()
+
+
+def test_load_selected_task_plan_does_not_reset_it(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
+    checkpoint.write_text("[]", encoding="utf-8")
+    task_plan = tmp_path / "task_plan_selected_abcd1234.json"
+    task_plan.write_text("{}", encoding="utf-8")
+    handler = make_handler()
+    handler.console = Mock()
+    handler.list_checkpoints = lambda: [checkpoint]
+    handler.load_checkpoint = lambda path: [{"role": "system", "content": "system"}]
+    chooser_calls = 0
+
+    def choose_checkpoint(checkpoints, title=None, delete_handler=None, preview_handler=None):
+        nonlocal chooser_calls
+        chooser_calls += 1
+        assert preview_handler is not None
+        return str(checkpoint) if chooser_calls == 1 else str(task_plan)
+
+    load_selected_plan = Mock(return_value={"tasks": {}})
+    reset_task_plan = Mock()
+    monkeypatch.setattr("system.commands.interactive_choose_checkpoint", choose_checkpoint)
+    monkeypatch.setattr("system.commands.list_task_plans", lambda: [task_plan])
+    monkeypatch.setattr("system.commands.load_task_plan", load_selected_plan)
+    monkeypatch.setattr("system.commands.refresh_task_workspace_paths", reset_task_plan)
+    monkeypatch.setattr("system.commands.render_current_task_plan", lambda console: None)
+
+    loaded_history, loaded_checkpoint = handler.handle_load(
+        [{"role": "system", "content": "system"}],
+        checkpoint,
+        render_banner_fn=lambda: None,
+        render_hint_fn=lambda: None,
+        render_history_fn=lambda messages: None,
+    )
+
+    assert loaded_history == [{"role": "system", "content": ""}]
+    assert loaded_checkpoint == checkpoint
+    load_selected_plan.assert_called_once_with(task_plan)
+    reset_task_plan.assert_not_called()
 
 
 def test_tasks_command_opens_task_management_panel(monkeypatch):

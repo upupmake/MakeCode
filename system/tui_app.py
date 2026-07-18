@@ -109,6 +109,7 @@ class TuiBridge:
         *,
         allow_custom: bool = False,
         delete_handler: Callable[[str], None] | None = None,
+        preview_handler: Callable[[str], tuple[str, RenderableType]] | None = None,
     ) -> str:
         with self._app_lock:
             app = self._app
@@ -116,7 +117,7 @@ class TuiBridge:
             return "<cancelled>"
         future: Future[str] = Future()
         if self._is_app_thread():
-            app.open_choice_modal(title, options, allow_custom, delete_handler, future)
+            app.open_choice_modal(title, options, allow_custom, delete_handler, preview_handler, future)
         else:
             app.call_from_thread(
                 app.open_choice_modal,
@@ -124,6 +125,7 @@ class TuiBridge:
                 options,
                 allow_custom,
                 delete_handler,
+                preview_handler,
                 future,
             )
         return future.result()
@@ -997,6 +999,7 @@ class MakeCodeTuiApp(App[None]):
         options: list[str],
         allow_custom: bool,
         delete_handler: Callable[[str], None] | None,
+        preview_handler: Callable[[str], tuple[str, RenderableType]] | None,
         future: Future[str],
     ) -> None:
         def _done(value: str | None) -> None:
@@ -1006,7 +1009,7 @@ class MakeCodeTuiApp(App[None]):
 
         self._modal_active = True
         self.push_screen(
-            ChoiceModal(title, options, allow_custom, delete_handler), _done
+            ChoiceModal(title, options, allow_custom, delete_handler, preview_handler), _done
         )
 
     def open_delegate_tasks_modal(
@@ -1627,10 +1630,12 @@ def choose_tui(
     *,
     allow_custom: bool = False,
     delete_handler: Callable[[str], None] | None = None,
+    preview_handler: Callable[[str], tuple[str, RenderableType]] | None = None,
 ) -> str:
     return TUI_BRIDGE.choose(
         title,
         options,
         allow_custom=allow_custom,
         delete_handler=delete_handler,
+        preview_handler=preview_handler,
     )

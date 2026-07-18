@@ -8,7 +8,7 @@ from rich.text import Text
 from system.models import ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandResult
-from system.tui_modals import ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal, ModelManagerModal, TaskPanelModal
+from system.tui_modals import ChoiceModal, InfoPanelModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal, ModelManagerModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.llm_client import ChatAPIClient, AsyncChatAPIClient, DynamicLLMClientProxy, create_memory_recall_llm_client
 import main as main_module
@@ -475,6 +475,36 @@ async def test_choice_modal_deletes_only_after_confirmation():
         assert deleted == ["选项A"]
         assert modal._options == ["选项B"]
         assert "d 删除选中项" in str(modal.query_one("#choice-title", Label).render())
+
+
+@pytest.mark.anyio
+async def test_choice_modal_v_previews_selected_option_and_returns_to_same_selection():
+    previewed = []
+
+    def preview_handler(option):
+        previewed.append(option)
+        return "预览标题", Text("预览内容")
+
+    modal = ChoiceModal("测试", ["选项A", "选项B"], preview_handler=preview_handler)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        choice_list = modal.query_one("#choice-list")
+        choice_list.index = 1
+
+        await pilot.press("v")
+        await pilot.pause()
+
+        assert previewed == ["选项B"]
+        assert isinstance(app.screen, InfoPanelModal)
+        assert "预览标题" in str(app.screen.query_one("#choice-title", Label).render())
+
+        await pilot.press("q")
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert choice_list.index == 1
 
 
 @pytest.mark.anyio

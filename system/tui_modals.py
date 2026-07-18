@@ -3,6 +3,7 @@ from typing import Any, Callable
 from pathlib import Path
 
 from rich.console import RenderableType
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -352,6 +353,7 @@ class ChoiceModal(ModalScreen[str]):
     BINDINGS = [
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "confirm", "Confirm", priority=True),
+        Binding("v", "preview", "Preview", priority=True),
         Binding("d", "delete", "Delete", priority=True),
         Binding("y", "confirm_delete", "Confirm Delete", priority=True),
         Binding("n", "cancel_delete", "Cancel Delete", priority=True),
@@ -363,18 +365,23 @@ class ChoiceModal(ModalScreen[str]):
         options: list[str],
         allow_custom: bool = False,
         delete_handler: Callable[[str], None] | None = None,
+        preview_handler: Callable[[str], tuple[str, RenderableType]] | None = None,
     ) -> None:
         super().__init__()
         self._title = title
         self._options = options
         self._allow_custom = allow_custom
         self._delete_handler = delete_handler
+        self._preview_handler = preview_handler
         self._pending_delete_index: int | None = None
 
     def _title_text(self) -> str:
-        if self._delete_handler is None:
-            return self._title
-        return f"{self._title}\nd 删除选中项 · y 确认删除 · n 取消删除"
+        hints = []
+        if self._preview_handler is not None:
+            hints.append("v 预览选中项")
+        if self._delete_handler is not None:
+            hints.append("d 删除选中项 · y 确认删除 · n 取消删除")
+        return f"{self._title}\n{' · '.join(hints)}" if hints else self._title
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
@@ -401,6 +408,12 @@ class ChoiceModal(ModalScreen[str]):
         self.dismiss(self._options[event.list_view.index or 0])
 
     def _on_key(self, event: Key) -> None:
+        if self._preview_handler is not None and not isinstance(self.focused, Input):
+            if event.key == "v":
+                self.action_preview()
+                event.stop()
+                event.prevent_default()
+                return
         if self._delete_handler is not None and not isinstance(self.focused, Input):
             key_actions = {
                 "d": self.action_delete,
@@ -448,6 +461,18 @@ class ChoiceModal(ModalScreen[str]):
         elif self._allow_custom:
             value = self.query_one("#custom-input", Input).value.strip()
             self.dismiss(value if value else "<empty_input>")
+
+    def action_preview(self) -> None:
+        if self._preview_handler is None or not self._options or self._pending_delete_index is not None:
+            return
+        choice_list = self.query_one("#choice-list", ListView)
+        index = choice_list.index if choice_list.index is not None else 0
+        try:
+            title, content = self._preview_handler(self._options[index])
+        except Exception as exc:
+            title = "预览失败"
+            content = Text(f"无法读取选中项：{exc}", style="bold red")
+        self.app.push_screen(InfoPanelModal(title, content))
 
     def action_delete(self) -> None:
         if self._delete_handler is None or not self._options:

@@ -2,6 +2,7 @@
 斜杠命令模块 - 负责处理所有内置命令和交互式界面
 """
 import argparse
+import json
 import shlex
 import time
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from system.models import get_model_manager
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.plan_mode import toggle_plan_mode
-from utils.tasks import TASK_MANAGER, list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
+from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
 from utils.teams import list_team_histories, load_team_history, get_history_title
 from utils.memory import (
     delete_long_term_memory,
@@ -110,6 +111,7 @@ def interactive_choose_checkpoint(
         checkpoints: list,
         title: str = "\n📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
         delete_handler: Callable[[Path], None] | None = None,
+        preview_handler: Callable[[Path], tuple[str, Any]] | None = None,
 ) -> str:
     """交互式选择 checkpoint"""
     if not checkpoints:
@@ -156,12 +158,57 @@ def interactive_choose_checkpoint(
         if delete_handler is not None:
             delete_handler(path)
 
+    def _preview_choice(label: str) -> tuple[str, Any]:
+        path = Path(lookup[label])
+        return preview_handler(path)
+
     selected = choose_tui(
         title.strip(),
         choices,
         delete_handler=_delete_choice if delete_handler is not None else None,
+        preview_handler=_preview_choice if preview_handler is not None else None,
     )
     return lookup.get(selected, "abort")
+
+
+def _checkpoint_preview(messages: list) -> Text:
+    preview = Text()
+    user_messages = [message for message in messages if message.get("role") == "user"]
+    if not user_messages:
+        preview.append("该对话没有 user 询问记录。", style="bold yellow")
+        return preview
+
+    for index, message in enumerate(user_messages, start=1):
+        if index > 1:
+            preview.append("\n\n")
+        preview.append(f"[{index}] User\n", style="bold cyan")
+        content = message.get("content", "")
+        preview.append(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False))
+    return preview
+
+
+def _task_plan_preview(plan_data: dict) -> Group:
+    tasks = plan_data.get("tasks", {})
+    completed = sum(task.get("status") == "completed" for task in tasks.values())
+    summary = Text(
+        f"Epic ID: {plan_data.get('epic_id', '-')}\n"
+        f"任务总数: {len(tasks)} · 已完成: {completed} · 未完成: {len(tasks) - completed}"
+    )
+    table = Table(box=box.SIMPLE, expand=True)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Subject")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Depend On")
+    for task_id, task in tasks.items():
+        table.add_row(
+            str(task_id),
+            str(task.get("subject", "")),
+            str(task.get("status", "pending")),
+            ", ".join(str(dep_id) for dep_id in task.get("depend_on", [])) or "-",
+        )
+    if not tasks:
+        table.add_row("-", "当前任务计划为空", "-", "-")
+    return Group(summary, table)
 
 
 # ============================================================================
@@ -1108,10 +1155,14 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 raise ValueError("当前 checkpoint 正在使用，不能删除。")
             path.unlink()
 
+        def _preview_checkpoint(path: Path) -> tuple[str, Text]:
+            return f"对话预览 · {path.stem}", _checkpoint_preview(self.load_checkpoint(path))
+
         try:
             selected_path = interactive_choose_checkpoint(
                 checkpoints,
                 delete_handler=_delete_checkpoint,
+                preview_handler=_preview_checkpoint,
             )
         except Exception as exc:
             log_error_traceback("commands handle_load checkpoint", exc)
@@ -1161,6 +1212,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return history, current_checkpoint
 
         # 检查任务看板
+        task_plan_loaded = False
         task_plans = list_task_plans()
         if task_plans:
             self.console.print(
@@ -1169,15 +1221,23 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
 
             def _delete_task_plan(path: Path) -> None:
+                from utils.tasks import TASK_MANAGER
+
                 if path.resolve() == TASK_MANAGER.path.resolve():
                     raise ValueError("当前 Task Plan 正在使用，不能删除。")
                 path.unlink()
+
+            def _preview_task_plan(path: Path) -> tuple[str, Group]:
+                with open(path, "r", encoding="utf-8") as file:
+                    plan_data = json.load(file)
+                return f"任务规划预览 · {path.stem}", _task_plan_preview(plan_data)
 
             try:
                 selected_task_path = interactive_choose_checkpoint(
                     task_plans,
                     title="\n📌 Select a Task Plan to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
                     delete_handler=_delete_task_plan,
+                    preview_handler=_preview_task_plan,
                 )
             except Exception as exc:
                 log_error_traceback("commands handle_load task plan", exc)
@@ -1186,6 +1246,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             if selected_task_path != "abort":
                 try:
                     plan_data = load_task_plan(Path(selected_task_path))
+                    task_plan_loaded = True
                     self.console.print(
                         "[bold green]🚀 成功加载任务看板！[/bold green]",
                         tui_region=TuiRegion.TOOLS,
@@ -1236,6 +1297,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                         f"\n[bold red]❌ 加载任务看板失败: {exc}[/bold red]",
                         tui_region=TuiRegion.TOOLS,
                     )
+        if not task_plan_loaded:
+            refresh_task_workspace_paths()
         render_current_task_plan(self.console)
         return loaded, new_checkpoint
 
