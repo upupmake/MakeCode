@@ -19,6 +19,7 @@ class StreamRenderer:
         self.update_interval = update_interval
         self.tail_update_interval = 0.5
         self._last_tail_update_at: dict[TuiRegion, float] = {}
+        self._active_regions: set[TuiRegion] = set()
 
     def render_text_stream(
             self,
@@ -144,14 +145,9 @@ class StreamRenderer:
             if live_buffer and text_started and not is_cancelled():
                 self._safe_cleanup(live_buffer)
             self._clear_tail(TuiRegion.CONTENT)
-            if reasoning_started and not text_started:
-                self._set_active(TuiRegion.REASONING, False)
-            if text_started:
-                self._set_active(TuiRegion.CONTENT, False)
+            self._release_active_regions()
 
         if is_cancelled():
-            if tool_calls_started:
-                self._set_active(TuiRegion.BACKGROUND, False)
             self._print_cancelled(agent_name, start_time)
             return "", [], None
 
@@ -186,12 +182,12 @@ class StreamRenderer:
         return reasoning_content, reasoning_buffer, True
 
     def _handle_tool_calls_generation(self, name: str):
-        post_tui(TuiRegion.BACKGROUND, active=True)
+        self._set_active(TuiRegion.BACKGROUND, True)
         post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🛠️ {name} 正在生成 tool_calls...[/#aaaaaa]")
 
     def _handle_tool_calls_generated(self, name: str):
         post_tui(TuiRegion.BACKGROUND, f"[bold green]🛠️ {name} tool_calls 生成完成[/bold green]")
-        post_tui(TuiRegion.BACKGROUND, active=False)
+        self._set_active(TuiRegion.BACKGROUND, False)
 
     def _start_text_section(self, name: str, reasoning_started: bool):
         if reasoning_started:
@@ -234,6 +230,14 @@ class StreamRenderer:
 
     def _set_active(self, region: TuiRegion, active: bool):
         post_tui(region, active=active)
+        if active:
+            self._active_regions.add(region)
+        else:
+            self._active_regions.discard(region)
+
+    def _release_active_regions(self):
+        for region in tuple(self._active_regions):
+            self._set_active(region, False)
 
     def _safe_cleanup(self, buffer: str, region: TuiRegion = TuiRegion.CONTENT):
         """流结束时输出剩余内容。"""

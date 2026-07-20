@@ -777,20 +777,26 @@ def test_previous_assistant_content_is_selected_for_user_pre_recall():
     assert content == "上一轮 assistant 的回复"
 
 
-def test_empty_latest_assistant_content_is_not_replaced_by_older_content():
+def test_latest_empty_assistant_content_falls_back_to_older_non_empty_content():
     content = main_module._get_previous_assistant_content(
         [
             {"role": "assistant", "content": "更早的回复"},
+            {"role": "assistant", "content": None},
+            {"role": "assistant", "content": "   "},
             {"role": "assistant", "content": ""},
         ]
     )
 
-    assert content == ""
+    assert content == "更早的回复"
 
 
-def test_user_pre_recall_has_no_assistant_content_without_assistant_message():
+def test_user_pre_recall_has_no_valid_assistant_content():
     content = main_module._get_previous_assistant_content(
-        [{"role": "system", "content": "system"}]
+        [
+            {"role": "system", "content": "system"},
+            {"role": "assistant", "content": None},
+            {"role": "assistant", "content": ""},
+        ]
     )
 
     assert content == ""

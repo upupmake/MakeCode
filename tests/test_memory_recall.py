@@ -1,7 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -86,6 +86,42 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertNotIn("new evidence should not be injected", context)
         self.assertNotIn("mem_old", context)
         self.assertNotIn("missing", context)
+
+    def test_touch_recalled_memories_updates_selected_active_records_only(self):
+        records = [
+            {"id": "mem_selected", "status": "active", "updated_at": "old-selected"},
+            {"id": "mem_other", "status": "active", "updated_at": "old-other"},
+            {"id": "mem_deleted", "status": "deleted", "updated_at": "old-deleted"},
+        ]
+
+        fixed_datetime = Mock()
+        fixed_datetime.now.return_value.strftime.return_value = "2026-07-21 12:34:56"
+        with patch.object(memory, "_read_memory_records", return_value=records), \
+                patch.object(memory, "_write_memory_records") as write_records, \
+                patch.object(memory, "datetime", fixed_datetime):
+            memory._touch_recalled_memories(["mem_selected", "mem_deleted", "missing"])
+
+        self.assertEqual(records[0]["updated_at"], "2026-07-21 12:34:56")
+        self.assertEqual(records[1]["updated_at"], "old-other")
+        self.assertEqual(records[2]["updated_at"], "old-deleted")
+        write_records.assert_called_once_with(records)
+
+    def test_recall_touches_selected_memories_before_rendering_context(self):
+        events = []
+
+        def render_context(memory_ids):
+            events.append(("render", memory_ids))
+            return "selected context"
+
+        with patch.object(memory, "select_relevant_memory_ids", return_value=["mem_new"]), \
+                patch.object(memory, "_touch_recalled_memories", side_effect=lambda ids: events.append(("touch", ids))), \
+                patch.object(memory, "render_selected_memory_context", side_effect=render_context), \
+                patch.object(memory, "post_tui"), \
+                patch.object(memory, "Markdown"):
+            result = memory.recall_long_term_memories("query")
+
+        self.assertEqual(result["content"], "selected context")
+        self.assertEqual(events, [("touch", ["mem_new"]), ("render", ["mem_new"])])
 
     def test_prepend_recalled_memory_to_query_only_changes_query_when_context_exists(self):
         original = "请处理当前项目的测试。"

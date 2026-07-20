@@ -456,8 +456,8 @@ def _get_previous_assistant_content(history: list) -> str:
         if message.get("role") != "assistant":
             continue
         assistant_content = message.get("content", "")
-        if not isinstance(assistant_content, str):
-            return ""
+        if not isinstance(assistant_content, str) or not assistant_content.strip():
+            continue
         return assistant_content.strip()
     return ""
 

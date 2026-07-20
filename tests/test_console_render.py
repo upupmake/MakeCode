@@ -2,6 +2,7 @@ from io import StringIO
 from unittest.mock import patch
 
 from rich.console import Console
+import pytest
 
 from system.console_render import (
     _format_readable_ui,
@@ -10,6 +11,8 @@ from system.console_render import (
     render_content_assistant_message,
     render_model_markdown,
 )
+from system.stream_render import StreamRenderer
+from system.tui_app import TuiRegion
 
 
 def _render_terminal_output(output):
@@ -105,3 +108,79 @@ def test_assistant_panel_displays_tags_and_keeps_markdown_formatting():
 
     assert "正文" in rendered
     assert "<thinking>内容</thinking>" in rendered
+
+
+def test_stream_error_releases_tool_calls_background_active_state():
+    events = []
+
+    def failing_stream():
+        yield {"type": "tool_calls", "content": None}
+        raise RuntimeError("stream interrupted")
+
+    with patch(
+        "system.stream_render.post_tui",
+        side_effect=lambda region, payload=None, **kwargs: events.append((region, payload, kwargs)),
+    ), patch("system.stream_render.is_cancelled", return_value=False):
+        with pytest.raises(RuntimeError, match="stream interrupted"):
+            StreamRenderer().render(failing_stream())
+
+    background_active = [
+        kwargs["active"]
+        for region, _, kwargs in events
+        if region == TuiRegion.BACKGROUND and "active" in kwargs
+    ]
+    assert background_active == [True, False]
+
+
+def test_stream_error_releases_reasoning_and_content_active_state():
+    events = []
+
+    def failing_stream():
+        yield {"type": "reasoning", "content": "思考中"}
+        yield {"type": "text", "content": "正文"}
+        raise RuntimeError("stream interrupted")
+
+    with patch(
+        "system.stream_render.post_tui",
+        side_effect=lambda region, payload=None, **kwargs: events.append((region, payload, kwargs)),
+    ), patch("system.stream_render.is_cancelled", return_value=False):
+        with pytest.raises(RuntimeError, match="stream interrupted"):
+            StreamRenderer().render(failing_stream())
+
+    active_by_region = {
+        region: [
+            kwargs["active"]
+            for event_region, _, kwargs in events
+            if event_region == region and "active" in kwargs
+        ]
+        for region in (TuiRegion.REASONING, TuiRegion.CONTENT)
+    }
+    assert active_by_region == {
+        TuiRegion.REASONING: [True, False],
+        TuiRegion.CONTENT: [True, False],
+    }
+
+
+def test_cancelled_stream_releases_tool_calls_background_active_state():
+    events = []
+
+    def cancelled_stream():
+        yield {"type": "tool_calls", "content": None}
+        yield {"type": "text", "content": "不会继续渲染"}
+
+    with patch(
+        "system.stream_render.post_tui",
+        side_effect=lambda region, payload=None, **kwargs: events.append((region, payload, kwargs)),
+    ), patch(
+        "system.stream_render.is_cancelled",
+        side_effect=[False, True, True],
+    ):
+        text_content, tool_calls, raw_message = StreamRenderer().render(cancelled_stream())
+
+    background_active = [
+        kwargs["active"]
+        for region, _, kwargs in events
+        if region == TuiRegion.BACKGROUND and "active" in kwargs
+    ]
+    assert background_active == [True, False]
+    assert (text_content, tool_calls, raw_message) == ("", [], None)

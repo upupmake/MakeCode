@@ -4,7 +4,9 @@ import json
 import locale
 import os
 import re
+import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -112,11 +114,9 @@ class RunTerminalCommand(BaseModel):
     """
     Execute a terminal command in non-interactive mode.
 
-    PROHIBITED COMMANDS:
-    - Interactive: vim, nano, top, ssh, ftp
-    - Destructive: rm -rf, format, del /f
-    - Privilege escalation: sudo, runas
-    - Network attacks: nmap, sqlmap
+    EXECUTION POLICY:
+    - Commands that may be destructive, require elevated privileges, or perform network diagnostics go through HITL confirmation.
+    - Interactive and full-screen commands are unsupported by the non-interactive terminal and may time out.
 
     PREFERRED APPROACH:
     - For file read/write/edit: Use File tools (FileRead/FileCreate/FileEdit)
@@ -124,7 +124,8 @@ class RunTerminalCommand(BaseModel):
     - For file path regex search: Use FileSearch (not find, ls, dir)
     - Use this tool ONLY for: builds, tests, git, package management, system info
 
-    TIMEOUT: 120 seconds hard limit.
+    TIMEOUT: 120 seconds hard limit. Running commands can be cancelled from the TUI.
+    Results always include a status and exit code.
     """
 
     command: str = Field(
@@ -153,58 +154,168 @@ def _build_terminal_argv(terminal_type: str, command: str) -> list[str]:
     raise ValueError(f"Unsupported terminal type: {terminal_type}")
 
 
+_TERMINAL_COMMAND_TIMEOUT = 120
+_TERMINAL_POLL_INTERVAL = 0.1
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            if process.poll() is None:
+                process.terminate()
+
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                process.kill()
+        process.wait(timeout=2)
+
+
+def _decode_terminal_output(raw_output: bytes) -> str:
+    # 动态解码策略：优先 UTF-8，依次尝试多种编码
+    out = None
+    encodings = ['utf-8', 'gbk', 'gb2312', locale.getpreferredencoding()]
+    for enc in encodings:
+        try:
+            out = raw_output.decode(enc).strip()
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    if out is None:
+        out = raw_output.decode('utf-8', errors='replace').strip()
+    return truncate_output(out)
+
+
+def _format_terminal_result(
+        status: str,
+        return_code: int | None,
+        output: str,
+        terminal_meta: str,
+) -> str:
+    code_text = str(return_code) if return_code is not None else "none"
+    if not output:
+        output = "(no output)"
+    return (
+        f"Status: {status}\n"
+        f"Exit code: {code_text}\n"
+        f"Terminal: {terminal_meta}\n\n"
+        f"{output}"
+    )
+
+
 def run_terminal_command(command: str) -> str:
     parts = command.strip().split()
     if len(parts) > 1:
         action_name = " ".join(parts[:2])
     else:
         action_name = parts[0] if parts else "unknown"
+
     allowed, reason = check_permission("cmd", action_name, command)
     if not allowed:
         return f"User Denied Execution. Reason: {reason}"
 
+    process = None
+    terminal_cancel_started = False
     try:
         resolved_terminal = _resolve_startup_terminal_type()
-        r = subprocess.run(
-            _build_terminal_argv(resolved_terminal, command),
-            cwd=_workdir(),
-            capture_output=True,
-            timeout=120,
-        )
-        raw_output = r.stdout + r.stderr
-
-        # 动态解码策略：优先 UTF-8，依次尝试多种编码
-        out = None
-        encodings = ['utf-8', 'gbk', 'gb2312', locale.getpreferredencoding()]
-        for enc in encodings:
-            try:
-                out = raw_output.decode(enc).strip()
-                break
-            except (UnicodeDecodeError, LookupError):
-                continue
-        if out is None:
-            out = raw_output.decode('utf-8', errors='replace').strip()
-        out = truncate_output(out)
         terminal_meta = f"{resolved_terminal}, source={STARTUP_TERMINAL_SOURCE}"
-        return (
-            out
-            if out
-            else f"Command executed successfully with no output. (terminal: {terminal_meta})"
+        popen_kwargs = {
+            "cwd": _workdir(),
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        from system.stream_cancel import (
+            is_terminal_cancelled,
+            start_terminal_command,
         )
 
-    except subprocess.TimeoutExpired as exc:
-        log_error_traceback("RunTerminalCommand timeout", exc)
-        return "Error: Command timed out after 120 seconds. Did you run an interactive prompt?"
+        start_terminal_command()
+        terminal_cancel_started = True
+        process = subprocess.Popen(
+            _build_terminal_argv(resolved_terminal, command),
+            **popen_kwargs,
+        )
+        deadline = time.monotonic() + _TERMINAL_COMMAND_TIMEOUT
+        timed_out = False
+        cancelled = False
+        stdout = b""
+        stderr = b""
+        while True:
+            if is_terminal_cancelled():
+                cancelled = True
+                _terminate_process_tree(process)
+                stdout, stderr = process.communicate()
+                break
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                _terminate_process_tree(process)
+                stdout, stderr = process.communicate()
+                break
+
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=min(_TERMINAL_POLL_INTERVAL, remaining)
+                )
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        output = _decode_terminal_output(stdout + stderr)
+        if cancelled:
+            return _format_terminal_result("cancelled", process.returncode, output, terminal_meta)
+        if timed_out:
+            return _format_terminal_result("timed_out", process.returncode, output, terminal_meta)
+        status = "success" if process.returncode == 0 else "failed"
+        return _format_terminal_result(status, process.returncode, output, terminal_meta)
+
     except FileNotFoundError as exc:
         log_error_traceback("RunTerminalCommand terminal missing", exc)
         return (
+            "Status: startup_error\n"
+            "Exit code: none\n"
             "Error: No supported terminal executable found. "
             f"startup_terminal={STARTUP_TERMINAL_TYPE or 'unavailable'} "
             f"(source={STARTUP_TERMINAL_SOURCE})."
         )
     except Exception as e:
+        if process is not None and process.poll() is None:
+            _terminate_process_tree(process)
+            process.communicate()
         log_error_traceback("RunTerminalCommand execution", e)
-        return f"Error executing command: {e}"
+        return f"Status: execution_error\nExit code: none\nError executing command: {e}"
+    finally:
+        if terminal_cancel_started:
+            from system.stream_cancel import stop_terminal_command
+            stop_terminal_command()
 
 
 class ReadBlock(BaseModel):

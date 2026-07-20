@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -36,6 +37,7 @@ DEFAULT_MEMORY_SIZE = 30
 DEFAULT_MEMORY_RECALL_WINDOW_SIZE = MEMORY_RECALL_WINDOW_SIZE
 _MEMORY_CONFIG_CACHE: dict | None = None
 _MEMORY_RECALL_WINDOWS: dict[str, list[list[str]]] = {}
+_MEMORY_RECORDS_LOCK = threading.RLock()
 
 
 def refresh_workspace_paths() -> None:
@@ -172,36 +174,38 @@ def append_long_term_memory(
         reuse_condition: str,
         **kwargs,
 ) -> dict:
-    records = _read_memory_records(include_deleted=True)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    active_records = [record for record in records if record.get("status") == "active"]
-    overflow_count = len(active_records) + 1 - get_memory_size()
-    deleted_ids = []
-    if overflow_count > 0:
-        for record in sorted(active_records, key=_memory_sort_key)[:overflow_count]:
-            record["status"] = "deleted"
-            record["updated_at"] = now
-            deleted_ids.append(record.get("id", ""))
+    with _MEMORY_RECORDS_LOCK:
+        records = _read_memory_records(include_deleted=True)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        active_records = [record for record in records if record.get("status") == "active"]
+        overflow_count = len(active_records) + 1 - get_memory_size()
+        deleted_ids = []
+        if overflow_count > 0:
+            for record in sorted(active_records, key=_memory_sort_key)[:overflow_count]:
+                record["status"] = "deleted"
+                record["updated_at"] = now
+                deleted_ids.append(record.get("id", ""))
 
-    record = _new_memory_record(category, insight, evidence, reuse_condition)
-    records.append(record)
-    _write_memory_records(records)
-    return {**record, "path": MEMORY_JSONL_FILE.as_posix(), "deleted_overflow_ids": deleted_ids}
+        record = _new_memory_record(category, insight, evidence, reuse_condition)
+        records.append(record)
+        _write_memory_records(records)
+        return {**record, "path": MEMORY_JSONL_FILE.as_posix(), "deleted_overflow_ids": deleted_ids}
 
 
 def delete_long_term_memory(memory_id: str) -> bool:
-    records = _read_memory_records(include_deleted=True)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    found = False
-    for record in records:
-        if record.get("id") == memory_id and record.get("status") == "active":
-            record["status"] = "deleted"
-            record["updated_at"] = now
-            found = True
-            break
-    if found:
-        _write_memory_records(records)
-    return found
+    with _MEMORY_RECORDS_LOCK:
+        records = _read_memory_records(include_deleted=True)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        found = False
+        for record in records:
+            if record.get("id") == memory_id and record.get("status") == "active":
+                record["status"] = "deleted"
+                record["updated_at"] = now
+                found = True
+                break
+        if found:
+            _write_memory_records(records)
+        return found
 
 
 def update_long_term_memory(
@@ -212,18 +216,19 @@ def update_long_term_memory(
         reuse_condition: str,
         **kwargs,
 ) -> dict:
-    records = _read_memory_records(include_deleted=True)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for record in records:
-        if record.get("id") == memory_id and record.get("status") == "active":
-            record["updated_at"] = now
-            record["category"] = category.strip()
-            record["insight"] = insight.strip()
-            record["evidence"] = evidence.strip()
-            record["reuse_condition"] = reuse_condition.strip()
-            _write_memory_records(records)
-            return {**record, "path": MEMORY_JSONL_FILE.as_posix()}
-    return {"error": f"active memory not found: {memory_id}"}
+    with _MEMORY_RECORDS_LOCK:
+        records = _read_memory_records(include_deleted=True)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for record in records:
+            if record.get("id") == memory_id and record.get("status") == "active":
+                record["updated_at"] = now
+                record["category"] = category.strip()
+                record["insight"] = insight.strip()
+                record["evidence"] = evidence.strip()
+                record["reuse_condition"] = reuse_condition.strip()
+                _write_memory_records(records)
+                return {**record, "path": MEMORY_JSONL_FILE.as_posix()}
+        return {"error": f"active memory not found: {memory_id}"}
 
 
 LONG_TERM_MEMORY_TOOL_HANDLERS = {
@@ -364,6 +369,23 @@ def _write_memory_records(records: list[dict]) -> None:
     with open(MEMORY_JSONL_FILE, "w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _touch_recalled_memories(memory_ids: list[str]) -> None:
+    selected_ids = set(memory_ids)
+    if not selected_ids:
+        return
+
+    with _MEMORY_RECORDS_LOCK:
+        records = _read_memory_records(include_deleted=True)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        touched = False
+        for record in records:
+            if record.get("status") == "active" and record.get("id") in selected_ids:
+                record["updated_at"] = now
+                touched = True
+        if touched:
+            _write_memory_records(records)
 
 
 def list_long_term_memories() -> list[dict]:
@@ -619,26 +641,32 @@ def recall_long_term_memories(
     if query:
         post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🔎 召回查询：{escape(query)}[/#aaaaaa]")
     try:
-        selected_ids = select_relevant_memory_ids(
-            query,
-            agent_id=agent_id,
-            previous_assistant_content=previous_assistant_content,
-        )
+        try:
+            selected_ids = select_relevant_memory_ids(
+                query,
+                agent_id=agent_id,
+                previous_assistant_content=previous_assistant_content,
+            )
+        except Exception as exc:
+            log_error_traceback("memory recall failed", exc)
+            post_tui(TuiRegion.BACKGROUND, f"[bold red]🧠 记忆召回失败：{escape(str(exc))}[/bold red]")
+            return {"ids": [], "content": "", "error": str(exc)}
+
+        _touch_recalled_memories(selected_ids)
+        memory_context = render_selected_memory_context(selected_ids)
+        if selected_ids:
+            post_tui(TuiRegion.BACKGROUND, f"[bold green]🧠 记忆召回命中 {len(selected_ids)} 条：{escape(', '.join(selected_ids))}[/bold green]")
+            post_tui(TuiRegion.BACKGROUND, Markdown(memory_context))
+        else:
+            post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 记忆召回未命中相关长期记忆。[/#aaaaaa]")
+        post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 记忆召回流程已结束。[/#aaaaaa]")
+        return {"ids": selected_ids, "content": memory_context}
     except Exception as exc:
         log_error_traceback("memory recall failed", exc)
         post_tui(TuiRegion.BACKGROUND, f"[bold red]🧠 记忆召回失败：{escape(str(exc))}[/bold red]")
-        post_tui(TuiRegion.BACKGROUND, active=False)
         return {"ids": [], "content": "", "error": str(exc)}
-
-    memory_context = render_selected_memory_context(selected_ids)
-    if selected_ids:
-        post_tui(TuiRegion.BACKGROUND, f"[bold green]🧠 记忆召回命中 {len(selected_ids)} 条：{escape(', '.join(selected_ids))}[/bold green]")
-        post_tui(TuiRegion.BACKGROUND, Markdown(memory_context))
-    else:
-        post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 记忆召回未命中相关长期记忆。[/#aaaaaa]")
-    post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 记忆召回流程已结束。[/#aaaaaa]")
-    post_tui(TuiRegion.BACKGROUND, active=False)
-    return {"ids": selected_ids, "content": memory_context}
+    finally:
+        post_tui(TuiRegion.BACKGROUND, active=False)
 
 
 MEMORY_RECALL_TOOLS_HANDLERS = {

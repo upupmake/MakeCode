@@ -80,7 +80,7 @@ class SkillLoaderTests(unittest.TestCase):
                 loader = SkillLoader(workspace_root / "empty-skills")
                 prompt = loader.render_prompt_block()
 
-            expected = workspace_root / ".makecode" / "skills"
+            expected = (workspace_root / ".makecode" / "skills").as_posix()
             self.assertIn(
                 f"Default installation directory for user skills: `{expected}`",
                 prompt,
