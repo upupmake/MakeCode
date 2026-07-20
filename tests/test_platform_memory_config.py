@@ -766,6 +766,58 @@ def test_select_relevant_memory_ids_closes_temporary_recall_client():
     memory._MEMORY_RECALL_WINDOWS = {}
 
 
+def test_previous_assistant_content_is_selected_for_user_pre_recall():
+    content = main_module._get_previous_assistant_content(
+        [
+            {"role": "system", "content": "system"},
+            {"role": "assistant", "content": "上一轮 assistant 的回复"},
+        ]
+    )
+
+    assert content == "上一轮 assistant 的回复"
+
+
+def test_empty_latest_assistant_content_is_not_replaced_by_older_content():
+    content = main_module._get_previous_assistant_content(
+        [
+            {"role": "assistant", "content": "更早的回复"},
+            {"role": "assistant", "content": ""},
+        ]
+    )
+
+    assert content == ""
+
+
+def test_user_pre_recall_has_no_assistant_content_without_assistant_message():
+    content = main_module._get_previous_assistant_content(
+        [{"role": "system", "content": "system"}]
+    )
+
+    assert content == ""
+
+
+def test_user_request_pre_recall_receives_previous_assistant_content():
+    command_handler = Mock()
+    command_handler.process_command.return_value = CommandResult(
+        action=CommandAction.RUN_AGENT,
+        payload="新的用户请求",
+    )
+    history = [
+        {"role": "system", "content": "system"},
+        {"role": "assistant", "content": "上一轮 assistant 回复"},
+    ]
+
+    with patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "recall_long_term_memories", return_value={"content": ""}) as recall, \
+            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module, "agent_loop"), \
+            patch.object(main_module, "refresh_status"):
+        main_module._process_user_query("新的用户请求", history, command_handler)
+
+    assert recall.call_args.args[0] == "新的用户请求"
+    assert recall.call_args.kwargs["previous_assistant_content"] == "上一轮 assistant 回复"
+
+
 def test_first_title_request_starts_after_agent_loop_returns():
     events = []
 

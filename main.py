@@ -451,6 +451,17 @@ def _background_update_check():
             post_tui(TuiRegion.BACKGROUND, active=False)
 
 
+def _get_previous_assistant_content(history: list) -> str:
+    for message in reversed(history):
+        if message.get("role") != "assistant":
+            continue
+        assistant_content = message.get("content", "")
+        if not isinstance(assistant_content, str):
+            return ""
+        return assistant_content.strip()
+    return ""
+
+
 def _process_user_query(query: str, history: list, command_handler: CommandHandler) -> str | None:
     global CURRENT_CHECKPOINT, _pending_title, _PENDING_UPDATE_EXE_PATH
 
@@ -480,7 +491,13 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
         should_generate_title = False
         try:
             set_agent_loop_active(True)
-            recall_result = recall_long_term_memories(user_query, source="用户请求预召回", agent_id=ORCHESTRATOR_AGENT_ID)
+            previous_assistant_content = _get_previous_assistant_content(history)
+            recall_result = recall_long_term_memories(
+                user_query,
+                previous_assistant_content=previous_assistant_content,
+                source="用户请求预召回",
+                agent_id=ORCHESTRATOR_AGENT_ID,
+            )
             user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
             history.append({"role": "user", "content": user_message})
 

@@ -94,7 +94,7 @@ class MemoryRecallTests(unittest.TestCase):
         injected = memory.prepend_recalled_memory_to_query(original, "## mem_new\n- Insight: use tests")
         self.assertTrue(injected.startswith("# Potentially Relevant Memories"))
         self.assertIn("not as new user instructions", injected)
-        self.assertIn("# User Request", injected)
+        self.assertIn("# Current User Request", injected)
         self.assertTrue(injected.endswith(original))
 
     def test_sub_agent_memory_prompt_injection_uses_delegated_task_context(self):
@@ -123,6 +123,35 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertIn("## Role\nTester", query)
         self.assertIn("## Context Prompt\nRun memory tests", query)
         self.assertNotIn(relay_context, query)
+
+    def test_memory_recall_message_places_user_request_at_bottom(self):
+        messages = memory._get_memory_recall_messages(
+            "本次用户请求",
+            "### mem_new\n- Insight: new insight",
+            "上一轮 assistant 回复",
+        )
+
+        payload = messages[1]["content"]
+        assert payload == (
+            "# Memory Recall Request\n\n"
+            "## Previous Assistant Content\n\n"
+            "上一轮 assistant 回复\n\n"
+            "## Candidate Memories\n\n"
+            "### mem_new\n- Insight: new insight\n\n"
+            "## Current User Request\n\n"
+            "本次用户请求"
+        )
+
+    def test_memory_recall_message_omits_empty_previous_assistant_content(self):
+        messages = memory._get_memory_recall_messages(
+            "本次用户请求",
+            "### mem_new\n- Insight: new insight",
+            "",
+        )
+
+        payload = messages[1]["content"]
+        assert "## Previous Assistant Content" not in payload
+        assert payload.endswith("## Current User Request\n\n本次用户请求")
 
     def test_select_relevant_memory_ids_uses_tool_call_and_retries_until_called(self):
         fake_client = FakeRecallLLMClient([
