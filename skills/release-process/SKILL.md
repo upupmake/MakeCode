@@ -115,7 +115,7 @@ GitHub Actions 将 `assets/MakeCode.command` 与 `dist/MakeCode/` 一起打入 `
 
 GitHub Actions 将 `dist/MakeCode/` 打入 `MakeCode-Linux-X64.zip`。Linux 用户解压后直接运行 `./MakeCode/MakeCode`；若执行权限未保留，先运行 `chmod +x MakeCode/MakeCode`。
 
-当前 GitHub Actions 构建 Windows X64、macOS ARM64 和 Linux X64。Linux runner 固定为 `ubuntu-22.04`，发布包支持基线为 GLIBC 2.35+，避免 `ubuntu-latest` 升级后无意提高最低系统要求。构建后只做 TOC、目录结构和警告日志静态检查，禁止启动 `dist` 下的程序。
+当前 GitHub Actions 构建 Windows X64、macOS ARM64 和 Linux X64。Linux 在固定的 `python:3.12-bullseye` 容器中构建，发布包支持基线为 GLIBC 2.31+；构建后静态检查 TOC、目录结构、警告日志，以及 `dist/MakeCode/` 和 Linux parser archive 内全部 ELF 文件的 GLIBC 版本要求。禁止启动 `dist` 下的程序。
 
 ---
 

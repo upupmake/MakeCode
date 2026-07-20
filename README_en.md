@@ -744,7 +744,7 @@ A typical flow looks like this:
 
 ## 5. Requirements
 
-- Supported platforms: Windows X64, macOS ARM64, and Linux X64 (GLIBC 2.35+)
+- Supported platforms: Windows X64, macOS ARM64, and Linux X64 (GLIBC 2.31+)
 - Source runs require Python 3.10+
 - Access to an OpenAI-compatible endpoint
 - A model that supports the Chat Completions API or Responses API

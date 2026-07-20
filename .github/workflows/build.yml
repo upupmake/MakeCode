@@ -22,7 +22,6 @@ jobs:
         os:
           - windows-latest
           - macos-latest
-          - ubuntu-22.04
 
     steps:
       - name: Checkout repository
@@ -104,7 +103,6 @@ jobs:
           platform_key = {
               ("Windows", "X64"): "windows-x86_64",
               ("macOS", "ARM64"): "macos-arm64",
-              ("Linux", "X64"): "linux-x86_64",
           }.get((runner_os, runner_arch))
           if platform_key:
               parser_archive = f"parsers-{platform_key}.tar.zst"
@@ -166,11 +164,6 @@ jobs:
               shutil.copy2(launcher, package / launcher.name)
               shutil.copytree(package / "MakeCode", Path("artifacts") / "MakeCode", symlinks=True)
               shutil.copy2(package / launcher.name, Path("artifacts") / launcher.name)
-          elif runner_os == "Linux":
-              app = dist / "MakeCode"
-              if not (app / "MakeCode").is_file() or not (app / "_internal").is_dir():
-                  raise SystemExit("Invalid Linux onedir output")
-              shutil.copytree(app, Path("artifacts") / app.name, symlinks=True)
           else:
               raise SystemExit(f"Unsupported runner OS: {runner_os}")
           PY
@@ -179,10 +172,216 @@ jobs:
             ditto -c -k release-assets/macos-package \
               "release-assets/MakeCode-${RUNNER_OS}-${RUNNER_ARCH}.zip"
             rm -r release-assets/macos-package
-          elif [[ "$RUNNER_OS" == "Linux" ]]; then
-            (cd dist && zip -qry \
-              "../release-assets/MakeCode-${RUNNER_OS}-${RUNNER_ARCH}.zip" MakeCode)
           fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MakeCode-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+
+      - name: Upload release assets for release job
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ runner.os }}-${{ runner.arch }}
+          path: release-assets/
+          if-no-files-found: error
+
+  build-linux:
+    name: Build on Linux X64 (GLIBC 2.31)
+    runs-on: ubuntu-22.04
+    container:
+      image: python:3.12-bullseye
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl binutils git zip
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
+
+      - name: Verify bundled tree-sitter parser cache
+        env:
+          MAKECODE_NON_INTERACTIVE: '1'
+          TS_PACK_OFFLINE: '1'
+        run: >-
+          python -c "import subprocess,sys;
+          result=subprocess.run([sys.executable,'tools/verify_tree_sitter_offline.py'],timeout=25);
+          raise SystemExit(result.returncode)"
+
+      - name: Run tests
+        env:
+          MAKECODE_NON_INTERACTIVE: '1'
+        run: >-
+          python -m pytest
+          tests/test_delegate_confirmation.py
+          tests/test_prompts.py
+          tests/test_platform_memory_config.py
+          tests/test_macos_launcher.py
+          -q
+
+      - name: Build MakeCode
+        run: pyinstaller --clean --noconfirm MakeCode.spec
+
+      - name: Verify bundled project modules
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          expected = {"init", "prompts", "settings", "version"}
+          for package in ("system", "tools", "utils"):
+              for source in Path(package).rglob("*.py"):
+                  parts = source.with_suffix("").parts
+                  if parts[-1] == "__init__":
+                      parts = parts[:-1]
+                  expected.add(".".join(parts))
+
+          toc_path = Path("build/MakeCode/PYZ-00.toc")
+          if not toc_path.is_file():
+              raise SystemExit(f"Missing PyInstaller module manifest: {toc_path}")
+          toc = toc_path.read_text(encoding="utf-8")
+          missing = sorted(
+              module for module in expected
+              if not re.search(rf"\('{re.escape(module)}',", toc)
+          )
+          if missing:
+              raise SystemExit(f"Project modules missing from bundle: {', '.join(missing)}")
+
+          analysis_path = Path("build/MakeCode/Analysis-00.toc")
+          analysis = analysis_path.read_text(encoding="utf-8")
+          parser_archive = "parsers-linux-x86_64.tar.zst"
+          if parser_archive not in analysis:
+              raise SystemExit(f"Platform parser archive missing from bundle: {parser_archive}")
+
+          warning_path = Path("build/MakeCode/warn-MakeCode.txt")
+          warnings = warning_path.read_text(encoding="utf-8")
+          project_prefixes = ("init", "prompts", "settings", "version", "system", "tools", "utils")
+          missing_warning = []
+          for line in warnings.splitlines():
+              match = re.search(r"missing module named ['\"]?([^'\" ]+)", line)
+              if match and any(
+                  match.group(1) == prefix or match.group(1).startswith(f"{prefix}.")
+                  for prefix in project_prefixes
+              ):
+                  missing_warning.append(line)
+          if missing_warning:
+              raise SystemExit("Project module warnings:\n" + "\n".join(missing_warning))
+
+          print(f"Verified {len(expected)} bundled project modules")
+          PY
+
+      - name: Verify GLIBC compatibility
+        shell: bash
+        run: |
+          python - <<'PY'
+          import platform
+          import re
+          import subprocess
+          import tarfile
+          import tempfile
+          from pathlib import Path
+
+          import pyzstd
+
+          maximum = (2, 31)
+          libc_name, libc_version = platform.libc_ver()
+          build_glibc = tuple(map(int, libc_version.split(".")[:2]))
+          if libc_name != "glibc" or build_glibc != maximum:
+              raise SystemExit(
+                  f"Expected glibc {maximum[0]}.{maximum[1]} build environment, "
+                  f"found {libc_name} {libc_version}"
+              )
+
+          checked = []
+          violations = []
+
+          def is_elf(path: Path) -> bool:
+              with path.open("rb") as stream:
+                  return stream.read(4) == b"\x7fELF"
+
+          def check_elf(path: Path, label: str) -> None:
+              result = subprocess.run(
+                  ["readelf", "--version-info", "--wide", str(path)],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              versions = {
+                  tuple(map(int, match))
+                  for match in re.findall(r"\bGLIBC_(\d+)\.(\d+)\b", result.stdout)
+              }
+              highest = max(versions, default=None)
+              checked.append((label, highest))
+              if highest is not None and highest > maximum:
+                  violations.append(
+                      f"{label}: GLIBC_{highest[0]}.{highest[1]}"
+                  )
+
+          dist = Path("dist/MakeCode")
+          for path in dist.rglob("*"):
+              if path.is_file() and is_elf(path):
+                  check_elf(path, path.as_posix())
+
+          archive = Path("ts_cache/parsers-linux-x86_64.tar.zst")
+          with tempfile.TemporaryDirectory(prefix="makecode-glibc-") as temp_dir:
+              extracted = Path(temp_dir)
+              with pyzstd.open(archive, "rb") as compressed:
+                  with tarfile.open(fileobj=compressed) as tar:
+                      tar.extractall(extracted, filter="data")
+              for path in extracted.rglob("*"):
+                  if path.is_file() and is_elf(path):
+                      label = f"{archive.as_posix()}!/{path.relative_to(extracted).as_posix()}"
+                      check_elf(path, label)
+
+          if not checked:
+              raise SystemExit("No ELF files found for GLIBC verification")
+          if violations:
+              raise SystemExit(
+                  "ELF files exceed the GLIBC 2.31 compatibility baseline:\n"
+                  + "\n".join(violations)
+              )
+
+          observed = max(
+              (version for _, version in checked if version is not None),
+              default=None,
+          )
+          observed_text = (
+              f"GLIBC_{observed[0]}.{observed[1]}" if observed else "no GLIBC symbol versions"
+          )
+          print(f"Verified {len(checked)} ELF files; highest requirement: {observed_text}")
+          PY
+
+      - name: Package build outputs
+        shell: bash
+        run: |
+          mkdir -p artifacts release-assets
+
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+
+          dist = Path("dist")
+          app = dist / "MakeCode"
+          if not (app / "MakeCode").is_file() or not (app / "_internal").is_dir():
+              raise SystemExit("Invalid Linux onedir output")
+          shutil.copytree(app, Path("artifacts") / app.name, symlinks=True)
+          PY
+
+          (cd dist && zip -qry \
+            "../release-assets/MakeCode-${RUNNER_OS}-${RUNNER_ARCH}.zip" MakeCode)
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -201,7 +400,9 @@ jobs:
 
   release:
     name: Attach assets to GitHub Release
-    needs: build
+    needs:
+      - build
+      - build-linux
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

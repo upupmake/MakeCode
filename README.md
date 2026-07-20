@@ -707,7 +707,7 @@ flowchart TD
 
 ## 5. 环境要求
 
-- 支持平台：Windows X64、macOS ARM64、Linux X64（GLIBC 2.35+）
+- 支持平台：Windows X64、macOS ARM64、Linux X64（GLIBC 2.31+）
 - 源码运行需要 Python 3.10+
 - 可用的 OpenAI 兼容接口
 - 模型支持 Chat Completions API 或 Responses API
