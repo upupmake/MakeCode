@@ -58,6 +58,7 @@ jobs:
           MAKECODE_NON_INTERACTIVE: '1'
         run: >-
           python -m pytest
+          tests/test_clipboard.py
           tests/test_delegate_confirmation.py
           tests/test_prompts.py
           tests/test_platform_memory_config.py
@@ -229,6 +230,7 @@ jobs:
           MAKECODE_NON_INTERACTIVE: '1'
         run: >-
           python -m pytest
+          tests/test_clipboard.py
           tests/test_delegate_confirmation.py
           tests/test_prompts.py
           tests/test_platform_memory_config.py
