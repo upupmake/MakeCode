@@ -12,6 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, TextArea, DataTable
 
 from system.models import REASONING_EFFORTS
+from system.clipboard import copy_to_system_clipboard
 from system.tui_types import (
     LAYOUT_DEFAULT_RATIOS,
     LAYOUT_LEFT_KEYS,
@@ -798,8 +799,12 @@ class CopyContentModal(ModalScreen[str]):
             text_area = self.query_one("#copy-text", TextArea)
             selected = text_area.selected_text
             text_to_copy = selected if selected else text_area.text
-            self.app.copy_to_clipboard(text_to_copy)
-            self.query_one("#copy-status", Label).update("📋 已复制文本到剪贴板。")
+            if copy_to_system_clipboard(text_to_copy):
+                status = "📋 已复制文本到系统剪贴板。"
+            else:
+                self.app.copy_to_clipboard(text_to_copy)
+                status = "📋 已发送复制请求；当前终端可能不支持系统剪贴板。"
+            self.query_one("#copy-status", Label).update(status)
             event.stop()
             event.prevent_default()
             return
