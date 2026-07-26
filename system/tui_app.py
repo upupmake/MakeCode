@@ -671,6 +671,7 @@ class MakeCodeTuiApp(App[None]):
         self._status = "MakeCode ready"
         self._runtime_info = ""
         self._submit_handler = submit_handler
+        self._submit_lock = threading.Lock()
         self._runtime_info_provider = runtime_info_provider
         self._header_info_provider = header_info_provider
         self._startup_workdir_provider = startup_workdir_provider
@@ -1256,26 +1257,53 @@ class MakeCodeTuiApp(App[None]):
         text = input_box.text.strip()
         if not text:
             return
-        self._record_input_history(text)
-        input_box.load_text("")
-        self.update_input_height()
-        self._slash_matches = []
-        self._slash_match_index = 0
-        self._hide_slash_hints()
-        if text != "/flush":
-            from system.console_render import render_content_user_message
+        if self._submit_handler is None or not self._submit_lock.acquire(blocking=False):
+            return
+        try:
+            self._record_input_history(text)
+            input_box.load_text("")
+            self.update_input_height()
+            self._slash_matches = []
+            self._slash_match_index = 0
+            self._hide_slash_hints()
+            if text != "/flush":
+                from system.console_render import render_content_user_message
 
-            post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
-            self.handle_tui_event(TuiEvent(TuiRegion.CONTENT, render_content_user_message(text)))
-        if self._submit_handler is not None:
-            threading.Thread(target=self._run_submit_handler, args=(text,), daemon=True).start()
+                post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
+                self.handle_tui_event(TuiEvent(TuiRegion.CONTENT, render_content_user_message(text)))
+            self._launch_submit_handler(text)
+        except Exception:
+            self._submit_lock.release()
+            raise
 
-    def _run_submit_handler(self, text: str) -> None:
+    def _launch_submit_handler(self, text: str) -> None:
+        threading.Thread(
+            target=self._run_submit_handler,
+            args=(text, True),
+            daemon=True,
+        ).start()
+
+    def _start_submit_handler(self, text: str) -> bool:
+        if self._submit_handler is None or not self._submit_lock.acquire(blocking=False):
+            return False
+        try:
+            self._launch_submit_handler(text)
+        except Exception:
+            self._submit_lock.release()
+            raise
+        return True
+
+    def _run_submit_handler(self, text: str, owns_submit_lock: bool = False) -> None:
         if self._submit_handler is None:
             return
-        result = asyncio.run(self._submit_handler(text))
-        if result == "exit":
-            self.call_from_thread(self.exit)
+        if not owns_submit_lock and not self._submit_lock.acquire(blocking=False):
+            return
+        try:
+            result = asyncio.run(self._submit_handler(text))
+            if result == "exit":
+                self.call_from_thread(self.exit)
+        finally:
+            self._submit_lock.release()
 
     def set_agent_loop_active(self, active: bool) -> None:
         was_active = self._agent_loop_active
@@ -1355,9 +1383,7 @@ class MakeCodeTuiApp(App[None]):
         buttons.set_class(not self._quick_panel_expanded, "hidden")
 
     def _run_quick_command(self, command: str) -> None:
-        if self._submit_handler is None:
-            return
-        threading.Thread(target=self._run_submit_handler, args=(command,), daemon=True).start()
+        self._start_submit_handler(command)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id

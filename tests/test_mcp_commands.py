@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -381,9 +382,11 @@ def test_copy_command_strips_private_native_payloads_without_mutating_history(mo
 @pytest.mark.anyio
 async def test_submitting_flush_preserves_existing_pane_content():
     submitted = []
+    submitted_event = threading.Event()
 
     async def submit_handler(text):
         submitted.append(text)
+        submitted_event.set()
 
     app = MakeCodeTuiApp(submit_handler=submit_handler)
 
@@ -397,6 +400,7 @@ async def test_submitting_flush_preserves_existing_pane_content():
         input_box.load_text("/flush")
         app.submit_current_input()
         await pilot.pause()
+        assert await asyncio.to_thread(submitted_event.wait, 1)
 
         assert list(content_log.lines) == before
         assert submitted == ["/flush"]
@@ -416,6 +420,32 @@ def test_submit_worker_owns_single_asyncio_run_boundary():
     run.assert_called_once()
     assert len(running_loops) == 1
     assert running_loops[0][0] == "hello"
+
+
+def test_submit_worker_rejects_overlapping_commands():
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    submitted = []
+
+    async def submit_handler(text):
+        submitted.append(text)
+        started.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        finished.set()
+
+    app = MakeCodeTuiApp(submit_handler=submit_handler)
+    app._run_quick_command("first")
+    assert started.wait(timeout=1)
+
+    app._run_quick_command("second")
+    assert submitted == ["first"]
+
+    release.set()
+    assert finished.wait(timeout=1)
+    assert app._submit_lock.acquire(timeout=1)
+    app._submit_lock.release()
 
 
 @pytest.mark.anyio
