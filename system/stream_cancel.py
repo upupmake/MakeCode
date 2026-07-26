@@ -60,9 +60,10 @@ def start_cancel_listener():
 
 
 def stop_cancel_listener():
-    """停止取消监听。在流式输出完成后调用。"""
-    global _response_active
+    """停止取消监听并清除本次响应的取消信号。"""
+    global _cancel_requested, _response_active
     _response_active = False
+    _cancel_requested = False
 
 
 def is_cancelled() -> bool:

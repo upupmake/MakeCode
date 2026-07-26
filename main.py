@@ -296,6 +296,7 @@ async def agent_loop(messages: list) -> bool:
     global CURRENT_CHECKPOINT
     micro_compact(messages)
     committed_response = False
+    was_cancelled = False
 
     async def _remember_long_term_memory(prompt: str, **kwargs):
         post_tui(TuiRegion.BACKGROUND, active=True)
@@ -351,6 +352,7 @@ async def agent_loop(messages: list) -> bool:
 
         # 用户取消：丢弃部分模型回复，不执行工具调用，回到输入等待
         if cancelled:
+            was_cancelled = True
             break
 
         async_llm_client.append_assistant_message(messages, raw_message)
@@ -427,6 +429,8 @@ async def agent_loop(messages: list) -> bool:
 
     if not committed_response:
         return False
+    if was_cancelled:
+        return True
 
     current_context_tokens = estimate_tokens(
         messages, tools_definition=current_super_tools

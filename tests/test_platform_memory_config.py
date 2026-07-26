@@ -1370,6 +1370,65 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_checkpoint()
 
 
 @pytest.mark.anyio
+async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    tool_call = {"id": "call_1", "name": "MissingTool", "arguments": "{}"}
+    responses = [
+        (
+            "",
+            [tool_call],
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_call],
+                "stop_reason": "tool_use",
+            },
+            False,
+        ),
+        ("", [], None, True),
+    ]
+
+    class FakeClient:
+        @staticmethod
+        def append_assistant_message(current_messages, raw_message):
+            current_messages.append(raw_message)
+
+        @staticmethod
+        def format_tool_result(tool_id, tool_name, output):
+            return {
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "name": tool_name,
+                "content": output,
+            }
+
+    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
+            patch.object(main_module, "micro_compact"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "_stream_with_render", AsyncMock(side_effect=responses)), \
+            patch.object(main_module, "async_llm_client", FakeClient()), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module, "estimate_tokens") as estimate_tokens, \
+            patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
+            patch.object(main_module, "_render_tool_call"), \
+            patch.object(main_module, "_render_tool_output"), \
+            patch.object(main_module, "_apply_pending_title"), \
+            patch.object(main_module, "post_tui"), \
+            patch.object(main_module, "is_plan_mode", return_value=False):
+        committed = await main_module.agent_loop(messages)
+
+    assert committed is True
+    estimate_tokens.assert_not_called()
+    auto_compact.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_error():
     messages = [
         {"role": "system", "content": "system"},

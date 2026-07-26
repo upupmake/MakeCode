@@ -200,3 +200,18 @@ def test_cancel_current_response_cancels_active_terminal_command():
     finally:
         stream_cancel.stop_terminal_command()
         stream_cancel.reset_cancel()
+
+
+def test_stop_cancel_listener_clears_response_cancel_signal():
+    from system import stream_cancel
+
+    stream_cancel.reset_cancel()
+    try:
+        with patch.object(stream_cancel, "post_tui"):
+            stream_cancel.start_cancel_listener()
+            assert stream_cancel.cancel_current_response() is True
+            assert stream_cancel.is_cancelled() is True
+            stream_cancel.stop_cancel_listener()
+            assert stream_cancel.is_cancelled() is False
+    finally:
+        stream_cancel.reset_cancel()
