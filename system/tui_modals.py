@@ -9,9 +9,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, TextArea, DataTable
+from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, TextArea, DataTable
 
-from system.models import REASONING_EFFORTS
+from system.models import MESSAGE_FORMATS, ModelKey, REASONING_EFFORTS
 from system.clipboard import copy_to_system_clipboard
 from system.tui_types import (
     LAYOUT_DEFAULT_RATIOS,
@@ -1103,8 +1103,8 @@ class ModelManagerModal(ModalScreen[str]):
     def __init__(self, model_manager: Any) -> None:
         super().__init__()
         self._model_manager = model_manager
-        self._model_keys: list[tuple[str, str, str] | None] = []
-        self._pending_delete_key: tuple[str, str, str] | None = None
+        self._model_keys: list[ModelKey | None] = []
+        self._pending_delete_key: ModelKey | None = None
         self._pending_delete_index: int | None = None
 
     def compose(self) -> ComposeResult:
@@ -1128,14 +1128,17 @@ class ModelManagerModal(ModalScreen[str]):
         choice_list = self.query_one("#choice-list", ListView)
         return choice_list.index if choice_list.index is not None else 0
 
-    def _model_label(self, model: Any, current_key: tuple[str, str, str] | None) -> str:
+    def _model_label(self, model: Any, current_key: ModelKey | None) -> str:
         markers = []
         if model.key == current_key:
             markers.append("✓")
         if model.is_favorite:
             markers.append("♥")
         marker_text = " ".join(markers) if markers else " "
-        return f"[{marker_text:^3}] {model.get_display_text()} · effort: {model.reasoning_effort}"
+        return (
+            f"[{marker_text:^3}] {model.get_display_text()}"
+            f" · effort: {model.reasoning_effort} · format: {model.message_format}"
+        )
 
     def _reload_rows(self, selected_index: int | None = None) -> None:
         self._pending_delete_key = None
@@ -1151,7 +1154,7 @@ class ModelManagerModal(ModalScreen[str]):
         current_model = self._model_manager.get_current_model()
         current_key = current_model.key if current_model else None
         labels = ["➕ 添加模型"]
-        keys: list[tuple[str, str, str] | None] = [None]
+        keys: list[ModelKey | None] = [None]
         for model in self._model_manager.models:
             labels.append(self._model_label(model, current_key))
             keys.append(model.key)
@@ -1170,7 +1173,7 @@ class ModelManagerModal(ModalScreen[str]):
 
         self.call_after_refresh(_mount_rows)
 
-    def _refresh_model_row_by_key(self, model_key: tuple[str, str, str]) -> None:
+    def _refresh_model_row_by_key(self, model_key: ModelKey) -> None:
         index = next((index for index, key in enumerate(self._model_keys) if key == model_key), None)
         if index is None:
             return
@@ -1249,6 +1252,7 @@ class ModelManagerModal(ModalScreen[str]):
         if self._model_manager.select_model(model_key, selected_model.reasoning_effort):
             self.dismiss(
                 f"selected:{selected_model.get_display_text()} · effort: {selected_model.reasoning_effort}"
+                f" · format: {selected_model.message_format}"
             )
 
     def action_decrease_effort(self) -> None:
@@ -1348,10 +1352,15 @@ class ModelManagerModal(ModalScreen[str]):
             for item in model_config["model_input"].replace("，", ",").split(",")
             if item.strip()
         ]
-        self._model_manager.add_model(model_config["base_url"], model_config["api_key"], model_ids)
+        self._model_manager.add_model(
+            model_config["base_url"],
+            model_config["api_key"],
+            model_ids,
+            message_format=model_config["message_format"],
+        )
         self._reload_rows(selected_index)
 
-    def _target_index(self, model_key: tuple[str, str, str]) -> int | None:
+    def _target_index(self, model_key: ModelKey) -> int | None:
         return next(
             (index for index, model in enumerate(self._model_manager.models) if model.key == model_key),
             None,
@@ -1726,6 +1735,14 @@ class AddModelModal(ModalScreen[dict[str, str] | None]):
             yield Input(placeholder="API Key", password=True, id="model-api-key", classes="model-form-input")
             yield Label("Model ID(s)（多个用逗号分隔）", classes="model-form-label")
             yield Input(placeholder="model-a, model-b", id="model-ids", classes="model-form-input")
+            yield Label("消息格式", classes="model-form-label")
+            yield Select(
+                [(message_format, message_format) for message_format in MESSAGE_FORMATS],
+                value="openai_chat",
+                allow_blank=False,
+                id="model-message-format",
+                classes="model-form-input",
+            )
             yield Label("提示：填写完成后点击“确定”，也可以按 Enter 提交。", id="model-form-hint")
             with Horizontal(id="custom-actions"):
                 yield Button("确定", id="model-confirm", variant="success")
@@ -1735,12 +1752,14 @@ class AddModelModal(ModalScreen[dict[str, str] | None]):
         self.query_one("#model-base-url", Input).focus()
 
     def _on_key(self, event: Key) -> None:
+        if event.key == "enter" and isinstance(self.focused, Select):
+            return
         if event.key == "enter":
             self.action_submit()
             event.stop()
             event.prevent_default()
             return
-        if event.key == "q" and not isinstance(self.focused, Input):
+        if event.key == "q" and not isinstance(self.focused, (Input, Select)):
             self.action_cancel()
             event.stop()
             event.prevent_default()
@@ -1759,9 +1778,15 @@ class AddModelModal(ModalScreen[dict[str, str] | None]):
         base_url = self.query_one("#model-base-url", Input).value.strip()
         api_key = self.query_one("#model-api-key", Input).value.strip()
         model_input = self.query_one("#model-ids", Input).value.strip()
-        if not base_url or not api_key or not model_input:
+        message_format = self.query_one("#model-message-format", Select).value
+        if not base_url or not api_key or not model_input or message_format not in MESSAGE_FORMATS:
             return
-        self.dismiss({"base_url": base_url, "api_key": api_key, "model_input": model_input})
+        self.dismiss({
+            "base_url": base_url,
+            "api_key": api_key,
+            "model_input": model_input,
+            "message_format": message_format,
+        })
 
     def action_cancel(self) -> None:
         self.dismiss(None)

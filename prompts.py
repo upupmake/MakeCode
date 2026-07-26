@@ -565,13 +565,14 @@ Memory quality:
 def get_title_generation_system_prompt() -> str:
     return """You are a title generation tool.
 Your task is to generate a concise and descriptive title based on the user's query.
+Call GenerateConversationTitle exactly once and put only the title in its title argument.
 
 STRICT RULES:
 - The title MUST only contain: English letters (a-z, A-Z), digits (0-9), Chinese characters, spaces, dots (.), and hyphens (-).
 - FORBIDDEN characters: underscores, slashes, colons, quotes, commas, semicolons, parentheses, brackets, braces, pipes, asterisks, question marks, angle brackets, @, #, $, %, &, +, =, ~, or any other symbol/punctuation.
 - The title will be used directly as a filename component, so it must be filename-safe.
 - The title MUST be between 1 and 30 Unicode characters, counting spaces and punctuation.
-- Do NOT include any explanations, just the raw title.
+- Do NOT reply with the title as plain text or include explanations; return it through GenerateConversationTitle.
 
 Good examples: "用户管理系统", "Python 爬虫开发", "数据库优化方案", "API接口设计 v2.0", "test-file"
 Bad examples: "hello_world" (has underscore), "user/name" (has slash), "a+b=c" (has symbols)"""

@@ -1,9 +1,10 @@
-from unittest.mock import Mock
+import asyncio
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from rich.console import Console
 
-from system.commands import COMMAND_DESCRIPTIONS, CommandHandler, _checkpoint_preview, _task_plan_preview
+from system.commands import COMMAND_DESCRIPTIONS, CommandAction, CommandHandler, _checkpoint_preview, _task_plan_preview
 from system.tui_app import MakeCodeInput, MakeCodeTuiApp
 from system.tui_types import TuiEvent, TuiRegion
 from utils.mcp_manager import GlobalMCPManager
@@ -35,6 +36,91 @@ def make_handler():
 
 def test_mcp_help_command_registered():
     assert COMMAND_DESCRIPTIONS["/mcp-help"] == "显示 MCP 相关命令介绍。"
+
+
+@pytest.mark.anyio
+async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypatch):
+    handler = make_handler()
+    handler.console = Mock()
+    history = [{"role": "system", "content": "system"}]
+    checkpoint = object()
+
+    sync_handlers = {
+        "handle_mcp_help": None,
+        "handle_mcp_view": None,
+        "handle_mcp_add": True,
+        "handle_mcp_delete": True,
+        "handle_mcp_restart": None,
+        "handle_mcp_switch": None,
+        "handle_cmds": True,
+        "handle_task_table": True,
+        "handle_copy": True,
+        "handle_models": None,
+        "handle_layout": None,
+        "handle_update": None,
+        "handle_skills_switch": "system",
+        "handle_skills_list": True,
+        "handle_new": None,
+        "handle_cd": False,
+        "handle_memory_list": True,
+        "handle_memory_panel": checkpoint,
+        "handle_memory_delete": checkpoint,
+        "handle_memory_config": True,
+        "handle_load": (history, checkpoint),
+    }
+    for name, return_value in sync_handlers.items():
+        monkeypatch.setattr(handler, name, Mock(return_value=return_value))
+    monkeypatch.setattr(handler, "handle_compact", AsyncMock(return_value=("summary", checkpoint)))
+    monkeypatch.setattr(handler, "handle_memory_update", AsyncMock(return_value=[]))
+    monkeypatch.setattr("system.commands.flush_tui_screen", Mock())
+    monkeypatch.setattr("system.commands.toggle_plan_mode", Mock(return_value=True))
+    monkeypatch.setattr("system.commands.render_current_workdir", Mock())
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+    monkeypatch.setattr("system.commands.toggle_sub_agent_console", Mock(return_value=True))
+    monkeypatch.setattr("system.commands.refresh_status", Mock())
+    monkeypatch.setattr("system.commands.hitl_mod.toggle_hitl", Mock(return_value=True))
+
+    query_by_command = {
+        "/mcp-add": "/mcp-add demo -- command",
+        "/mcp-delete": "/mcp-delete demo",
+        "/memory-delete": "/memory-delete mem_1",
+        "/memory-update": "/memory-update remember this",
+        "/compact": "/compact keep decisions",
+        "/cd": "/cd .",
+    }
+    actions = {}
+    for command in COMMAND_DESCRIPTIONS:
+        result = await handler.process_command(
+            query_by_command.get(command, command),
+            history,
+            checkpoint,
+            render_banner_fn=Mock(),
+            render_hint_fn=Mock(),
+            render_history_fn=Mock(),
+        )
+        actions[command] = result.action
+
+    assert set(actions) == set(COMMAND_DESCRIPTIONS)
+    assert actions["/quit"] == CommandAction.EXIT
+    assert actions["/exit"] == CommandAction.EXIT
+    assert all(action != CommandAction.RUN_AGENT for action in actions.values())
+    assert actions["/help"] == actions["/cmds"] == CommandAction.CONTINUE
+
+
+def test_mcp_registry_snapshot_copies_tools_and_handlers_under_one_lock():
+    manager = GlobalMCPManager()
+    handler = Mock()
+    manager._mcp_tools = [{"name": "server_read"}]
+    manager._mcp_handlers = {"server_read": handler}
+
+    tools, handlers = manager.get_registry_snapshot()
+    tools.append({"name": "mutated"})
+    handlers.clear()
+
+    assert manager.get_registry_snapshot() == (
+        [{"name": "server_read"}],
+        {"server_read": handler},
+    )
 
 
 def test_checkpoint_preview_only_contains_user_messages():
@@ -70,12 +156,13 @@ def test_task_plan_preview_contains_summary_and_tasks():
     assert "1" in rendered
 
 
-def test_flush_command_registered_and_does_not_run_agent(monkeypatch):
+@pytest.mark.anyio
+async def test_flush_command_registered_and_does_not_run_agent(monkeypatch):
     handler = make_handler()
     flushed = []
     monkeypatch.setattr("system.commands.flush_tui_screen", lambda: flushed.append(True))
 
-    result = handler.process_command(
+    result = await handler.process_command(
         "/flush",
         history=[],
         current_checkpoint=None,
@@ -271,10 +358,34 @@ def test_tasks_command_opens_task_management_panel(monkeypatch):
     manage_tasks.assert_called_once_with(manager)
 
 
+def test_copy_command_strips_private_native_payloads_without_mutating_history(monkeypatch):
+    history = [{
+        "role": "assistant",
+        "content": "answer",
+        "message_metadata": {
+            "source_format": "anthropic",
+            "source_model": "claude-test",
+            "native_blocks": [{"type": "thinking", "signature": "private-signature"}],
+        },
+    }]
+    show_copy = Mock(return_value="closed")
+    monkeypatch.setattr("system.commands.show_copy_content_tui", show_copy)
+
+    assert make_handler().handle_copy(history) is True
+
+    copied_messages = show_copy.call_args.args[0]
+    assert "native_blocks" not in copied_messages[0]["message_metadata"]
+    assert history[0]["message_metadata"]["native_blocks"][0]["signature"] == "private-signature"
+
+
 @pytest.mark.anyio
 async def test_submitting_flush_preserves_existing_pane_content():
     submitted = []
-    app = MakeCodeTuiApp(submit_handler=lambda text: submitted.append(text))
+
+    async def submit_handler(text):
+        submitted.append(text)
+
+    app = MakeCodeTuiApp(submit_handler=submit_handler)
 
     async with app.run_test() as pilot:
         app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, "existing content"))
@@ -289,6 +400,22 @@ async def test_submitting_flush_preserves_existing_pane_content():
 
         assert list(content_log.lines) == before
         assert submitted == ["/flush"]
+
+
+def test_submit_worker_owns_single_asyncio_run_boundary():
+    running_loops = []
+
+    async def submit_handler(text):
+        running_loops.append((text, asyncio.get_running_loop()))
+
+    app = MakeCodeTuiApp(submit_handler=submit_handler)
+    real_asyncio_run = asyncio.run
+    with patch("system.tui_app.asyncio.run", wraps=real_asyncio_run) as run:
+        app._run_submit_handler("hello")
+
+    run.assert_called_once()
+    assert len(running_loops) == 1
+    assert running_loops[0][0] == "hello"
 
 
 @pytest.mark.anyio

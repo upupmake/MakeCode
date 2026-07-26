@@ -392,6 +392,7 @@ def format_runtime_info(tokens: int | None = None, threshold: int = 80000) -> st
     current_model = get_current_model_config()
     model_text = (
         f"{current_model.get_display_text()} · Effort: {current_model.reasoning_effort}"
+        f" · Format: {current_model.message_format}"
         if current_model
         else "未选择"
     )

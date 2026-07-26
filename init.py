@@ -73,8 +73,6 @@ def log_error_traceback(context: str, exc: Exception):
             pass
 
 
-API_STANDARD = "chat"
-
 from shutil import which
 
 SUPPORTED_TERMINAL_TYPES = ("powershell", "pwsh", "cmd", "bash", "zsh", "sh")

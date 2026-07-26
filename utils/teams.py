@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import time
 import uuid
@@ -45,7 +46,11 @@ from utils.common import (
 )
 from utils.file_access import AgentFileAccess
 from utils.hitl import current_agent_role
-from utils.llm_client import _create_async_chat_client
+from utils.llm_client import (
+    _create_async_chat_client,
+    close_async_llm_client,
+    strip_native_message_payloads,
+)
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
 from utils.skills import (
@@ -339,7 +344,7 @@ class TeammateManager:
         )
         return "\n".join(formatted_log)
 
-    def delegate_concurrently(self, tasks: list[dict]) -> str:
+    async def delegate_concurrently(self, tasks: list[dict]) -> str:
         if not tasks:
             return "Error: No tasks provided to delegate."
         try:
@@ -397,7 +402,11 @@ class TeammateManager:
                 original_prompt = task_info["context_prompt"]
 
                 recall_query = build_sub_agent_recall_query(plan_task_id, role, original_prompt)
-                recall_result = recall_long_term_memories(recall_query, source="Sub-Agent 任务预召回", agent_id=f"#{plan_task_id} - {role}")
+                recall_result = await recall_long_term_memories(
+                    recall_query,
+                    source="Sub-Agent 任务预召回",
+                    agent_id=f"#{plan_task_id} - {role}",
+                )
                 prompt = prepend_recalled_memory_to_sub_agent_prompt(
                     original_prompt,
                     recall_result.get("content", "") if isinstance(recall_result, dict) else "",
@@ -487,10 +496,10 @@ class TeammateManager:
                 coroutines = [worker(t) for t in tasks]
                 return await asyncio.gather(*coroutines, return_exceptions=True)
             finally:
-                await local_async_llm_client.client.close()
+                await close_async_llm_client(local_async_llm_client)
 
         try:
-            raw_results = asyncio.run(_run_all())
+            raw_results = await _run_all()
             results = []
             for idx, res in enumerate(raw_results):
                 if isinstance(res, Exception):
@@ -573,18 +582,19 @@ class TeammateManager:
 
         local_todo = TodoManager()
 
+        mcp_tools, mcp_handlers = GLOBAL_MCP_MANAGER.get_registry_snapshot()
         sub_agent_tools = local_async_llm_client.format_tools(
             COMMON_TOOLS
             + SKILL_TOOLS
             + TODO_TOOLS
-            + GLOBAL_MCP_MANAGER.get_tools()
+            + mcp_tools
         )
         agent_access = AgentFileAccess()
 
         sub_handlers = {
             **COMMON_TOOLS_HANDLERS,
             **SKILL_TOOLS_HANDLERS,
-            **GLOBAL_MCP_MANAGER.get_handlers(),
+            **mcp_handlers,
             "TodoUpdate": lambda **kw: (
                 local_todo.update(kw["todos"]) if "todos" in kw
                 else f"Error: TodoUpdate requires 'todos' field, got keys: {list(kw.keys())}"
@@ -607,7 +617,10 @@ class TeammateManager:
             """生成详细的完成报告，并判断是否应该标记为 completed"""
             todo_snapshot = local_todo.render()
             messages_text = json.dumps(
-                messages, ensure_ascii=False, default=str, indent=2
+                strip_native_message_payloads(messages),
+                ensure_ascii=False,
+                default=str,
+                indent=2,
             )
             summary_prompt = get_sub_agent_summary_prompt(
                 executed_steps, max_steps, todo_snapshot, messages_text
@@ -621,15 +634,20 @@ class TeammateManager:
             ]
             try:
                 summary_parts = []
-                async for event in local_async_llm_client.generate_stream(
-                    messages=fallback_messages, tools=[]
-                ):
-                    if event.get("type") == "text":
-                        summary_parts.append(event.get("content", ""))
-                    elif event.get("type") == "done":
-                        summary_text, _, _ = event.get("content", ("", [], None))
-                        if summary_text:
-                            summary_parts = [summary_text]
+                for _ in range(8):
+                    stream_result = None
+                    async for event in local_async_llm_client.generate_stream(
+                        messages=fallback_messages, tools=[]
+                    ):
+                        if event.get("type") == "done":
+                            stream_result = event["result"]
+                    if stream_result is None:
+                        break
+                    if stream_result.text:
+                        summary_parts.append(stream_result.text)
+                    if getattr(stream_result, "stop_reason", None) != "pause_turn":
+                        break
+                    fallback_messages.append(stream_result.assistant_message)
                 summary_text = "".join(summary_parts).strip()
                 if summary_text:
                     return summary_text
@@ -657,7 +675,7 @@ class TeammateManager:
                     tools=sub_agent_tools,
                 ):
                     if event.get("type") == "done":
-                        stream_result = event.get("content")
+                        stream_result = event.get("result")
                         break
                 if stream_result is None:
                     raise RuntimeError("Sub-agent stream ended without a final done event.")
@@ -672,7 +690,9 @@ class TeammateManager:
                 await append_trace("task_error", final_report)
                 return {"report": final_report}
 
-            text_content, tool_calls, raw_message = stream_result
+            text_content = stream_result.text
+            tool_calls = stream_result.tool_calls
+            raw_message = stream_result.assistant_message
 
             # append assistant message to history
             local_async_llm_client.append_assistant_message(messages, raw_message)
@@ -695,6 +715,7 @@ class TeammateManager:
                 )
 
             has_tool_call = len(tool_calls) > 0
+            stop_reason = getattr(stream_result, "stop_reason", None)
 
             # 处理工具调用
             for tc in tool_calls:
@@ -715,6 +736,7 @@ class TeammateManager:
 
                 # 预处理参数：统一转换为字典，默认使用 tool_args
                 args = tool_args
+                tool_error = False
                 try:
                     handler = sub_handlers.get(tool_name)
                     if handler:
@@ -725,11 +747,18 @@ class TeammateManager:
 
                         if not isinstance(args, dict):
                             output = f"Error: {tool_name} arguments must be a dict, got {type(args).__name__}"
+                        elif inspect.iscoroutinefunction(handler):
+                            output = await handler(**args)
                         else:
                             output = await asyncio.to_thread(handler, **args)
+                            if inspect.isawaitable(output):
+                                output = await output
+                        tool_error = isinstance(output, str) and output.startswith("Error:")
                     else:
+                        tool_error = True
                         output = f"Unknown tool: {tool_name}"
                 except Exception as e:
+                    tool_error = True
                     log_error_traceback(
                         f"Sub-agent tool execution error (Role: {role}, Tool: {tool_name})",
                         e,
@@ -757,14 +786,15 @@ class TeammateManager:
                     },
                 )
 
-                messages.append(
-                    local_async_llm_client.format_tool_result(
-                        tool_id, tool_name, output
-                    )
+                tool_result = local_async_llm_client.format_tool_result(
+                    tool_id, tool_name, output
                 )
+                if tool_error:
+                    tool_result["is_error"] = True
+                messages.append(tool_result)
 
             # 检查是否应该跳出循环
-            if not has_tool_call:
+            if not has_tool_call and stop_reason != "pause_turn":
                 stop_reason = "model_returned_no_tool_call"
                 break
 
@@ -847,6 +877,10 @@ TEAM_NAMESPACE = {
 
 TEAM_TOOLS = [pydantic_function_tool(DelegateTasks)]
 
+async def _delegate_tasks_handler(tasks, **kwargs):
+    return await TEAM.delegate_concurrently(tasks)
+
+
 TEAM_TOOLS_HANDLERS = {
-    "DelegateTasks": lambda tasks, **kwargs: TEAM.delegate_concurrently(tasks)
+    "DelegateTasks": _delegate_tasks_handler
 }

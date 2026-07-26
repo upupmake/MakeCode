@@ -49,7 +49,7 @@ and extensible**.
 
 ### 2.1 Orchestrator Loop (`main.py`)
 
-- Uses OpenAI `responses.create(...)` for multi-turn interaction.
+- Uses OpenAI Chat Completions or Anthropic Messages for multi-turn interaction.
 - Automatically executes model-issued tool calls.
 - Aggregates these tool groups:
     - File / Terminal tools
@@ -69,9 +69,9 @@ chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode sou
   `WORKDIR/skills` directory. This ensures that different projects can maintain their own dedicated skill configurations
   without interference.
 - Workspace selection happens through an **interactive Textual TUI wizard panel** (current directory or a custom path); MakeCode no longer depends on any environment variable (the historical `MAKECODE_WORKDIR` has been removed).
-- Supports interactive API Standard selection:
-    - `Chat Completions API` (Standard format, suitable for DeepSeek, Ollama, vLLM, and standard OpenAI endpoints)
-    - `Responses API` (Legacy/Custom Beta format)
+- Supports per-model message format selection:
+    - `openai_chat` (OpenAI Chat Completions message format)
+    - `anthropic` (Anthropic Messages protocol)
 - **Centralized Paths**: workspace paths, install-directory paths, `.makecode/` subdirectories (`tasks/`, `team/`, `memory/`, `transcripts/`, `checkpoint/`, etc.), as well as `model_config.json`, `mcp_config.json`, `layout_config.json`, and `error.log` under the install directory are all provided by `utils/paths.py`.
 - **Model Configuration**: Managed via the built-in `/models` command (see section 2.14)
 
@@ -235,8 +235,7 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 #### Streaming Summary Generation
 
 - **Real-time Streaming Display**: Uses Rich Live component to display summary generation progress in real-time
-- **Multi-API Adaptation**: Internally calls `get_summary_stream()` method, automatically adapting to Chat Completions or Responses API
-- **Intelligent Fallback**: If streaming generation fails, automatically falls back to normal mode to ensure compaction availability
+- **Async streaming summaries**: Uses the unified async `generate_stream()` adapter and the model's OpenAI Chat or Anthropic Messages format; the fallback remains asynchronous.
 - **Context Compression Display Optimization**: Improved UI provides friendlier progress feedback during compression
 
 ### 2.10 Centralized Prompt Management (`prompts.py`) (New)
@@ -399,7 +398,7 @@ Orchestrator output is semantically dispatched to the following independent pane
 - **Task**: dedicated task-board pane showing TaskManager state, the runnable frontier, and execution progress in real time.
 - **Background**: background activity pane for long-term memory recall/write, background checks, and other events that should not interrupt the main conversation.
 - **Sub-Agent**: sub-agent console output, disabled by default and toggled via `/sub-agent-console`.
-- **Status / RuntimeInfo**: top status bar showing the current mode (Plan/Act), model, token usage, and other runtime indicators; it shows `Client: REQUESTING` while any LLM request is active, appends `RETRY n/2` when an SDK retry actually occurs, and clears the state after all requests finish. `Agent: RUNNING` is no longer rendered; agent activity still controls input visibility and other interaction behavior.
+- **Status / RuntimeInfo**: top status bar showing the current mode (Plan/Act), model, token usage, and other runtime indicators; it shows `Client: REQUESTING` while any LLM request is active, appends `RETRY n/5` when an SDK retry actually occurs, and clears the state after all requests finish. `Agent: RUNNING` is no longer rendered; agent activity still controls input visibility and other interaction behavior.
 
 Pane ratios can be customized via the `/layout` command and persisted to `.makecode/layout_config.json` under the installation directory. For backward compatibility, the old `reasoning` key is still read; new configurations use the unified `task` key.
 
@@ -550,12 +549,14 @@ To centrally manage workspace paths and install-directory global configuration, 
 
 ### 2.22 LLM Client Adaptation and Request Resilience (`utils/llm_client.py`) (New)
 
-- **Unified Client Creation**: The orchestrator uses a synchronous client, while sub-agents use `_create_async_chat_client()` with the same endpoint, authentication, timeout, and retry settings.
-- **Timeouts**: The total request timeout is 120 seconds and the connection timeout is 10 seconds, preventing connections or responses from hanging indefinitely.
-- **Retry Policy**: Requests are retried at most twice, with retry waits increasing from 10 to 20 seconds; when a retry actually occurs, the runtime bar shows `Client: REQUESTING · RETRY 1/2` or `RETRY 2/2`.
-- **Request State Lifecycle**: All synchronous, asynchronous, and streaming requests increment a thread-safe counter before the actual network call, showing `Client: REQUESTING` in the runtime bar; success, failure, timeout, and stream cancellation all clean up in `finally`, and the indicator clears after the final concurrent request ends. Retry state is tracked independently per concurrent request.
-- **Request Isolation and Resource Cleanup**: Long-term-memory pre-recall and title generation use independent temporary clients that are closed after completion; first-session title generation starts only after the main conversation request ends, avoiding shared-client connection contention with the main stream.
-- **Reasoning Effort and Caching**: Clients read `ModelConfig.reasoning_effort`; the main client cache key includes this field, so changing it rebuilds the client and applies the new value.
+- **Unified Async Streaming Interface**: The orchestrator, sub-agents, title generation, summaries, long-term memory management, and memory recall all use `generate_stream()` with unified events and `LLMResult`. OpenAI Chat uses the official `AsyncOpenAI` client, while Anthropic Messages uses the official `AsyncAnthropic` client.
+- **Dual-Protocol History Reconstruction**: Checkpoints and history store an OpenAI-style normalized message superset, not a provider request body. Each request rebuilds OpenAI Chat messages or Anthropic content blocks according to the model's `message_format`, replaying native blocks only when the source format and model are compatible.
+- **Anthropic Prefix Caching**: Anthropic requests set ephemeral `cache_control` at both the request and system-text-block levels. Tool definitions are sorted deterministically by name, and each orchestrator or sub-agent run takes one atomic snapshot of MCP tools and handlers, stabilizing the `tools → system → messages` prefix.
+- **Timeouts and Retries**: The total request timeout is 120 seconds and the connection timeout is 10 seconds. The SDK retries at most five times; actual retries appear as `Client: REQUESTING · RETRY n/5` in the runtime bar.
+- **Request State Lifecycle**: Every LLM request increments a thread-safe counter before the network call. Success, failure, timeout, and stream cancellation all clean up in `finally`, and the indicator clears after the final concurrent request ends. Retry state is tracked independently per concurrent request.
+- **Cancellation and `pause_turn`**: Cancellation discards partial assistant output, does not execute tools, and does not create a first checkpoint or title. The main loop and secondary title, summary, memory, recall, and sub-agent report paths resume `pause_turn` with path-specific bounds.
+- **Request Isolation and Resource Cleanup**: Long-term-memory pre-recall and title generation use independent temporary clients that close on completion. A model runtime configuration change closes the stale cached client, and each Textual submission closes the cached client used by that event loop to avoid reusing connection pools across `asyncio.run()` boundaries.
+- **Reasoning Effort and Runtime Cache Key**: Clients accept `low` / `medium` / `high` / `xhigh` / `max`. The runtime cache key includes message format, model identity, and effort, so switching configuration rebuilds the adapter for the new protocol and settings.
 
 ---
 
@@ -577,7 +578,7 @@ Agent/
 │  ├─ todo.py               # internal todo manager for sub-agents
 │  └─ ask_user.py            # agent proactive questioning tool
 ├─ utils/
-│  ├─ llm_client.py         # LLM standard adapter (Chat vs Response API)
+│  ├─ llm_client.py         # Async LLM adapters (OpenAI Chat / Anthropic Messages)
 │  ├─ hitl.py               # Human-In-The-Loop interceptor and UI
 │  ├─ common.py             # file / terminal / grep primitives
 │  ├─ skills.py             # skill discovery and content loading
@@ -633,7 +634,7 @@ Additionally, under the install directory (cross-project shared):
 flowchart TD
     U["User / CLI Input"] --> O["Orchestrator\nmain.py"]
     O --> AC["llm_client.py\nAdapter"]
-    AC --> M["OpenAI Standard / Responses API"]
+    AC --> M["OpenAI Chat / Anthropic Messages\nAsync adapters"]
     O --> I["Initialization & Environment\ninit.py"]
 
     O --> C["File / Terminal Tools\nutils/common.py"]
@@ -703,7 +704,7 @@ flowchart TD
 - `utils/teams.py` delegates the latest runnable tasks to sub-agents concurrently, collects results, and supports
   failure context recovery.
 - `utils/skills.py` discovers and loads skills by priority from the install directory, workspace `.makecode/skills/`, and legacy workspace `skills/` directory.
-- `utils/llm_client.py` creates orchestrator and sub-agent LLM clients consistently, propagates `reasoning_effort`, and configures a 120-second total timeout, 10-second connection timeout, and at most two retries.
+- `utils/llm_client.py` provides unified OpenAI Chat / Anthropic Messages streaming adapters through the official async SDKs, propagates `reasoning_effort`, reconstructs cross-protocol history, manages Anthropic prefix caching, and configures a 120-second total timeout, 10-second connection timeout, and at most five retries.
 - `utils/memory.py` handles long-session compaction, long-term memory management, and transcript storage.
 - `utils/mcp_manager.py` manages MCP service configuration loading, client lifecycle, tool extraction and
   registration, with support for dynamic enable/disable.
@@ -746,13 +747,13 @@ A typical flow looks like this:
 
 - Supported platforms: Windows X64, macOS ARM64, and Linux X64 (GLIBC 2.31+)
 - Source runs require Python 3.10+
-- Access to an OpenAI-compatible endpoint
-- A model that supports the Chat Completions API or Responses API
+- Access to an OpenAI Chat or Anthropic Messages endpoint
+- A model that supports the corresponding async streaming message interface
 
 Dependencies currently declared in `requirements.txt`:
 
 - `fastmcp`
-- `openai`
+- `anthropic`
 - `pydantic`
 - `python_frontmatter`
 - `PyYAML`
@@ -800,10 +801,9 @@ For packaged releases:
 
 After startup, you will enter a wizard flow:
 
-1. **Interactive Workspace Selection (WORKDIR)**: Enter your workspace directory (absolute path) through the Textual panel, or directly use the current directory (the historical `MAKECODE_WORKDIR` environment variable is no longer used).
-2. **Select API Standard**: Choose your underlying API protocol (Chat Completions API or Responses API).
-3. **Enter Interactive Terminal**: Begin your conversation with the main agent; you can switch to another workspace at any time via `/cd <path>`.
-4. **Configure Model**: Use the `/models` command to add and manage your model configurations.
+1. **Select the model message format**: In `/models`, choose `openai_chat` or `anthropic`; MakeCode uses the corresponding official async SDK and message adapter.
+2. **Enter the interactive terminal**: Begin your conversation with the main agent; you can switch to another workspace at any time via `/cd <path>`.
+3. **Configure the model**: Use the `/models` command to add and manage model configurations.
 
 ### 6.4 Built-in Slash Commands
 
@@ -823,11 +823,10 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/skills-switch`     | Toggle skills catalog injection status (On/Off)                                                                                                  |
 | `/skills-list`       | List available skills in the current workspace                                                                                                   |
 | `/compact [prompt]`  | Compact the current conversation context; prompt is optional                                                                                     |
-| `/tools`             | List detailed information of available tools                                                                                                     |
-| `/tasks`              | View the full task table and delete a selected task with confirmation                                                                             |
-| `/plan`               | Enter/exit Plan Mode — only read-only and planning tools are allowed in the planning phase                                                       |
-| `/status`            | Report system status, completed tasks, and next steps                                                                                            |
-| `/help`              | Show usage help and self-introduction                                                                                                            |
+| `/tasks`             | View the full task table and delete a selected task with confirmation                                                                             |
+| `/copy`              | Open a read-only conversation panel with text selection and copy support                                                                          |
+| `/plan`              | Enter/exit Plan Mode — only read-only and planning tools are allowed in the planning phase                                                       |
+| `/help`              | Show all available commands and descriptions                                                                                                      |
 | `/new`                | Clear current conversation history                                                                                                               |
 | `/pwd`               | Show the current working directory in the Content pane                                                                                           |
 | `/cd <path>`         | Switch the current working directory and start a fresh session; supports absolute / relative / quoted paths                                       |
@@ -836,7 +835,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/memory-list`       | List current active long-term memories                                                                                                           |
 | `/memory-panel`      | Open the long-term memory panel (sorted by `updated_at` ascending)                                                                               |
 | `/memory-delete`     | Delete one or more long-term memories by ID                                                                                                       |
-| `/memory-config`     | Open the memory configuration panel to edit `memory_size` and `keep_recent_tool_call`                                                            |
+| `/memory-config`     | Open memory configuration to edit memory size, retained tool calls, recall window, and recall model                                              |
 | `/memory-update [prompt]` | Proactively add, refine, or remove long-term memories; prompt is optional                                                                  |
 | `/hitl`               | Toggle Human-in-the-Loop interception status (On/Off)                                                                                            |
 | `/sub-agent-console`  | Toggle Sub-Agent console output status, disabled by default                                                                                      |
@@ -884,7 +883,7 @@ Important built-in rules include:
 
 ### 8.2 Add a Tool
 
-The current tool registration flow is based on `openai.pydantic_function_tool(...)` plus `make_response_tool(...)`.
+The current tool registration flow is based on `openai.pydantic_function_tool(...)`. The adapter converts the schema to the tool format required by the selected model message format.
 
 Typical steps:
 

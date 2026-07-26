@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ from system.tui_modals import DelegateTasksModal
 from utils.teams import DelegateTasks, TeammateManager
 
 
-class DelegateConfirmationTests(unittest.TestCase):
+class DelegateConfirmationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
@@ -45,29 +46,36 @@ class DelegateConfirmationTests(unittest.TestCase):
                 }
             )
 
-    def _delegate(self, action: str):
+    async def _delegate(self, action: str):
         run_dir = Path(self.temp_dir.name) / "runs"
         run_dir.mkdir()
-
-        def run_async(coroutine):
-            coroutine.close()
-            return []
+        raw_client = SimpleNamespace(close=AsyncMock())
+        llm_client = SimpleNamespace(client=raw_client)
 
         with (
             patch.object(self.manager, "_validate_delegation_tasks", return_value=self.tasks),
             patch("utils.teams.choose_delegate_tasks_tui", return_value=action) as choose,
             patch("utils.teams.request_window_attention"),
             patch("utils.teams.post_tui"),
+            patch("utils.teams.print_formatted_text"),
             patch("utils.teams._runs_dir", return_value=run_dir),
-            patch("utils.teams.asyncio.run", side_effect=run_async) as run,
+            patch("utils.teams._workdir", return_value=Path(self.temp_dir.name)),
+            patch("utils.teams.get_current_model_config", return_value=object()),
+            patch("utils.teams._create_async_chat_client", return_value=llm_client),
+            patch.object(
+                self.manager,
+                "_sub_agent_loop",
+                AsyncMock(return_value={"report": "COMPLETION_STATUS: completed"}),
+            ) as sub_agent_loop,
+            patch("utils.teams.recall_long_term_memories", new_callable=AsyncMock) as recall,
             patch("utils.hitl.check_permission") as hitl,
         ):
-            result = self.manager.delegate_concurrently(self.tasks)
+            result = await self.manager.delegate_concurrently(self.tasks)
         hitl.assert_not_called()
-        return result, choose, run
+        return result, choose, sub_agent_loop, recall
 
-    def test_approve_starts_delegation(self):
-        result, choose, run = self._delegate("approve")
+    async def test_approve_starts_delegation(self):
+        result, choose, sub_agent_loop, recall = await self._delegate("approve")
 
         choose.assert_called_once_with(
             [
@@ -83,23 +91,26 @@ class DelegateConfirmationTests(unittest.TestCase):
                 },
             ]
         )
-        run.assert_called_once()
+        sub_agent_loop.assert_awaited()
+        recall.assert_awaited()
         self.assertIn("Sub-Agents Execution Reports", result)
 
-    def test_orchestrator_choice_does_not_start_delegation(self):
-        result, _, run = self._delegate("orchestrator")
+    async def test_orchestrator_choice_does_not_start_delegation(self):
+        result, _, sub_agent_loop, recall = await self._delegate("orchestrator")
 
-        run.assert_not_called()
+        sub_agent_loop.assert_not_awaited()
+        recall.assert_not_awaited()
         self.assertIn("Orchestrator", result)
         self.assertIn("Do not call DelegateTasks again", result)
 
-    def test_cancel_does_not_start_delegation(self):
-        result, _, run = self._delegate("cancel")
+    async def test_cancel_does_not_start_delegation(self):
+        result, _, sub_agent_loop, recall = await self._delegate("cancel")
 
-        run.assert_not_called()
+        sub_agent_loop.assert_not_awaited()
+        recall.assert_not_awaited()
         self.assertEqual("Sub-agent delegation cancelled by the user.", result)
 
-    def test_approved_delegation_closes_async_client(self):
+    async def test_approved_delegation_closes_async_client(self):
         run_dir = Path(self.temp_dir.name) / "runs"
         run_dir.mkdir()
         raw_client = SimpleNamespace(close=AsyncMock())
@@ -119,13 +130,280 @@ class DelegateConfirmationTests(unittest.TestCase):
             patch("utils.teams._runs_dir", return_value=run_dir),
             patch("utils.teams._workdir", return_value=Path(self.temp_dir.name)),
             patch("utils.teams.get_current_model_config", return_value=object()),
-            patch("utils.teams._create_async_chat_client", return_value=llm_client),
-            patch("utils.teams.recall_long_term_memories", return_value={}),
+            patch("utils.teams._create_async_chat_client", return_value=llm_client) as create_client,
+            patch("utils.teams.recall_long_term_memories", AsyncMock(return_value={})) as recall,
         ):
-            result = self.manager.delegate_concurrently(self.tasks)
+            result = await self.manager.delegate_concurrently(self.tasks)
 
         self.assertIn("Sub-Agents Execution Reports", result)
+        create_client.assert_called_once()
+        self.assertEqual(2, recall.await_count)
         raw_client.close.assert_awaited_once_with()
+
+
+@pytest.mark.anyio
+async def test_sub_agent_loop_consumes_unified_result_without_legacy_done_content(tmp_path):
+    manager = TeammateManager(tmp_path / "team")
+    trace_log = tmp_path / "trace.jsonl"
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+            self.requests = []
+
+        def format_tools(self, tools):
+            return []
+
+        async def generate_stream(self, messages, tools):
+            self.calls += 1
+            self.requests.append(list(messages))
+            if self.calls == 1:
+                result = SimpleNamespace(
+                    text="work finished",
+                    tool_calls=[],
+                    assistant_message={
+                        "role": "assistant",
+                        "content": "work finished",
+                        "message_metadata": {
+                            "source_format": "anthropic",
+                            "source_model": "claude-test",
+                            "native_blocks": [{"type": "thinking", "signature": "private-signature"}],
+                        },
+                    },
+                )
+            else:
+                result = SimpleNamespace(
+                    text="verified report\n\nCOMPLETION_STATUS: completed",
+                    tool_calls=[],
+                    assistant_message={"role": "assistant", "content": "verified report"},
+                )
+            yield {"type": "done", "result": result}
+
+        def append_assistant_message(self, messages, raw_message):
+            messages.append(raw_message)
+
+        def format_tool_result(self, tool_id, tool_name, output):
+            return {"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": output}
+
+    client = FakeClient()
+    with patch("utils.teams.get_sub_agent_console", return_value=False), \
+            patch("utils.teams.GLOBAL_MCP_MANAGER.get_registry_snapshot", return_value=([], {})):
+        result = await manager._sub_agent_loop(
+            "1",
+            "Test Engineer",
+            "Complete the test task.",
+            trace_log,
+            client,
+        )
+
+    assert result["report"].endswith("COMPLETION_STATUS: completed")
+    assert client.calls == 2
+    assert client.requests[1][0]["role"] == "system"
+    assert "private-signature" not in json.dumps(client.requests[1])
+    assert "native_blocks" not in json.dumps(client.requests[1])
+
+
+@pytest.mark.anyio
+async def test_sub_agent_loop_awaits_async_tool_handlers(tmp_path):
+    manager = TeammateManager(tmp_path / "team")
+    trace_log = tmp_path / "trace.jsonl"
+    async_handler = AsyncMock(return_value={"value": 4})
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+            self.requests = []
+
+        def format_tools(self, tools):
+            return []
+
+        async def generate_stream(self, messages, tools):
+            self.calls += 1
+            self.requests.append(list(messages))
+            if self.calls == 1:
+                result = SimpleNamespace(
+                    text="",
+                    tool_calls=[{
+                        "id": "call_1",
+                        "name": "AsyncTool",
+                        "arguments": '{"value": 2}',
+                    }],
+                    assistant_message={"role": "assistant", "content": None},
+                )
+            elif self.calls == 2:
+                result = SimpleNamespace(
+                    text="done",
+                    tool_calls=[],
+                    assistant_message={"role": "assistant", "content": "done"},
+                )
+            else:
+                result = SimpleNamespace(
+                    text="report\n\nCOMPLETION_STATUS: completed",
+                    tool_calls=[],
+                    assistant_message={"role": "assistant", "content": "report"},
+                )
+            yield {"type": "done", "result": result}
+
+        def append_assistant_message(self, messages, raw_message):
+            messages.append(raw_message)
+
+        def format_tool_result(self, tool_id, tool_name, output):
+            return {"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": output}
+
+    client = FakeClient()
+    with patch("utils.teams.get_sub_agent_console", return_value=False), \
+            patch("utils.teams.COMMON_TOOLS_HANDLERS", {"AsyncTool": async_handler}), \
+            patch("utils.teams.GLOBAL_MCP_MANAGER.get_registry_snapshot", return_value=([], {})):
+        result = await manager._sub_agent_loop(
+            "1",
+            "Test Engineer",
+            "Use the async tool.",
+            trace_log,
+            client,
+        )
+
+    async_handler.assert_awaited_once_with(value=2)
+    assert result["report"].endswith("COMPLETION_STATUS: completed")
+    assert client.requests[1][-1]["content"] == {"value": 4}
+
+
+@pytest.mark.anyio
+async def test_sub_agent_resumes_pause_turn_in_main_loop_and_completion_report(tmp_path):
+    manager = TeammateManager(tmp_path / "team")
+    trace_log = tmp_path / "trace.jsonl"
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+            self.requests = []
+
+        def format_tools(self, tools):
+            return []
+
+        async def generate_stream(self, messages, tools):
+            self.requests.append(list(messages))
+            self.calls += 1
+            if self.calls == 1:
+                result = SimpleNamespace(
+                    text="partial work",
+                    tool_calls=[],
+                    stop_reason="pause_turn",
+                    assistant_message={
+                        "role": "assistant",
+                        "content": "partial work",
+                        "stop_reason": "pause_turn",
+                    },
+                )
+            elif self.calls == 2:
+                result = SimpleNamespace(
+                    text="work done",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    assistant_message={"role": "assistant", "content": "work done"},
+                )
+            elif self.calls == 3:
+                result = SimpleNamespace(
+                    text="partial report ",
+                    tool_calls=[],
+                    stop_reason="pause_turn",
+                    assistant_message={
+                        "role": "assistant",
+                        "content": "partial report ",
+                        "stop_reason": "pause_turn",
+                    },
+                )
+            else:
+                result = SimpleNamespace(
+                    text="complete\n\nCOMPLETION_STATUS: completed",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    assistant_message={"role": "assistant", "content": "complete"},
+                )
+            yield {"type": "done", "result": result}
+
+        def append_assistant_message(self, messages, raw_message):
+            messages.append(raw_message)
+
+        def format_tool_result(self, tool_id, tool_name, output):
+            return {"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": output}
+
+    client = FakeClient()
+    with patch("utils.teams.get_sub_agent_console", return_value=False), \
+            patch("utils.teams.GLOBAL_MCP_MANAGER.get_registry_snapshot", return_value=([], {})):
+        result = await manager._sub_agent_loop(
+            "1",
+            "Test Engineer",
+            "Complete the task.",
+            trace_log,
+            client,
+        )
+
+    assert client.calls == 4
+    assert client.requests[1][-1]["stop_reason"] == "pause_turn"
+    assert client.requests[3][-1]["stop_reason"] == "pause_turn"
+    assert result["report"] == "partial report complete\n\nCOMPLETION_STATUS: completed"
+
+
+@pytest.mark.anyio
+async def test_sub_agent_marks_unknown_tool_result_as_error(tmp_path):
+    manager = TeammateManager(tmp_path / "team")
+    trace_log = tmp_path / "trace.jsonl"
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+            self.requests = []
+
+        def format_tools(self, tools):
+            return []
+
+        async def generate_stream(self, messages, tools):
+            self.requests.append(list(messages))
+            self.calls += 1
+            if self.calls == 1:
+                result = SimpleNamespace(
+                    text="",
+                    tool_calls=[{"id": "call_1", "name": "MissingTool", "arguments": "{}"}],
+                    stop_reason="tool_use",
+                    assistant_message={"role": "assistant", "content": None},
+                )
+            elif self.calls == 2:
+                result = SimpleNamespace(
+                    text="done",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    assistant_message={"role": "assistant", "content": "done"},
+                )
+            else:
+                result = SimpleNamespace(
+                    text="report\n\nCOMPLETION_STATUS: completed",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    assistant_message={"role": "assistant", "content": "report"},
+                )
+            yield {"type": "done", "result": result}
+
+        def append_assistant_message(self, messages, raw_message):
+            messages.append(raw_message)
+
+        def format_tool_result(self, tool_id, tool_name, output):
+            return {"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": output}
+
+    client = FakeClient()
+    with patch("utils.teams.get_sub_agent_console", return_value=False), \
+            patch("utils.teams.GLOBAL_MCP_MANAGER.get_registry_snapshot", return_value=([], {})):
+        await manager._sub_agent_loop(
+            "1",
+            "Test Engineer",
+            "Use the missing tool.",
+            trace_log,
+            client,
+        )
+
+    tool_result = client.requests[1][-1]
+    assert tool_result["role"] == "tool"
+    assert tool_result["name"] == "MissingTool"
+    assert tool_result["is_error"] is True
 
 
 class DelegateModalHost(App):

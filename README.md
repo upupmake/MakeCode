@@ -46,7 +46,7 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
 
 ### 2.1 编排器主循环（`main.py`）
 
-- 使用 OpenAI `responses.create(...)` 发起多轮对话。
+- 使用 OpenAI Chat Completions 或 Anthropic Messages 协议发起多轮对话。
 - 自动处理模型输出的工具调用。
 - 聚合以下工具集：
     - File / Terminal 工具
@@ -65,9 +65,9 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 - **技能库 (`skills/`) 加载**：系统会严格从 `WORKDIR/skills` 目录中扫描并加载所有的自定义技能（`SKILL.md`
   ）。这样可以确保不同的工程项目可以使用其专属的技能配置，互不干扰。
 - 启动时以 **Textual TUI 向导面板** 交互式选择工作区目录（当前目录或自定义路径），不再依赖任何环境变量（如历史上的 `MAKECODE_WORKDIR` 已移除）。
-- 支持交互式选择底层的接口规范标准：
-    - `Chat Completions API`（标准格式，适用于接入大多数开源模型如 DeepSeek、Ollama 等）。
-    - `Responses API`（内测定制格式，原生兼容）。
+- 支持按模型配置选择消息格式：
+    - `openai_chat`（OpenAI Chat Completions 消息格式）
+    - `anthropic`（Anthropic Messages 协议）
 - **路径集中管理**：工作区路径、安装目录路径、`.makecode/` 子目录（`tasks/`、`team/`、`memory/`、`transcripts/`、`checkpoint/`等）及安装目录下的 `model_config.json`、`mcp_config.json`、`layout_config.json`、`error.log` 均由 `utils/paths.py` 统一提供。
 - **模型配置**：通过内置的 `/models` 命令进行管理（详见 2.15 节）
 
@@ -215,8 +215,7 @@ Team 模块支持：
 #### 流式摘要生成
 
 - **实时流式显示**：使用 Rich Live 组件实时显示摘要生成过程，用户可直观看到进度
-- **多 API 适配**：底层调用 `get_summary_stream()` 方法，自动适配 Chat Completions 或 Responses API
-- **智能回退机制**：若流式生成失败，自动回退到普通模式确保压缩功能可用
+- **异步流式摘要生成**：底层通过统一的异步 `generate_stream()` adapter 生成摘要，并按模型配置选择 OpenAI Chat 或 Anthropic Messages；失败时保留异步回退路径。
 - **上下文压缩显示优化**：改进后的 UI 在压缩过程中提供更友好的进度反馈
 
 ### 2.10 Prompt 集中管理（`prompts.py`）（新增）
@@ -367,7 +366,7 @@ MakeCode 采用 **Textual** 构建的多面板 TUI，将智能体输出路由到
 - **Task**：任务看板专用面板，实时展示 TaskManager 状态、Runnable Frontier 与执行进度。
 - **Background**：后台活动区，用于展示长期记忆召回/写入、后台检查等不需打断主对话的事件。
 - **Sub-Agent**：子智能体控制台输出，默认关闭，可通过 `/sub-agent-console` 切换。
-- **Status / RuntimeInfo**：顶部状态栏，展示当前模式（Plan/Act）、模型、Token 使用量等运行时指标；任一 LLM 请求进行中时显示 `Client: REQUESTING`，实际发生 SDK 重试时追加 `RETRY n/2`，全部请求结束后自动清除。运行栏不再显示 `Agent: RUNNING`，智能体活动状态仍用于输入区显隐等交互控制。
+- **Status / RuntimeInfo**：顶部状态栏，展示当前模式（Plan/Act）、模型、Token 使用量等运行时指标；任一 LLM 请求进行中时显示 `Client: REQUESTING`，实际发生 SDK 重试时追加 `RETRY n/5`，全部请求结束后自动清除。运行栏不再显示 `Agent: RUNNING`，智能体活动状态仍用于输入区显隐等交互控制。
 
 面板布局比例可通过 `/layout` 命令定制，配置保存到安装目录下的 `.makecode/layout_config.json`。为延续旧配置设计上保留 `reasoning` 键名的兼容读取，迁移后统一使用 `task` 键。
 
@@ -518,12 +517,14 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 ### 2.22 LLM 客户端适配与请求健壮性（`utils/llm_client.py`）（新增）
 
-- **统一客户端创建**：主智能体使用同步客户端，子智能体通过 `_create_async_chat_client()` 复用相同的端点、认证、超时与重试配置。
-- **超时配置**：请求总超时为 120 秒，连接超时为 10 秒，避免连接或响应无限挂起。
-- **重试策略**：最多重试 2 次，重试等待从 10 秒递增到 20 秒；实际发生重试时，运行栏显示 `Client: REQUESTING · RETRY 1/2` 或 `RETRY 2/2`。
-- **请求状态生命周期**：所有同步、异步和流式请求在实际网络调用前增加线程安全计数，运行栏显示 `Client: REQUESTING`；成功、异常、超时或流式取消均在 `finally` 中清理，最后一个并发请求结束后取消标识。并发请求的重试状态按请求独立追踪。
-- **请求隔离与资源释放**：长期记忆预召回和标题生成使用独立临时 client 并在完成后关闭；首次标题生成延后到主对话请求结束后启动，避免与主流式请求共享或竞争 client 连接。
-- **推理强度下发与缓存**：客户端从 `ModelConfig.reasoning_effort` 读取推理强度；主客户端缓存键包含该字段，调整后会重建客户端并应用新值。
+- **统一异步流式接口**：主智能体、子智能体、标题、摘要、长期记忆管理和记忆召回均通过 `generate_stream()` 返回统一事件与 `LLMResult`；OpenAI Chat 使用官方 `AsyncOpenAI`，Anthropic Messages 使用官方 `AsyncAnthropic`。
+- **双协议历史重建**：checkpoint/history 保存 OpenAI 风格的规范化消息超集，而不是 provider 请求体；发起请求时按模型的 `message_format` 重建 OpenAI Chat 消息或 Anthropic content blocks，并仅在来源格式和模型兼容时回放原生 blocks。
+- **Anthropic 前缀缓存**：Anthropic 请求同时设置顶层和 system text block 的 ephemeral `cache_control`。工具定义按名称确定性排序，并在单次主/子智能体运行开始时固定 MCP 工具与 handler 原子快照，使 `tools → system → messages` 前缀保持稳定。
+- **超时与重试**：请求总超时为 120 秒，连接超时为 10 秒；SDK 最多重试 5 次。实际发生重试时，运行栏显示 `Client: REQUESTING · RETRY n/5`。
+- **请求状态生命周期**：所有 LLM 请求在实际网络调用前增加线程安全计数；成功、异常、超时或流式取消均在 `finally` 中清理，最后一个并发请求结束后取消标识。并发请求的重试状态按请求独立追踪。
+- **取消与 `pause_turn`**：取消会丢弃部分 assistant 输出，不执行工具，也不会为首次请求创建 checkpoint 或标题；主循环和标题、摘要、记忆、召回、子智能体报告等二级路径按各自上限有界续接 `pause_turn`。
+- **请求隔离与资源释放**：长期记忆预召回和标题生成使用独立临时 client 并在完成后关闭；模型运行配置变化时关闭旧缓存 client，每次 Textual 提交结束后也关闭本次事件循环使用的缓存 client，避免跨 `asyncio.run()` 复用连接池。
+- **推理强度与运行缓存键**：客户端从 `ModelConfig.reasoning_effort` 读取 `low` / `medium` / `high` / `xhigh` / `max`；运行缓存键包含消息格式、模型身份和 effort，切换后会为新协议与配置重建 adapter。
 
 ## 3. 项目结构与架构
 
@@ -601,7 +602,7 @@ Agent/
 flowchart TD
     U["用户 / CLI Input"] --> O["Orchestrator\nmain.py"]
     O --> AC["llm_client.py\nAdapter"]
-    AC --> M["OpenAI 标准 / Responses API"]
+    AC --> M["OpenAI Chat / Anthropic Messages\nAsync adapters"]
     O --> I["初始化与环境\ninit.py"]
 
     O --> C["File / Terminal Tools\nutils/common.py"]
@@ -668,7 +669,7 @@ flowchart TD
 - `utils/tasks.py` 维护任务 DAG、状态流转与 runnable frontier。
 - `utils/teams.py` 负责把最新可执行任务并发委派给子智能体，回收结果，并支持失败上下文恢复。
 - `utils/skills.py` 从安装目录、工作区 `.makecode/skills/` 和工作区旧 `skills/` 目录按优先级发现并加载技能。
-- `utils/llm_client.py` 统一创建主/子智能体 LLM 客户端，传递 `reasoning_effort`，并配置 120 秒总超时、10 秒连接超时与最多 2 次重试。
+- `utils/llm_client.py` 使用官方异步 SDK 统一提供 OpenAI Chat / Anthropic Messages 流式 adapter，传递 `reasoning_effort`，重建跨协议历史，管理 Anthropic 前缀缓存，并配置 120 秒总超时、10 秒连接超时与最多 5 次重试。
 - `utils/memory.py` 负责长会话压缩、长期记忆管理与转录保存。
 - `utils/mcp_manager.py` 负责 MCP 服务配置加载、客户端生命周期管理、工具提取与注册，支持动态启用/禁用服务。
 - `utils/paths.py` 集中提供安装目录与工作区目录下的路径派生，所有消费者通过共享 getter 访问；PyInstaller 冻结与源码运行环境自动适配。
@@ -709,13 +710,13 @@ flowchart TD
 
 - 支持平台：Windows X64、macOS ARM64、Linux X64（GLIBC 2.31+）
 - 源码运行需要 Python 3.10+
-- 可用的 OpenAI 兼容接口
-- 模型支持 Chat Completions API 或 Responses API
+- 可用的 OpenAI Chat 或 Anthropic Messages 接口
+- 模型支持对应的异步流式消息接口
 
 当前 `requirements.txt` 中声明的依赖：
 
 - `fastmcp`
-- `openai`
+- `anthropic`
 - `pydantic`
 - `python_frontmatter`
 - `PyYAML`
@@ -762,10 +763,9 @@ python main.py
 
 启动后会进入向导流程：
 
-1. **交互式选择工作区目录（WORKDIR）**：通过 Textual 面板输入工作目录绝对路径，或直接使用当前目录（不再使用 `MAKECODE_WORKDIR` 环境变量）。
-2. **选择 API 标准**：选择你使用的底层 API 协议（Chat Completions API 或 Responses API）。
-3. **进入交互式终端**：开始与主代理对话，运行期可随时使用 `/cd <path>` 切换到另一个工作区。
-4. **配置模型**：使用 `/models` 命令添加和管理你的模型配置。
+1. **选择模型消息格式**：在 `/models` 中为模型选择 `openai_chat` 或 `anthropic`；系统使用对应的官方异步 SDK 和消息适配器。
+2. **进入交互式终端**：开始与主代理对话，运行期可随时使用 `/cd <path>` 切换到另一个工作区。
+3. **配置模型**：使用 `/models` 命令添加和管理你的模型配置。
 
 ### 6.4 内置快捷命令（Slash Commands）
 
@@ -785,11 +785,10 @@ python main.py
 | `/skills-switch`     | 切换 skills 目录摘要注入状态 (开启/关闭)                                     |
 | `/skills-list`       | 列出当前工作区可用的 skills                                              |
 | `/compact [prompt]`  | 压缩当前对话上下文，prompt 可选                                            |
-| `/tools`             | 列出当前可用工具详细信息                                                   |
-| `/tasks`              | 查看完整任务表格，并支持经二次确认删除选中任务                                  |
-| `/plan`               | 进入/退出 Plan Mode — 规划阶段只允许只读和任务规划工具                             |
-| `/status`            | 汇报系统状态、已完成任务和下一步计划                                             |
-| `/help`              | 显示使用帮助和自我介绍                                                    |
+| `/tasks`             | 查看完整任务表格，并支持经二次确认删除选中任务                                  |
+| `/copy`              | 打开只读对话内容面板，支持选择并复制文本                                         |
+| `/plan`              | 进入/退出 Plan Mode — 规划阶段只允许只读和任务规划工具                             |
+| `/help`              | 显示使用帮助和全部可用命令                                                      |
 | `/new`                | 清空当前对话历史                                                       |
 | `/pwd`               | 在 Content 区展示当前工作目录                                            |
 | `/cd <path>`         | 切换当前工作目录并开启全新会话，支持绝对/相对/带引号路径                       |
@@ -798,7 +797,7 @@ python main.py
 | `/memory-list`       | 列出当前 active 长期记忆                                                |
 | `/memory-panel`      | 打开长期记忆面板（按 `updated_at` 升序展示）                            |
 | `/memory-delete`     | 按 ID 删除一条或多条长期记忆                                            |
-| `/memory-config`     | 打开记忆配置面板，修改 `memory_size` 与 `keep_recent_tool_call`           |
+| `/memory-config`     | 打开记忆配置面板，修改记忆大小、保留工具调用数、召回窗口和召回模型                 |
 | `/memory-update [prompt]` | 主动新增/修正/清理长期记忆，prompt 可选                              |
 | `/hitl`               | 切换 Human-in-the-Loop 拦截状态 (开启/关闭)                               |
 | `/sub-agent-console`  | 切换 Sub-Agent 的控制台输出状态，默认关闭                                      |
@@ -842,8 +841,7 @@ python main.py
 
 ### 8.2 新增工具
 
-当前工具注册方式统一基于 `openai.pydantic_function_tool(...)`。系统在底层（`utils/llm_client.py`）会自动将其格式化处理为适配不同大模型
-API 标准的格式。
+当前工具注册方式统一基于 `openai.pydantic_function_tool(...)`。系统在底层 adapter 中将其转换为当前模型消息格式所需的工具 schema。
 
 新增工具的一般步骤：
 

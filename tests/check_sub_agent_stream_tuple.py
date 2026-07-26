@@ -41,18 +41,17 @@ def _read_config(args: argparse.Namespace) -> tuple[str, str, str]:
     return base_url, api_key, model
 
 
-def _describe_done(label: str, done_content: Any) -> bool:
-    print(f"\n[{label}] done content type: {type(done_content).__name__}")
-    if not isinstance(done_content, tuple) or len(done_content) != 3:
-        print(f"[{label}] FAIL: expected a 3-tuple, got {done_content!r}")
-        return False
-
-    text_content, tool_calls, raw_message = done_content
-    print(f"[{label}] text_content type: {type(text_content).__name__}, length: {len(text_content or '')}")
-    print(f"[{label}] tool_calls type: {type(tool_calls).__name__}, count: {len(tool_calls) if isinstance(tool_calls, list) else 'n/a'}")
-    print(f"[{label}] raw_message type: {type(raw_message).__name__}")
+def _describe_done(label: str, result: Any) -> bool:
+    print(f"\n[{label}] result type: {type(result).__name__}")
 
     ok = True
+    text_content = getattr(result, "text", None)
+    tool_calls = getattr(result, "tool_calls", None)
+    raw_message = getattr(result, "assistant_message", None)
+    print(f"[{label}] text_content type: {type(text_content).__name__}, length: {len(text_content or '')}")
+    print(f"[{label}] tool_calls type: {type(tool_calls).__name__}, count: {len(tool_calls) if isinstance(tool_calls, list) else 'n/a'}")
+    print(f"[{label}] assistant_message type: {type(raw_message).__name__}")
+
     if not isinstance(text_content, str):
         print(f"[{label}] FAIL: text_content is not str")
         ok = False
@@ -60,11 +59,11 @@ def _describe_done(label: str, done_content: Any) -> bool:
         print(f"[{label}] FAIL: tool_calls is not list")
         ok = False
     if not isinstance(raw_message, dict):
-        print(f"[{label}] FAIL: raw_message is not dict")
+        print(f"[{label}] FAIL: assistant_message is not dict")
         ok = False
 
     if isinstance(raw_message, dict):
-        print(f"[{label}] raw_message keys: {sorted(raw_message.keys())}")
+        print(f"[{label}] assistant_message keys: {sorted(raw_message.keys())}")
     if isinstance(tool_calls, list):
         for idx, call in enumerate(tool_calls):
             print(f"[{label}] tool_call[{idx}] keys: {sorted(call.keys()) if isinstance(call, dict) else type(call).__name__}")
@@ -76,7 +75,7 @@ def _describe_done(label: str, done_content: Any) -> bool:
 
 
 async def _collect_done(client: AsyncChatAPIClient, label: str, messages: list[dict], tools: list | None = None) -> Any:
-    done_content = None
+    result = None
     text_chunks = 0
     reasoning_chunks = 0
     async for event in client.generate_stream(messages=messages, tools=tools):
@@ -86,16 +85,16 @@ async def _collect_done(client: AsyncChatAPIClient, label: str, messages: list[d
         elif event_type == "reasoning":
             reasoning_chunks += 1
         elif event_type == "done":
-            done_content = event.get("content")
+            result = event["result"]
             break
     print(f"[{label}] streamed text chunks: {text_chunks}, reasoning chunks: {reasoning_chunks}")
-    if done_content is None:
+    if result is None:
         raise RuntimeError(f"{label}: stream ended without done event")
-    return done_content
+    return result
 
 
 async def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate AsyncChatAPIClient.generate_stream done tuple shape.")
+    parser = argparse.ArgumentParser(description="Validate AsyncChatAPIClient.generate_stream unified result shape.")
     parser.add_argument("--base-url")
     parser.add_argument("--api-key")
     parser.add_argument("--model")

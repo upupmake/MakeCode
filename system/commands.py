@@ -22,6 +22,7 @@ from system.console_render import render_current_task_plan, render_current_workd
 from system.models import get_model_manager
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
+from utils.llm_client import strip_native_message_payloads
 from utils.plan_mode import toggle_plan_mode
 from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
 from utils.teams import list_team_histories, load_team_history, get_history_title
@@ -715,7 +716,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         if not messages:
             self.console.print("[#aaaaaa]当前对话暂无可查看的内容。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
             return True
-        show_copy_content_tui(messages)
+        show_copy_content_tui(strip_native_message_payloads(messages))
         return True
 
     def handle_cmds(self) -> bool:
@@ -874,6 +875,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         current_model = model_manager.get_current_model()
         current_text = (
             f"{current_model.get_display_text()} · effort: {current_model.reasoning_effort}"
+            f" · format: {current_model.message_format}"
             if current_model
             else "未选择"
         )
@@ -965,14 +967,14 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             post_tui(region, "", clear=True)
         render_current_task_plan(self.console)
 
-    def handle_compact(self, query: str, history: list, current_checkpoint: Optional[Path]) -> tuple:
+    async def handle_compact(self, query: str, history: list, current_checkpoint: Optional[Path]) -> tuple:
         """处理 /compact [prompt] 命令，返回 (should_continue, new_checkpoint)"""
         parts = query.split(maxsplit=1)
         reason = parts[1].strip() if len(parts) == 2 and parts[1].strip() else self.DEFAULT_COMPACT_PROMPT
 
         set_agent_loop_active(True)
         try:
-            self.auto_compact(
+            await self.auto_compact(
                 history,
                 reason=reason,
                 system_prompt_fn=self.get_system_prompt_fn,
@@ -1116,14 +1118,14 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         )
         return True
 
-    def handle_memory_update(self, query: str, history: list) -> bool:
+    async def handle_memory_update(self, query: str, history: list) -> bool:
         """处理 /memory-update [prompt] 命令"""
         parts = query.split(maxsplit=1)
         prompt = parts[1].strip() if len(parts) == 2 and parts[1].strip() else self.DEFAULT_MEMORY_UPDATE_PROMPT
 
         set_agent_loop_active(True)
         try:
-            outputs = manual_memory_update(prompt, history)
+            outputs = await manual_memory_update(prompt, history)
             if outputs and history and history[0].get("role") == "system":
                 history[0]["content"] = self.get_system_prompt_fn()
         finally:
@@ -1302,7 +1304,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         render_current_task_plan(self.console)
         return loaded, new_checkpoint
 
-    def process_command(
+    async def process_command(
             self,
             query: str,
             history: list,
@@ -1446,7 +1448,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         # /compact [prompt] - 压缩上下文
         if query == "/compact" or query.startswith("/compact "):
-            _, new_checkpoint = self.handle_compact(query, history, current_checkpoint)
+            _, new_checkpoint = await self.handle_compact(query, history, current_checkpoint)
             return CommandResult(action=CommandAction.UPDATE_CHECKPOINT, payload=new_checkpoint)
 
         # /memory-list - 列出长期记忆
@@ -1471,7 +1473,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         # /memory-update [prompt] - 主动管理长期记忆
         if query == "/memory-update" or query.startswith("/memory-update "):
-            self.handle_memory_update(query, history)
+            await self.handle_memory_update(query, history)
             refresh_status()
             return CommandResult(action=CommandAction.CONTINUE)
 

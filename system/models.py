@@ -13,10 +13,17 @@ from urllib.parse import urlparse
 
 REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_REASONING_EFFORT = "medium"
+MESSAGE_FORMATS = ("openai_chat", "anthropic")
+DEFAULT_MESSAGE_FORMAT = "openai_chat"
+ModelKey = tuple[str, str, str, str]
 
 
 def normalize_reasoning_effort(value: object) -> str:
     return value if isinstance(value, str) and value in REASONING_EFFORTS else DEFAULT_REASONING_EFFORT
+
+
+def normalize_message_format(value: object) -> str:
+    return value if isinstance(value, str) and value in MESSAGE_FORMATS else DEFAULT_MESSAGE_FORMAT
 
 
 @dataclass
@@ -28,13 +35,14 @@ class ModelConfig:
     is_favorite: bool = False
     max_context: int = 128  # 单位: k (千tokens)
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    message_format: str = DEFAULT_MESSAGE_FORMAT
 
     @property
-    def key(self) -> tuple[str, str, str]:
-        return (self.base_url, self.api_key, self.model_id)
+    def key(self) -> ModelKey:
+        return (self.base_url, self.api_key, self.model_id, self.message_format)
 
     @property
-    def runtime_key(self) -> tuple[str, str, str, str]:
+    def runtime_key(self) -> tuple[str, str, str, str, str]:
         return (*self.key, self.reasoning_effort)
 
     def get_display_name(self) -> str:
@@ -61,10 +69,11 @@ class ModelConfig:
             "base_url": self.base_url,
             "api_key": self.api_key,
             "model_id": self.model_id,
+            "message_format": self.message_format,
         }
 
     @classmethod
-    def key_from_dict(cls, data: dict | None) -> Optional[tuple[str, str, str]]:
+    def key_from_dict(cls, data: dict | None) -> Optional[ModelKey]:
         if not isinstance(data, dict):
             return None
         base_url = data.get("base_url")
@@ -72,7 +81,7 @@ class ModelConfig:
         model_id = data.get("model_id")
         if not base_url or api_key is None or not model_id:
             return None
-        return (base_url, api_key, model_id)
+        return (base_url, api_key, model_id, normalize_message_format(data.get("message_format")))
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelConfig":
@@ -84,6 +93,7 @@ class ModelConfig:
             is_favorite=data.get("is_favorite", False),
             max_context=data.get("max_context", 128),
             reasoning_effort=normalize_reasoning_effort(data.get("reasoning_effort")),
+            message_format=normalize_message_format(data.get("message_format")),
         )
 
 
@@ -95,9 +105,9 @@ class ModelManager:
         self.config_file = config_dir / "model_config.json"
         self.models: list[ModelConfig] = []
         self.current_model: Optional[ModelConfig] = None
-        self.current_model_key: Optional[tuple[str, str, str]] = None
-        self.last_selected_key: Optional[tuple[str, str, str]] = None
-        self.memory_recall_model_key: Optional[tuple[str, str, str]] = None
+        self.current_model_key: Optional[ModelKey] = None
+        self.last_selected_key: Optional[ModelKey] = None
+        self.memory_recall_model_key: Optional[ModelKey] = None
         self.load_error: Optional[str] = None
         self._raw_config: Optional[dict] = None
         self._load_config()
@@ -106,7 +116,7 @@ class ModelManager:
     def _sort_models(self):
         self.models.sort(key=lambda model: (not model.is_favorite, model.model_id.lower()))
 
-    def _get_model_by_key(self, key: Optional[tuple[str, str, str]]) -> Optional[ModelConfig]:
+    def _get_model_by_key(self, key: Optional[ModelKey]) -> Optional[ModelConfig]:
         if key is None:
             return None
         for model in self.models:
@@ -269,7 +279,7 @@ class ModelManager:
         model = self.get_memory_recall_model()
         return model.get_display_text() if model else "同主模型"
 
-    def set_memory_recall_model_by_key(self, key: Optional[tuple[str, str, str]]) -> bool:
+    def set_memory_recall_model_by_key(self, key: Optional[ModelKey]) -> bool:
         if not self._ensure_config_loaded_for_save():
             return False
         if key is not None and self._get_model_by_key(key) is None:
@@ -282,7 +292,7 @@ class ModelManager:
             return False
         return self.select_model(self.models[index].key, self.models[index].reasoning_effort)
 
-    def select_model(self, key: tuple[str, str, str], reasoning_effort: str) -> bool:
+    def select_model(self, key: ModelKey, reasoning_effort: str) -> bool:
         if not self._reload_from_disk():
             return False
         model = self._get_model_by_key(key)
@@ -293,7 +303,7 @@ class ModelManager:
         self.last_selected_key = model.key
         return self._save_config()
 
-    def set_reasoning_effort(self, key: tuple[str, str, str], reasoning_effort: str) -> bool:
+    def set_reasoning_effort(self, key: ModelKey, reasoning_effort: str) -> bool:
         if not self._reload_from_disk():
             return False
         model = self._get_model_by_key(key)
@@ -310,9 +320,10 @@ class ModelManager:
         api_key: str,
         model_ids: list[str],
         max_contexts: Optional[list[int]] = None,
+        message_format: str = DEFAULT_MESSAGE_FORMAT,
     ) -> list[ModelConfig]:
         self._reload_from_disk()
-        if self.load_error is not None:
+        if self.load_error is not None or message_format not in MESSAGE_FORMATS:
             return []
 
         if max_contexts is None:
@@ -329,13 +340,9 @@ class ModelManager:
                 model_id=model_id.strip(),
                 is_favorite=False,
                 max_context=max_contexts[i] if i < len(max_contexts) else 128,
+                message_format=message_format,
             )
-            existing = any(
-                existing_model.base_url == model.base_url
-                and existing_model.api_key == model.api_key
-                and existing_model.model_id == model.model_id
-                for existing_model in self.models
-            )
+            existing = any(existing_model.key == model.key for existing_model in self.models)
             if not existing:
                 self.models.append(model)
                 new_models.append(model)
@@ -355,7 +362,7 @@ class ModelManager:
 
         return self.delete_model_by_key(self.models[index].key)
 
-    def delete_model_by_key(self, key: tuple[str, str, str]) -> bool:
+    def delete_model_by_key(self, key: ModelKey) -> bool:
         if not self._reload_from_disk():
             return False
         delete_index = next(
@@ -366,12 +373,17 @@ class ModelManager:
             return False
 
         deleted_model = self.models[delete_index]
+        deleting_current_model = self.current_model_key == deleted_model.key
         del self.models[delete_index]
 
         if self.last_selected_key == deleted_model.key:
             self.last_selected_key = None
         if self.memory_recall_model_key == deleted_model.key:
             self.memory_recall_model_key = None
+        if deleting_current_model:
+            fallback_model = self._get_default_model()
+            self._set_current_model(fallback_model)
+            self.last_selected_key = fallback_model.key if fallback_model else None
 
         return self._save_config()
 

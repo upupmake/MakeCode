@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from utils.llm_client import ChatAPIClient
+from utils.llm_client import AsyncChatAPIClient
 from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS, TOOLS, TaskManager
 
 
@@ -37,7 +37,7 @@ def test_create_tasks_description_explains_same_batch_dependencies() -> None:
 
 
 def test_batch_tool_schemas_use_tasks_arrays_without_refs() -> None:
-    formatted = ChatAPIClient(None, "test").format_tools(TASK_MANAGER_TOOLS)
+    formatted = AsyncChatAPIClient(None, "test").format_tools(TASK_MANAGER_TOOLS)
     tools = {tool["function"]["name"]: tool["function"] for tool in formatted}
 
     for name in ("UpdateTasksContent", "UpdateTasksDependencies"):

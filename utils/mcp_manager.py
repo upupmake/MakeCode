@@ -408,6 +408,10 @@ class GlobalMCPManager:
         with self._db_lock:
             return dict(self._mcp_handlers)
 
+    def get_registry_snapshot(self) -> tuple[list, dict]:
+        with self._db_lock:
+            return list(self._mcp_tools), dict(self._mcp_handlers)
+
     def stop(self):
         with self._db_lock:
             self._mcp_tools = []

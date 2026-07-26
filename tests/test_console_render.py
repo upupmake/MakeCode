@@ -13,6 +13,7 @@ from system.console_render import (
 )
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion
+from utils.llm_client import build_llm_result
 
 
 def _render_terminal_output(output):
@@ -110,10 +111,11 @@ def test_assistant_panel_displays_tags_and_keeps_markdown_formatting():
     assert "<thinking>内容</thinking>" in rendered
 
 
-def test_stream_error_releases_tool_calls_background_active_state():
+@pytest.mark.anyio
+async def test_stream_error_releases_tool_calls_background_active_state():
     events = []
 
-    def failing_stream():
+    async def failing_stream():
         yield {"type": "tool_calls", "content": None}
         raise RuntimeError("stream interrupted")
 
@@ -122,7 +124,7 @@ def test_stream_error_releases_tool_calls_background_active_state():
         side_effect=lambda region, payload=None, **kwargs: events.append((region, payload, kwargs)),
     ), patch("system.stream_render.is_cancelled", return_value=False):
         with pytest.raises(RuntimeError, match="stream interrupted"):
-            StreamRenderer().render(failing_stream())
+            await StreamRenderer().render_async(failing_stream())
 
     background_active = [
         kwargs["active"]
@@ -132,10 +134,11 @@ def test_stream_error_releases_tool_calls_background_active_state():
     assert background_active == [True, False]
 
 
-def test_stream_error_releases_reasoning_and_content_active_state():
+@pytest.mark.anyio
+async def test_stream_error_releases_reasoning_and_content_active_state():
     events = []
 
-    def failing_stream():
+    async def failing_stream():
         yield {"type": "reasoning", "content": "思考中"}
         yield {"type": "text", "content": "正文"}
         raise RuntimeError("stream interrupted")
@@ -145,7 +148,7 @@ def test_stream_error_releases_reasoning_and_content_active_state():
         side_effect=lambda region, payload=None, **kwargs: events.append((region, payload, kwargs)),
     ), patch("system.stream_render.is_cancelled", return_value=False):
         with pytest.raises(RuntimeError, match="stream interrupted"):
-            StreamRenderer().render(failing_stream())
+            await StreamRenderer().render_async(failing_stream())
 
     active_by_region = {
         region: [
@@ -161,10 +164,11 @@ def test_stream_error_releases_reasoning_and_content_active_state():
     }
 
 
-def test_cancelled_stream_releases_tool_calls_background_active_state():
+@pytest.mark.anyio
+async def test_cancelled_stream_releases_tool_calls_background_active_state():
     events = []
 
-    def cancelled_stream():
+    async def cancelled_stream():
         yield {"type": "tool_calls", "content": None}
         yield {"type": "text", "content": "不会继续渲染"}
 
@@ -175,7 +179,7 @@ def test_cancelled_stream_releases_tool_calls_background_active_state():
         "system.stream_render.is_cancelled",
         side_effect=[False, True, True],
     ):
-        text_content, tool_calls, raw_message = StreamRenderer().render(cancelled_stream())
+        text_content, tool_calls, raw_message = await StreamRenderer().render_async(cancelled_stream())
 
     background_active = [
         kwargs["active"]
@@ -184,3 +188,26 @@ def test_cancelled_stream_releases_tool_calls_background_active_state():
     ]
     assert background_active == [True, False]
     assert (text_content, tool_calls, raw_message) == ("", [], None)
+
+
+@pytest.mark.anyio
+async def test_async_stream_renderer_consumes_unified_done_result():
+    result = build_llm_result(
+        text="async answer",
+        reasoning="reason",
+        source_format="openai_chat",
+        source_model="test-model",
+        stop_reason="stop",
+    )
+
+    async def stream():
+        yield {"type": "reasoning", "content": "reason"}
+        yield {"type": "text", "content": "async answer"}
+        yield {"type": "done", "result": result}
+
+    with patch("system.stream_render.post_tui"), patch(
+        "system.stream_render.is_cancelled", return_value=False
+    ):
+        rendered = await StreamRenderer().render_async(stream())
+
+    assert rendered == ("async answer", [], result.assistant_message)

@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import json
 import os
 import subprocess
@@ -9,6 +11,8 @@ from typing import Any
 from rich.console import Console
 from rich.markup import escape
 from rich.markdown import Markdown
+from openai import pydantic_function_tool
+from pydantic import BaseModel, Field
 
 from init import (
     log_error_traceback,
@@ -53,9 +57,16 @@ from utils.common import (
     file_edit,
     file_read,
     file_create,
+    sanitize_title,
 )
 from utils.file_access import AgentFileAccess
-from utils.llm_client import close_llm_client, create_current_llm_client, llm_client
+from utils.llm_client import (
+    async_llm_client,
+    close_async_llm_client,
+    close_cached_async_llm_client,
+    create_current_async_llm_client,
+    refresh_async_llm_client,
+)
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
 from utils.memory import (
@@ -85,6 +96,19 @@ from tools.ask_user import ASK_USER_TOOLS, ASK_USER_TOOLS_HANDLERS
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 
+
+class GenerateConversationTitle(BaseModel):
+    """Structured title returned by the title-generation request."""
+
+    title: str = Field(
+        ...,
+        description="A concise filename-safe conversation title, 1–30 Unicode characters.",
+    )
+
+
+TITLE_GENERATION_TOOLS = [pydantic_function_tool(GenerateConversationTitle)]
+
+
 _PENDING_UPDATE_EXE_PATH = None
 
 
@@ -101,20 +125,25 @@ def get_dynamic_system_prompt() -> str:
     )
 
 
-def get_current_tools_definition():
+def get_current_tools_definition(mcp_tools: list | None = None):
     """获取当前可用的工具定义（包含动态加载的 MCP 工具）"""
-    all_tools = _get_all_tools_definition()
+    all_tools = _get_all_tools_definition(mcp_tools)
     if is_plan_mode():
         # Plan Mode: 黑名单过滤，禁止写入/执行/委托工具
-        filtered = [t for t in all_tools if t["function"]["name"] not in PLAN_MODE_BLOCKLIST]
+        filtered = [
+            tool
+            for tool in all_tools
+            if (tool.get("function") or {}).get("name", tool.get("name"))
+            not in PLAN_MODE_BLOCKLIST
+        ]
         return filtered
     return all_tools
 
 
-def _get_all_tools_definition():
+def _get_all_tools_definition(mcp_tools: list | None = None):
     """获取全部工具定义（不考虑 Plan Mode 过滤）"""
     try:
-        return llm_client.format_tools(
+        return async_llm_client.format_tools(
             COMMON_TOOLS
             + MEMORY_RECALL_TOOLS
             + MEMORY_SELF_MANAGEMENT_TOOLS
@@ -122,7 +151,7 @@ def _get_all_tools_definition():
             + TASK_MANAGER_TOOLS
             + TEAM_TOOLS
             + ASK_USER_TOOLS
-            + GLOBAL_MCP_MANAGER.get_tools()
+            + (GLOBAL_MCP_MANAGER.get_tools() if mcp_tools is None else mcp_tools)
         )
     except RuntimeError as exc:
         if "No model configured" in str(exc):
@@ -180,36 +209,53 @@ def _parse_arguments(arguments: Any) -> dict:
     return {"_error": f"Unexpected arguments type: {type(arguments).__name__}"}
 
 
-def generate_title(user_query: str) -> str:
+async def generate_title(user_query: str) -> str | None:
     """Generate a short title for the conversation based on the first user query."""
     title_client = None
     try:
-        title_client = create_current_llm_client()
+        title_client = create_current_async_llm_client()
         if title_client is None:
             return None
         messages = [
             {"role": "system", "content": get_title_generation_system_prompt()},
             {"role": "user", "content": user_query},
         ]
-        response = title_client.generate(messages)
-        # Parse response based on client type
-        if hasattr(response, 'choices'):  # Chat API
-            return response.choices[0].message.content.strip()
-        else:  # Response API
-            for item in response.output:
-                if item.type == "message":
-                    return next(
-                        (c.text for c in item.content if c.type == "output_text"), ""
-                    ).strip()
+        tools = title_client.format_tools(TITLE_GENERATION_TOOLS)
+        title_parts = []
+        for _ in range(8):
+            result = None
+            async for event in title_client.generate_stream(
+                messages,
+                tools,
+                tool_choice="GenerateConversationTitle",
+            ):
+                if event.get("type") == "done":
+                    result = event["result"]
+            if result is None:
+                break
+
+            for tool_call in result.tool_calls:
+                if tool_call.get("name") != "GenerateConversationTitle":
+                    continue
+                arguments = _parse_arguments(tool_call.get("arguments"))
+                title = arguments.get("title")
+                if isinstance(title, str):
+                    return sanitize_title(title)
+
+            if result.text:
+                title_parts.append(result.text)
+            if getattr(result, "stop_reason", None) != "pause_turn":
+                return sanitize_title("".join(title_parts).strip())
+            messages.append(result.assistant_message)
     except Exception as exc:
         log_error_traceback("Failed to generate title", exc)
     finally:
         if title_client is not None:
-            close_llm_client(title_client)
+            await close_async_llm_client(title_client)
     return None
 
 
-def _stream_with_render(messages: list, current_tools: list):
+async def _stream_with_render(messages: list, current_tools: list):
     """
     流式请求渲染：
     1. reasoning 和正文均交给 StreamRenderer 处理。
@@ -220,8 +266,11 @@ def _stream_with_render(messages: list, current_tools: list):
     renderer = StreamRenderer(console=console, update_interval=0.1)
     start_cancel_listener()
     try:
-        stream = llm_client.generate_stream(messages, current_tools)
-        text_content, tool_calls, raw_message = renderer.render(stream, agent_name="Orchestrator")
+        stream = async_llm_client.generate_stream(messages, current_tools)
+        text_content, tool_calls, raw_message = await renderer.render_async(
+            stream,
+            agent_name="Orchestrator",
+        )
         cancelled = is_cancelled()
     finally:
         stop_cancel_listener()
@@ -233,40 +282,50 @@ def _is_no_model_configured_error(exc: Exception) -> bool:
     return "No model configured" in str(exc)
 
 
-def agent_loop(messages: list):
+async def _run_tool_handler(handler, arguments: dict):
+    if inspect.iscoroutinefunction(handler):
+        return await handler(**arguments)
+    output = await asyncio.to_thread(handler, **arguments)
+    if inspect.isawaitable(output):
+        return await output
+    return output
+
+
+async def agent_loop(messages: list) -> bool:
     """Agent 主循环：与 LLM 交互并执行工具调用"""
     global CURRENT_CHECKPOINT
     micro_compact(messages)
+    committed_response = False
 
-    def _remember_long_term_memory(prompt: str, **kwargs):
+    async def _remember_long_term_memory(prompt: str, **kwargs):
         post_tui(TuiRegion.BACKGROUND, active=True)
         post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 Agent 主动请求写入长期记忆：{escape(prompt.strip())}[/#aaaaaa]")
         try:
-            return manual_memory_update(prompt, messages)
+            return await manual_memory_update(prompt, messages)
         finally:
             post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 Agent 主动记忆写入流程已返回。[/#aaaaaa]")
             post_tui(TuiRegion.BACKGROUND, active=False)
 
+    mcp_tools, mcp_handlers = GLOBAL_MCP_MANAGER.get_registry_snapshot()
     current_handlers = {
         **BASE_SUPER_TOOLS_HANDLERS,
-        **GLOBAL_MCP_MANAGER.get_handlers(),
+        **mcp_handlers,
         "RememberLongTermMemory": _remember_long_term_memory, # 单独注册，因为只提供给 Agent 主循环使用，不暴露给技能调用
     }
-    current_super_tools = []
+    try:
+        current_super_tools = get_current_tools_definition(mcp_tools)
+    except RuntimeError as exc:
+        if _is_no_model_configured_error(exc):
+            console.print(
+                "[bold yellow]⚠️ 未配置模型。请先使用 /models 命令配置模型。[/bold yellow]"
+            )
+            return False
+        raise
 
     while True:
         # Update system prompt to reflect current plan mode state
         messages[0] = {"role": "system", "content": get_dynamic_system_prompt()}
 
-        try:
-            current_super_tools = get_current_tools_definition()
-        except RuntimeError as exc:
-            if _is_no_model_configured_error(exc):
-                console.print(
-                    "[bold yellow]⚠️ 未配置模型。请先使用 /models 命令配置模型。[/bold yellow]"
-                )
-                break
-            raise
         _render_token_usage(
             messages,
             tools_definition=current_super_tools,
@@ -275,7 +334,10 @@ def agent_loop(messages: list):
         )
 
         try:
-            text_content, tool_calls, raw_message, cancelled = _stream_with_render(messages, current_super_tools)
+            text_content, tool_calls, raw_message, cancelled = await _stream_with_render(
+                messages,
+                current_super_tools,
+            )
         except Exception as e:
             if _is_no_model_configured_error(e):
                 console.print(
@@ -291,13 +353,16 @@ def agent_loop(messages: list):
         if cancelled:
             break
 
-        llm_client.append_assistant_message(messages, raw_message)
+        async_llm_client.append_assistant_message(messages, raw_message)
+        committed_response = True
         has_tool_call = len(tool_calls) > 0
+        stop_reason = raw_message.get("stop_reason") if isinstance(raw_message, dict) else None
 
         for tc in tool_calls:
             tool_name = tc["name"]
             tool_id = tc["id"]
             tool_args = tc["arguments"]
+            tool_error = False
 
             post_tui(TuiRegion.TOOLS, active=True)
             try:
@@ -305,8 +370,12 @@ def agent_loop(messages: list):
 
                 try:
                     arguments = _parse_arguments(tool_args)
+                    if "_error" in arguments:
+                        output = arguments["_error"]
+                        tool_error = True
                     # Plan Mode safety net: block write/execute/delegate tools
-                    if is_plan_mode() and tool_name in PLAN_MODE_BLOCKLIST:
+                    elif is_plan_mode() and tool_name in PLAN_MODE_BLOCKLIST:
+                        tool_error = True
                         output = (
                             f"⛔ Plan Mode active: '{tool_name}' is blocked. "
                             f"Complete your plan first, then exit Plan Mode to execute."
@@ -315,8 +384,9 @@ def agent_loop(messages: list):
                         cmd = arguments.get("command", "")
                         if is_plan_mode_command_allowed(cmd):
                             handler = current_handlers.get(tool_name)
-                            output = handler(**arguments)
+                            output = await _run_tool_handler(handler, arguments)
                         else:
+                            tool_error = True
                             output = (
                                 f"⛔ Plan Mode: this command is not allowed. "
                                 f"Only {', '.join(PLAN_MODE_ALLOWED_COMMANDS)} commands are permitted in Plan Mode."
@@ -324,10 +394,13 @@ def agent_loop(messages: list):
                     else:
                         handler = current_handlers.get(tool_name)
                         if handler:
-                            output = handler(**arguments)
+                            output = await _run_tool_handler(handler, arguments)
+                            tool_error = isinstance(output, str) and output.startswith("Error:")
                         else:
+                            tool_error = True
                             output = f"Unknown tool: {tool_name}"
                 except Exception as e:
+                    tool_error = True
                     log_error_traceback(
                         f"Orchestrator tool execution error: {tool_name}", e
                     )
@@ -337,13 +410,23 @@ def agent_loop(messages: list):
             finally:
                 post_tui(TuiRegion.TOOLS, active=False)
 
-            messages.append(llm_client.format_tool_result(tool_id, tool_name, output))
+            tool_result = async_llm_client.format_tool_result(
+                tool_id,
+                tool_name,
+                output,
+            )
+            if tool_error:
+                tool_result["is_error"] = True
+            messages.append(tool_result)
 
         CURRENT_CHECKPOINT = save_checkpoint(messages, CURRENT_CHECKPOINT)
         _apply_pending_title()
 
-        if not has_tool_call:
+        if not has_tool_call and stop_reason != "pause_turn":
             break
+
+    if not committed_response:
+        return False
 
     current_context_tokens = estimate_tokens(
         messages, tools_definition=current_super_tools
@@ -354,7 +437,11 @@ def agent_loop(messages: list):
             f"{current_context_tokens} exceeded threshold {THRESHOLD}."
         )
         try:
-            auto_compact(messages, reason=compact_reason, system_prompt_fn=get_dynamic_system_prompt)
+            await auto_compact(
+                messages,
+                reason=compact_reason,
+                system_prompt_fn=get_dynamic_system_prompt,
+            )
             CURRENT_CHECKPOINT = save_checkpoint(messages, CURRENT_CHECKPOINT)
             console.print(
                 "\n[bold green]✨ 当前对话上下文已成功压缩并保存！[/bold green]"
@@ -364,6 +451,7 @@ def agent_loop(messages: list):
             log_error_traceback("Orchestrator auto-compact error", e)
             error_msg = f"Error executing auto_compact: {e}."
             console.print(f"[bold red]⚠️ {escape(error_msg)}[/bold red]")
+    return True
 
 
 def _init_tree_sitter_cache(console: Console):
@@ -462,14 +550,14 @@ def _get_previous_assistant_content(history: list) -> str:
     return ""
 
 
-def _process_user_query(query: str, history: list, command_handler: CommandHandler) -> str | None:
+async def _process_user_query(query: str, history: list, command_handler: CommandHandler) -> str | None:
     global CURRENT_CHECKPOINT, _pending_title, _PENDING_UPDATE_EXE_PATH
 
     query = query.strip()
     if not query:
         return None
 
-    command_result = command_handler.process_command(
+    command_result = await command_handler.process_command(
         query=query,
         history=history,
         current_checkpoint=CURRENT_CHECKPOINT,
@@ -477,6 +565,7 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
         render_hint_fn=_render_env_customization_hint,
         render_history_fn=_render_history,
     )
+    await refresh_async_llm_client()
 
     if command_result.action == CommandAction.EXIT:
         return "exit"
@@ -487,12 +576,11 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
         return None
     if command_result.action == CommandAction.RUN_AGENT:
         user_query = command_result.payload
-        _title_thread = None
         should_generate_title = False
         try:
             set_agent_loop_active(True)
             previous_assistant_content = _get_previous_assistant_content(history)
-            recall_result = recall_long_term_memories(
+            recall_result = await recall_long_term_memories(
                 user_query,
                 previous_assistant_content=previous_assistant_content,
                 source="用户请求预召回",
@@ -501,38 +589,30 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
             user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
             history.append({"role": "user", "content": user_message})
 
-            if CURRENT_CHECKPOINT is None and any(msg['role'] == 'user' for msg in history):
+            should_generate_title = CURRENT_CHECKPOINT is None
+            committed_response = await agent_loop(history)
+            if committed_response and CURRENT_CHECKPOINT is None:
                 CURRENT_CHECKPOINT = save_checkpoint(history)
-                should_generate_title = True
 
-            agent_loop(history)
-
-            if should_generate_title:
-                def _title_worker():
-                    global _pending_title
-                    post_tui(TuiRegion.BACKGROUND, active=True)
-                    post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 正在生成对话标题...[/#aaaaaa]")
-                    try:
-                        title = generate_title(query)
-                        if title:
-                            _pending_title = title
-                            post_tui(TuiRegion.BACKGROUND, f"[bold green]🏷️ 对话标题生成完成：{title}[/bold green]")
-                        else:
-                            post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 对话标题生成结束：未生成可用标题[/#aaaaaa]")
-                    except Exception as exc:
-                        log_error_traceback("Failed to generate title", exc)
-                        post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题生成失败：{escape(str(exc))}[/bold red]")
-                    finally:
-                        post_tui(TuiRegion.BACKGROUND, active=False)
-
-                _title_thread = threading.Thread(target=_title_worker, daemon=True)
-                _title_thread.start()
+            if should_generate_title and committed_response:
+                post_tui(TuiRegion.BACKGROUND, active=True)
+                post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 正在生成对话标题...[/#aaaaaa]")
+                try:
+                    title = await generate_title(query)
+                    if title:
+                        _pending_title = title
+                        post_tui(TuiRegion.BACKGROUND, f"[bold green]🏷️ 对话标题生成完成：{title}[/bold green]")
+                    else:
+                        post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 对话标题生成结束：未生成可用标题[/#aaaaaa]")
+                except Exception as exc:
+                    log_error_traceback("Failed to generate title", exc)
+                    post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题生成失败：{escape(str(exc))}[/bold red]")
+                finally:
+                    post_tui(TuiRegion.BACKGROUND, active=False)
         except RuntimeError as exc:
             console.print(f"[bold yellow]⚠️ {escape(str(exc))}[/bold yellow]")
         finally:
             set_agent_loop_active(False)
-        if _title_thread is not None:
-            _title_thread.join(timeout=10)
         _apply_pending_title()
         refresh_status()
         return None
@@ -554,8 +634,11 @@ def _process_user_query(query: str, history: list, command_handler: CommandHandl
 
 
 def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for_workdir: bool) -> None:
-    def submit_handler(query: str) -> str | None:
-        return _process_user_query(query, history, command_handler)
+    async def submit_handler(query: str) -> str | None:
+        try:
+            return await _process_user_query(query, history, command_handler)
+        finally:
+            await close_cached_async_llm_client()
 
     def startup_workdir_provider():
         return _current_workdir()

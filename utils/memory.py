@@ -1,3 +1,4 @@
+import asyncio
 import json
 import threading
 import time
@@ -20,7 +21,12 @@ from system.console_render import (
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion, post_tui
 from utils.common import sanitize_title
-from utils.llm_client import close_llm_client, create_memory_recall_llm_client, llm_client
+from utils.llm_client import (
+    async_llm_client,
+    close_async_llm_client,
+    create_memory_recall_llm_client,
+    strip_native_message_payloads,
+)
 from settings import KEEP_RECENT_TOOL_CALL, MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_MAX_ITERATIONS, MEMORY_RECALL_WINDOW_SIZE
 from utils import paths
 
@@ -576,7 +582,7 @@ def _get_memory_recall_messages(
     ]
 
 
-def select_relevant_memory_ids(
+async def select_relevant_memory_ids(
         query: str,
         agent_id: str = ORCHESTRATOR_AGENT_ID,
         max_iterations: int = MEMORY_RECALL_MAX_ITERATIONS,
@@ -593,23 +599,30 @@ def select_relevant_memory_ids(
     messages = _get_memory_recall_messages(query, candidates, previous_assistant_content)
     recall_client = create_memory_recall_llm_client()
     owns_recall_client = recall_client is not None
-    recall_client = recall_client or llm_client
+    recall_client = recall_client or async_llm_client
     try:
         tools = recall_client.format_tools(MEMORY_RECALL_SELECTION_TOOLS)
         for round_index in range(max_iterations):
             post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 记忆召回选择中：{agent_id} 第 {round_index + 1}/{max_iterations} 轮[/#aaaaaa]")
-            response = recall_client.generate(messages, tools)  # todo 改为 generate_stream
-            text_content, tool_calls, raw_message = recall_client.parse_response(response)
-            if raw_message is not None:
-                recall_client.append_assistant_message(messages, raw_message)
+            result = None
+            async for event in recall_client.generate_stream(messages, tools):
+                if event.get("type") == "done":
+                    result = event["result"]
+            if result is None:
+                raise RuntimeError("Memory recall stream ended without a final result")
+            if result.assistant_message is not None:
+                messages.append(result.assistant_message)
 
-            for tool_call in tool_calls:
+            for tool_call in result.tool_calls:
                 if tool_call.get("name") != "SelectRelevantMemories":
                     continue
                 arguments = _parse_tool_arguments(tool_call.get("arguments"))
                 selected_ids = normalize_memory_ids(arguments.get("memory_ids", []))
                 _append_memory_recall_window(agent_id, selected_ids)
                 return selected_ids
+
+            if getattr(result, "stop_reason", None) == "pause_turn":
+                continue
 
             remaining_rounds = max_iterations - round_index - 1
             if remaining_rounds > 0:
@@ -625,10 +638,10 @@ def select_relevant_memory_ids(
         return []
     finally:
         if owns_recall_client:
-            close_llm_client(recall_client)
+            await close_async_llm_client(recall_client)
 
 
-def recall_long_term_memories(
+async def recall_long_term_memories(
         query: str,
         source: str = "RecallLongTermMemory",
         agent_id: str = ORCHESTRATOR_AGENT_ID,
@@ -642,7 +655,7 @@ def recall_long_term_memories(
         post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🔎 召回查询：{escape(query)}[/#aaaaaa]")
     try:
         try:
-            selected_ids = select_relevant_memory_ids(
+            selected_ids = await select_relevant_memory_ids(
                 query,
                 agent_id=agent_id,
                 previous_assistant_content=previous_assistant_content,
@@ -670,7 +683,11 @@ def recall_long_term_memories(
 
 
 MEMORY_RECALL_TOOLS_HANDLERS = {
-    "RecallLongTermMemory": lambda query, **kwargs: recall_long_term_memories(query, source="Agent 主动召回", agent_id=ORCHESTRATOR_AGENT_ID),
+    "RecallLongTermMemory": lambda query, **kwargs: recall_long_term_memories(
+        query,
+        source="Agent 主动召回",
+        agent_id=ORCHESTRATOR_AGENT_ID,
+    ),
 }
 
 
@@ -682,7 +699,7 @@ def _parse_tool_arguments(arguments) -> dict:
     return json.loads(arguments, strict=False)
 
 
-def memory_agent_loop(
+async def memory_agent_loop(
         conversation_text: str,
         summary: str,
         reason: str,
@@ -696,7 +713,7 @@ def memory_agent_loop(
     try:
         post_tui(TuiRegion.BACKGROUND, "\n[bold yellow]🧠 正在管理长期记忆...[/bold yellow]")
         post_tui(TuiRegion.BACKGROUND, "[bold yellow]📓 记忆[/bold yellow]")
-        messages = llm_client.get_memory_decision_messages(
+        messages = async_llm_client.get_memory_decision_messages(
             conversation_text,
             summary,
             reason,
@@ -706,8 +723,11 @@ def memory_agent_loop(
 
         for round_index in range(max_iterations):
             try:
-                text_content, memory_tool_calls, raw_message = StreamRenderer().render_text_stream(
-                    llm_client.generate_stream(messages, llm_client.format_tools(tools)),
+                text_content, memory_tool_calls, raw_message = await StreamRenderer().render_text_stream_async(
+                    async_llm_client.generate_stream(
+                        messages,
+                        async_llm_client.format_tools(tools),
+                    ),
                     region=TuiRegion.BACKGROUND,
                     render_live=False,
                     set_active=True,
@@ -718,7 +738,8 @@ def memory_agent_loop(
                 return saved_outputs
 
             if raw_message is not None:
-                llm_client.append_assistant_message(messages, raw_message)
+                messages.append(raw_message)
+            stop_reason = raw_message.get("stop_reason") if isinstance(raw_message, dict) else None
 
             _render_agent_response_message(
                 text_content,
@@ -727,6 +748,8 @@ def memory_agent_loop(
             )
 
             if not memory_tool_calls:
+                if stop_reason == "pause_turn":
+                    continue
                 break
 
             memory_changed = False
@@ -734,7 +757,9 @@ def memory_agent_loop(
                 tool_name = tool_call.get("name")
                 tool_id = tool_call.get("id")
                 handler = LONG_TERM_MEMORY_TOOL_HANDLERS.get(tool_name)
+                tool_error = False
                 if not handler:
+                    tool_error = True
                     output = f"未知记忆工具：{tool_name}"
                     post_tui(TuiRegion.BACKGROUND, f"[bold red]🧠 未知记忆工具：{escape(str(tool_name))}[/bold red]")
                 else:
@@ -743,7 +768,7 @@ def memory_agent_loop(
                     _render_tool_call(tool_name, tool_call.get("arguments"), identity=MEMORY_AGENT_IDENTITY)
                     try:
                         arguments = _parse_tool_arguments(tool_call.get("arguments"))
-                        output = handler(**arguments)
+                        output = await asyncio.to_thread(handler, **arguments)
                         if tool_name == "AppendLongTermMemory" and isinstance(output, dict) and "error" not in output:
                             tool_changed = True
                         elif tool_name == "DeleteLongTermMemory" and isinstance(output, dict) and output.get("deleted"):
@@ -752,6 +777,7 @@ def memory_agent_loop(
                             tool_changed = True
                         memory_changed = memory_changed or tool_changed
                     except Exception as e:
+                        tool_error = True
                         output = f"执行 {tool_name} 出错：{e}。"
                     if tool_changed:
                         post_tui(TuiRegion.BACKGROUND, f"[bold green]🧠 记忆工具执行完成并产生变更：{escape(tool_name)}[/bold green]")
@@ -760,7 +786,10 @@ def memory_agent_loop(
                     _render_tool_output(tool_name, output, identity=MEMORY_AGENT_IDENTITY)
                 saved_outputs.append({"tool": tool_name, "output": output})
                 if tool_id:
-                    messages.append(llm_client.format_tool_result(tool_id, tool_name, output))
+                    tool_result = async_llm_client.format_tool_result(tool_id, tool_name, output)
+                    if tool_error:
+                        tool_result["is_error"] = True
+                    messages.append(tool_result)
 
             current_round = round_index + 1
             remaining_rounds = max_iterations - current_round
@@ -792,10 +821,12 @@ def memory_agent_loop(
         post_tui(TuiRegion.BACKGROUND, active=False)
 
 
-def manual_memory_update(prompt: str, history: list = None) -> list[dict]:
+async def manual_memory_update(prompt: str, history: list = None) -> list[dict]:
     prompt = prompt.strip()
-    conversation_messages = [msg for msg in (history or []) if msg.get("role") != "system"]
-    return memory_agent_loop(
+    conversation_messages = strip_native_message_payloads([
+        msg for msg in (history or []) if msg.get("role") != "system"
+    ])
+    return await memory_agent_loop(
         conversation_text=json.dumps(
             conversation_messages,
             ensure_ascii=False,
@@ -934,7 +965,7 @@ except ImportError:
 
 def estimate_tokens(messages: list, tools_definition: list = None):
     # 计算基础文本的 token 数（messages 已包含系统提示词）
-    text = json.dumps(messages, ensure_ascii=False)
+    text = json.dumps(strip_native_message_payloads(messages), ensure_ascii=False)
     if _ENCODER:
         base_tokens = len(_ENCODER.encode(text, disallowed_special=()))
     else:
@@ -962,6 +993,7 @@ def micro_compact(input_list: list) -> list:
         return input_list
 
     tool_call_info_map = {}
+    assistant_by_tool_call_id = {}
     for msg in input_list:
         if msg.get("type") == "function_call":
             tool_call_info_map[msg.get("call_id")] = {
@@ -994,6 +1026,7 @@ def micro_compact(input_list: list) -> list:
                             "name": tc_name,
                             "arguments": tc_args,
                         }
+                        assistant_by_tool_call_id[tc_id] = msg
 
     to_clear = tool_results[:-keep_recent_tool_call]
     for result in to_clear:
@@ -1010,10 +1043,16 @@ def micro_compact(input_list: list) -> list:
         elif "content" in result:
             result["content"] = replacement
 
+        assistant_message = assistant_by_tool_call_id.get(call_id)
+        if assistant_message is not None:
+            metadata = assistant_message.get("message_metadata")
+            if isinstance(metadata, dict):
+                metadata.pop("native_blocks", None)
+
     return input_list
 
 
-def auto_compact(
+async def auto_compact(
         messages: list,
         reason: str = "User triggered compact",
         system_prompt_fn=None,
@@ -1021,15 +1060,16 @@ def auto_compact(
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     transcript_path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
 
+    transcript_messages = strip_native_message_payloads(messages)
     with open(transcript_path, "w", encoding="utf-8") as f:
-        for msg in messages:
+        for msg in transcript_messages:
             f.write(json.dumps(msg, default=str, ensure_ascii=False) + "\n")
     print_formatted_text(
         f"\n[yellow][对话记录已保存到：{escape(str(transcript_path))}][/yellow]"
     )
 
     # Filter out original system messages to prevent system instructions clash
-    filtered_messages = [m for m in messages if m.get("role") != "system"]
+    filtered_messages = [m for m in transcript_messages if m.get("role") != "system"]
     conversation_text = json.dumps(filtered_messages, default=str, ensure_ascii=False)
 
     _compact_console.print(
@@ -1041,8 +1081,8 @@ def auto_compact(
     chunks: list[str] = []
     try:
         renderer = StreamRenderer(console=_compact_console, update_interval=0.1)
-        summary, _, _ = renderer.render_text_stream(
-            llm_client.get_summary_stream_events(conversation_text, reason),
+        summary, _, _ = await renderer.render_text_stream_async(
+            async_llm_client.get_summary_stream_events(conversation_text, reason),
             set_active=True,
         )
         if summary:
@@ -1053,7 +1093,7 @@ def auto_compact(
         _compact_console.print(f"\n[bold red]流式摘要错误：{e}[/bold red]")
 
         # 流式失败时回退到普通调用
-        fallback = llm_client.get_summary(conversation_text, reason)
+        fallback = await async_llm_client.get_summary(conversation_text, reason)
         # 回退时也同样使用 Markdown 渲染
         _compact_console.print(Markdown(fallback))
         chunks = [fallback]
@@ -1061,7 +1101,7 @@ def auto_compact(
     _compact_console.print("[#aaaaaa]摘要生成流程已结束。[/#aaaaaa]")
     summary = "".join(chunks)
 
-    memory_agent_loop(
+    await memory_agent_loop(
         conversation_text=conversation_text,
         summary=summary,
         reason="Automatic memory extraction during context compaction. Extract durable, cross-session memories from the conversation if any valuable ones are found; skip if none.",

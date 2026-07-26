@@ -13,7 +13,7 @@ from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
 from utils.common import FileRead
-from utils.llm_client import ChatAPIClient
+from utils.llm_client import AsyncChatAPIClient
 
 
 class GeoPoint(BaseModel):
@@ -121,7 +121,7 @@ def main() -> None:
     complex_schema = ComplexToolArgs.model_json_schema()
     complex_tool = pydantic_function_tool(ComplexToolArgs)
     complex_parameters = complex_tool["function"]["parameters"]
-    formatted_complex_parameters = ChatAPIClient(None, "test").format_tools([complex_tool])[0]["function"]["parameters"]
+    formatted_complex_parameters = AsyncChatAPIClient(None, "test").format_tools([complex_tool])[0]["function"]["parameters"]
 
     _print_result("FileRead.model_json_schema()", model_schema)
     _print_result("pydantic_function_tool(FileRead) parameters", parameters)
@@ -141,7 +141,7 @@ def main() -> None:
         print("\n=== FileRead full parameters after jsonref flatten ===")
         print(json.dumps(jsonref_parameters, ensure_ascii=False, indent=2))
 
-    print("\n=== ComplexToolArgs parameters after ChatAPIClient.format_tools ===")
+    print("\n=== ComplexToolArgs parameters after AsyncChatAPIClient.format_tools ===")
     print(json.dumps(formatted_complex_parameters, ensure_ascii=False, indent=2))
 
     assert not _contains_key(formatted_complex_parameters, "$ref")

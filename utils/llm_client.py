@@ -6,10 +6,12 @@ import re
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Union, Generator
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypedDict
 
 import httpx
-from openai import OpenAI, AsyncOpenAI, Timeout
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI, Timeout
 
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
 
@@ -20,6 +22,155 @@ _CLIENT_REQUEST_IDS = itertools.count(1)
 _CURRENT_CLIENT_REQUEST_ID: ContextVar[int | None] = ContextVar(
     "current_client_request_id", default=None
 )
+
+
+class MessageMetadata(TypedDict, total=False):
+    source_format: Literal["openai_chat", "anthropic"]
+    source_model: str
+    native_blocks: list[dict[str, Any]]
+
+
+class LLMMessage(TypedDict, total=False):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: Any
+    reasoning_content: str
+    tool_calls: list[dict[str, Any]]
+    tool_call_id: str
+    name: str
+    content_blocks: list[dict[str, Any]]
+    message_metadata: MessageMetadata
+    stop_reason: str
+    usage: dict[str, Any]
+
+
+@dataclass
+class LLMResult:
+    text: str = ""
+    reasoning: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    assistant_message: LLMMessage = field(default_factory=lambda: {"role": "assistant", "content": ""})
+    stop_reason: str | None = None
+    usage: dict[str, Any] | None = None
+
+
+def _normalized_content_blocks(
+    text: str,
+    reasoning: str,
+    tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    if reasoning:
+        blocks.append({"type": "reasoning", "text": reasoning})
+    if text:
+        blocks.append({"type": "text", "text": text})
+    for tool_call in tool_calls:
+        function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+        blocks.append({
+            "type": "tool_call",
+            "id": tool_call.get("id", ""),
+            "name": tool_call.get("name") or function.get("name", ""),
+            "arguments": tool_call.get("arguments", function.get("arguments", "")),
+        })
+    return blocks
+
+
+def build_assistant_message(
+    *,
+    text: str = "",
+    reasoning: str = "",
+    tool_calls: list[dict[str, Any]] | None = None,
+    content_blocks: list[dict[str, Any]] | None = None,
+    source_format: Literal["openai_chat", "anthropic"],
+    source_model: str,
+    native_blocks: list[dict[str, Any]] | None = None,
+    stop_reason: str | None = None,
+    usage: dict[str, Any] | None = None,
+) -> LLMMessage:
+    message: LLMMessage = {"role": "assistant", "content": text or None}
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    if tool_calls:
+        message["tool_calls"] = copy.deepcopy(tool_calls)
+    if content_blocks:
+        message["content_blocks"] = copy.deepcopy(content_blocks)
+
+    metadata: MessageMetadata = {
+        "source_format": source_format,
+        "source_model": source_model,
+    }
+    if native_blocks:
+        metadata["native_blocks"] = copy.deepcopy(native_blocks)
+    message["message_metadata"] = metadata
+    if stop_reason is not None:
+        message["stop_reason"] = stop_reason
+    if usage is not None:
+        message["usage"] = copy.deepcopy(usage)
+    return message
+
+
+def build_llm_result(
+    *,
+    text: str = "",
+    reasoning: str = "",
+    tool_calls: list[dict[str, Any]] | None = None,
+    assistant_tool_calls: list[dict[str, Any]] | None = None,
+    content_blocks: list[dict[str, Any]] | None = None,
+    source_format: Literal["openai_chat", "anthropic"],
+    source_model: str,
+    native_blocks: list[dict[str, Any]] | None = None,
+    stop_reason: str | None = None,
+    usage: dict[str, Any] | None = None,
+) -> LLMResult:
+    normalized_tool_calls = copy.deepcopy(tool_calls or [])
+    normalized_assistant_tool_calls = copy.deepcopy(
+        assistant_tool_calls if assistant_tool_calls is not None else normalized_tool_calls
+    )
+    normalized_blocks = copy.deepcopy(content_blocks) if content_blocks is not None else _normalized_content_blocks(
+        text,
+        reasoning,
+        normalized_tool_calls,
+    )
+    return LLMResult(
+        text=text,
+        reasoning=reasoning,
+        tool_calls=normalized_tool_calls,
+        assistant_message=build_assistant_message(
+            text=text,
+            reasoning=reasoning,
+            tool_calls=normalized_assistant_tool_calls,
+            content_blocks=normalized_blocks,
+            source_format=source_format,
+            source_model=source_model,
+            native_blocks=native_blocks,
+            stop_reason=stop_reason,
+            usage=usage,
+        ),
+        stop_reason=stop_reason,
+        usage=copy.deepcopy(usage),
+    )
+
+
+def strip_native_message_payloads(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sanitized = copy.deepcopy(messages)
+    for message in sanitized:
+        metadata = message.get("message_metadata")
+        if isinstance(metadata, dict):
+            metadata.pop("native_blocks", None)
+
+        content_blocks = message.get("content_blocks")
+        if isinstance(content_blocks, list):
+            message["content_blocks"] = [
+                block
+                for block in content_blocks
+                if not isinstance(block, dict) or block.get("type") != "native"
+            ]
+
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                if isinstance(tool_call, dict):
+                    tool_call.pop("raw", None)
+    return sanitized
 
 
 def _set_client_request_retry(retry_count: int, max_retries: int) -> None:
@@ -34,23 +185,6 @@ def _set_client_request_retry(retry_count: int, max_retries: int) -> None:
         pass
 
 
-class _TrackedOpenAI(OpenAI):
-    def _should_retry(self, response: httpx.Response) -> bool:
-        # 中转场景下 404 多为上游瞬时路由失败（部分渠道缺模型），计入重试
-        if response.status_code == 404:
-            return True
-        return super()._should_retry(response)
-
-    def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
-        _set_client_request_retry(retries_taken + 1, max_retries)
-        super()._sleep_for_retry(
-            retries_taken=retries_taken,
-            max_retries=max_retries,
-            options=options,
-            response=response,
-        )
-
-
 class _TrackedAsyncOpenAI(AsyncOpenAI):
     def _should_retry(self, response: httpx.Response) -> bool:
         # 中转场景下 404 多为上游瞬时路由失败（部分渠道缺模型），计入重试
@@ -58,6 +192,17 @@ class _TrackedAsyncOpenAI(AsyncOpenAI):
             return True
         return super()._should_retry(response)
 
+    async def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
+        _set_client_request_retry(retries_taken + 1, max_retries)
+        await super()._sleep_for_retry(
+            retries_taken=retries_taken,
+            max_retries=max_retries,
+            options=options,
+            response=response,
+        )
+
+
+class _TrackedAsyncAnthropic(AsyncAnthropic):
     async def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
         _set_client_request_retry(retries_taken + 1, max_retries)
         await super()._sleep_for_retry(
@@ -90,18 +235,10 @@ def _client_request_active():
                 set_client_request_active(False, request_id=request_id)
             except Exception:
                 pass
-        _CURRENT_CLIENT_REQUEST_ID.reset(request_token)
-
-
-def _tracked_sync_stream(create_stream):
-    with _client_request_active():
-        stream = create_stream()
         try:
-            yield from stream
-        finally:
-            close = getattr(stream, "close", None)
-            if close is not None:
-                close()
+            _CURRENT_CLIENT_REQUEST_ID.reset(request_token)
+        except ValueError:
+            _CURRENT_CLIENT_REQUEST_ID.set(None)
 
 
 async def _tracked_async_stream(create_stream):
@@ -172,10 +309,10 @@ def _inline_schema_refs(schema):
     return walk(schema)
 
 
-class BaseLLMClient(ABC):
+class AsyncBaseLLMClient(ABC):
     def __init__(
         self,
-        client: Union[OpenAI, AsyncOpenAI],
+        client: Any,
         model: str,
         reasoning_effort: str = "medium",
     ):
@@ -184,237 +321,23 @@ class BaseLLMClient(ABC):
         self.reasoning_effort = reasoning_effort
 
     @abstractmethod
-    def generate(self, messages: list, tools: list = None):
-        """Unified interface for generating a response."""
-        pass
-
-    @abstractmethod
-    def generate_stream(self, messages: list, tools: list = None):
-        """Streaming generation. Yields event dicts:
-        {type: 'text', content: str}       - text delta
-        {type: 'done', content: (text, tool_calls, raw_message)}  - stream finished
-        """
-        pass
-
-    @abstractmethod
-    def parse_response(self, response) -> tuple[str, list, Any]:
-        """
-        Parses the API response.
-        Returns: (text_content, tool_calls_list, raw_message)
-        tool_calls_list items should have: "id", "name", "arguments", "raw"
-        """
-        pass
-
-    @abstractmethod
-    def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: Any
-    ) -> dict:
-        """Formats the result of the tool execution to be appended to messages."""
-        pass
-
-    @abstractmethod
-    def append_assistant_message(self, messages: list, raw_message: Any):
-        """Appends the assistant's response (with tool calls if any) to the history."""
-        pass
-
-    @abstractmethod
-    def format_tools(self, pydantic_tools: list) -> list:
-        """Formats the tool definitions for the specific API standard."""
-        pass
-
-    @abstractmethod
-    def get_summary(self, conversation_text: str, reason: str) -> str:
-        """Generates a summary of the conversation."""
-        pass
-
-    @abstractmethod
-    def get_summary_stream(self, conversation_text: str, reason: str) -> Generator[str, None, None]:
-        """Generates a streaming summary of the conversation, yielding text chunks."""
-        pass
-
-
-class AsyncBaseLLMClient(ABC):
-    @abstractmethod
-    async def generate(self, messages: list, tools: list = None):
-        pass
-
-    @abstractmethod
-    def parse_response(self, response) -> tuple[str, list, Any]:
-        pass
-
-    @abstractmethod
-    def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: Any
-    ) -> dict:
-        pass
-
-    @abstractmethod
-    def append_assistant_message(self, messages: list, raw_message: Any):
-        pass
-
-    @abstractmethod
-    def format_tools(self, pydantic_tools: list) -> list:
-        pass
-
-    @abstractmethod
-    async def get_summary(self, conversation_text: str, reason: str) -> str:
-        pass
-
-
-class ChatAPIClient(BaseLLMClient):
-    """Implementation for the standard OpenAI Chat Completions API standard."""
-
-    def generate(self, messages: list, tools: list = None):
-        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": self.reasoning_effort}
-        if tools:
-            kwargs["tools"] = tools
-        with _client_request_active():
-            return self.client.chat.completions.create(**kwargs)
-
-    def generate_stream(self, messages: list, tools: list = None):
-        kwargs = {"model": self.model, "messages": messages, "stream": True, "reasoning_effort": self.reasoning_effort}
-        if tools:
-            kwargs["tools"] = tools
-
-        stream = _tracked_sync_stream(
-            lambda: self.client.chat.completions.create(**kwargs)
-        )
-
-        # 累积所有 delta，最终拼合为完整的 raw_message
-        # 原理：stream 返回的每个 chunk.choices[0].delta 是 message 的一个片段，
-        # 将所有 delta 的有效字段逐步合并，即可重建与非流式 message 一致的结构，
-        # 确保任何出现的字段都不会丢失。
-        # 只有文本片段需要实时 yield（用于流式渲染），工具调用等其余字段全部留到最后统一解析。
-        response_deltas = []  # 保存所有 delta，最终拼合为 raw_message
-
-        def _build_done_event():
-            """根据累积的 delta 列表构建 done 事件"""
-            # 拼合所有 delta 为完整的 raw_message
-            # 纯文本类字段（增量字符串，需要拼接）
-            _TEXT_FIELDS = ("content", "reasoning_content", "reasoning")
-
-            raw_message = {}
-            merged_text_parts = {field: [] for field in _TEXT_FIELDS}
-            merged_tool_calls = {}  # idx -> {id, type, function: {name, arguments}}
-            for delta in response_deltas:
-                for key, value in delta:
-                    if value is None:
-                        continue
-                    if key in _TEXT_FIELDS:
-                        merged_text_parts[key].append(value)
-                    elif key == "tool_calls":
-                        for tc in value:
-                            idx = tc.index
-                            if idx not in merged_tool_calls:
-                                merged_tool_calls[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-                            if tc.id:
-                                merged_tool_calls[idx]["id"] = tc.id
-                            if hasattr(tc, "type") and tc.type:
-                                merged_tool_calls[idx]["type"] = tc.type
-                            if tc.function:
-                                if tc.function.name:
-                                    merged_tool_calls[idx]["function"]["name"] = tc.function.name
-                                if tc.function.arguments:
-                                    merged_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
-                    else:
-                        # 标量字段直接覆盖（如 role, refusal 等）
-                        raw_message[key] = value
-
-            # 组装 raw_message：所有文本字段统一拼合写入
-            for field in _TEXT_FIELDS:
-                parts = merged_text_parts[field]
-                raw_message[field] = "".join(parts) if parts else None
-            raw_message["role"] = "assistant"
-            # 移除 content 以外值为 None 的字段，保持消息干净
-            for k in list(raw_message.keys()):
-                if k != "content" and raw_message[k] is None:
-                    del raw_message[k]
-            # text 仍取 content 作为主文本返回
-            text = raw_message.get("content") or ""
-
-            # 过滤无效的 tool_calls（id 或 name 为空则丢弃）
-            valid_tool_calls = {
-                idx: tc for idx, tc in merged_tool_calls.items()
-                if tc["id"] and tc["function"]["name"]
-            }
-            if valid_tool_calls:
-                raw_message["tool_calls"] = [
-                    valid_tool_calls[idx]
-                    for idx in sorted(valid_tool_calls.keys())
-                ]
-
-            # 构建 tool_calls 列表（给调用方使用）
-            tool_calls = []
-            for idx in sorted(valid_tool_calls.keys()):
-                tc = valid_tool_calls[idx]
-                tool_calls.append({
-                    "id": tc["id"],
-                    "name": tc["function"]["name"],
-                    "arguments": tc["function"]["arguments"],
-                    "raw": tc,
-                })
-
-            return {"type": "done", "content": (text, tool_calls, raw_message)}
-
-        from system.stream_cancel import stream_cancel_event
-
-        done_event = None
-        try:
-            for chunk in stream:
-                # ESC 取消检查：用户按下 ESC 后立即中断流式读取
-                if stream_cancel_event.is_set():
-                    break
-
-                if not chunk.choices:
-                    continue
-                choice = chunk.choices[0]
-                delta = choice.delta
-
-                # 保存 delta，用于最终拼合
-                response_deltas.append(delta)
-
-                # 实时 yield 文本片段（用于流式渲染）
-                if delta.content:
-                    yield {"type": "text", "content": delta.content}
-
-                # 实时 yield reasoning 片段（用于思考过程流式渲染）
-                reasoning_val = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                if reasoning_val:
-                    yield {"type": "reasoning", "content": reasoning_val}
-
-                if getattr(delta, "tool_calls", None):
-                    yield {"type": "tool_calls", "content": None}
-
-                # 流结束：统一解析所有累积的 delta，构建 done 事件
-                if choice.finish_reason in ("tool_calls", "stop"):
-                    done_event = _build_done_event()
-                    break
-        finally:
-            stream.close()
-
-        yield done_event or _build_done_event()
-
-    def parse_response(self, response) -> tuple[str, list, Any]:
-        message = response.choices[0].message
-        text_content = message.content or ""
-        tool_calls = []
-        if message.tool_calls:
-            for tc in message.tool_calls:
-                # Chat standard returns arguments as a JSON string
-                tool_calls.append(
-                    {
-                        "id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                        "raw": tc,
-                    }
-                )
-        return text_content, tool_calls, message
+    async def generate_stream(
+        self,
+        messages: list,
+        tools: list = None,
+        tool_choice: str | None = None,
+    ):
+        """Yields stream events and ends with a done event containing LLMResult."""
+        raise NotImplementedError
 
     def format_tool_result(
-            self, tool_call_id: str, tool_name: str, output: Any
+            self,
+            tool_call_id: str,
+            tool_name: str,
+            output: Any,
+            is_error: bool = False,
     ) -> dict:
-        return {
+        result = {
             "role": "tool",
             "tool_call_id": tool_call_id,
             "name": tool_name,
@@ -422,9 +345,11 @@ class ChatAPIClient(BaseLLMClient):
             if not isinstance(output, str)
             else output,
         }
+        if is_error:
+            result["is_error"] = True
+        return result
 
     def append_assistant_message(self, messages: list, raw_message: Any):
-        # Standard Chat API requires the assistant message to be appended exactly as it is (including tool_calls)
         msg_dict = (
             raw_message.model_dump()
             if hasattr(raw_message, "model_dump")
@@ -433,59 +358,75 @@ class ChatAPIClient(BaseLLMClient):
         messages.append(msg_dict)
 
     def format_tools(self, pydantic_tools: list) -> list:
-        # Standard format doesn't support "namespace" tools, so extract all functions into a flat list.
         result = []
-        for t in pydantic_tools:
-            if isinstance(t, dict) and t.get("type") == "namespace":
-                for inner_t in t.get("tools", []):
-                    name, desc, params = _extract_tool_info(inner_t)
-                    func_def = {
-                        "name": name,
-                        "description": desc,
-                        "parameters": _inline_schema_refs(params),
-                    }
-                    if "function" in inner_t:
-                        func_def["strict"] = True
-                    result.append({"type": "function", "function": func_def})
+        for tool in pydantic_tools:
+            if isinstance(tool, dict) and tool.get("type") == "namespace":
+                source_tools = tool.get("tools", [])
             else:
-                name, desc, params = _extract_tool_info(t)
-                func_def = {
+                source_tools = [tool]
+            for source_tool in source_tools:
+                name, desc, params = _extract_tool_info(source_tool)
+                function = {
                     "name": name,
                     "description": desc,
                     "parameters": _inline_schema_refs(params),
                 }
-                if "function" in t:
-                    func_def["strict"] = True
-                result.append({"type": "function", "function": func_def})
-        return result
+                if "function" in source_tool:
+                    function["strict"] = True
+                result.append({"type": "function", "function": function})
+        return sorted(result, key=lambda item: item["function"]["name"] or "")
 
-    def get_summary(self, conversation_text: str, reason: str, tools: list = None) -> str:
+    async def get_summary(self, conversation_text: str, reason: str) -> str:
+        async for event in self.get_summary_stream_events(conversation_text, reason):
+            if event.get("type") == "done":
+                return event["result"].text
+        return ""
+
+    async def get_summary_stream_events(
+        self,
+        conversation_text: str,
+        reason: str,
+        tools: list = None,
+    ):
         messages = [
             {"role": "system", "content": get_summary_system_prompt()},
             {"role": "user", "content": conversation_text},
             {"role": "user", "content": get_summary_user_prompt(reason)},
         ]
         formatted_tools = self.format_tools(tools) if tools else None
-        res = self.generate(messages, formatted_tools)
-        text, tool_calls, raw_message = self.parse_response(res)
-        if tools:
-            return text, tool_calls, raw_message
-        return text
+        text_parts = []
+        last_result = None
+        for _ in range(8):
+            final_result = None
+            async for event in self.generate_stream(messages, formatted_tools):
+                if event.get("type") == "done":
+                    final_result = event["result"]
+                    continue
+                if event.get("type") == "text":
+                    text_parts.append(event.get("content", ""))
+                yield event
+            if final_result is None:
+                return
+            last_result = final_result
+            if getattr(final_result, "stop_reason", None) != "pause_turn":
+                final_result.text = "".join(text_parts) or final_result.text
+                final_result.assistant_message["content"] = final_result.text or None
+                yield {"type": "done", "result": final_result}
+                return
+            messages.append(final_result.assistant_message)
+        if last_result is not None:
+            last_result.text = "".join(text_parts) or last_result.text
+            last_result.assistant_message["content"] = last_result.text or None
+            yield {"type": "done", "result": last_result}
 
-    def get_summary_stream_events(self, conversation_text: str, reason: str, tools: list = None) -> Generator[dict, None, None]:
-        messages = [
-            {"role": "system", "content": get_summary_system_prompt()},
-            {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(reason)},
-        ]
-        yield from self.generate_stream(messages, self.format_tools(tools) if tools else None)
-
-    def get_summary_stream(self, conversation_text: str, reason: str) -> Generator[str, None, None]:
-        for event in self.get_summary_stream_events(conversation_text, reason):
-            if event.get("type") == "text":
-                yield event.get("content", "")
-
-    def get_memory_decision_messages(self, conversation_text: str, summary: str, reason: str, current_memory_content: str, mode: str = "compact") -> list:
+    def get_memory_decision_messages(
+        self,
+        conversation_text: str,
+        summary: str,
+        reason: str,
+        current_memory_content: str,
+        mode: str = "compact",
+    ) -> list:
         summary_section = f"## Summary\n{summary}\n\n" if summary.strip() else ""
         return [
             {"role": "system", "content": get_memory_decision_system_prompt()},
@@ -502,152 +443,499 @@ class ChatAPIClient(BaseLLMClient):
             },
         ]
 
-    def get_memory_decision(self, conversation_text: str, summary: str, reason: str, current_memory_content: str, tools: list, mode: str = "compact") -> tuple[str, list, Any]:
-        messages = self.get_memory_decision_messages(
-            conversation_text,
-            summary,
-            reason,
-            current_memory_content,
-            mode=mode,
-        )
-        res = self.generate(messages, self.format_tools(tools))
-        return self.parse_response(res)
 
-    def get_memory_decision_stream(self, conversation_text: str, summary: str, reason: str, current_memory_content: str, tools: list, mode: str = "compact"):
-        messages = self.get_memory_decision_messages(
-            conversation_text,
-            summary,
-            reason,
-            current_memory_content,
-            mode=mode,
-        )
-        return self.get_memory_decision_stream_messages(messages, tools)
-
-    def get_memory_decision_stream_messages(self, messages: list, tools: list):
-        for event in self.generate_stream(messages, self.format_tools(tools)):
-            if event.get("type") == "done":
-                return event["content"]
-        return "", [], None
+def _to_plain_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return copy.deepcopy(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_none=True)
+    try:
+        return {key: copy.deepcopy(item) for key, item in value}
+    except (TypeError, ValueError):
+        return {
+            key: copy.deepcopy(item)
+            for key, item in vars(value).items()
+            if not key.startswith("_") and item is not None
+        }
 
 
-class AsyncChatAPIClient(ChatAPIClient, AsyncBaseLLMClient):
-    async def generate(self, messages: list, tools: list = None):
-        kwargs = {"model": self.model, "messages": messages, "reasoning_effort": self.reasoning_effort}
+def _openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+    result = []
+    for raw_tool_call in tool_calls or []:
+        tool_call = _to_plain_dict(raw_tool_call)
+        function = tool_call.get("function")
+        if function is not None:
+            function = _to_plain_dict(function)
+            name = function.get("name", "")
+            arguments = function.get("arguments", "")
+        else:
+            name = tool_call.get("name", "")
+            arguments = tool_call.get("arguments", "")
+        result.append({
+            "id": tool_call.get("id", ""),
+            "type": tool_call.get("type") or "function",
+            "function": {"name": name, "arguments": arguments},
+        })
+    return result
+
+
+def _tool_calls_from_content_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    tool_calls = []
+    for block in message.get("content_blocks") or []:
+        if not isinstance(block, dict) or block.get("type") != "tool_call":
+            continue
+        arguments = block.get("arguments", "")
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        tool_calls.append({
+            "id": block.get("id", ""),
+            "type": "function",
+            "function": {
+                "name": block.get("name", ""),
+                "arguments": arguments,
+            },
+        })
+    return tool_calls
+
+
+def _text_from_content_blocks(message: dict[str, Any]) -> str:
+    return "".join(
+        block.get("text", "")
+        for block in message.get("content_blocks") or []
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def sanitize_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sanitized = []
+    for message in messages:
+        role = message.get("role")
+        clean_message: dict[str, Any] = {"role": role}
+        if "content" in message:
+            content = copy.deepcopy(message.get("content"))
+            if role == "assistant" and content is None:
+                content = _text_from_content_blocks(message) or None
+            clean_message["content"] = content
+        elif role == "assistant":
+            normalized_text = _text_from_content_blocks(message)
+            if normalized_text:
+                clean_message["content"] = normalized_text
+        if role in {"system", "user", "assistant", "tool"} and message.get("name"):
+            clean_message["name"] = message["name"]
+        if role == "assistant":
+            reasoning_content = message.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                clean_message["reasoning_content"] = reasoning_content
+            tool_calls = message.get("tool_calls") or _tool_calls_from_content_blocks(message)
+            if tool_calls:
+                clean_message["tool_calls"] = _openai_tool_calls(tool_calls)
+        if role == "tool":
+            clean_message["tool_call_id"] = message.get("tool_call_id", "")
+        sanitized.append(clean_message)
+    return sanitized
+
+
+class AsyncChatAPIClient(AsyncBaseLLMClient):
+    async def generate_stream(
+        self,
+        messages: list,
+        tools: list = None,
+        tool_choice: str | None = None,
+    ):
+        kwargs = {
+            "model": self.model,
+            "messages": sanitize_openai_messages(messages),
+            "stream": True,
+            "reasoning_effort": self.reasoning_effort,
+        }
         if tools:
             kwargs["tools"] = tools
-        with _client_request_active():
-            return await self.client.chat.completions.create(**kwargs)
-
-    async def generate_stream(self, messages: list, tools: list = None):
-        kwargs = {"model": self.model, "messages": messages, "stream": True, "reasoning_effort": self.reasoning_effort}
-        if tools:
-            kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": tool_choice},
+            }
 
         stream = _tracked_async_stream(
             lambda: self.client.chat.completions.create(**kwargs)
         )
-        response_deltas = []
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        merged_tool_calls: dict[int, dict[str, Any]] = {}
+        stop_reason = None
+        usage = None
+        tool_calls_started = False
 
-        def _build_done_event():
-            _TEXT_FIELDS = ("content", "reasoning_content", "reasoning")
-
-            raw_message = {}
-            merged_text_parts = {field: [] for field in _TEXT_FIELDS}
-            merged_tool_calls = {}
-            for delta in response_deltas:
-                for key, value in delta:
-                    if value is None:
-                        continue
-                    if key in _TEXT_FIELDS:
-                        merged_text_parts[key].append(value)
-                    elif key == "tool_calls":
-                        for tc in value:
-                            idx = tc.index
-                            if idx not in merged_tool_calls:
-                                merged_tool_calls[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-                            if tc.id:
-                                merged_tool_calls[idx]["id"] = tc.id
-                            if hasattr(tc, "type") and tc.type:
-                                merged_tool_calls[idx]["type"] = tc.type
-                            if tc.function:
-                                if tc.function.name:
-                                    merged_tool_calls[idx]["function"]["name"] = tc.function.name
-                                if tc.function.arguments:
-                                    merged_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
-                    else:
-                        raw_message[key] = value
-
-            for field in _TEXT_FIELDS:
-                parts = merged_text_parts[field]
-                raw_message[field] = "".join(parts) if parts else None
-            raw_message["role"] = "assistant"
-            for k in list(raw_message.keys()):
-                if k != "content" and raw_message[k] is None:
-                    del raw_message[k]
-            text = raw_message.get("content") or ""
-
-            valid_tool_calls = {
-                idx: tc for idx, tc in merged_tool_calls.items()
-                if tc["id"] and tc["function"]["name"]
-            }
-            if valid_tool_calls:
-                raw_message["tool_calls"] = [
-                    valid_tool_calls[idx]
-                    for idx in sorted(valid_tool_calls.keys())
-                ]
-
-            tool_calls = []
-            for idx in sorted(valid_tool_calls.keys()):
-                tc = valid_tool_calls[idx]
-                tool_calls.append({
-                    "id": tc["id"],
-                    "name": tc["function"]["name"],
-                    "arguments": tc["function"]["arguments"],
-                    "raw": tc,
-                })
-
-            return {"type": "done", "content": (text, tool_calls, raw_message)}
-
-        done_event = None
         try:
             async for chunk in stream:
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = _to_plain_dict(chunk_usage)
                 if not chunk.choices:
                     continue
+
                 choice = chunk.choices[0]
                 delta = choice.delta
+                content = getattr(delta, "content", None)
+                if content:
+                    text_parts.append(content)
+                    yield {"type": "text", "content": content}
 
-                response_deltas.append(delta)
+                reasoning = (
+                    getattr(delta, "reasoning_content", None)
+                    or getattr(delta, "reasoning", None)
+                )
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+                    yield {"type": "reasoning", "content": reasoning}
 
-                if delta.content:
-                    yield {"type": "text", "content": delta.content}
+                delta_tool_calls = getattr(delta, "tool_calls", None)
+                if delta_tool_calls:
+                    if not tool_calls_started:
+                        tool_calls_started = True
+                        yield {"type": "tool_calls"}
+                    for fallback_index, raw_tool_call in enumerate(delta_tool_calls):
+                        tool_call = _to_plain_dict(raw_tool_call)
+                        index = tool_call.get("index")
+                        if index is None:
+                            index = fallback_index
+                        merged = merged_tool_calls.setdefault(index, {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                        if tool_call.get("id"):
+                            merged["id"] = tool_call["id"]
+                        if tool_call.get("type"):
+                            merged["type"] = tool_call["type"]
+                        function = tool_call.get("function")
+                        if function is not None:
+                            function = _to_plain_dict(function)
+                            if function.get("name"):
+                                merged["function"]["name"] = function["name"]
+                            if function.get("arguments"):
+                                merged["function"]["arguments"] += function["arguments"]
 
-                reasoning_val = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                if reasoning_val:
-                    yield {"type": "reasoning", "content": reasoning_val}
-
-                if choice.finish_reason in ("tool_calls", "stop"):
-                    done_event = _build_done_event()
-                    break
+                if choice.finish_reason is not None:
+                    stop_reason = choice.finish_reason
         finally:
             await stream.aclose()
 
-        yield done_event or _build_done_event()
-
-    async def get_summary(self, conversation_text: str, reason: str) -> str:
-        messages = [
-            {"role": "system", "content": get_summary_system_prompt()},
-            {"role": "user", "content": conversation_text},
-            {"role": "user", "content": get_summary_user_prompt(reason)},
+        assistant_tool_calls = [
+            merged_tool_calls[index]
+            for index in sorted(merged_tool_calls)
+            if merged_tool_calls[index]["id"] and merged_tool_calls[index]["function"]["name"]
         ]
-        res = await self.generate(messages)
-        return res.choices[0].message.content or ""
+        tool_calls = [
+            {
+                "id": tool_call["id"],
+                "name": tool_call["function"]["name"],
+                "arguments": tool_call["function"]["arguments"],
+                "raw": copy.deepcopy(tool_call),
+            }
+            for tool_call in assistant_tool_calls
+        ]
+        result = build_llm_result(
+            text="".join(text_parts),
+            reasoning="".join(reasoning_parts),
+            tool_calls=tool_calls,
+            assistant_tool_calls=assistant_tool_calls,
+            source_format="openai_chat",
+            source_model=self.model,
+            stop_reason=stop_reason,
+            usage=usage,
+        )
+        yield {
+            "type": "done",
+            "result": result,
+        }
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else str(content)
+    return "".join(
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _anthropic_tool_input(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return copy.deepcopy(arguments)
+    if arguments is None or arguments == "":
+        return {}
+    parsed = json.loads(arguments)
+    if not isinstance(parsed, dict):
+        raise ValueError("Anthropic tool input must decode to a JSON object")
+    return parsed
+
+
+def _anthropic_tool_use_block(tool_call: dict[str, Any]) -> dict[str, Any]:
+    function = tool_call.get("function", {})
+    name = tool_call.get("name") or function.get("name", "")
+    arguments = tool_call.get("arguments", function.get("arguments", ""))
+    return {
+        "type": "tool_use",
+        "id": tool_call.get("id", ""),
+        "name": name,
+        "input": _anthropic_tool_input(arguments),
+    }
+
+
+def _anthropic_user_content(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if not isinstance(content, list):
+        return [{"type": "text", "text": "" if content is None else str(content)}]
+
+    blocks = []
+    for block in content:
+        if isinstance(block, str):
+            blocks.append({"type": "text", "text": block})
+        elif isinstance(block, dict):
+            blocks.append(copy.deepcopy(block))
+    return blocks
+
+
+def _anthropic_assistant_content(message: dict[str, Any], model: str) -> list[dict[str, Any]]:
+    metadata = message.get("message_metadata")
+    if (
+        isinstance(metadata, dict)
+        and metadata.get("source_format") == "anthropic"
+        and metadata.get("source_model") == model
+        and isinstance(metadata.get("native_blocks"), list)
+    ):
+        return copy.deepcopy(metadata["native_blocks"])
+
+    blocks = []
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        blocks.append({"type": "text", "text": content})
+    elif isinstance(content, list):
+        blocks.extend(
+            copy.deepcopy(block)
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    if not any(block.get("type") == "text" for block in blocks):
+        normalized_text = _text_from_content_blocks(message)
+        if normalized_text:
+            blocks.append({"type": "text", "text": normalized_text})
+    tool_calls = message.get("tool_calls") or _tool_calls_from_content_blocks(message)
+    for tool_call in tool_calls:
+        blocks.append(_anthropic_tool_use_block(tool_call))
+    return blocks
+
+
+def build_anthropic_request_messages(
+    messages: list[dict[str, Any]],
+    model: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    system_parts = []
+    request_messages = []
+    index = 0
+
+    while index < len(messages):
+        message = messages[index]
+        role = message.get("role")
+        if role == "system":
+            text = _content_text(message.get("content"))
+            if text:
+                system_parts.append(text)
+            index += 1
+            continue
+
+        if role == "tool":
+            tool_results = []
+            while index < len(messages) and messages[index].get("role") == "tool":
+                tool_message = messages[index]
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": tool_message.get("tool_call_id", ""),
+                    "content": tool_message.get("content", ""),
+                }
+                if tool_message.get("is_error") is True:
+                    block["is_error"] = True
+                tool_results.append(block)
+                index += 1
+            request_messages.append({"role": "user", "content": tool_results})
+            continue
+
+        if role == "assistant":
+            content = _anthropic_assistant_content(message, model)
+        elif role == "user":
+            content = _anthropic_user_content(message.get("content"))
+        else:
+            index += 1
+            continue
+        request_messages.append({"role": role, "content": content})
+        index += 1
+
+    return "\n\n".join(system_parts), request_messages
+
+
+def format_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for tool in tools:
+        candidates = tool.get("tools", []) if tool.get("type") == "namespace" else [tool]
+        for candidate in candidates:
+            if "function" in candidate:
+                function = candidate["function"]
+                formatted = {
+                    "name": function.get("name"),
+                    "description": function.get("description", ""),
+                    "input_schema": _inline_schema_refs(function.get("parameters", {})),
+                }
+                if function.get("strict") is True:
+                    formatted["strict"] = True
+            else:
+                formatted = {
+                    "name": candidate.get("name"),
+                    "description": candidate.get("description", ""),
+                    "input_schema": _inline_schema_refs(
+                        candidate.get("input_schema", candidate.get("inputSchema", {}))
+                    ),
+                }
+                if candidate.get("strict") is True:
+                    formatted["strict"] = True
+            result.append(formatted)
+    return sorted(result, key=lambda item: item.get("name") or "")
+
+
+def _normalized_anthropic_blocks(native_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = []
+    for block in native_blocks:
+        block_type = block.get("type")
+        if block_type == "text":
+            normalized.append({"type": "text", "text": block.get("text", "")})
+        elif block_type == "thinking":
+            normalized.append({"type": "reasoning", "text": block.get("thinking", "")})
+        elif block_type == "redacted_thinking":
+            normalized.append({"type": "redacted_reasoning"})
+        elif block_type == "tool_use":
+            normalized.append({
+                "type": "tool_call",
+                "id": block.get("id", ""),
+                "name": block.get("name", ""),
+                "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
+            })
+        else:
+            normalized.append({
+                "type": "native",
+                "native_type": block_type,
+                "block": copy.deepcopy(block),
+            })
+    return normalized
+
+
+class AnthropicMessagesClient(AsyncBaseLLMClient):
+    def format_tools(self, pydantic_tools: list) -> list:
+        return format_anthropic_tools(pydantic_tools)
+
+    async def generate_stream(
+        self,
+        messages: list,
+        tools: list = None,
+        tool_choice: str | None = None,
+    ):
+        system, request_messages = build_anthropic_request_messages(messages, self.model)
+        kwargs = {
+            "model": self.model,
+            "max_tokens": 64_000,
+            "messages": request_messages,
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": self.reasoning_effort},
+            "cache_control": {"type": "ephemeral"},
+        }
+        if system:
+            kwargs["system"] = [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        if tools:
+            kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+
+        with _client_request_active():
+            async with self.client.messages.stream(**kwargs) as stream:
+                tool_calls_started = False
+                async for event in stream:
+                    event_type = getattr(event, "type", None)
+                    if event_type == "content_block_start":
+                        block_type = getattr(event.content_block, "type", None)
+                        if block_type == "tool_use" and not tool_calls_started:
+                            tool_calls_started = True
+                            yield {"type": "tool_calls"}
+                    elif event_type == "content_block_delta":
+                        delta_type = getattr(event.delta, "type", None)
+                        if delta_type == "text_delta" and event.delta.text:
+                            yield {"type": "text", "content": event.delta.text}
+                        elif delta_type == "thinking_delta" and event.delta.thinking:
+                            yield {"type": "reasoning", "content": event.delta.thinking}
+                final_message = await stream.get_final_message()
+
+        native_blocks = [_to_plain_dict(block) for block in final_message.content]
+        text = "".join(
+            block.get("text", "")
+            for block in native_blocks
+            if block.get("type") == "text"
+        )
+        reasoning = "".join(
+            block.get("thinking", "")
+            for block in native_blocks
+            if block.get("type") == "thinking"
+        )
+        assistant_tool_calls = []
+        tool_calls = []
+        for block in native_blocks:
+            if block.get("type") != "tool_use":
+                continue
+            arguments = json.dumps(block.get("input", {}), ensure_ascii=False)
+            assistant_tool_call = {
+                "id": block.get("id", ""),
+                "type": "function",
+                "function": {
+                    "name": block.get("name", ""),
+                    "arguments": arguments,
+                },
+            }
+            assistant_tool_calls.append(assistant_tool_call)
+            tool_calls.append({
+                "id": block.get("id", ""),
+                "name": block.get("name", ""),
+                "arguments": arguments,
+                "raw": copy.deepcopy(block),
+            })
+
+        result = build_llm_result(
+            text=text,
+            reasoning=reasoning,
+            tool_calls=tool_calls,
+            assistant_tool_calls=assistant_tool_calls,
+            content_blocks=_normalized_anthropic_blocks(native_blocks),
+            source_format="anthropic",
+            source_model=self.model,
+            native_blocks=native_blocks,
+            stop_reason=final_message.stop_reason,
+            usage=_to_plain_dict(final_message.usage),
+        )
+        yield {
+            "type": "done",
+            "result": result,
+        }
 
 
 from system.models import get_current_model_config, get_model_manager
 
 
-_cached_llm_client = None
-_cached_model_key = None
+_cached_async_llm_client = None
+_cached_async_model_key = None
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -657,18 +945,28 @@ def _normalize_base_url(base_url: str) -> str:
     return base_url
 
 
-def _create_chat_client(model_config):
-    client = _TrackedOpenAI(
-        base_url=_normalize_base_url(model_config.base_url),
-        api_key=model_config.api_key,
-        timeout=_LLM_TIMEOUT,
-        max_retries=_LLM_MAX_RETRIES,
-        default_headers={"User-Agent": "MakeCode Agent"},
-    )
-    return ChatAPIClient(client, model_config.model_id, model_config.reasoning_effort)
+def _normalize_anthropic_base_url(base_url: str) -> str:
+    base_url = base_url.rstrip("/")
+    if re.search(r"/v1$", base_url):
+        return base_url[:-3]
+    return base_url
 
 
 def _create_async_chat_client(model_config):
+    if model_config.message_format == "anthropic":
+        client = _TrackedAsyncAnthropic(
+            base_url=_normalize_anthropic_base_url(model_config.base_url),
+            api_key=model_config.api_key,
+            timeout=_LLM_TIMEOUT,
+            max_retries=_LLM_MAX_RETRIES,
+            default_headers={"User-Agent": "MakeCode Agent"},
+        )
+        return AnthropicMessagesClient(
+            client,
+            model_config.model_id,
+            model_config.reasoning_effort,
+        )
+
     client = _TrackedAsyncOpenAI(
         base_url=_normalize_base_url(model_config.base_url),
         api_key=model_config.api_key,
@@ -679,53 +977,86 @@ def _create_async_chat_client(model_config):
     return AsyncChatAPIClient(client, model_config.model_id, model_config.reasoning_effort)
 
 
-def _create_llm_client():
-    """根据当前模型配置动态创建 LLM 客户端"""
-    global _cached_llm_client, _cached_model_key
+def _create_async_llm_client():
+    """根据当前进程选择的模型配置创建并缓存异步协议 adapter。"""
+    global _cached_async_llm_client, _cached_async_model_key
     current_model = get_current_model_config()
     if current_model is None:
-        _cached_llm_client = None
-        _cached_model_key = None
+        _cached_async_llm_client = None
+        _cached_async_model_key = None
         return None
-    if current_model.runtime_key != _cached_model_key:
-        _cached_llm_client = _create_chat_client(current_model)
-        _cached_model_key = current_model.runtime_key
-    return _cached_llm_client
+    if current_model.runtime_key != _cached_async_model_key:
+        _cached_async_llm_client = _create_async_chat_client(current_model)
+        _cached_async_model_key = current_model.runtime_key
+    return _cached_async_llm_client
 
 
-def close_llm_client(client) -> None:
+async def refresh_async_llm_client():
+    """模型运行配置变化后关闭旧 adapter；尚未创建客户端时保持惰性。"""
+    global _cached_async_llm_client, _cached_async_model_key
+    if _cached_async_llm_client is None:
+        _cached_async_model_key = None
+        return None
+
+    current_model = get_current_model_config()
+    current_key = current_model.runtime_key if current_model is not None else None
+    if current_key == _cached_async_model_key:
+        return _cached_async_llm_client
+
+    previous_client = _cached_async_llm_client
+    _cached_async_llm_client = (
+        _create_async_chat_client(current_model) if current_model is not None else None
+    )
+    _cached_async_model_key = current_key
+    await close_async_llm_client(previous_client)
+    return _cached_async_llm_client
+
+
+async def close_cached_async_llm_client() -> None:
+    """关闭当前提交事件循环使用的缓存 adapter，避免跨 asyncio.run 复用连接池。"""
+    global _cached_async_llm_client, _cached_async_model_key
+    client = _cached_async_llm_client
+    _cached_async_llm_client = None
+    _cached_async_model_key = None
+    if client is not None:
+        await close_async_llm_client(client)
+
+
+async def close_async_llm_client(client) -> None:
     raw_client = getattr(client, "client", None)
     close = getattr(raw_client, "close", None)
-    if close is not None:
-        close()
+    if close is None:
+        return
+    result = close()
+    if inspect.isawaitable(result):
+        await result
 
 
-def create_current_llm_client():
+def create_current_async_llm_client():
     current_model = get_current_model_config()
     if current_model is None:
         return None
-    return _create_chat_client(current_model)
+    return _create_async_chat_client(current_model)
 
 
 def create_memory_recall_llm_client():
     manager = get_model_manager()
     if manager is None:
         return None
-    manager._reload_from_disk()
     recall_model = manager.get_memory_recall_model()
     if recall_model is None:
         current_model = manager.get_current_model()
         if current_model is None:
             return None
-        return _create_chat_client(current_model)
-    return _create_chat_client(recall_model)
+        return _create_async_chat_client(current_model)
+    return _create_async_chat_client(recall_model)
 
 
-class DynamicLLMClientProxy:
-    """动态 LLM 客户端代理：每次调用时获取当前模型配置"""
+class DynamicAsyncLLMClientProxy:
+    """动态异步 LLM 客户端代理：使用当前进程内模型选择。"""
 
     def _get_client(self):
-        client = _create_llm_client()
+        client = _create_async_llm_client()
         if client is None:
             raise RuntimeError("No model configured. Please use /models to configure a model first.")
         return client
@@ -734,9 +1065,4 @@ class DynamicLLMClientProxy:
         return getattr(self._get_client(), item)
 
 
-llm_client = DynamicLLMClientProxy()
-
-
-def reload_llm_client():
-    """兼容旧调用，当前为动态代理无需重载"""
-    return _create_llm_client()
+async_llm_client = DynamicAsyncLLMClientProxy()

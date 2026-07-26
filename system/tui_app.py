@@ -1,5 +1,6 @@
+import asyncio
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from datetime import datetime
 from queue import Queue
@@ -657,7 +658,7 @@ class MakeCodeTuiApp(App[None]):
 
     def __init__(
         self,
-        submit_handler: Callable[[str], str | None] | None = None,
+        submit_handler: Callable[[str], Awaitable[str | None]] | None = None,
         runtime_info_provider: Callable[[], str] | None = None,
         header_info_provider: Callable[[], str] | None = None,
         startup_workdir_provider: Callable[[], Any] | None = None,
@@ -1272,7 +1273,7 @@ class MakeCodeTuiApp(App[None]):
     def _run_submit_handler(self, text: str) -> None:
         if self._submit_handler is None:
             return
-        result = self._submit_handler(text)
+        result = asyncio.run(self._submit_handler(text))
         if result == "exit":
             self.call_from_thread(self.exit)
 

@@ -1,7 +1,8 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -41,22 +42,23 @@ class FakeRecallLLMClient:
     def format_tools(self, tools):
         return tools
 
-    def generate(self, messages, tools):
+    async def generate_stream(self, messages, tools):
         self.messages_seen.append(list(messages))
         self.generate_calls += 1
-        return object()
-
-    def parse_response(self, response):
         index = self.generate_calls - 1
         tool_calls = self.tool_calls_by_round[index]
-        raw_message = {"role": "assistant", "content": "", "tool_calls": tool_calls}
-        return "", tool_calls, raw_message
+        assistant_message = {"role": "assistant", "content": "", "tool_calls": tool_calls}
+        yield {
+            "type": "done",
+            "result": SimpleNamespace(
+                text="",
+                tool_calls=tool_calls,
+                assistant_message=assistant_message,
+            ),
+        }
 
-    def append_assistant_message(self, messages, raw_message):
-        messages.append(raw_message)
 
-
-class MemoryRecallTests(unittest.TestCase):
+class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         memory._MEMORY_RECALL_WINDOWS = {}
 
@@ -106,19 +108,19 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertEqual(records[2]["updated_at"], "old-deleted")
         write_records.assert_called_once_with(records)
 
-    def test_recall_touches_selected_memories_before_rendering_context(self):
+    async def test_recall_touches_selected_memories_before_rendering_context(self):
         events = []
 
         def render_context(memory_ids):
             events.append(("render", memory_ids))
             return "selected context"
 
-        with patch.object(memory, "select_relevant_memory_ids", return_value=["mem_new"]), \
+        with patch.object(memory, "select_relevant_memory_ids", AsyncMock(return_value=["mem_new"])), \
                 patch.object(memory, "_touch_recalled_memories", side_effect=lambda ids: events.append(("touch", ids))), \
                 patch.object(memory, "render_selected_memory_context", side_effect=render_context), \
                 patch.object(memory, "post_tui"), \
                 patch.object(memory, "Markdown"):
-            result = memory.recall_long_term_memories("query")
+            result = await memory.recall_long_term_memories("query")
 
         self.assertEqual(result["content"], "selected context")
         self.assertEqual(events, [("touch", ["mem_new"]), ("render", ["mem_new"])])
@@ -189,7 +191,7 @@ class MemoryRecallTests(unittest.TestCase):
         assert "## Previous Assistant Content" not in payload
         assert payload.endswith("## Current User Request\n\n本次用户请求")
 
-    def test_select_relevant_memory_ids_uses_tool_call_and_retries_until_called(self):
+    async def test_select_relevant_memory_ids_uses_tool_call_and_retries_until_called(self):
         fake_client = FakeRecallLLMClient([
             [],
             [
@@ -204,8 +206,8 @@ class MemoryRecallTests(unittest.TestCase):
 
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
                 patch.object(memory, "create_memory_recall_llm_client", return_value=None), \
-                patch.object(memory, "llm_client", fake_client):
-            selected = memory.select_relevant_memory_ids("需要处理新约定", max_iterations=3)
+                patch.object(memory, "async_llm_client", fake_client):
+            selected = await memory.select_relevant_memory_ids("需要处理新约定", max_iterations=3)
 
         self.assertEqual(selected, ["mem_new", "mem_old"])
         self.assertEqual(fake_client.generate_calls, 2)
@@ -215,6 +217,102 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertIn("new insight should be injected", first_user_payload)
         self.assertNotIn("new evidence should not be injected", first_user_payload)
         self.assertIn("You did not call SelectRelevantMemories", fake_client.messages_seen[1][-1]["content"])
+
+    async def test_select_relevant_memory_ids_resumes_pause_turn_without_inserting_user_prompt(self):
+        class PauseRecallClient:
+            def __init__(self):
+                self.calls = 0
+                self.messages_seen = []
+
+            def format_tools(self, tools):
+                return tools
+
+            async def generate_stream(self, messages, tools):
+                self.messages_seen.append(list(messages))
+                self.calls += 1
+                if self.calls == 1:
+                    result = SimpleNamespace(
+                        text="",
+                        tool_calls=[],
+                        stop_reason="pause_turn",
+                        assistant_message={
+                            "role": "assistant",
+                            "content": "",
+                            "stop_reason": "pause_turn",
+                        },
+                    )
+                else:
+                    tool_calls = [{
+                        "id": "call_1",
+                        "name": "SelectRelevantMemories",
+                        "arguments": '{"memory_ids": ["mem_new"]}',
+                    }]
+                    result = SimpleNamespace(
+                        text="",
+                        tool_calls=tool_calls,
+                        stop_reason="tool_use",
+                        assistant_message={"role": "assistant", "content": "", "tool_calls": tool_calls},
+                    )
+                yield {"type": "done", "result": result}
+
+        fake_client = PauseRecallClient()
+        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
+                patch.object(memory, "create_memory_recall_llm_client", return_value=None), \
+                patch.object(memory, "async_llm_client", fake_client):
+            selected = await memory.select_relevant_memory_ids("query", max_iterations=2)
+
+        self.assertEqual(selected, ["mem_new"])
+        self.assertEqual(fake_client.calls, 2)
+        self.assertEqual(fake_client.messages_seen[1][-1]["role"], "assistant")
+        self.assertEqual(fake_client.messages_seen[1][-1]["stop_reason"], "pause_turn")
+
+    async def test_memory_agent_resumes_pause_turn_and_marks_unknown_tool_as_error(self):
+        initial_messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "manage memory"},
+        ]
+        fake_client = Mock()
+        fake_client.get_memory_decision_messages.return_value = initial_messages
+        fake_client.format_tools.return_value = []
+        fake_client.generate_stream.return_value = object()
+        fake_client.format_tool_result.side_effect = lambda tool_id, tool_name, output: {
+            "role": "tool",
+            "tool_call_id": tool_id,
+            "name": tool_name,
+            "content": output,
+        }
+        stream_results = [
+            (
+                "partial",
+                [],
+                {"role": "assistant", "content": "partial", "stop_reason": "pause_turn"},
+            ),
+            (
+                "",
+                [{"id": "call_1", "name": "MissingMemoryTool", "arguments": "{}"}],
+                {"role": "assistant", "content": None, "stop_reason": "tool_use"},
+            ),
+        ]
+
+        with patch.object(memory, "async_llm_client", fake_client), \
+                patch.object(memory.StreamRenderer, "render_text_stream_async", new_callable=AsyncMock, side_effect=stream_results), \
+                patch.object(memory, "post_tui"), \
+                patch.object(memory, "_render_agent_response_message"), \
+                patch.object(memory, "_render_tool_output"):
+            outputs = await memory.memory_agent_loop(
+                conversation_text="[]",
+                summary="",
+                reason="test",
+                current_memory_content="",
+                tools=[],
+                max_iterations=2,
+            )
+
+        self.assertEqual(outputs[0]["tool"], "MissingMemoryTool")
+        self.assertEqual(fake_client.generate_stream.call_count, 2)
+        self.assertEqual(initial_messages[2]["stop_reason"], "pause_turn")
+        tool_result = next(item for item in initial_messages if item.get("role") == "tool")
+        self.assertTrue(tool_result["is_error"])
 
     def test_recall_window_filters_only_current_agent_candidates(self):
         memory._MEMORY_RECALL_WINDOWS = {
@@ -232,7 +330,7 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertNotIn("mem_old", tester_candidates)
         memory._MEMORY_RECALL_WINDOWS = {}
 
-    def test_select_relevant_memory_ids_updates_per_agent_window_only_when_non_empty(self):
+    async def test_select_relevant_memory_ids_updates_per_agent_window_only_when_non_empty(self):
         selected_client = FakeRecallLLMClient([
             [
                 {
@@ -257,13 +355,13 @@ class MemoryRecallTests(unittest.TestCase):
         memory._MEMORY_RECALL_WINDOWS = {}
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
                 patch.object(memory, "create_memory_recall_llm_client", return_value=None), \
-                patch.object(memory, "llm_client", selected_client):
-            selected = memory.select_relevant_memory_ids("query", agent_id="agent_a")
+                patch.object(memory, "async_llm_client", selected_client):
+            selected = await memory.select_relevant_memory_ids("query", agent_id="agent_a")
 
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
                 patch.object(memory, "create_memory_recall_llm_client", return_value=None), \
-                patch.object(memory, "llm_client", empty_client):
-            empty = memory.select_relevant_memory_ids("query", agent_id="agent_b")
+                patch.object(memory, "async_llm_client", empty_client):
+            empty = await memory.select_relevant_memory_ids("query", agent_id="agent_b")
 
         self.assertEqual(selected, ["mem_new"])
         self.assertEqual(empty, [])
@@ -317,10 +415,10 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertIn("B" * 50, candidates)
         self.assertIn("[...内容截断...]", candidates)
 
-    def test_recall_tool_handler_returns_selected_context_without_real_model(self):
+    async def test_recall_tool_handler_returns_selected_context_without_real_model(self):
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "select_relevant_memory_ids", return_value=["mem_new"]):
-            result = memory.MEMORY_RECALL_TOOLS_HANDLERS["RecallLongTermMemory"]("当前任务")
+                patch.object(memory, "select_relevant_memory_ids", AsyncMock(return_value=["mem_new"])):
+            result = await memory.MEMORY_RECALL_TOOLS_HANDLERS["RecallLongTermMemory"]("当前任务")
 
         self.assertEqual(result["ids"], ["mem_new"])
         self.assertIn("mem_new", result["content"])

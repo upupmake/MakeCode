@@ -1,5 +1,5 @@
 import time
-from typing import Iterator, Tuple, List, Any
+from typing import Any, AsyncIterator, List, Tuple
 
 from rich.text import Text
 
@@ -21,9 +21,9 @@ class StreamRenderer:
         self._last_tail_update_at: dict[TuiRegion, float] = {}
         self._active_regions: set[TuiRegion] = set()
 
-    def render_text_stream(
+    async def render_text_stream_async(
             self,
-            stream_generator: Iterator[dict],
+            stream_generator: AsyncIterator[dict],
             region: TuiRegion = TuiRegion.CONTENT,
             render_live: bool = True,
             set_active: bool = False,
@@ -37,7 +37,7 @@ class StreamRenderer:
         if set_active:
             self._set_active(region, True)
         try:
-            for event in stream_generator:
+            async for event in stream_generator:
                 if is_cancelled():
                     break
                 event_type = event.get("type")
@@ -47,19 +47,23 @@ class StreamRenderer:
                     text_content += chunk
                     if render_live:
                         live_buffer += chunk
-                        live_buffer, emitted_chunk = self._process_block_commit(text_content, live_buffer, region=region)
+                        live_buffer, emitted_chunk = self._process_block_commit(
+                            text_content,
+                            live_buffer,
+                            region=region,
+                        )
                         emitted_text += emitted_chunk
                         self._update_tail(live_buffer, region=region, force=bool(emitted_chunk))
 
                 elif event_type == "done":
-                    text_content_done, tool_calls, raw_message = event["content"]
+                    text_content_done, tool_calls, raw_message = self._done_content(event)
                     if text_content_done:
                         text_content = text_content_done
                         if render_live and text_content.startswith(emitted_text):
                             live_buffer = text_content[len(emitted_text):]
                     break
-
         finally:
+            await self._close_async_stream(stream_generator)
             if render_live:
                 if live_buffer and not is_cancelled():
                     self._safe_cleanup(live_buffer, region=region)
@@ -72,7 +76,11 @@ class StreamRenderer:
 
         return text_content, tool_calls, raw_message
 
-    def render(self, stream_generator: Iterator[dict], agent_name: str = "Orchestrator") -> Tuple[str, List, Any]:
+    async def render_async(
+            self,
+            stream_generator: AsyncIterator[dict],
+            agent_name: str = "Orchestrator",
+    ) -> Tuple[str, List, Any]:
         self._print_header(agent_name)
         start_time = time.perf_counter()
 
@@ -81,10 +89,8 @@ class StreamRenderer:
         live_buffer = ""
         tool_calls = []
         raw_message = None
-
         reasoning_started = False
         text_started = False
-
         reasoning_content = ""
         reasoning_buffer = ""
         tool_calls_started = False
@@ -92,7 +98,7 @@ class StreamRenderer:
         post_tui(TuiRegion.STATUS, f"Awakening {agent_name}...")
 
         try:
-            for event in stream_generator:
+            async for event in stream_generator:
                 if is_cancelled():
                     break
                 event_type = event.get("type")
@@ -127,7 +133,7 @@ class StreamRenderer:
                         self._update_tail(live_buffer, force=bool(emitted_chunk))
 
                 elif event_type == "done":
-                    text_content_done, tool_calls, raw_message = event["content"]
+                    text_content_done, tool_calls, raw_message = self._done_content(event)
                     if text_content_done:
                         text_content = text_content_done
                         if text_started and text_content.startswith(emitted_text):
@@ -138,8 +144,8 @@ class StreamRenderer:
                             tool_calls_started = True
                         self._handle_tool_calls_generated(agent_name)
                     break
-
         finally:
+            await self._close_async_stream(stream_generator)
             self._safe_cleanup(reasoning_buffer, region=TuiRegion.REASONING)
             self._clear_tail(TuiRegion.REASONING)
             if live_buffer and text_started and not is_cancelled():
@@ -153,8 +159,19 @@ class StreamRenderer:
 
         self._handle_fallback(agent_name, text_content, reasoning_started, text_started)
         self._print_footer(agent_name, start_time)
-
         return text_content, tool_calls, raw_message
+
+    @staticmethod
+    def _done_content(event: dict) -> Tuple[str, List, Any]:
+        result = event["result"]
+        return result.text, result.tool_calls, result.assistant_message
+
+    @staticmethod
+    async def _close_async_stream(stream_generator: AsyncIterator[dict]) -> None:
+        close = getattr(stream_generator, "aclose", None)
+        if close is not None:
+            await close()
+
     # ==================== 私有辅助方法 ====================
 
     def _print_header(self, name: str):
