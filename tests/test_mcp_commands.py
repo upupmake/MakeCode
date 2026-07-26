@@ -422,30 +422,23 @@ def test_submit_worker_owns_single_asyncio_run_boundary():
     assert running_loops[0][0] == "hello"
 
 
-def test_submit_worker_rejects_overlapping_commands():
-    started = threading.Event()
-    release = threading.Event()
-    finished = threading.Event()
+def test_quick_command_bypasses_submit_lock_without_releasing_it():
     submitted = []
+    submitted_event = threading.Event()
 
     async def submit_handler(text):
         submitted.append(text)
-        started.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
-        finished.set()
+        submitted_event.set()
 
     app = MakeCodeTuiApp(submit_handler=submit_handler)
-    app._run_quick_command("first")
-    assert started.wait(timeout=1)
-
-    app._run_quick_command("second")
-    assert submitted == ["first"]
-
-    release.set()
-    assert finished.wait(timeout=1)
-    assert app._submit_lock.acquire(timeout=1)
-    app._submit_lock.release()
+    assert app._submit_lock.acquire(blocking=False)
+    try:
+        app._run_quick_command("/tasks")
+        assert submitted_event.wait(timeout=1)
+        assert submitted == ["/tasks"]
+        assert not app._submit_lock.acquire(blocking=False)
+    finally:
+        app._submit_lock.release()
 
 
 @pytest.mark.anyio

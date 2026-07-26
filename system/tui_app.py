@@ -1283,27 +1283,26 @@ class MakeCodeTuiApp(App[None]):
             daemon=True,
         ).start()
 
-    def _start_submit_handler(self, text: str) -> bool:
-        if self._submit_handler is None or not self._submit_lock.acquire(blocking=False):
-            return False
-        try:
-            self._launch_submit_handler(text)
-        except Exception:
-            self._submit_lock.release()
-            raise
-        return True
-
-    def _run_submit_handler(self, text: str, owns_submit_lock: bool = False) -> None:
+    def _run_submit_handler(
+        self,
+        text: str,
+        owns_submit_lock: bool = False,
+        bypass_submit_lock: bool = False,
+    ) -> None:
         if self._submit_handler is None:
             return
-        if not owns_submit_lock and not self._submit_lock.acquire(blocking=False):
-            return
+        acquired_submit_lock = owns_submit_lock
+        if not acquired_submit_lock and not bypass_submit_lock:
+            if not self._submit_lock.acquire(blocking=False):
+                return
+            acquired_submit_lock = True
         try:
             result = asyncio.run(self._submit_handler(text))
             if result == "exit":
                 self.call_from_thread(self.exit)
         finally:
-            self._submit_lock.release()
+            if acquired_submit_lock:
+                self._submit_lock.release()
 
     def set_agent_loop_active(self, active: bool) -> None:
         was_active = self._agent_loop_active
@@ -1383,7 +1382,13 @@ class MakeCodeTuiApp(App[None]):
         buttons.set_class(not self._quick_panel_expanded, "hidden")
 
     def _run_quick_command(self, command: str) -> None:
-        self._start_submit_handler(command)
+        if self._submit_handler is None:
+            return
+        threading.Thread(
+            target=self._run_submit_handler,
+            args=(command, False, True),
+            daemon=True,
+        ).start()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
