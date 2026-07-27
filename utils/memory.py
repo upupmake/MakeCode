@@ -170,7 +170,7 @@ def _new_memory_record(category: str, insight: str, evidence: str, reuse_conditi
 
 
 def _memory_sort_key(record: dict) -> str:
-    return record.get("created_at") or record.get("updated_at") or ""
+    return record.get("updated_at") or record.get("created_at") or ""
 
 
 def append_long_term_memory(

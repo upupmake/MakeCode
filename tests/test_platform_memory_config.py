@@ -231,6 +231,49 @@ async def test_select_relevant_memory_ids_uses_dedicated_recall_client():
     memory._MEMORY_RECALL_WINDOWS = {}
 
 
+def test_append_long_term_memory_evicts_least_recently_updated(tmp_path, monkeypatch):
+    memory_file = tmp_path / "long_term_memory.jsonl"
+    records = [
+        {
+            "id": "mem_created_first",
+            "created_at": "2026-01-01 00:00:00",
+            "updated_at": "2026-01-03 00:00:00",
+            "category": "workflow",
+            "insight": "recently updated",
+            "evidence": "test",
+            "reuse_condition": "test",
+            "status": "active",
+        },
+        {
+            "id": "mem_updated_first",
+            "created_at": "2026-01-02 00:00:00",
+            "updated_at": "2026-01-02 00:00:00",
+            "category": "workflow",
+            "insight": "least recently updated",
+            "evidence": "test",
+            "reuse_condition": "test",
+            "status": "active",
+        },
+    ]
+    memory_file.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(memory, "MEMORY_JSONL_FILE", memory_file)
+    monkeypatch.setattr(memory, "get_memory_size", lambda: 2)
+
+    result = memory.append_long_term_memory("workflow", "new", "test", "test")
+
+    saved_records = [
+        json.loads(line)
+        for line in memory_file.read_text(encoding="utf-8").splitlines()
+    ]
+    saved_by_id = {record["id"]: record for record in saved_records}
+    assert saved_by_id["mem_created_first"]["status"] == "active"
+    assert saved_by_id["mem_updated_first"]["status"] == "deleted"
+    assert result["deleted_overflow_ids"] == ["mem_updated_first"]
+
+
 def test_memory_recall_window_size_config_preserves_existing_fields(tmp_path):
     memory.refresh_workspace_paths()
     original_config_file = memory.MEMORY_CONFIG_FILE
@@ -323,7 +366,7 @@ def test_tui_modals_use_q_not_escape_for_cancel():
 # ---------- ChoiceModal 渲染与交互测试 ----------
 
 from textual.app import App, ComposeResult
-from textual.widgets import DataTable, Input, Label, Select
+from textual.widgets import Button, DataTable, Input, Label, Select
 
 
 @pytest.fixture
@@ -360,6 +403,30 @@ async def test_choice_modal_options_only_renders_list_no_custom():
         assert modal.query("#choice-list").__len__() == 1
         assert modal.query("#custom-input").__len__() == 0
         assert modal.query("#custom-hint").__len__() == 0
+
+
+@pytest.mark.anyio
+async def test_choice_modal_close_button_is_top_right_and_cancels():
+    modal = ChoiceModal("测试标题", ["选项A"], allow_custom=False)
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    app = ChoiceModalHost(modal, on_dismiss)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        close_button = modal.query_one("#modal-close", Button)
+        title = modal.query_one("#choice-title", Label)
+        assert str(close_button.label) == "×"
+        assert close_button.region.y == title.region.y
+        assert close_button.region.x >= title.region.right
+
+        await pilot.click("#modal-close")
+        await pilot.pause()
+
+    assert result == "<cancelled>"
 
 
 @pytest.mark.anyio

@@ -1,5 +1,5 @@
 import json
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 from pathlib import Path
 
 from rich.console import RenderableType
@@ -21,10 +21,74 @@ from system.tui_types import (
 )
 
 
-class ChoiceModal(ModalScreen[str]):
+ModalResult = TypeVar("ModalResult")
+
+
+class ClosableModalScreen(ModalScreen[ModalResult]):
+    def action_close_modal(self) -> None:
+        close_action = getattr(self, "action_cancel", None) or getattr(self, "action_close", None)
+        if close_action is None:
+            self.dismiss(None)
+            return
+        close_action()
+
+
+class ModalCloseButton(Button):
+    def __init__(self) -> None:
+        super().__init__("×", id="modal-close", classes="modal-close")
+        self.tooltip = "关闭窗口"
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        screen = self.screen
+        if isinstance(screen, ClosableModalScreen):
+            screen.action_close_modal()
+
+
+class ModalHeader(Horizontal):
+    def __init__(self, title: RenderableType, *, title_id: str, markup: bool = True) -> None:
+        super().__init__(classes="modal-header")
+        self._title = title
+        self._title_id = title_id
+        self._markup = markup
+
+    def compose(self) -> ComposeResult:
+        yield Label(
+            self._title,
+            id=self._title_id,
+            classes="modal-header-title",
+            markup=self._markup,
+        )
+        yield ModalCloseButton()
+
+
+class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
     ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal {
         align: center middle;
+    }
+
+    .modal-header {
+        width: 1fr;
+        height: auto;
+        margin-bottom: 1;
+        align: left top;
+    }
+
+    .modal-header-title {
+        width: 1fr;
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    .modal-close {
+        width: 3;
+        min-width: 3;
+        height: 1;
+        min-height: 1;
+        padding: 0;
+        margin: 0;
+        border: none;
     }
 
     #startup-dialog {
@@ -37,7 +101,7 @@ class ChoiceModal(ModalScreen[str]):
 
     #startup-title {
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
 
     #startup-input {
@@ -64,7 +128,7 @@ class ChoiceModal(ModalScreen[str]):
 
     #task-title {
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
 
     #task-table {
@@ -107,7 +171,7 @@ class ChoiceModal(ModalScreen[str]):
 
     #copy-title {
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
 
     #copy-text {
@@ -285,7 +349,7 @@ class ChoiceModal(ModalScreen[str]):
 
     #choice-title {
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
 
     #choice-list {
@@ -386,7 +450,7 @@ class ChoiceModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label(self._title_text(), id="choice-title", markup=False)
+            yield ModalHeader(self._title_text(), title_id="choice-title", markup=False)
             if self._options:
                 yield ListView(*[ListItem(Label(option, markup=False)) for option in self._options], id="choice-list")
             if self._allow_custom:
@@ -531,7 +595,7 @@ class ChoiceModal(ModalScreen[str]):
         self.dismiss("<cancelled>")
 
 
-class DelegateTasksModal(ModalScreen[str]):
+class DelegateTasksModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -545,7 +609,7 @@ class DelegateTasksModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="delegate-dialog"):
-            yield Label("子智能体委派确认", id="delegate-title", markup=False)
+            yield ModalHeader("子智能体委派确认", title_id="delegate-title", markup=False)
             yield Label(
                 f"本批包含 {len(self._tasks)} 个独立任务。请选择由子智能体并行处理，或交回主智能体顺序执行。",
                 id="delegate-subtitle",
@@ -592,7 +656,7 @@ class DelegateTasksModal(ModalScreen[str]):
         self.dismiss("cancel")
 
 
-class StartupWorkdirModal(ModalScreen[str]):
+class StartupWorkdirModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
     def __init__(self, cwd: Path) -> None:
@@ -604,7 +668,7 @@ class StartupWorkdirModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="startup-dialog"):
-            yield Label(id="startup-title")
+            yield ModalHeader("", title_id="startup-title")
             yield Input(placeholder="输入自定义工作区路径", id="startup-input")
 
     def on_mount(self) -> None:
@@ -668,8 +732,11 @@ class StartupWorkdirModal(ModalScreen[str]):
             lines.append(f"  {marker} {text}")
         self.query_one("#startup-title", Label).update("\n".join(lines))
 
+    def action_cancel(self) -> None:
+        self.dismiss("abort")
 
-class TaskPanelModal(ModalScreen[str]):
+
+class TaskPanelModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -682,7 +749,7 @@ class TaskPanelModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="task-dialog"):
-            yield Label(self._title_text(), id="task-title")
+            yield ModalHeader(self._title_text(), title_id="task-title")
             yield DataTable(id="task-table", cursor_type="row")
             with Horizontal(id="task-actions"):
                 yield Button("关闭", id="task-close", variant="primary")
@@ -720,7 +787,7 @@ class TaskPanelModal(ModalScreen[str]):
         self.dismiss("closed")
 
 
-class InfoPanelModal(ModalScreen[str]):
+class InfoPanelModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -734,7 +801,7 @@ class InfoPanelModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="info-dialog"):
-            yield Label(f"{self._title}\nq 关闭。", id="choice-title")
+            yield ModalHeader(f"{self._title}\nq 关闭。", title_id="choice-title")
             yield RichLog(id="info-content", markup=True, wrap=True, min_width=1)
             with Horizontal(id="info-actions"):
                 yield Button("关闭", id="info-close", variant="primary")
@@ -758,7 +825,7 @@ class InfoPanelModal(ModalScreen[str]):
         self.dismiss("closed")
 
 
-class CopyContentModal(ModalScreen[str]):
+class CopyContentModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -771,9 +838,9 @@ class CopyContentModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="copy-dialog"):
-            yield Label(
+            yield ModalHeader(
                 "📝 对话内容（只读）\nc 复制选中文本（无选区则复制全部）· q 关闭",
-                id="copy-title",
+                title_id="copy-title",
             )
             yield TextArea(
                 self._build_text(),
@@ -855,7 +922,7 @@ class CopyContentModal(ModalScreen[str]):
         return "\n\n".join(parts)
 
 
-class McpSwitchModal(ModalScreen[str | dict]):
+class McpSwitchModal(ClosableModalScreen[str | dict]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -877,7 +944,7 @@ class McpSwitchModal(ModalScreen[str | dict]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label(self._title_text(), id="choice-title")
+            yield ModalHeader(self._title_text(), title_id="choice-title")
             yield ListView(*[ListItem(Label(label)) for label in self._labels()], id="choice-list")
 
     def on_mount(self) -> None:
@@ -1019,13 +1086,16 @@ class McpSwitchModal(ModalScreen[str | dict]):
         choice_list.index = selected_index
         choice_list.focus()
 
+    def action_cancel(self) -> None:
+        self.dismiss(self._dismiss_payload("cancel"))
+
     def _toggle_index(self, index: int) -> None:
         name = self._server_switches[index]["name"]
         self._draft_states[name] = not self._draft_states[name]
         self._refresh_server_row(index)
 
 
-class ModelPanelModal(ModalScreen[str]):
+class ModelPanelModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -1041,7 +1111,7 @@ class ModelPanelModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label(self._title, id="choice-title")
+            yield ModalHeader(self._title, title_id="choice-title")
             yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
 
     def on_mount(self) -> None:
@@ -1085,8 +1155,11 @@ class ModelPanelModal(ModalScreen[str]):
     def action_delete(self) -> None:
         self._dismiss_action("delete")
 
+    def action_cancel(self) -> None:
+        self.dismiss("<cancelled>")
 
-class ModelManagerModal(ModalScreen[str]):
+
+class ModelManagerModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -1109,7 +1182,7 @@ class ModelManagerModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label(self._title_text(), id="choice-title")
+            yield ModalHeader(self._title_text(), title_id="choice-title")
             yield ListView(id="choice-list")
 
     @staticmethod
@@ -1367,7 +1440,7 @@ class ModelManagerModal(ModalScreen[str]):
         )
 
 
-class MemoryPanelModal(ModalScreen[list[str]]):
+class MemoryPanelModal(ClosableModalScreen[list[str]]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -1390,7 +1463,10 @@ class MemoryPanelModal(ModalScreen[list[str]]):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="memory-dialog"):
-            yield Label("🧠 长期记忆面板 (active: 0)\nEnter/Space 查看详情；d 删除；q 关闭。", id="choice-title")
+            yield ModalHeader(
+                "🧠 长期记忆面板 (active: 0)\nEnter/Space 查看详情；d 删除；q 关闭。",
+                title_id="choice-title",
+            )
             yield ListView(id="memory-list")
             yield RichLog(id="memory-detail", markup=True, wrap=True, min_width=1)
 
@@ -1549,7 +1625,7 @@ class MemoryPanelModal(ModalScreen[list[str]]):
         self.dismiss(list(self._deleted_ids))
 
 
-class MemoryConfigModal(ModalScreen[str | dict[str, Any]]):
+class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -1578,9 +1654,9 @@ class MemoryConfigModal(ModalScreen[str | dict[str, Any]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="memory-config-dialog"):
-            yield Label(
+            yield ModalHeader(
                 "🧠 记忆配置\n修改后按 Enter 或点击确认应用；配置值必须是大于 0 的整数。",
-                id="choice-title",
+                title_id="choice-title",
             )
             for field, meta in self._FIELDS.items():
                 yield Label(f"{meta['label']} ({field})", classes="memory-config-label")
@@ -1670,7 +1746,7 @@ class MemoryConfigModal(ModalScreen[str | dict[str, Any]]):
         )
 
 
-class RecallModelPickerModal(ModalScreen[str]):
+class RecallModelPickerModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -1684,7 +1760,7 @@ class RecallModelPickerModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label("🧠 选择记忆召回模型\nEnter 选择；q 取消。", id="choice-title")
+            yield ModalHeader("🧠 选择记忆召回模型\nEnter 选择；q 取消。", title_id="choice-title")
 
             yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
 
@@ -1718,7 +1794,7 @@ class RecallModelPickerModal(ModalScreen[str]):
         self.dismiss("<cancelled>")
 
 
-class AddModelModal(ModalScreen[dict[str, str] | None]):
+class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -1728,7 +1804,7 @@ class AddModelModal(ModalScreen[dict[str, str] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="model-form-dialog"):
-            yield Label("➕ 添加模型", id="choice-title")
+            yield ModalHeader("➕ 添加模型", title_id="choice-title")
             yield Label("Base URL", classes="model-form-label")
             yield Input(placeholder="https://api.example.com/v1", id="model-base-url", classes="model-form-input")
             yield Label("API Key", classes="model-form-label")
@@ -1792,7 +1868,7 @@ class AddModelModal(ModalScreen[dict[str, str] | None]):
         self.dismiss(None)
 
 
-class LayoutModal(ModalScreen[str | dict[str, int]]):
+class LayoutModal(ClosableModalScreen[str | dict[str, int]]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
@@ -1814,9 +1890,9 @@ class LayoutModal(ModalScreen[str | dict[str, int]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="layout-dialog"):
-            yield Label(
+            yield ModalHeader(
                 "🧩 Layout 布局比例\n点击按钮或按 Space 在 0-10 间循环；0 表示隐藏但继续接收渲染。",
-                id="choice-title",
+                title_id="choice-title",
             )
             with Horizontal(id="layout-columns"):
                 with Vertical(classes="layout-column"):
@@ -1889,4 +1965,3 @@ class LayoutModal(ModalScreen[str | dict[str, int]]):
         button = self.query_one(f"#layout-{key}", Button)
         button.label = self._button_label(key)
         button.focus()
-
