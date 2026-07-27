@@ -173,14 +173,23 @@ def strip_native_message_payloads(messages: list[dict[str, Any]]) -> list[dict[s
     return sanitized
 
 
-def _set_client_request_retry(retry_count: int, max_retries: int) -> None:
+def _set_client_request_retry(
+    retry_count: int,
+    max_retries: int,
+    response: httpx.Response | None,
+) -> None:
     request_id = _CURRENT_CLIENT_REQUEST_ID.get()
     if request_id is None:
         return
     try:
-        from system.tui_app import set_client_request_retry
+        from system.tui_app import TuiRegion, post_tui, set_client_request_retry
 
         set_client_request_retry(request_id, retry_count, max_retries)
+        reason = f"HTTP {response.status_code}" if response is not None else "连接或超时错误"
+        post_tui(
+            TuiRegion.BACKGROUND,
+            f"[#aaaaaa]🌐 LLM 请求失败（{reason}），正在重试 {retry_count}/{max_retries}。[/#aaaaaa]",
+        )
     except Exception:
         pass
 
@@ -188,12 +197,12 @@ def _set_client_request_retry(retry_count: int, max_retries: int) -> None:
 class _TrackedAsyncOpenAI(AsyncOpenAI):
     def _should_retry(self, response: httpx.Response) -> bool:
         # 中转场景下 404 多为上游瞬时路由失败（部分渠道缺模型），计入重试
-        if response.status_code == 404:
+        if response.status_code == 404 and response.headers.get("x-should-retry") is None:
             return True
         return super()._should_retry(response)
 
     async def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
-        _set_client_request_retry(retries_taken + 1, max_retries)
+        _set_client_request_retry(retries_taken + 1, max_retries, response)
         await super()._sleep_for_retry(
             retries_taken=retries_taken,
             max_retries=max_retries,
@@ -203,8 +212,14 @@ class _TrackedAsyncOpenAI(AsyncOpenAI):
 
 
 class _TrackedAsyncAnthropic(AsyncAnthropic):
+    def _should_retry(self, response: httpx.Response) -> bool:
+        # 中转场景下 404 多为上游瞬时路由失败（部分渠道缺模型），计入重试
+        if response.status_code == 404 and response.headers.get("x-should-retry") is None:
+            return True
+        return super()._should_retry(response)
+
     async def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
-        _set_client_request_retry(retries_taken + 1, max_retries)
+        _set_client_request_retry(retries_taken + 1, max_retries, response)
         await super()._sleep_for_retry(
             retries_taken=retries_taken,
             max_retries=max_retries,
@@ -309,6 +324,23 @@ def _inline_schema_refs(schema):
     return walk(schema)
 
 
+def format_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for tool in tools:
+        source_tools = tool.get("tools", []) if isinstance(tool, dict) and tool.get("type") == "namespace" else [tool]
+        for source_tool in source_tools:
+            name, desc, params = _extract_tool_info(source_tool)
+            function = {
+                "name": name,
+                "description": desc,
+                "parameters": _inline_schema_refs(params),
+            }
+            if "function" in source_tool:
+                function["strict"] = True
+            result.append({"type": "function", "function": function})
+    return sorted(result, key=lambda item: item["function"]["name"] or "")
+
+
 class AsyncBaseLLMClient(ABC):
     def __init__(
         self,
@@ -358,23 +390,7 @@ class AsyncBaseLLMClient(ABC):
         messages.append(msg_dict)
 
     def format_tools(self, pydantic_tools: list) -> list:
-        result = []
-        for tool in pydantic_tools:
-            if isinstance(tool, dict) and tool.get("type") == "namespace":
-                source_tools = tool.get("tools", [])
-            else:
-                source_tools = [tool]
-            for source_tool in source_tools:
-                name, desc, params = _extract_tool_info(source_tool)
-                function = {
-                    "name": name,
-                    "description": desc,
-                    "parameters": _inline_schema_refs(params),
-                }
-                if "function" in source_tool:
-                    function["strict"] = True
-                result.append({"type": "function", "function": function})
-        return sorted(result, key=lambda item: item["function"]["name"] or "")
+        return format_openai_tools(pydantic_tools)
 
     async def get_summary(self, conversation_text: str, reason: str) -> str:
         async for event in self.get_summary_stream_events(conversation_text, reason):
@@ -934,10 +950,6 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
 from system.models import get_current_model_config, get_model_manager
 
 
-_cached_async_llm_client = None
-_cached_async_model_key = None
-
-
 def _normalize_base_url(base_url: str) -> str:
     base_url = base_url.rstrip("/")
     if not re.search(r"/v[0-9]+$", base_url):
@@ -977,49 +989,13 @@ def _create_async_chat_client(model_config):
     return AsyncChatAPIClient(client, model_config.model_id, model_config.reasoning_effort)
 
 
-def _create_async_llm_client():
-    """根据当前进程选择的模型配置创建并缓存异步协议 adapter。"""
-    global _cached_async_llm_client, _cached_async_model_key
+def format_tools_for_current_model(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     current_model = get_current_model_config()
     if current_model is None:
-        _cached_async_llm_client = None
-        _cached_async_model_key = None
-        return None
-    if current_model.runtime_key != _cached_async_model_key:
-        _cached_async_llm_client = _create_async_chat_client(current_model)
-        _cached_async_model_key = current_model.runtime_key
-    return _cached_async_llm_client
-
-
-async def refresh_async_llm_client():
-    """模型运行配置变化后关闭旧 adapter；尚未创建客户端时保持惰性。"""
-    global _cached_async_llm_client, _cached_async_model_key
-    if _cached_async_llm_client is None:
-        _cached_async_model_key = None
-        return None
-
-    current_model = get_current_model_config()
-    current_key = current_model.runtime_key if current_model is not None else None
-    if current_key == _cached_async_model_key:
-        return _cached_async_llm_client
-
-    previous_client = _cached_async_llm_client
-    _cached_async_llm_client = (
-        _create_async_chat_client(current_model) if current_model is not None else None
-    )
-    _cached_async_model_key = current_key
-    await close_async_llm_client(previous_client)
-    return _cached_async_llm_client
-
-
-async def close_cached_async_llm_client() -> None:
-    """关闭当前提交事件循环使用的缓存 adapter，避免跨 asyncio.run 复用连接池。"""
-    global _cached_async_llm_client, _cached_async_model_key
-    client = _cached_async_llm_client
-    _cached_async_llm_client = None
-    _cached_async_model_key = None
-    if client is not None:
-        await close_async_llm_client(client)
+        raise RuntimeError("No model configured. Please use /models to configure a model first.")
+    if current_model.message_format == "anthropic":
+        return format_anthropic_tools(tools)
+    return format_openai_tools(tools)
 
 
 async def close_async_llm_client(client) -> None:
@@ -1050,19 +1026,3 @@ def create_memory_recall_llm_client():
             return None
         return _create_async_chat_client(current_model)
     return _create_async_chat_client(recall_model)
-
-
-class DynamicAsyncLLMClientProxy:
-    """动态异步 LLM 客户端代理：使用当前进程内模型选择。"""
-
-    def _get_client(self):
-        client = _create_async_llm_client()
-        if client is None:
-            raise RuntimeError("No model configured. Please use /models to configure a model first.")
-        return client
-
-    def __getattr__(self, item):
-        return getattr(self._get_client(), item)
-
-
-async_llm_client = DynamicAsyncLLMClientProxy()

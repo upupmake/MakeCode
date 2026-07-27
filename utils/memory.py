@@ -22,8 +22,8 @@ from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion, post_tui
 from utils.common import sanitize_title
 from utils.llm_client import (
-    async_llm_client,
     close_async_llm_client,
+    create_current_async_llm_client,
     create_memory_recall_llm_client,
     strip_native_message_payloads,
 )
@@ -598,8 +598,8 @@ async def select_relevant_memory_ids(
 
     messages = _get_memory_recall_messages(query, candidates, previous_assistant_content)
     recall_client = create_memory_recall_llm_client()
-    owns_recall_client = recall_client is not None
-    recall_client = recall_client or async_llm_client
+    if recall_client is None:
+        raise RuntimeError("No model configured. Please use /models to configure a model first.")
     try:
         tools = recall_client.format_tools(MEMORY_RECALL_SELECTION_TOOLS)
         for round_index in range(max_iterations):
@@ -637,8 +637,7 @@ async def select_relevant_memory_ids(
                 })
         return []
     finally:
-        if owns_recall_client:
-            await close_async_llm_client(recall_client)
+        await close_async_llm_client(recall_client)
 
 
 async def recall_long_term_memories(
@@ -708,12 +707,15 @@ async def memory_agent_loop(
         mode: str = "compact",
         max_iterations: int = MEMORY_AGENT_MAX_ITERATIONS,
 ) -> list[dict]:
+    llm_client = create_current_async_llm_client()
+    if llm_client is None:
+        raise RuntimeError("No model configured. Please use /models to configure a model first.")
     post_tui(TuiRegion.BACKGROUND, active=True)
     saved_outputs = []
     try:
         post_tui(TuiRegion.BACKGROUND, "\n[bold yellow]🧠 正在管理长期记忆...[/bold yellow]")
         post_tui(TuiRegion.BACKGROUND, "[bold yellow]📓 记忆[/bold yellow]")
-        messages = async_llm_client.get_memory_decision_messages(
+        messages = llm_client.get_memory_decision_messages(
             conversation_text,
             summary,
             reason,
@@ -724,9 +726,9 @@ async def memory_agent_loop(
         for round_index in range(max_iterations):
             try:
                 text_content, memory_tool_calls, raw_message = await StreamRenderer().render_text_stream_async(
-                    async_llm_client.generate_stream(
+                    llm_client.generate_stream(
                         messages,
-                        async_llm_client.format_tools(tools),
+                        llm_client.format_tools(tools),
                     ),
                     region=TuiRegion.BACKGROUND,
                     render_live=False,
@@ -786,7 +788,7 @@ async def memory_agent_loop(
                     _render_tool_output(tool_name, output, identity=MEMORY_AGENT_IDENTITY)
                 saved_outputs.append({"tool": tool_name, "output": output})
                 if tool_id:
-                    tool_result = async_llm_client.format_tool_result(tool_id, tool_name, output)
+                    tool_result = llm_client.format_tool_result(tool_id, tool_name, output)
                     if tool_error:
                         tool_result["is_error"] = True
                     messages.append(tool_result)
@@ -819,6 +821,7 @@ async def memory_agent_loop(
         return saved_outputs
     finally:
         post_tui(TuiRegion.BACKGROUND, active=False)
+        await close_async_llm_client(llm_client)
 
 
 async def manual_memory_update(prompt: str, history: list = None) -> list[dict]:
@@ -1079,24 +1082,30 @@ async def auto_compact(
     _compact_console.rule("[bold cyan]📝 摘要", style="cyan")
 
     chunks: list[str] = []
+    summary_client = create_current_async_llm_client()
+    if summary_client is None:
+        raise RuntimeError("No model configured. Please use /models to configure a model first.")
     try:
-        renderer = StreamRenderer(console=_compact_console, update_interval=0.1)
-        summary, _, _ = await renderer.render_text_stream_async(
-            async_llm_client.get_summary_stream_events(conversation_text, reason),
-            set_active=True,
-        )
-        if summary:
-            chunks.append(summary)
+        try:
+            renderer = StreamRenderer(console=_compact_console, update_interval=0.1)
+            summary, _, _ = await renderer.render_text_stream_async(
+                summary_client.get_summary_stream_events(conversation_text, reason),
+                set_active=True,
+            )
+            if summary:
+                chunks.append(summary)
 
-    except Exception as e:
-        # 打印红色的错误提示，比原生的 print 更友好
-        _compact_console.print(f"\n[bold red]流式摘要错误：{e}[/bold red]")
+        except Exception as e:
+            # 打印红色的错误提示，比原生的 print 更友好
+            _compact_console.print(f"\n[bold red]流式摘要错误：{e}[/bold red]")
 
-        # 流式失败时回退到普通调用
-        fallback = await async_llm_client.get_summary(conversation_text, reason)
-        # 回退时也同样使用 Markdown 渲染
-        _compact_console.print(Markdown(fallback))
-        chunks = [fallback]
+            # 流式失败时回退到普通调用
+            fallback = await summary_client.get_summary(conversation_text, reason)
+            # 回退时也同样使用 Markdown 渲染
+            _compact_console.print(Markdown(fallback))
+            chunks = [fallback]
+    finally:
+        await close_async_llm_client(summary_client)
 
     _compact_console.print("[#aaaaaa]摘要生成流程已结束。[/#aaaaaa]")
     summary = "".join(chunks)

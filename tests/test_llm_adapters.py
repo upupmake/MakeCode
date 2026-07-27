@@ -1,14 +1,17 @@
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
+from anthropic import AsyncAnthropic
 
 from system.models import ModelConfig
 from utils.llm_client import (
     AnthropicMessagesClient,
     AsyncBaseLLMClient,
+    _TrackedAsyncAnthropic,
     _client_request_active,
     _create_async_chat_client,
     build_anthropic_request_messages,
@@ -56,6 +59,62 @@ class FakeAnthropicStreamManager:
 class FakeAnthropicClient:
     def __init__(self, manager):
         self.messages = SimpleNamespace(stream=Mock(return_value=manager))
+
+
+def _anthropic_sse_response(request, text="ok"):
+    message = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [],
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 1, "output_tokens": 0},
+    }
+    events = [
+        ("message_start", {"type": "message_start", "message": message}),
+        ("content_block_start", {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        }),
+        ("content_block_delta", {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text},
+        }),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_delta", {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 1},
+        }),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    body = "".join(
+        f"event: {event_name}\ndata: {json.dumps(data)}\n\n"
+        for event_name, data in events
+    )
+    return httpx.Response(
+        200,
+        request=request,
+        headers={"content-type": "text/event-stream"},
+        content=body.encode(),
+    )
+
+
+class _FailingAnthropicByteStream(httpx.AsyncByteStream):
+    def __init__(self, packets):
+        self.packets = packets
+
+    async def __aiter__(self):
+        for packet in self.packets:
+            yield packet
+        raise httpx.ReadError("stream disconnected")
+
+    async def aclose(self):
+        pass
 
 
 def test_anthropic_message_conversion_extracts_system_and_groups_parallel_tool_results():
@@ -438,6 +497,87 @@ async def test_anthropic_client_factory_strips_v1_suffix_from_gateway_base_url()
         assert str(client.client.base_url) == "https://gateway.example"
     finally:
         await client.client.close()
+
+
+@pytest.mark.anyio
+async def test_anthropic_stream_retries_connection_failure_before_response_starts():
+    attempts = 0
+
+    async def handler(request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("temporary connect failure", request=request)
+        return _anthropic_sse_response(request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    raw_client = _TrackedAsyncAnthropic(
+        base_url="https://gateway.example",
+        api_key="key",
+        http_client=http_client,
+        max_retries=1,
+    )
+    client = AnthropicMessagesClient(raw_client, "claude-test")
+    try:
+        with patch.object(AsyncAnthropic, "_sleep_for_retry", new=AsyncMock()):
+            events = [
+                event
+                async for event in client.generate_stream([{"role": "user", "content": "hello"}])
+            ]
+    finally:
+        await raw_client.close()
+
+    assert attempts == 2
+    assert [event["type"] for event in events] == ["text", "done"]
+    assert events[-1]["result"].text == "ok"
+
+
+@pytest.mark.anyio
+async def test_anthropic_stream_does_not_replay_after_partial_output():
+    attempts = 0
+
+    async def handler(request):
+        nonlocal attempts
+        attempts += 1
+        message_start = (
+            'event: message_start\ndata: {"type":"message_start","message":'
+            '{"id":"msg_1","type":"message","role":"assistant","model":"claude-test",'
+            '"content":[],"stop_reason":null,"stop_sequence":null,'
+            '"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
+        ).encode()
+        content_start = (
+            'event: content_block_start\ndata: {"type":"content_block_start","index":0,'
+            '"content_block":{"type":"text","text":""}}\n\n'
+        ).encode()
+        text_delta = (
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":"partial"}}\n\n'
+        ).encode()
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            stream=_FailingAnthropicByteStream([message_start, content_start, text_delta]),
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    raw_client = _TrackedAsyncAnthropic(
+        base_url="https://gateway.example",
+        api_key="key",
+        http_client=http_client,
+        max_retries=2,
+    )
+    client = AnthropicMessagesClient(raw_client, "claude-test")
+    emitted = []
+    try:
+        with pytest.raises(httpx.ReadError, match="stream disconnected"):
+            async for event in client.generate_stream([{"role": "user", "content": "hello"}]):
+                emitted.append(event)
+    finally:
+        await raw_client.close()
+
+    assert attempts == 1
+    assert emitted == [{"type": "text", "content": "partial"}]
 
 
 @pytest.mark.anyio

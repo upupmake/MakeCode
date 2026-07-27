@@ -61,11 +61,9 @@ from utils.common import (
 )
 from utils.file_access import AgentFileAccess
 from utils.llm_client import (
-    async_llm_client,
     close_async_llm_client,
-    close_cached_async_llm_client,
     create_current_async_llm_client,
-    refresh_async_llm_client,
+    format_tools_for_current_model,
 )
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
@@ -125,9 +123,9 @@ def get_dynamic_system_prompt() -> str:
     )
 
 
-def get_current_tools_definition(mcp_tools: list | None = None):
+def get_current_tools_definition(mcp_tools: list | None = None, llm_client=None):
     """获取当前可用的工具定义（包含动态加载的 MCP 工具）"""
-    all_tools = _get_all_tools_definition(mcp_tools)
+    all_tools = _get_all_tools_definition(mcp_tools, llm_client=llm_client)
     if is_plan_mode():
         # Plan Mode: 黑名单过滤，禁止写入/执行/委托工具
         filtered = [
@@ -140,19 +138,22 @@ def get_current_tools_definition(mcp_tools: list | None = None):
     return all_tools
 
 
-def _get_all_tools_definition(mcp_tools: list | None = None):
+def _get_all_tools_definition(mcp_tools: list | None = None, llm_client=None):
     """获取全部工具定义（不考虑 Plan Mode 过滤）"""
+    tools = (
+        COMMON_TOOLS
+        + MEMORY_RECALL_TOOLS
+        + MEMORY_SELF_MANAGEMENT_TOOLS
+        + SKILL_TOOLS
+        + TASK_MANAGER_TOOLS
+        + TEAM_TOOLS
+        + ASK_USER_TOOLS
+        + (GLOBAL_MCP_MANAGER.get_tools() if mcp_tools is None else mcp_tools)
+    )
     try:
-        return async_llm_client.format_tools(
-            COMMON_TOOLS
-            + MEMORY_RECALL_TOOLS
-            + MEMORY_SELF_MANAGEMENT_TOOLS
-            + SKILL_TOOLS
-            + TASK_MANAGER_TOOLS
-            + TEAM_TOOLS
-            + ASK_USER_TOOLS
-            + (GLOBAL_MCP_MANAGER.get_tools() if mcp_tools is None else mcp_tools)
-        )
+        if llm_client is not None:
+            return llm_client.format_tools(tools)
+        return format_tools_for_current_model(tools)
     except RuntimeError as exc:
         if "No model configured" in str(exc):
             return []
@@ -255,7 +256,7 @@ async def generate_title(user_query: str) -> str | None:
     return None
 
 
-async def _stream_with_render(messages: list, current_tools: list):
+async def _stream_with_render(messages: list, current_tools: list, llm_client):
     """
     流式请求渲染：
     1. reasoning 和正文均交给 StreamRenderer 处理。
@@ -266,7 +267,7 @@ async def _stream_with_render(messages: list, current_tools: list):
     renderer = StreamRenderer(console=console, update_interval=0.1)
     start_cancel_listener()
     try:
-        stream = async_llm_client.generate_stream(messages, current_tools)
+        stream = llm_client.generate_stream(messages, current_tools)
         text_content, tool_calls, raw_message = await renderer.render_async(
             stream,
             agent_name="Orchestrator",
@@ -291,8 +292,24 @@ async def _run_tool_handler(handler, arguments: dict):
     return output
 
 
-async def agent_loop(messages: list) -> bool:
-    """Agent 主循环：与 LLM 交互并执行工具调用"""
+async def agent_loop(messages: list, llm_client=None) -> bool:
+    """Agent 主循环：每次业务请求独占一个 LLM client。"""
+    owns_client = llm_client is None
+    if owns_client:
+        llm_client = create_current_async_llm_client()
+    if llm_client is None:
+        console.print(
+            "[bold yellow]⚠️ 未配置模型。请先使用 /models 命令配置模型。[/bold yellow]"
+        )
+        return False
+    try:
+        return await _agent_loop_with_client(messages, llm_client)
+    finally:
+        if owns_client:
+            await close_async_llm_client(llm_client)
+
+
+async def _agent_loop_with_client(messages: list, llm_client) -> bool:
     global CURRENT_CHECKPOINT
     micro_compact(messages)
     committed_response = False
@@ -314,7 +331,7 @@ async def agent_loop(messages: list) -> bool:
         "RememberLongTermMemory": _remember_long_term_memory, # 单独注册，因为只提供给 Agent 主循环使用，不暴露给技能调用
     }
     try:
-        current_super_tools = get_current_tools_definition(mcp_tools)
+        current_super_tools = get_current_tools_definition(mcp_tools, llm_client=llm_client)
     except RuntimeError as exc:
         if _is_no_model_configured_error(exc):
             console.print(
@@ -338,6 +355,7 @@ async def agent_loop(messages: list) -> bool:
             text_content, tool_calls, raw_message, cancelled = await _stream_with_render(
                 messages,
                 current_super_tools,
+                llm_client,
             )
         except Exception as e:
             if _is_no_model_configured_error(e):
@@ -355,7 +373,7 @@ async def agent_loop(messages: list) -> bool:
             was_cancelled = True
             break
 
-        async_llm_client.append_assistant_message(messages, raw_message)
+        llm_client.append_assistant_message(messages, raw_message)
         committed_response = True
         has_tool_call = len(tool_calls) > 0
         stop_reason = raw_message.get("stop_reason") if isinstance(raw_message, dict) else None
@@ -412,7 +430,7 @@ async def agent_loop(messages: list) -> bool:
             finally:
                 post_tui(TuiRegion.TOOLS, active=False)
 
-            tool_result = async_llm_client.format_tool_result(
+            tool_result = llm_client.format_tool_result(
                 tool_id,
                 tool_name,
                 output,
@@ -569,7 +587,6 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
         render_hint_fn=_render_env_customization_hint,
         render_history_fn=_render_history,
     )
-    await refresh_async_llm_client()
 
     if command_result.action == CommandAction.EXIT:
         return "exit"
@@ -639,10 +656,7 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
 
 def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for_workdir: bool) -> None:
     async def submit_handler(query: str) -> str | None:
-        try:
-            return await _process_user_query(query, history, command_handler)
-        finally:
-            await close_cached_async_llm_client()
+        return await _process_user_query(query, history, command_handler)
 
     def startup_workdir_provider():
         return _current_workdir()

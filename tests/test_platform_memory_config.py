@@ -179,20 +179,18 @@ def test_model_manager_does_not_overwrite_null_top_level_config(tmp_path):
     assert config_file.read_text(encoding="utf-8") == original_content
 
 
-def test_dynamic_async_llm_client_proxy_reuses_client_until_model_changes():
-    first_model = ModelConfig("https://example.com", "key", "first")
-    second_model = ModelConfig("https://example.com", "key", "second")
+def test_create_current_async_llm_client_returns_fresh_clients():
+    model = ModelConfig("https://example.com", "key", "model")
     created_clients = [Mock(), Mock()]
-    proxy = llm_client_module.DynamicAsyncLLMClientProxy()
 
-    llm_client_module._cached_async_llm_client = None
-    llm_client_module._cached_async_model_key = None
-    with patch("utils.llm_client.get_current_model_config", side_effect=[first_model, first_model, second_model]), \
+    with patch("utils.llm_client.get_current_model_config", return_value=model), \
             patch("utils.llm_client._create_async_chat_client", side_effect=created_clients) as create_client:
-        assert proxy.client is created_clients[0].client
-        assert proxy.client is created_clients[0].client
-        assert proxy.client is created_clients[1].client
+        first_client = llm_client_module.create_current_async_llm_client()
+        second_client = llm_client_module.create_current_async_llm_client()
 
+    assert first_client is created_clients[0]
+    assert second_client is created_clients[1]
+    assert first_client is not second_client
     assert create_client.call_count == 2
 
 
@@ -221,18 +219,15 @@ def test_create_memory_recall_llm_client_uses_configured_model_and_falls_back():
 
 
 @pytest.mark.anyio
-async def test_select_relevant_memory_ids_prefers_recall_client_over_global_client():
+async def test_select_relevant_memory_ids_uses_dedicated_recall_client():
     recall_client = FakeRecallClient()
-    global_client = FakeRecallClient()
 
     with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-            patch.object(memory, "create_memory_recall_llm_client", return_value=recall_client), \
-            patch.object(memory, "async_llm_client", global_client):
+            patch.object(memory, "create_memory_recall_llm_client", return_value=recall_client):
         selected = await memory.select_relevant_memory_ids("query")
 
     assert selected == ["mem_a"]
     assert recall_client.generate_calls == 1
-    assert global_client.generate_calls == 0
     memory._MEMORY_RECALL_WINDOWS = {}
 
 
@@ -552,6 +547,7 @@ async def test_tracked_async_openai_reports_actual_retry_number():
     try:
         with patch("system.tui_app.set_client_request_active"), \
                 patch("system.tui_app.set_client_request_retry") as set_retry, \
+                patch("system.tui_app.post_tui") as post_tui, \
                 patch.object(llm_client_module.AsyncOpenAI, "_sleep_for_retry", new=AsyncMock()):
             with llm_client_module._client_request_active():
                 await client._sleep_for_retry(
@@ -568,6 +564,63 @@ async def test_tracked_async_openai_reports_actual_retry_number():
                 )
 
         assert [call.args[1:] for call in set_retry.call_args_list] == [(1, 2), (2, 2)]
+        assert [call.args[1] for call in post_tui.call_args_list] == [
+            "[#aaaaaa]🌐 LLM 请求失败（连接或超时错误），正在重试 1/2。[/#aaaaaa]",
+            "[#aaaaaa]🌐 LLM 请求失败（连接或超时错误），正在重试 2/2。[/#aaaaaa]",
+        ]
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_tracked_anthropic_retries_transient_gateway_not_found_response():
+    attempts = 0
+
+    async def handler(request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(
+                404,
+                request=request,
+                json={"type": "error", "error": {"type": "not_found_error", "message": "temporary route miss"}},
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-test",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = llm_client_module._TrackedAsyncAnthropic(
+        base_url="https://gateway.example",
+        api_key="key",
+        http_client=http_client,
+        max_retries=1,
+    )
+    try:
+        with patch("system.tui_app.set_client_request_active"), \
+                patch("system.tui_app.set_client_request_retry") as set_retry, \
+                patch.object(llm_client_module.AsyncAnthropic, "_sleep_for_retry", new=AsyncMock()):
+            with llm_client_module._client_request_active():
+                response = await client.messages.create(
+                    model="claude-test",
+                    max_tokens=1,
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        assert response.content[0].text == "ok"
+        assert attempts == 2
+        assert [call.args[1:] for call in set_retry.call_args_list] == [(1, 1)]
     finally:
         await client.close()
 
@@ -943,7 +996,8 @@ async def test_auto_compact_transcript_and_summary_ignore_private_native_payload
     fake_client.get_summary_stream_events.return_value = object()
 
     with patch.object(memory, "TRANSCRIPT_DIR", tmp_path), \
-            patch.object(memory, "async_llm_client", fake_client), \
+            patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+            patch.object(memory, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
             patch.object(memory, "_compact_console"), \
             patch.object(
                 memory.StreamRenderer,
@@ -962,6 +1016,7 @@ async def test_auto_compact_transcript_and_summary_ignore_private_native_payload
     conversation_text = memory_loop.await_args.kwargs["conversation_text"]
     assert "private-signature" not in conversation_text
     assert "native_blocks" not in conversation_text
+    close_client.assert_awaited_once_with(fake_client)
 
 
 @pytest.mark.anyio
@@ -1352,11 +1407,10 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_checkpoint()
                 "_stream_with_render",
                 AsyncMock(return_value=("partial", [tool_call], {"role": "assistant"}, True)),
             ), \
-            patch.object(main_module, "async_llm_client", fake_client), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
             patch.object(main_module, "save_checkpoint") as save_checkpoint, \
             patch.object(main_module, "estimate_tokens", return_value=0):
-        committed = await main_module.agent_loop(messages)
+        committed = await main_module.agent_loop(messages, llm_client=fake_client)
         assert main_module.CURRENT_CHECKPOINT is None
 
     assert committed is False
@@ -1367,6 +1421,47 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_checkpoint()
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
     ]
+
+
+@pytest.mark.anyio
+async def test_agent_loop_creates_and_closes_request_local_client():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+
+    class FakeClient:
+        @staticmethod
+        def append_assistant_message(current_messages, raw_message):
+            current_messages.append(raw_message)
+
+    local_client = FakeClient()
+    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
+            patch.object(main_module, "micro_compact"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                AsyncMock(return_value=(
+                    "done",
+                    [],
+                    {"role": "assistant", "content": "done", "stop_reason": "end_turn"},
+                    False,
+                )),
+            ), \
+            patch.object(main_module, "create_current_async_llm_client", return_value=local_client) as create_client, \
+            patch.object(main_module, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "_apply_pending_title"):
+        committed = await main_module.agent_loop(messages)
+
+    assert committed is True
+    create_client.assert_called_once_with()
+    close_client.assert_awaited_once_with(local_client)
 
 
 @pytest.mark.anyio
@@ -1411,7 +1506,6 @@ async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check(
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", AsyncMock(side_effect=responses)), \
-            patch.object(main_module, "async_llm_client", FakeClient()), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
             patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
             patch.object(main_module, "estimate_tokens") as estimate_tokens, \
@@ -1421,7 +1515,7 @@ async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check(
             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "post_tui"), \
             patch.object(main_module, "is_plan_mode", return_value=False):
-        committed = await main_module.agent_loop(messages)
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
 
     assert committed is True
     estimate_tokens.assert_not_called()
@@ -1462,7 +1556,7 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
         ),
     ]
 
-    async def stream_with_render(current_messages, current_tools):
+    async def stream_with_render(current_messages, current_tools, llm_client):
         requests.append(list(current_messages))
         return responses[len(requests) - 1]
 
@@ -1486,7 +1580,6 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
-            patch.object(main_module, "async_llm_client", FakeClient()), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
             patch.object(main_module, "save_checkpoint", return_value="checkpoint") as save_checkpoint, \
             patch.object(main_module, "estimate_tokens", return_value=0), \
@@ -1495,7 +1588,7 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "post_tui"), \
             patch.object(main_module, "is_plan_mode", return_value=False):
-        committed = await main_module.agent_loop(messages)
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
 
     assert committed is True
     assert len(requests) == 3
@@ -1520,43 +1613,67 @@ def test_deleting_current_model_selects_a_valid_process_local_fallback(tmp_path)
 
 
 @pytest.mark.anyio
-async def test_refresh_async_llm_client_closes_stale_cached_client():
-    old_model = ModelConfig("https://example.com", "key", "old")
-    new_model = ModelConfig("https://example.com", "key", "new", message_format="anthropic")
-    old_client = Mock()
-    new_client = Mock()
+async def test_agent_loops_close_only_their_own_request_local_clients():
+    class FakeClient:
+        def __init__(self, name):
+            self.name = name
 
-    llm_client_module._cached_async_llm_client = old_client
-    llm_client_module._cached_async_model_key = old_model.runtime_key
-    with patch.object(llm_client_module, "get_current_model_config", return_value=new_model), \
-            patch.object(llm_client_module, "_create_async_chat_client", return_value=new_client) as create_client, \
-            patch.object(llm_client_module, "close_async_llm_client", new_callable=AsyncMock) as close_client:
-        refreshed = await llm_client_module.refresh_async_llm_client()
+        @staticmethod
+        def append_assistant_message(current_messages, raw_message):
+            current_messages.append(raw_message)
 
-    assert refreshed is new_client
-    create_client.assert_called_once_with(new_model)
-    assert llm_client_module._cached_async_model_key == new_model.runtime_key
-    close_client.assert_awaited_once_with(old_client)
-    llm_client_module._cached_async_llm_client = None
-    llm_client_module._cached_async_model_key = None
+    clients = [FakeClient("first"), FakeClient("second")]
+
+    async def stream_with_render(messages, tools, llm_client):
+        await asyncio.sleep(0)
+        return (
+            llm_client.name,
+            [],
+            {"role": "assistant", "content": llm_client.name, "stop_reason": "end_turn"},
+            False,
+        )
+
+    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
+            patch.object(main_module, "micro_compact"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
+            patch.object(main_module, "create_current_async_llm_client", side_effect=clients), \
+            patch.object(main_module, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "_apply_pending_title"):
+        results = await asyncio.gather(
+            main_module.agent_loop([{"role": "system", "content": "system"}, {"role": "user", "content": "one"}]),
+            main_module.agent_loop([{"role": "system", "content": "system"}, {"role": "user", "content": "two"}]),
+        )
+
+    assert results == [True, True]
+    assert close_client.await_count == 2
+    assert {call.args[0] for call in close_client.await_args_list} == set(clients)
 
 
 @pytest.mark.anyio
-async def test_models_command_refreshes_the_cached_async_client():
+async def test_models_command_does_not_create_or_close_an_llm_client():
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(
         action=CommandAction.CONTINUE,
     ))
     history = [{"role": "system", "content": "system"}]
 
-    with patch.object(main_module, "refresh_async_llm_client", new_callable=AsyncMock) as refresh_client:
+    with patch.object(main_module, "create_current_async_llm_client") as create_client, \
+            patch.object(main_module, "close_async_llm_client", new_callable=AsyncMock) as close_client:
         await main_module._process_user_query("/models", history, command_handler)
 
-    refresh_client.assert_awaited_once_with()
+    create_client.assert_not_called()
+    close_client.assert_not_awaited()
     command_handler.process_command.assert_awaited_once()
 
 
-def test_textual_submit_closes_the_cached_async_client_after_processing():
+
+def test_textual_submit_delegates_client_lifecycle_to_business_operations():
     history = [{"role": "system", "content": "system"}]
     command_handler = Mock()
 
@@ -1568,25 +1685,21 @@ def test_textual_submit_closes_the_cached_async_client_after_processing():
             asyncio.run(self.submit_handler("hello"))
 
     with patch.object(main_module, "MakeCodeTuiApp", FakeTuiApp), \
-            patch.object(main_module, "_process_user_query", new_callable=AsyncMock) as process_query, \
-            patch.object(main_module, "close_cached_async_llm_client", new_callable=AsyncMock) as close_client:
+            patch.object(main_module, "_process_user_query", new_callable=AsyncMock) as process_query:
         main_module._run_textual_main(history, command_handler, prompt_for_workdir=False)
 
     process_query.assert_awaited_once_with("hello", history, command_handler)
-    close_client.assert_awaited_once_with()
 
 
-def test_llm_client_cache_changes_when_reasoning_effort_changes():
+def test_current_client_factory_reflects_reasoning_effort_without_cache():
     medium_model = ModelConfig("https://example.com", "key", "same", reasoning_effort="medium")
     high_model = ModelConfig("https://example.com", "key", "same", reasoning_effort="high")
     created_clients = [Mock(), Mock()]
 
-    llm_client_module._cached_async_llm_client = None
-    llm_client_module._cached_async_model_key = None
     with patch("utils.llm_client.get_current_model_config", side_effect=[medium_model, high_model]), \
             patch("utils.llm_client._create_async_chat_client", side_effect=created_clients) as create_client:
-        assert llm_client_module._create_async_llm_client() is created_clients[0]
-        assert llm_client_module._create_async_llm_client() is created_clients[1]
+        assert llm_client_module.create_current_async_llm_client() is created_clients[0]
+        assert llm_client_module.create_current_async_llm_client() is created_clients[1]
 
     assert create_client.call_count == 2
 
