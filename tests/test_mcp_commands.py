@@ -444,7 +444,7 @@ def test_quick_command_bypasses_submit_lock_without_releasing_it():
 @pytest.mark.anyio
 async def test_tui_displays_invalid_rich_markup_as_plain_text():
     app = MakeCodeTuiApp()
-    payload = "Expected markup value (found '=True, width=80) for s in samples]`')"
+    payload = "&mt=doc&dt=doc','https://ku.baidu-int.com/knowledge/example[/link]"
 
     async with app.run_test() as pilot:
         await pilot.pause()

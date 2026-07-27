@@ -363,6 +363,19 @@ async def test_choice_modal_options_only_renders_list_no_custom():
 
 
 @pytest.mark.anyio
+async def test_choice_modal_renders_dynamic_markup_tokens_as_plain_text():
+    payload = "&mt=doc&dt=doc','https://ku.baidu-int.com/knowledge/example[/link]"
+    modal = ChoiceModal(payload, [payload], allow_custom=False)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert str(modal.query_one("#choice-title", Label).render()) == payload
+        option_label = modal.query_one("#choice-list").children[0].query_one(Label)
+        assert str(option_label.render()) == payload
+
+
+@pytest.mark.anyio
 async def test_choice_modal_with_custom_input_renders_hint_and_input():
     """ChoiceModal 有选项且 allow_custom=True 时，渲染提示标签和输入框。"""
     modal = ChoiceModal("测试标题", ["选项A"], allow_custom=True)

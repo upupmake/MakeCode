@@ -386,9 +386,9 @@ class ChoiceModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield Label(self._title_text(), id="choice-title")
+            yield Label(self._title_text(), id="choice-title", markup=False)
             if self._options:
-                yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
+                yield ListView(*[ListItem(Label(option, markup=False)) for option in self._options], id="choice-list")
             if self._allow_custom:
                 yield Label("自定义输入（Enter 提交，q 取消）", id="custom-hint")
                 yield Input(placeholder="输入自定义选项", id="custom-input")
@@ -510,7 +510,7 @@ class ChoiceModal(ModalScreen[str]):
         choice_list.clear()
 
         def _mount_rows() -> None:
-            choice_list.extend(ListItem(Label(option)) for option in self._options)
+            choice_list.extend(ListItem(Label(option, markup=False)) for option in self._options)
             choice_list.index = min(index, len(self._options) - 1)
             choice_list.focus()
             self.query_one("#choice-title", Label).update(self._title_text())
