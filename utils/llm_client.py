@@ -1,4 +1,6 @@
 import copy
+import hashlib
+import hmac
 import inspect
 import itertools
 import json
@@ -357,7 +359,6 @@ class AsyncBaseLLMClient(ABC):
         self,
         messages: list,
         tools: list = None,
-        tool_choice: str | None = None,
     ):
         """Yields stream events and ends with a done event containing LLMResult."""
         raise NotImplementedError
@@ -551,26 +552,82 @@ def sanitize_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
     return sanitized
 
 
+def build_openai_prompt_cache_key(
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    reasoning_effort: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> str:
+    leading_system_messages = []
+    for message in messages:
+        if message.get("role") != "system":
+            break
+        leading_system_messages.append(message)
+
+    identity = {
+        "version": 2,
+        "base_url": base_url,
+        "message_format": "openai_chat",
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "system_messages": leading_system_messages,
+        "tools": tools or [],
+    }
+    canonical = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hmac.new(
+        api_key.encode("utf-8"),
+        b"makecode-prompt-cache-v2\0" + canonical,
+        hashlib.sha256,
+    ).hexdigest()[:48]
+    return f"mc-pc2-{digest}"
+
+
 class AsyncChatAPIClient(AsyncBaseLLMClient):
+    def __init__(
+        self,
+        client: Any,
+        model: str,
+        reasoning_effort: str = "medium",
+        *,
+        base_url: str = "",
+        api_key: str = "",
+    ):
+        super().__init__(client, model, reasoning_effort)
+        self.base_url = base_url
+        self.api_key = api_key
+
     async def generate_stream(
         self,
         messages: list,
         tools: list = None,
-        tool_choice: str | None = None,
     ):
+        request_messages = sanitize_openai_messages(messages)
         kwargs = {
             "model": self.model,
-            "messages": sanitize_openai_messages(messages),
+            "messages": request_messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "reasoning_effort": self.reasoning_effort,
+            "prompt_cache_key": build_openai_prompt_cache_key(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
+                messages=request_messages,
+                tools=tools,
+            ),
+            "prompt_cache_retention": "24h",
         }
         if tools:
             kwargs["tools"] = tools
-        if tool_choice:
-            kwargs["tool_choice"] = {
-                "type": "function",
-                "function": {"name": tool_choice},
-            }
 
         stream = _tracked_async_stream(
             lambda: self.client.chat.completions.create(**kwargs)
@@ -856,7 +913,6 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
         self,
         messages: list,
         tools: list = None,
-        tool_choice: str | None = None,
     ):
         system, request_messages = build_anthropic_request_messages(messages, self.model)
         kwargs = {
@@ -875,8 +931,6 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
             }]
         if tools:
             kwargs["tools"] = tools
-        if tool_choice:
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
 
         with _client_request_active():
             async with self.client.messages.stream(**kwargs) as stream:
@@ -979,14 +1033,21 @@ def _create_async_chat_client(model_config):
             model_config.reasoning_effort,
         )
 
+    normalized_base_url = _normalize_base_url(model_config.base_url)
     client = _TrackedAsyncOpenAI(
-        base_url=_normalize_base_url(model_config.base_url),
+        base_url=normalized_base_url,
         api_key=model_config.api_key,
         timeout=_LLM_TIMEOUT,
         max_retries=_LLM_MAX_RETRIES,
         default_headers={"User-Agent": "MakeCode Agent"},
     )
-    return AsyncChatAPIClient(client, model_config.model_id, model_config.reasoning_effort)
+    return AsyncChatAPIClient(
+        client,
+        model_config.model_id,
+        model_config.reasoning_effort,
+        base_url=normalized_base_url,
+        api_key=model_config.api_key,
+    )
 
 
 def format_tools_for_current_model(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

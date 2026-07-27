@@ -1055,7 +1055,11 @@ async def test_async_chat_client_uses_configured_reasoning_effort():
     with patch("system.tui_app.set_client_request_active") as set_request_active:
         [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
 
-    assert raw_client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "max"
+    request_kwargs = raw_client.chat.completions.create.call_args.kwargs
+    assert request_kwargs["reasoning_effort"] == "max"
+    assert request_kwargs["stream_options"] == {"include_usage": True}
+    assert request_kwargs["prompt_cache_retention"] == "24h"
+    assert request_kwargs["prompt_cache_key"].startswith("mc-pc2-")
     assert [call.args[0] for call in set_request_active.call_args_list] == [True, False]
 
 
@@ -1159,7 +1163,7 @@ async def test_async_chat_stream_builds_unified_result_and_usage():
             "description": "Read",
             "parameters": {"type": "object", "properties": {}},
         },
-    }], tool_choice="Read")]
+    }])]
 
     assert [event["type"] for event in events] == ["text", "reasoning", "tool_calls", "done"]
     result = events[-1]["result"]
@@ -1186,9 +1190,15 @@ async def test_async_chat_stream_builds_unified_result_and_usage():
         "role": "user",
         "content": "hello",
     }]
-    assert raw_client.chat.completions.create.call_args.kwargs["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "Read"},
+    assert set(raw_client.chat.completions.create.call_args.kwargs) == {
+        "model",
+        "messages",
+        "stream",
+        "stream_options",
+        "reasoning_effort",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "tools",
     }
     assert raw_stream.closed is True
 
@@ -1311,8 +1321,8 @@ async def test_generate_title_uses_stream_result_and_closes_independent_async_cl
         def format_tools(self, tools):
             return tools
 
-        async def generate_stream(self, messages, tools, tool_choice):
-            self.requests.append((list(messages), tools, tool_choice))
+        async def generate_stream(self, messages, tools):
+            self.requests.append((list(messages), tools))
             yield {
                 "type": "done",
                 "result": SimpleNamespace(
@@ -1334,11 +1344,11 @@ async def test_generate_title_uses_stream_result_and_closes_independent_async_cl
 
     assert title == "title"
     close_client.assert_awaited_once_with(title_client)
-    assert title_client.requests[0][2] == "GenerateConversationTitle"
+    assert len(title_client.requests) == 1
 
 
 @pytest.mark.anyio
-async def test_generate_title_resumes_pause_turn_before_returning_one_title():
+async def test_generate_title_retries_with_bounded_rounds_until_tool_call():
     class FakeTitleClient:
         def __init__(self):
             self.calls = 0
@@ -1347,18 +1357,18 @@ async def test_generate_title_resumes_pause_turn_before_returning_one_title():
         def format_tools(self, tools):
             return tools
 
-        async def generate_stream(self, messages, tools, tool_choice):
+        async def generate_stream(self, messages, tools):
             self.requests.append(list(messages))
             self.calls += 1
             if self.calls == 1:
                 result = SimpleNamespace(
-                    text="partial ",
+                    text="plain text is not a title",
                     tool_calls=[],
-                    stop_reason="pause_turn",
+                    stop_reason="end_turn",
                     assistant_message={
                         "role": "assistant",
-                        "content": "partial ",
-                        "stop_reason": "pause_turn",
+                        "content": "plain text is not a title",
+                        "stop_reason": "end_turn",
                     },
                 )
             else:
@@ -1381,7 +1391,39 @@ async def test_generate_title_resumes_pause_turn_before_returning_one_title():
 
     assert title == "title"
     assert title_client.calls == 2
-    assert title_client.requests[1][-1]["stop_reason"] == "pause_turn"
+    assert title_client.requests[1][-2]["content"] == "plain text is not a title"
+    assert "current_round=1 / max_round=8" in title_client.requests[1][-1]["content"]
+
+
+@pytest.mark.anyio
+async def test_generate_title_exits_at_max_rounds_without_tool_call():
+    class FakeTitleClient:
+        def __init__(self):
+            self.calls = 0
+
+        def format_tools(self, tools):
+            return tools
+
+        async def generate_stream(self, messages, tools):
+            self.calls += 1
+            yield {
+                "type": "done",
+                "result": SimpleNamespace(
+                    text="plain text",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    assistant_message={"role": "assistant", "content": "plain text"},
+                ),
+            }
+
+    title_client = FakeTitleClient()
+
+    with patch.object(main_module, "create_current_async_llm_client", return_value=title_client), \
+            patch.object(main_module, "close_async_llm_client", new_callable=AsyncMock):
+        title = await main_module.generate_title("hello", max_rounds=3)
+
+    assert title is None
+    assert title_client.calls == 3
 
 
 @pytest.mark.anyio

@@ -11,10 +11,12 @@ from system.models import ModelConfig
 from utils.llm_client import (
     AnthropicMessagesClient,
     AsyncBaseLLMClient,
+    AsyncChatAPIClient,
     _TrackedAsyncAnthropic,
     _client_request_active,
     _create_async_chat_client,
     build_anthropic_request_messages,
+    build_openai_prompt_cache_key,
     format_anthropic_tools,
 )
 
@@ -303,7 +305,6 @@ async def test_anthropic_stream_builds_lossless_unified_result(stop_reason):
     generated = [event async for event in client.generate_stream(
         [{"role": "system", "content": "system"}, {"role": "user", "content": "hello"}],
         tools,
-        tool_choice="Read",
     )]
 
     assert [event["type"] for event in generated] == ["reasoning", "text", "tool_calls", "done"]
@@ -341,7 +342,6 @@ async def test_anthropic_stream_builds_lossless_unified_result(stop_reason):
             "cache_control": {"type": "ephemeral"},
         }],
         "tools": tools,
-        "tool_choice": {"type": "tool", "name": "Read"},
     }
     assert stream.final_message_requested is True
     assert manager.exited is True
@@ -365,6 +365,79 @@ def test_anthropic_and_openai_tool_conversion_is_deterministic_by_name():
 
     assert [tool["function"]["name"] for tool in openai_tools] == ["Alpha", "Middle", "Zulu"]
     assert [tool["name"] for tool in anthropic_tools] == ["Alpha", "Middle", "Zulu"]
+
+
+def test_openai_prompt_cache_key_is_stable_for_growing_history_and_dict_order():
+    messages = [
+        {"role": "system", "content": "stable system"},
+        {"role": "user", "content": "first question"},
+    ]
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "Read",
+            "description": "Read",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Path"}},
+            },
+        },
+    }]
+    common = {
+        "api_key": "user-secret-key",
+        "base_url": "https://gateway.example/v1",
+        "model": "test-model",
+        "reasoning_effort": "high",
+    }
+
+    first = build_openai_prompt_cache_key(messages=messages, tools=tools, **common)
+    continued = build_openai_prompt_cache_key(
+        messages=messages + [
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "follow up"},
+        ],
+        tools=[{
+            "function": {
+                "parameters": {
+                    "properties": {"path": {"description": "Path", "type": "string"}},
+                    "type": "object",
+                },
+                "description": "Read",
+                "name": "Read",
+            },
+            "type": "function",
+        }],
+        **common,
+    )
+
+    assert first == continued
+    assert first.startswith("mc-pc2-")
+    assert "user-secret-key" not in first
+    assert "gateway.example" not in first
+
+
+def test_openai_prompt_cache_key_separates_request_identity():
+    common = {
+        "api_key": "key-a",
+        "base_url": "https://gateway.example/v1",
+        "model": "model-a",
+        "reasoning_effort": "high",
+        "messages": [{"role": "system", "content": "system-a"}],
+        "tools": [{"type": "function", "function": {"name": "Read"}}],
+    }
+    variants = [
+        common,
+        {**common, "api_key": "key-b"},
+        {**common, "base_url": "https://other.example/v1"},
+        {**common, "model": "model-b"},
+        {**common, "reasoning_effort": "max"},
+        {**common, "messages": [{"role": "system", "content": "system-b"}]},
+        {**common, "tools": [{"type": "function", "function": {"name": "Search"}}]},
+    ]
+
+    keys = {build_openai_prompt_cache_key(**variant) for variant in variants}
+
+    assert len(keys) == len(variants)
 
 
 def _create_test_openai_client():
@@ -479,6 +552,26 @@ async def test_async_client_factory_selects_official_anthropic_sdk_from_message_
         assert client.reasoning_effort == "max"
         assert client.client.__class__.__mro__[1].__name__ == "AsyncAnthropic"
         assert str(client.client.base_url) == "https://api.anthropic.com"
+    finally:
+        await client.client.close()
+
+
+@pytest.mark.anyio
+async def test_async_client_factory_passes_openai_cache_identity_to_adapter():
+    model = ModelConfig(
+        "https://gateway.example/",
+        "user-api-key",
+        "openai-test",
+        reasoning_effort="high",
+        message_format="openai_chat",
+    )
+
+    client = _create_async_chat_client(model)
+    try:
+        assert isinstance(client, AsyncChatAPIClient)
+        assert client.base_url == "https://gateway.example/v1"
+        assert client.api_key == "user-api-key"
+        assert str(client.client.base_url) == "https://gateway.example/v1/"
     finally:
         await client.client.close()
 

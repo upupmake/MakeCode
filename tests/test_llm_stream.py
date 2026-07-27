@@ -36,7 +36,12 @@ def _make_async_client() -> AsyncChatAPIClient:
         max_retries=3,
         default_headers={"User-Agent": "MakeCode Agent"},
     )
-    return AsyncChatAPIClient(raw, MODEL_ID)
+    return AsyncChatAPIClient(
+        raw,
+        MODEL_ID,
+        base_url=BASE_URL,
+        api_key=API_KEY,
+    )
 
 
 MESSAGES = [

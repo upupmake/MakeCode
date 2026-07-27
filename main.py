@@ -210,7 +210,7 @@ def _parse_arguments(arguments: Any) -> dict:
     return {"_error": f"Unexpected arguments type: {type(arguments).__name__}"}
 
 
-async def generate_title(user_query: str) -> str | None:
+async def generate_title(user_query: str, max_rounds: int = 8) -> str | None:
     """Generate a short title for the conversation based on the first user query."""
     title_client = None
     try:
@@ -222,14 +222,9 @@ async def generate_title(user_query: str) -> str | None:
             {"role": "user", "content": user_query},
         ]
         tools = title_client.format_tools(TITLE_GENERATION_TOOLS)
-        title_parts = []
-        for _ in range(8):
+        for round_index in range(max_rounds):
             result = None
-            async for event in title_client.generate_stream(
-                messages,
-                tools,
-                tool_choice="GenerateConversationTitle",
-            ):
+            async for event in title_client.generate_stream(messages, tools):
                 if event.get("type") == "done":
                     result = event["result"]
             if result is None:
@@ -240,14 +235,22 @@ async def generate_title(user_query: str) -> str | None:
                     continue
                 arguments = _parse_arguments(tool_call.get("arguments"))
                 title = arguments.get("title")
-                if isinstance(title, str):
-                    return sanitize_title(title)
+                return sanitize_title(title) if isinstance(title, str) else None
 
-            if result.text:
-                title_parts.append(result.text)
-            if getattr(result, "stop_reason", None) != "pause_turn":
-                return sanitize_title("".join(title_parts).strip())
+            current_round = round_index + 1
+            remaining_rounds = max_rounds - current_round
+            if remaining_rounds <= 0:
+                break
             messages.append(result.assistant_message)
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"[auto generated] current_round={current_round} / max_round={max_rounds}. "
+                    f"Remaining rounds: {remaining_rounds}.\n\n"
+                    "Call GenerateConversationTitle exactly once now. The title generation loop exits "
+                    "automatically at the max round. Do not return the title as plain text."
+                ),
+            })
     except Exception as exc:
         log_error_traceback("Failed to generate title", exc)
     finally:

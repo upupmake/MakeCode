@@ -108,7 +108,12 @@ async def main() -> int:
         max_retries=1,
         default_headers={"User-Agent": "MakeCode Agent Stream Tuple Test"},
     )
-    client = AsyncChatAPIClient(raw_client, model)
+    client = AsyncChatAPIClient(
+        raw_client,
+        model,
+        base_url=base_url,
+        api_key=api_key,
+    )
 
     try:
         plain_done = await _collect_done(
