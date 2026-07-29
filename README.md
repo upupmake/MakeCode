@@ -453,14 +453,14 @@ MakeCode 内置了完整的自动更新系统，支持版本检查、完整目�
 - **版本检查**（`system/updater.py`）：从远程服务器获取 `version.json`，与本地 `CURRENT_VERSION` 比较，并从 `platforms` 选择当前平台资产
 - **下载与校验**：支持带进度回调的分块下载（8KB/块），下载完成后校验文件大小和 SHA256
 - **独立更新器**（`updater.py`，Windows/Linux）：主程序将完整 onedir ZIP 下载到临时目录后，释放当前平台 updater 并退出；Windows 保留安装根目录并事务替换程序条目，Linux 事务切换完整目录
-- **安全与回滚**：拒绝路径穿越；Linux 只恢复包内安全的相对符号链接；新版通过 ready-file 确认启动，失败时恢复旧版本
+- **安全与回滚**：拒绝路径穿越；Linux 只恢复包内安全的相对符号链接；文件替换失败时恢复旧版本
 - **进度显示**：下载过程中实时显示可视化进度条（`█░` 填充动画）、百分比和 MB 数
 - **启动时后台检查**：程序启动时自动在后台检查更新，若有新版本会在终端提示用户
 
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "5.3.1"
+CURRENT_VERSION = "5.3.2"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -473,14 +473,14 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 3. 若有新版本，展示版本号与更新说明，等待用户确认
 4. 下载当前平台完整 onedir ZIP，并校验文件大小与 SHA256
 5. 释放当前平台 updater，主程序退出
-6. updater 事务替换应用、自动启动新版并等待 ready-file；失败时回滚旧版本
+6. updater 事务替换应用；失败时回滚旧版本，成功时提示用户手动重新启动 MakeCode
 
 Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 等受保护目录时需手动更新或调整安装位置。
 
 #### 相关组件
 
 - `system/updater.py`：核心更新逻辑（平台资产选择、版本检查、下载、校验、启动更新器）
-- `updater.py`：Windows/Linux 独立更新器，负责事务替换、启动确认与失败回滚
+- `updater.py`：Windows/Linux 独立更新器，负责事务替换、失败回滚与完成提示
 - `version.py`：版本号与更新服务器地址配置
 - `system/commands.py`：`/update` 命令处理与交互确认
 
@@ -689,7 +689,7 @@ flowchart TD
 - `tools/todo.py` 供子智能体在多步骤任务中维护内部待办。
 - `tools/ask_user.py` 允许智能体在不确定时主动向用户提问，支持选项列表与自定义输入，基于 TUI 交互面板实现。
 - `system/updater.py` 实现 Windows/Linux 应用内自动更新逻辑：平台资产选择、版本检查、带进度下载、大小与 SHA256 校验，并启动独立更新器；macOS 仅提示手动下载。
-- `updater.py` 是 Windows/Linux 独立事务更新器，在主程序退出后替换完整 onedir 应用、验证新版启动并在失败时回滚。
+- `updater.py` 是 Windows/Linux 独立事务更新器，在主程序退出后替换完整 onedir 应用，替换失败时回滚，成功后提示用户手动重新启动。
 - `version.py` 管理版本号与更新服务器地址配置。
 
 ---

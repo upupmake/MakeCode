@@ -179,17 +179,17 @@ GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务
 
 ### 4.2 Windows/Linux 更新执行流程
 
-主程序将内置 updater 释放到安装目录之外，随后用 `os._exit(0)` 退出整个进程。updater 负责完整 onedir 更新：
+主程序将内置 updater 释放到安装目录之外。Windows 启动 updater 后用 `os._exit(0)` 退出，updater 等待旧进程释放文件；Linux 用 `exec` 将当前前台进程替换为 updater，无需等待旧 PID，shell 会等待更新结果。updater 负责完整 onedir 更新：
 
 ```
-1. 接收 --install-dir、--archive、--pid
-2. 等待主程序退出（超时 30 秒）
+1. 接收 --install-dir、--archive、--pid（Linux exec 路径传 0）
+2. PID 非 0 时等待主程序退出（超时 30 秒）
 3. 拒绝路径穿越、绝对路径和不安全符号链接
 4. 解压到安装目录同级 staging，验证平台入口与 MakeCode/_internal/
 5. Windows 保留安装根目录与 .makecode，事务移动程序条目；Linux 将旧安装目录切换为 backup 并复制 .makecode
 6. 将 staged onedir 应用切换到正式位置
-7. 启动新版并等待 ready-file 启动确认
-8. 确认成功后删除 backup；失败或超时则恢复旧版本
+7. 替换成功后删除 backup 并提示用户手动重新启动 MakeCode
+8. 替换失败则恢复旧版本
 ```
 
 Linux 更新包可保留 PyInstaller 相对符号链接，但链接目标必须仍位于 `MakeCode/` 内；安装目录必须对当前用户可写。

@@ -184,7 +184,8 @@ def launch_updater(update_archive: Path) -> None:
     updater_path = _extract_updater_resource()
 
     current_exe = Path(sys.executable if getattr(sys, "frozen", False) else sys.argv[0]).resolve()
-    pid = os.getpid()
+    is_linux = sys.platform.startswith("linux")
+    pid = 0 if is_linux else os.getpid()
 
     cmd = [
         str(updater_path),
@@ -194,6 +195,11 @@ def launch_updater(update_archive: Path) -> None:
     ]
 
     logger.info("启动更新程序: %s", cmd)
+    if is_linux:
+        os.chdir(updater_path.parent)
+        os.execv(str(updater_path), cmd)
+        return
+
     subprocess.Popen(cmd, cwd=str(updater_path.parent), close_fds=True)
     os._exit(0)
 
@@ -289,5 +295,5 @@ def check_and_update(silent: bool = True) -> bool:
         print("下载完成，准备应用更新...")
 
     launch_updater(exe_path)
-    # launch_updater 内部会 sys.exit(0)，正常流程不会到达此处
+    # launch_updater 会移交给外置更新器，正常流程不会到达此处
     return True

@@ -7,8 +7,6 @@ import os
 import posixpath
 import shutil
 import stat
-import subprocess
-import sys
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -185,34 +183,15 @@ def _remove_entries(directory: Path, skip_names=()) -> None:
             retry_file_op(entry.unlink)
 
 
-def wait_for_ready(process, ready_file: Path, timeout: float = 30) -> None:
-    """等待新版报告启动成功；提前退出或超时均视为失败。"""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if ready_file.is_file():
-            return
-        if process.poll() is not None:
-            raise RuntimeError(f"新版进程提前退出，退出码 {process.returncode}")
-        time.sleep(0.2)
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
-    raise TimeoutError("新版启动确认超时")
-
-
 def install_update(archive: Path, install_dir: Path) -> None:
     """用同级目录切换安装更新；任何失败都会恢复旧目录。"""
     parent = install_dir.parent
     staging_root = parent / f".{install_dir.name}.staging.{os.getpid()}"
     backup_dir = parent / f".{install_dir.name}.backup.{os.getpid()}"
-    ready_file = parent / f".{install_dir.name}.ready.{os.getpid()}"
     staged_app = None
     old_install_moved = False
 
-    if staging_root.exists() or backup_dir.exists() or ready_file.exists():
+    if staging_root.exists() or backup_dir.exists():
         raise FileExistsError("更新暂存目录已存在")
 
     try:
@@ -235,16 +214,6 @@ def install_update(archive: Path, install_dir: Path) -> None:
             if user_data.exists():
                 retry_file_op(lambda: shutil.copytree(user_data, staged_app / ".makecode"))
             retry_file_op(lambda: os.replace(staged_app, install_dir))
-
-        env = os.environ.copy()
-        env["MAKECODE_UPDATE_READY_FILE"] = str(ready_file)
-        process = subprocess.Popen(
-            [str(_app_executable(install_dir))],
-            cwd=str(install_dir),
-            close_fds=True,
-            env=env,
-        )
-        wait_for_ready(process, ready_file)
     except Exception:
         if old_install_moved:
             if IS_WINDOWS:
@@ -261,7 +230,6 @@ def install_update(archive: Path, install_dir: Path) -> None:
     else:
         shutil.rmtree(backup_dir, ignore_errors=True)
     finally:
-        ready_file.unlink(missing_ok=True)
         shutil.rmtree(staging_root, ignore_errors=True)
 
 
@@ -269,7 +237,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="MakeCode 目录更新器")
     parser.add_argument("--install-dir", required=True, type=Path, help="当前 MakeCode 应用目录")
     parser.add_argument("--archive", required=True, type=Path, help="已校验的完整更新 ZIP")
-    parser.add_argument("--pid", required=True, type=int, help="主程序进程 ID")
+    parser.add_argument("--pid", required=True, type=int, help="主程序进程 ID；0 表示无需等待")
     args = parser.parse_args()
 
     install_dir = args.install_dir.resolve()
@@ -281,9 +249,10 @@ def main() -> None:
         parser.error("更新 ZIP 不存在")
 
     _configure_file_logging(install_dir.parent / f".{install_dir.name}.update.log")
-    log.info("等待主程序 (PID %d) 退出", args.pid)
-    if not wait_process_exit(args.pid, timeout=30):
-        raise SystemExit("等待主程序退出超时，更新中止")
+    if args.pid:
+        log.info("等待主程序 (PID %d) 退出", args.pid)
+        if not wait_process_exit(args.pid, timeout=30):
+            raise SystemExit("等待主程序退出超时，更新中止")
 
     try:
         install_update(archive, install_dir)
@@ -297,7 +266,8 @@ def main() -> None:
         except OSError:
             pass
 
-    log.info("更新完成")
+    log.info("更新完成，请手动重新启动 MakeCode")
+    print("\nMakeCode 更新成功，请手动重新启动。", flush=True)
 
 
 if __name__ == "__main__":

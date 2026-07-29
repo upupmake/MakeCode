@@ -113,6 +113,7 @@ def test_launch_updater_runs_outside_install_directory(tmp_path):
     with (
         patch.object(updater, "AUTO_UPDATE_SUPPORTED", True),
         patch.object(updater, "_extract_updater_resource", return_value=updater_path),
+        patch.object(updater.sys, "platform", "win32"),
         patch.object(updater.subprocess, "Popen") as popen,
         patch.object(updater.os, "_exit") as exit_process,
     ):
@@ -121,3 +122,27 @@ def test_launch_updater_runs_outside_install_directory(tmp_path):
     assert popen.call_args.kwargs["cwd"] == str(updater_dir)
     assert popen.call_args.kwargs["close_fds"] is True
     exit_process.assert_called_once_with(0)
+
+
+def test_launch_updater_replaces_linux_process(tmp_path):
+    updater_dir = tmp_path / "updater"
+    updater_dir.mkdir()
+    updater_path = updater_dir / "updater"
+    archive = tmp_path / "update.zip"
+
+    with (
+        patch.object(updater, "AUTO_UPDATE_SUPPORTED", True),
+        patch.object(updater, "_extract_updater_resource", return_value=updater_path),
+        patch.object(updater.sys, "platform", "linux"),
+        patch.object(updater.os, "chdir") as chdir,
+        patch.object(updater.os, "execv") as execv,
+        patch.object(updater.subprocess, "Popen") as popen,
+        patch.object(updater.os, "_exit") as exit_process,
+    ):
+        updater.launch_updater(archive)
+
+    chdir.assert_called_once_with(updater_dir)
+    assert execv.call_args.args[0] == str(updater_path)
+    assert execv.call_args.args[1][-2:] == ["--pid", "0"]
+    popen.assert_not_called()
+    exit_process.assert_not_called()

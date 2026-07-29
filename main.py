@@ -745,14 +745,9 @@ if __name__ == "__main__":
     if _launch_macos_terminal_if_needed():
         raise SystemExit(0)
 
-    update_ready_file = os.environ.pop("MAKECODE_UPDATE_READY_FILE", None)
-
     startup_workdir = resolve_startup_workdir()
     _apply_workdir(startup_workdir)
     prompt_for_workdir = should_prompt_for_workdir()
-
-    if update_ready_file:
-        Path(update_ready_file).touch()
 
     _render_startup_banner()
     _render_env_customization_hint()
