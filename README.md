@@ -460,7 +460,7 @@ MakeCode 内置了完整的自动更新系统，支持版本检查、完整目�
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "5.3.0"
+CURRENT_VERSION = "5.3.1"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"

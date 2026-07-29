@@ -5,6 +5,7 @@ pydantic
 python_frontmatter
 PyYAML
 Requests
+certifi
 rich
 textual
 tiktoken

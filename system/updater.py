@@ -8,12 +8,15 @@ import logging
 import os
 import platform
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+import certifi
 
 from version import CURRENT_VERSION, VERSION_CHECK_URL, DOWNLOAD_URL
 
@@ -37,6 +40,12 @@ UPDATE_PLATFORM_KEY = _current_platform_key()
 AUTO_UPDATE_SUPPORTED = UPDATE_PLATFORM_KEY is not None
 
 
+def _create_ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
 def _parse_version(v: str) -> tuple:
     """将版本号字符串解析为可比较的元组，例如 '1.2.3' -> (1, 2, 3)。"""
     return tuple(int(x) for x in v.strip().split("."))
@@ -58,7 +67,7 @@ def check_update(*, raise_errors: bool = False) -> dict | None:
     """
     try:
         req = urllib.request.Request(VERSION_CHECK_URL, headers={"User-Agent": "MakeCode-Updater/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_create_ssl_context()) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         logger.warning("检查更新失败: %s", exc)
@@ -133,7 +142,7 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
 
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "MakeCode-Updater/1.0"})
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=300, context=_create_ssl_context()) as resp:
             total = resp.headers.get("Content-Length")
             total = int(total) if total and total.isdigit() else None
             downloaded = 0

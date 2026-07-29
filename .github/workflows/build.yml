@@ -103,6 +103,9 @@ jobs:
 
           analysis_path = Path("build/MakeCode/Analysis-00.toc")
           analysis = analysis_path.read_text(encoding="utf-8")
+          certificate_bundle = Path("dist/MakeCode/_internal/certifi/cacert.pem")
+          if not certificate_bundle.is_file():
+              raise SystemExit(f"Bundled CA certificate file is missing: {certificate_bundle}")
           runner_os = os.environ["RUNNER_OS"]
           runner_arch = os.environ["RUNNER_ARCH"]
           platform_key = {
@@ -275,6 +278,9 @@ jobs:
 
           analysis_path = Path("build/MakeCode/Analysis-00.toc")
           analysis = analysis_path.read_text(encoding="utf-8")
+          certificate_bundle = Path("dist/MakeCode/_internal/certifi/cacert.pem")
+          if not certificate_bundle.is_file():
+              raise SystemExit(f"Bundled CA certificate file is missing: {certificate_bundle}")
           parser_archive = "parsers-linux-x86_64.tar.zst"
           if parser_archive not in analysis:
               raise SystemExit(f"Platform parser archive missing from bundle: {parser_archive}")

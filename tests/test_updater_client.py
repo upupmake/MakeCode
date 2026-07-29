@@ -1,7 +1,7 @@
 import hashlib
 import io
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -21,6 +21,31 @@ class _Response:
 
     def read(self, size: int = -1) -> bytes:
         return self._stream.read(size)
+
+
+def test_ssl_context_loads_system_and_bundled_ca():
+    ssl_context = Mock()
+    with (
+        patch.object(updater.ssl, "create_default_context", return_value=ssl_context) as create_context,
+        patch.object(updater.certifi, "where", return_value="/bundle/certifi/cacert.pem"),
+    ):
+        assert updater._create_ssl_context() is ssl_context
+
+    create_context.assert_called_once_with()
+    ssl_context.load_verify_locations.assert_called_once_with(cafile="/bundle/certifi/cacert.pem")
+
+
+def test_check_update_uses_trusted_ca_context():
+    ssl_context = object()
+    response = _Response(b'{"version":"999.0.0"}')
+
+    with (
+        patch.object(updater, "_create_ssl_context", return_value=ssl_context),
+        patch.object(updater.urllib.request, "urlopen", return_value=response) as urlopen,
+    ):
+        assert updater.check_update(raise_errors=True) == {"version": "999.0.0"}
+
+    assert urlopen.call_args.kwargs["context"] is ssl_context
 
 
 def test_linux_asset_requires_platform_manifest():
@@ -64,9 +89,11 @@ def test_download_update_uses_linux_platform_asset(tmp_path):
         }
     }
 
+    ssl_context = object()
     with (
         patch.object(updater, "UPDATE_PLATFORM_KEY", "linux-x86_64"),
         patch.object(updater.tempfile, "mkdtemp", return_value=str(tmp_path)),
+        patch.object(updater, "_create_ssl_context", return_value=ssl_context),
         patch.object(updater.urllib.request, "urlopen", return_value=_Response(content)) as urlopen,
     ):
         archive = updater.download_update(manifest)
@@ -74,6 +101,7 @@ def test_download_update_uses_linux_platform_asset(tmp_path):
     assert archive == tmp_path / "MakeCode-Linux-X64.zip"
     assert archive.read_bytes() == content
     assert urlopen.call_args.args[0].full_url == asset["download_url"]
+    assert urlopen.call_args.kwargs["context"] is ssl_context
 
 
 def test_launch_updater_runs_outside_install_directory(tmp_path):

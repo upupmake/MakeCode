@@ -4,7 +4,7 @@ import os
 import sys
 import platform
 
-from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 project_root = os.path.abspath(SPECPATH)
 if project_root not in sys.path:
@@ -20,6 +20,7 @@ project_hiddenimports = [
 for package in ('system', 'tools', 'utils'):
     project_hiddenimports.extend(collect_submodules(package))
 language_pack_hiddenimports = collect_submodules('tree_sitter_language_pack')
+certificate_datas = collect_data_files('certifi')
 
 # --- Custom logic to collect the current platform's ts_cache file ---
 ts_cache_datas = []
@@ -60,7 +61,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (os.path.join(project_root, 'tiktoken_cache'), 'tiktoken_cache'),
-    ] + updater_datas + ts_cache_datas + copy_metadata('fastmcp') + copy_metadata('tree-sitter-language-pack'),
+    ] + updater_datas + ts_cache_datas + certificate_datas + copy_metadata('fastmcp') + copy_metadata('tree-sitter-language-pack'),
     hiddenimports=project_hiddenimports + language_pack_hiddenimports + [
         'tiktoken_ext.openai_public',
         'tiktoken_ext',
