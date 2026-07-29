@@ -129,7 +129,9 @@ def get_release_body(log_path: Path) -> str:
         ])
 
     lines.append("### 下载")
-    lines.append("- `MakeCode-Windows-X64.zip` — Windows 完整应用目录")
+    lines.append("- `MakeCode-Windows-X64.zip` — Windows X64 完整应用目录")
+    lines.append("- `MakeCode-macOS-ARM64.zip` — macOS ARM64 完整应用目录")
+    lines.append("- `MakeCode-Linux-X64.zip` — Linux X64 完整应用目录")
     lines.append("- `version.json` — 版本信息文件")
 
     return "\n".join(lines)
@@ -163,7 +165,7 @@ def main():
     )
     print(f"   Release ID: {release['id']}")
     print(f"   URL: {release['html_url']}")
-    print("   Windows/macOS ZIP 和 version.json 将由 GitHub Actions 生成并上传")
+    print("   Windows/macOS/Linux ZIP 和 version.json 将由 GitHub Actions 生成并上传")
 
     print()
     print(f"[OK] GitHub Release 发布成功！")
