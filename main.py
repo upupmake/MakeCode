@@ -751,6 +751,9 @@ if __name__ == "__main__":
     _apply_workdir(startup_workdir)
     prompt_for_workdir = should_prompt_for_workdir()
 
+    if update_ready_file:
+        Path(update_ready_file).touch()
+
     _render_startup_banner()
     _render_env_customization_hint()
     render_current_workdir()
@@ -778,9 +781,6 @@ if __name__ == "__main__":
         auto_compact_fn=auto_compact,
         apply_workdir_fn=_apply_workdir,
     )
-
-    if update_ready_file:
-        Path(update_ready_file).touch()
 
     try:
         _run_textual_main(history, command_handler, prompt_for_workdir)

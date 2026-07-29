@@ -6,6 +6,8 @@ import hashlib
 import json
 import logging
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,7 +20,21 @@ from version import CURRENT_VERSION, VERSION_CHECK_URL, DOWNLOAD_URL
 logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 8192
-AUTO_UPDATE_SUPPORTED = sys.platform == "win32"
+
+
+def _current_platform_key() -> str | None:
+    machine = platform.machine().lower()
+    if machine not in {"amd64", "x86_64"}:
+        return None
+    if sys.platform == "win32":
+        return "windows-x86_64"
+    if sys.platform.startswith("linux"):
+        return "linux-x86_64"
+    return None
+
+
+UPDATE_PLATFORM_KEY = _current_platform_key()
+AUTO_UPDATE_SUPPORTED = UPDATE_PLATFORM_KEY is not None
 
 
 def _parse_version(v: str) -> tuple:
@@ -68,9 +84,25 @@ def check_update(*, raise_errors: bool = False) -> dict | None:
     return None
 
 
+def _get_platform_asset(version_info: dict) -> dict:
+    if UPDATE_PLATFORM_KEY is None:
+        raise RuntimeError("当前平台不支持应用内自动更新")
+
+    platforms = version_info.get("platforms")
+    if isinstance(platforms, dict):
+        asset = platforms.get(UPDATE_PLATFORM_KEY)
+        if not isinstance(asset, dict):
+            raise ValueError(f"version.json 缺少 {UPDATE_PLATFORM_KEY} 平台信息")
+        return asset
+
+    if UPDATE_PLATFORM_KEY == "windows-x86_64":
+        return version_info
+    raise ValueError("version.json 缺少 platforms 平台信息")
+
+
 def download_update(version_info: dict, progress_callback=None) -> Path | None:
     """
-    下载 Windows onedir 完整 ZIP，校验大小和 SHA256 后返回文件路径。
+    下载当前平台的 onedir 完整 ZIP，校验大小和 SHA256 后返回文件路径。
 
     Args:
         version_info: check_update() 返回的版本信息字典。
@@ -79,9 +111,12 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
     Returns:
         下载文件的 Path，失败返回 None。
     """
-    url = version_info.get("download_url") or DOWNLOAD_URL
-    expected_sha256 = version_info.get("sha256", "")
-    expected_size = version_info.get("size")
+    asset = _get_platform_asset(version_info)
+    url = asset.get("download_url")
+    if not url and UPDATE_PLATFORM_KEY == "windows-x86_64":
+        url = DOWNLOAD_URL
+    expected_sha256 = asset.get("sha256", "")
+    expected_size = asset.get("size")
     if not isinstance(url, str) or not url.lower().startswith("https://"):
         raise ValueError("version.json 中的 download_url 必须使用 HTTPS")
     if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
@@ -89,8 +124,12 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
     if not isinstance(expected_size, int) or expected_size <= 0:
         raise ValueError("version.json 缺少有效的 size")
 
+    archive_name = {
+        "windows-x86_64": "MakeCode-Windows-X64.zip",
+        "linux-x86_64": "MakeCode-Linux-X64.zip",
+    }[UPDATE_PLATFORM_KEY]
     tmp_dir = tempfile.mkdtemp(prefix="makecode_update_")
-    tmp_file = Path(tmp_dir) / "MakeCode-Windows-X64.zip"
+    tmp_file = Path(tmp_dir) / archive_name
 
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "MakeCode-Updater/1.0"})
@@ -112,15 +151,16 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
                         progress_callback(downloaded, total)
     except (urllib.error.URLError, OSError) as exc:
         logger.error("下载更新失败: %s", exc)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return None
 
     if downloaded != expected_size:
         logger.error("文件大小校验失败: 期望 %d, 实际 %d", expected_size, downloaded)
-        tmp_file.unlink(missing_ok=True)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return None
     if sha.hexdigest().lower() != expected_sha256.lower():
         logger.error("SHA256 校验失败: 期望 %s, 实际 %s", expected_sha256, sha.hexdigest())
-        tmp_file.unlink(missing_ok=True)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return None
 
     logger.info("更新下载完成: %s", tmp_file)
@@ -128,11 +168,10 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
 
 
 def launch_updater(update_archive: Path) -> None:
-    """释放内置 updater.exe，启动完整目录更新，然后退出整个主进程。"""
+    """释放内置 updater，启动完整目录更新，然后退出整个主进程。"""
     if not AUTO_UPDATE_SUPPORTED:
         raise RuntimeError("当前平台不支持应用内自动更新，请从 GitHub Release 下载对应平台版本")
 
-    # 定位 updater.exe：优先 PyInstaller 打包资源，其次 importlib.resources
     updater_path = _extract_updater_resource()
 
     current_exe = Path(sys.executable if getattr(sys, "frozen", False) else sys.argv[0]).resolve()
@@ -146,46 +185,49 @@ def launch_updater(update_archive: Path) -> None:
     ]
 
     logger.info("启动更新程序: %s", cmd)
-    subprocess.Popen(cmd, close_fds=True)
+    subprocess.Popen(cmd, cwd=str(updater_path.parent), close_fds=True)
     os._exit(0)
 
 
 def _extract_updater_resource() -> Path:
-    """从打包资源或模块资源中提取 updater.exe 到临时目录。"""
+    """从打包资源或模块资源中提取 updater 到临时目录。"""
+    resource_name = "updater.exe" if sys.platform == "win32" else "updater"
     tmp_dir = tempfile.mkdtemp(prefix="updater_res_")
-    dest = Path(tmp_dir) / "updater.exe"
+    dest = Path(tmp_dir) / resource_name
 
-    # PyInstaller 打包环境
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        src = Path(meipass) / "updater.exe"
+        src = Path(meipass) / resource_name
         if src.exists():
-            import shutil
             shutil.copy2(src, dest)
+            if sys.platform.startswith("linux"):
+                dest.chmod(dest.stat().st_mode | 0o700)
             return dest
 
-    # importlib.resources（Python 3.9+）
     try:
         import importlib.resources as resources
-        ref = resources.files("resources").joinpath("updater.exe")
+        ref = resources.files("resources").joinpath(resource_name)
         if ref.is_file():
             dest.write_bytes(ref.read_bytes())
+            if sys.platform.startswith("linux"):
+                dest.chmod(dest.stat().st_mode | 0o700)
             return dest
     except (ModuleNotFoundError, TypeError, FileNotFoundError):
         pass
 
-    # 开发模式：从项目根目录查找
     project_root = Path(__file__).resolve().parent.parent
     for candidate in [
-        project_root / "updater.exe",
-        project_root / "resources" / "updater.exe",
+        project_root / resource_name,
+        project_root / "dist" / resource_name,
+        project_root / "resources" / resource_name,
     ]:
         if candidate.exists():
-            import shutil
             shutil.copy2(candidate, dest)
+            if sys.platform.startswith("linux"):
+                dest.chmod(dest.stat().st_mode | 0o700)
             return dest
 
-    raise FileNotFoundError("无法找到 updater.exe 资源文件")
+    raise FileNotFoundError(f"无法找到 {resource_name} 资源文件")
 
 
 def check_and_update(silent: bool = True) -> bool:

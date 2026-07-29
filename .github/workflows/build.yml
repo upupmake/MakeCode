@@ -62,6 +62,8 @@ jobs:
           tests/test_delegate_confirmation.py
           tests/test_prompts.py
           tests/test_platform_memory_config.py
+          tests/test_updater_bundle.py
+          tests/test_updater_client.py
           tests/test_macos_launcher.py
           -q
 
@@ -234,8 +236,13 @@ jobs:
           tests/test_delegate_confirmation.py
           tests/test_prompts.py
           tests/test_platform_memory_config.py
+          tests/test_updater_bundle.py
+          tests/test_updater_client.py
           tests/test_macos_launcher.py
           -q
+
+      - name: Build updater
+        run: pyinstaller --clean --noconfirm updater.spec
 
       - name: Build MakeCode
         run: pyinstaller --clean --noconfirm MakeCode.spec
@@ -337,6 +344,8 @@ jobs:
                   )
 
           dist = Path("dist/MakeCode")
+          if not (dist / "_internal" / "updater").is_file():
+              raise SystemExit("Bundled updater is missing")
           for path in dist.rglob("*"):
               if path.is_file() and is_elf(path):
                   check_elf(path, path.as_posix())

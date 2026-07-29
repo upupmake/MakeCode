@@ -41,11 +41,12 @@ if os.path.isfile(manifest_path):
 # -------------------------------------------------------------------
 
 updater_datas = []
-if sys.platform == 'win32':
-    updater_path = os.path.join(project_root, 'dist', 'updater.exe')
+if sys.platform == 'win32' or sys.platform.startswith('linux'):
+    updater_name = 'updater.exe' if sys.platform == 'win32' else 'updater'
+    updater_path = os.path.join(project_root, 'dist', updater_name)
     if not os.path.isfile(updater_path):
         raise FileNotFoundError(
-            'dist/updater.exe does not exist; run pyinstaller updater.spec first'
+            f'dist/{updater_name} does not exist; run pyinstaller updater.spec first'
         )
     updater_datas.append((updater_path, '.'))
 

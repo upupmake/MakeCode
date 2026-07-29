@@ -67,15 +67,15 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 - PyInstaller
 - 项目依赖（`pip install -r requirements.txt`）
 
-### 2.3 构建 updater.exe
+### 2.3 构建 updater
 
-updater 是独立的更新器程序，需要先构建：
+Windows 和 Linux 的 updater 是独立更新器程序，需要先构建：
 
 ```bash
 pyinstaller updater.spec
 ```
 
-构建产物：`dist/updater.exe`
+Windows 构建产物为 `dist/updater.exe`，Linux 构建产物为 `dist/updater`。macOS 不构建 updater。
 
 ### 2.4 构建主程序
 
@@ -87,8 +87,9 @@ pyinstaller MakeCode.spec
 
 - Windows：`dist/MakeCode/MakeCode.exe`，运行依赖位于 `dist/MakeCode/_internal/`
 - macOS：`dist/MakeCode/MakeCode`，运行依赖位于 `dist/MakeCode/_internal/`；发布 ZIP 顶层额外提供 `MakeCode.command`，用户双击该脚本在 Terminal 中启动
+- Linux：`dist/MakeCode/MakeCode`，运行依赖位于 `dist/MakeCode/_internal/`
 
-Windows 的 `dist/updater.exe` 会被收集为 `dist/MakeCode/_internal/updater.exe`，因此 Windows 必须先构建 updater。macOS 和 Linux 不构建 updater，也不支持应用内自动更新。
+Windows 的 `dist/updater.exe` 会被收集为 `dist/MakeCode/_internal/updater.exe`，Linux 的 `dist/updater` 会被收集为 `dist/MakeCode/_internal/updater`，因此两个平台都必须先构建 updater。macOS 不构建 updater，也不支持应用内自动更新。
 
 ### 2.5 构建顺序
 
@@ -108,7 +109,8 @@ pyinstaller MakeCode.spec      → dist/MakeCode/
 Linux：
 
 ```
-pyinstaller MakeCode.spec      → dist/MakeCode/
+1. pyinstaller updater.spec    → dist/updater
+2. pyinstaller MakeCode.spec   → dist/MakeCode/（_internal 内含 updater）
 ```
 
 GitHub Actions 将 `assets/MakeCode.command` 与 `dist/MakeCode/` 一起打入 `MakeCode-macOS-ARM64.zip`。macOS 用户解压后双击顶层 `MakeCode.command`，不发布 `.app`。
@@ -169,54 +171,56 @@ GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务
 ### 4.1 更新检查流程
 
 用户端启动时会：
-1. Windows 请求 GitHub latest Release 的 `version.json` 获取最新版本信息
-2. Windows 比较本地版本与服务器版本，并可下载、校验和安装更新
-3. macOS 和 Linux 不支持应用内自动更新，用户需从 GitHub Release 手动下载最新版
+1. Windows/Linux 请求 GitHub latest Release 的 `version.json` 获取最新版本信息
+2. 从 `platforms` 严格选择 `windows-x86_64` 或 `linux-x86_64` 资产并下载、校验和安装
+3. macOS 不支持应用内自动更新，用户需从 GitHub Release 手动下载最新版
 
-下载必须使用 HTTPS 和系统证书验证。客户端要求 manifest 提供有效 `sha256` 与正整数 `size`，下载后同时校验大小和 SHA-256。
+下载必须使用 HTTPS 和系统证书验证。客户端要求 manifest 提供有效 `sha256` 与正整数 `size`，下载后同时校验大小和 SHA-256。Linux 不得回退使用兼容旧客户端的 Windows 顶层字段。
 
-### 4.2 Windows 更新执行流程
+### 4.2 Windows/Linux 更新执行流程
 
-主程序将内置的 updater 释放到安装目录之外，随后用 `os._exit(0)` 退出整个进程。updater.exe 负责完整 onedir 更新：
+主程序将内置 updater 释放到安装目录之外，随后用 `os._exit(0)` 退出整个进程。updater 负责完整 onedir 更新：
 
 ```
 1. 接收 --install-dir、--archive、--pid
 2. 等待主程序退出（超时 30 秒）
-3. 拒绝路径穿越、绝对路径、盘符/反斜杠路径和符号链接
-4. 解压到安装目录同级 staging，并验证 MakeCode/MakeCode.exe 与 MakeCode/_internal/
-5. 将旧安装目录切换为 backup
-6. 将旧目录的 .makecode 用户配置复制到新版
-7. 将 staged MakeCode 目录切换为正式安装目录
-8. 启动新版并等待 ready-file 启动确认
-9. 确认成功后删除 backup；失败或超时则恢复旧目录
+3. 拒绝路径穿越、绝对路径和不安全符号链接
+4. 解压到安装目录同级 staging，验证平台入口与 MakeCode/_internal/
+5. Windows 保留安装根目录与 .makecode，事务移动程序条目；Linux 将旧安装目录切换为 backup 并复制 .makecode
+6. 将 staged onedir 应用切换到正式位置
+7. 启动新版并等待 ready-file 启动确认
+8. 确认成功后删除 backup；失败或超时则恢复旧版本
 ```
+
+Linux 更新包可保留 PyInstaller 相对符号链接，但链接目标必须仍位于 `MakeCode/` 内；安装目录必须对当前用户可写。
 
 ### 4.3 更新边界与迁移
 
 - macOS 暂不做应用内自动更新；发布包使用 `MakeCode.command + MakeCode/ onedir`，用户从 GitHub Release 手动下载并替换。
-- 从旧 onefile 版本迁移到首个 onedir 版本应手动完成。安装 onedir 版本后，后续 Windows 版本才能使用完整目录自动更新。
-- Windows 的 `.makecode` 位于安装目录内，目录更新时必须保留；macOS 打包版配置位于 `~/Library/Application Support/MakeCode`。
+- 从旧 onefile 版本迁移到首个 onedir 版本应手动完成。安装 onedir 版本后，后续 Windows/Linux 版本才能使用完整目录自动更新。
+- Windows/Linux 的 `.makecode` 位于安装目录内，目录更新时必须保留；macOS 打包版配置位于 `~/Library/Application Support/MakeCode`。
 - 不得只替换 onedir 中的 `MakeCode.exe`，否则会造成 EXE 与 `_internal` 依赖版本混合。
 
 ---
 
 ## 5. 常见问题排查
 
-### Q1: 构建失败 "找不到 updater.exe"
+### Q1: 构建失败 "找不到 updater"
 
-确保先运行 `pyinstaller updater.spec`，再运行 `pyinstaller MakeCode.spec`。
+Windows/Linux 均需先运行 `pyinstaller updater.spec`，再运行 `pyinstaller MakeCode.spec`。
 
 ### Q2: version.json 生成失败
 
 检查 Release 汇总任务是否能找到 `MakeCode-Windows-X64.zip`，以及 GitHub Release body 是否包含发布日志起止标记。
 
-### Q3: Windows 用户无法更新
+### Q3: Windows/Linux 用户无法更新
 
 检查：
-- GitHub latest Release 的 `version.json` 是否可访问
-- `download_url` 是否是 `MakeCode-Windows-X64.zip` 的 HTTPS 地址
+- GitHub latest Release 的 `version.json` 是否可访问，`platforms` 是否包含当前平台
+- 平台 `download_url` 是否指向对应 Windows/Linux ZIP 的 HTTPS 地址
 - `sha256` 与 `size` 是否和服务器 ZIP 完全匹配
-- ZIP 顶层是否为唯一的 `MakeCode/`，内部是否包含 `MakeCode.exe` 与 `_internal/`
+- ZIP 顶层是否为唯一的 `MakeCode/`，内部是否包含平台入口与 `_internal/`
+- Linux 安装目录是否可写、入口是否保留执行权限
 - 当前客户端是否已经是 onedir 版本；旧 onefile 客户端需要手动迁移
 
 ### Q4: 版本号格式错误
@@ -251,7 +255,7 @@ git status  # 应输出 "nothing to commit, working tree clean"
 | `.github/workflows/build.yml` | 构建 Windows、macOS、Linux ZIP，并生成包含各平台哈希与大小的 version.json |
 | `MakeCode.spec` | Windows、macOS 与 Linux onedir 打包配置 |
 | `assets/MakeCode.command` | macOS 发布包顶层启动器 |
-| `updater.spec` | Windows 独立更新器打包配置 |
-| `updater.py` | Windows 完整目录事务更新器源码 |
+| `updater.spec` | Windows/Linux 独立更新器打包配置 |
+| `updater.py` | Windows/Linux onedir 事务更新器源码 |
 | `github_release.py` | 从 RELEASE_LOG.md 创建 GitHub Release/tag；所有资产由 Actions 生成 |
 | `.github_token` | GitHub Token（不提交远程） |

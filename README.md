@@ -446,20 +446,21 @@ MakeCode 支持智能体在不确定时主动向用户提问，而非盲目猜�
 
 MakeCode 内置了完整的自动更新系统，支持版本检查、完整目录下载与事务升级。
 
-> **平台限制**：应用内自动更新当前仅支持 Windows。macOS 会提示用户前往 GitHub Release 手动下载并替换最新版。
+> **平台限制**：应用内自动更新支持 Windows X64 和 Linux X64。macOS 会提示用户前往 GitHub Release 手动下载并替换最新版。
 
 #### 核心组件
 
-- **版本检查**（`system/updater.py`）：从远程服务器获取 `version.json`，与本地 `CURRENT_VERSION` 比较，判断是否有可用更新
-- **下载与校验**：支持带进度回调的分块下载（8KB/块），下载完成后自动进行 SHA256 完整性校验
-- **独立更新器**（`updater.py`，仅 Windows）：采用「独立更新器」方案 — 主程序将新版 exe 下载到临时目录后，释放 `updater.exe` 并退出；更新器等待主程序进程退出后，用新文件替换旧 exe，完成无缝升级
+- **版本检查**（`system/updater.py`）：从远程服务器获取 `version.json`，与本地 `CURRENT_VERSION` 比较，并从 `platforms` 选择当前平台资产
+- **下载与校验**：支持带进度回调的分块下载（8KB/块），下载完成后校验文件大小和 SHA256
+- **独立更新器**（`updater.py`，Windows/Linux）：主程序将完整 onedir ZIP 下载到临时目录后，释放当前平台 updater 并退出；Windows 保留安装根目录并事务替换程序条目，Linux 事务切换完整目录
+- **安全与回滚**：拒绝路径穿越；Linux 只恢复包内安全的相对符号链接；新版通过 ready-file 确认启动，失败时恢复旧版本
 - **进度显示**：下载过程中实时显示可视化进度条（`█░` 填充动画）、百分比和 MB 数
 - **启动时后台检查**：程序启动时自动在后台检查更新，若有新版本会在终端提示用户
 
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "5.1.0"
+CURRENT_VERSION = "5.2.3"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -468,16 +469,18 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 #### 更新流程
 
 1. 用户执行 `/update` 命令
-2. 系统从 GitHub latest Release 获取 `version.json` 并比较版本号
+2. 系统从 GitHub latest Release 获取 `version.json`，比较版本号并选择 Windows/Linux 平台资产
 3. 若有新版本，展示版本号与更新说明，等待用户确认
-4. 下载完整的 Windows onedir ZIP 并显示实时进度
-5. 文件大小与 SHA256 校验通过后，释放 `updater.exe` 并启动
-6. 主程序退出，更新器事务替换完整安装目录并自动验证新版启动
+4. 下载当前平台完整 onedir ZIP，并校验文件大小与 SHA256
+5. 释放当前平台 updater，主程序退出
+6. updater 事务替换应用、自动启动新版并等待 ready-file；失败时回滚旧版本
+
+Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 等受保护目录时需手动更新或调整安装位置。
 
 #### 相关组件
 
-- `system/updater.py`：核心更新逻辑（版本检查、下载、校验、启动更新器）
-- `updater.py`：Windows 独立更新器程序，负责等待主程序退出后替换 exe
+- `system/updater.py`：核心更新逻辑（平台资产选择、版本检查、下载、校验、启动更新器）
+- `updater.py`：Windows/Linux 独立更新器，负责事务替换、启动确认与失败回滚
 - `version.py`：版本号与更新服务器地址配置
 - `system/commands.py`：`/update` 命令处理与交互确认
 
@@ -487,8 +490,8 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 #### 路径分层
 
-- **安装目录（Install Dir）**：Windows 下为 `MakeCode.exe` 所在目录，macOS 打包版为 `MakeCode/MakeCode` 所在目录；源码运行时为源码根目录。
-    - Windows 与源码运行时的共享配置位于 `install_dir/.makecode/`。
+- **安装目录（Install Dir）**：Windows 下为 `MakeCode.exe` 所在目录，macOS/Linux 打包版为 `MakeCode/MakeCode` 所在目录；源码运行时为源码根目录。
+    - Windows、Linux 与源码运行时的共享配置位于 `install_dir/.makecode/`。
     - macOS 打包版的共享配置位于 `~/Library/Application Support/MakeCode/`，避免升级替换应用目录时丢失配置。
     - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 均位于对应的共享配置目录。
 - **工作区目录（Workdir）**：用户当前交互选择的工程目录，存放会话/任务相关的状态。
@@ -536,7 +539,7 @@ Agent/
 ├─ init.py                  # 工作区选择、模型配置初始化
 ├─ prompts.py               # 集中管理所有 LLM Prompt
 ├─ version.py               # 版本号与更新服务器地址配置
-├─ updater.py               # Windows 独立更新器（主程序退出后替换 exe）
+├─ updater.py               # Windows/Linux 独立事务更新器
 ├─ requirements.txt         # 项目依赖
 ├─ README.md
 ├─ README_en.md
@@ -685,8 +688,8 @@ flowchart TD
 - `system/models.py` 提供模型配置管理，支持多模型配置持久化、收藏、`max_context` 与 `reasoning_effort` 设置。
 - `tools/todo.py` 供子智能体在多步骤任务中维护内部待办。
 - `tools/ask_user.py` 允许智能体在不确定时主动向用户提问，支持选项列表与自定义输入，基于 TUI 交互面板实现。
-- `system/updater.py` 实现 Windows 应用内自动更新逻辑：版本检查、带进度下载、SHA256 校验、启动独立更新器完成无缝升级；macOS 仅提示手动下载。
-- `updater.py` 是 Windows 独立更新器程序，在主程序退出后替换 exe 文件完成升级。
+- `system/updater.py` 实现 Windows/Linux 应用内自动更新逻辑：平台资产选择、版本检查、带进度下载、大小与 SHA256 校验，并启动独立更新器；macOS 仅提示手动下载。
+- `updater.py` 是 Windows/Linux 独立事务更新器，在主程序退出后替换完整 onedir 应用、验证新版启动并在失败时回滚。
 - `version.py` 管理版本号与更新服务器地址配置。
 
 ---

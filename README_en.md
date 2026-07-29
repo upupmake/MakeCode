@@ -478,20 +478,21 @@ MakeCode allows agents to proactively ask users questions when uncertain, rather
 
 MakeCode includes a complete built-in auto-update system supporting version checks, complete directory downloads, and transactional upgrades.
 
-> **Platform limitation**: In-app auto-update currently supports Windows only. On macOS, MakeCode directs users to GitHub Releases to download and replace the application manually.
+> **Platform limitation**: In-app auto-update supports Windows X64 and Linux X64. On macOS, MakeCode directs users to GitHub Releases to download and replace the application manually.
 
 #### Core Components
 
-- **Version Checking** (`system/updater.py`): Fetches `version.json` from a remote server and compares it with the local `CURRENT_VERSION` to determine if an update is available
-- **Download & Verification**: Supports chunked downloading (8KB/chunk) with progress callbacks, followed by automatic SHA256 integrity verification
-- **Standalone Updater** (`updater.py`, Windows only): Uses a "standalone updater" approach — after downloading the new exe to a temporary directory, the main program releases `updater.exe` and exits; the updater waits for the main process to exit, then replaces the old exe with the new file for a seamless upgrade
+- **Version Checking** (`system/updater.py`): Fetches `version.json`, compares it with the local `CURRENT_VERSION`, and selects the current platform asset from `platforms`
+- **Download & Verification**: Supports chunked downloading (8KB/chunk) with progress callbacks, followed by file-size and SHA256 verification
+- **Standalone Updater** (`updater.py`, Windows/Linux): Downloads the complete onedir ZIP to a temporary directory, releases the current platform updater, and exits; Windows transactionally replaces application entries while preserving the install root, and Linux transactionally switches the complete directory
+- **Security & Rollback**: Rejects path traversal; Linux restores only safe relative symlinks; the new version reports readiness through a ready file, and failures restore the old version
 - **Progress Display**: Real-time visual progress bar (`█░` fill animation), percentage, and MB count during download
 - **Background Check on Startup**: Automatically checks for updates in the background at startup; notifies the user in the terminal if a new version is available
 
 #### Version Configuration (`version.py`)
 
 ```python
-CURRENT_VERSION = "5.1.0"
+CURRENT_VERSION = "5.2.3"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -500,16 +501,18 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 #### Update Flow
 
 1. User executes the `/update` command
-2. System fetches `version.json` from the latest GitHub Release and compares version numbers
-3. If a new version is available, displays version number and release notes, awaiting user confirmation
-4. Downloads the complete Windows onedir ZIP with real-time progress display
-5. After size and SHA256 verification pass, releases `updater.exe` and launches it
-6. Main program exits; updater transactionally replaces the installation directory and verifies the new version starts
+2. The system fetches `version.json`, compares versions, and selects the Windows/Linux platform asset
+3. If a new version is available, it displays the version and release notes and waits for confirmation
+4. It downloads the current platform's complete onedir ZIP and verifies file size and SHA256
+5. It releases the current platform updater and exits the main program
+6. The updater transactionally replaces the application, launches the new version, and waits for the ready file; failures roll back to the old version
+
+On Linux, the installation directory must be writable by the current user. Installations under protected locations such as `/opt` or `/usr/local` require a manual update or a user-writable installation location.
 
 #### Related Components
 
-- `system/updater.py`: Core update logic (version check, download, verification, updater launch)
-- `updater.py`: Windows standalone updater, responsible for replacing the exe after the main program exits
+- `system/updater.py`: Core update logic (platform asset selection, version check, download, verification, updater launch)
+- `updater.py`: Windows/Linux standalone updater for transactional replacement, startup confirmation, and rollback
 - `version.py`: Version number and update server URL configuration
 - `system/commands.py`: `/update` command handling and interactive confirmation
 
@@ -519,8 +522,8 @@ To centrally manage workspace paths and install-directory global configuration, 
 
 #### Path Layers
 
-- **Install Directory**: On Windows, this is the directory containing `MakeCode.exe`; in the packaged macOS release, it is the directory containing `MakeCode/MakeCode`; for source runs, it is the source root.
-    - On Windows and in source runs, shared configuration lives under `install_dir/.makecode/`.
+- **Install Directory**: On Windows, this is the directory containing `MakeCode.exe`; in packaged macOS/Linux releases, it is the directory containing `MakeCode/MakeCode`; for source runs, it is the source root.
+    - On Windows, Linux, and source runs, shared configuration lives under `install_dir/.makecode/`.
     - In the packaged macOS release, shared configuration lives under `~/Library/Application Support/MakeCode/`, preventing application replacement during upgrades from deleting configuration.
     - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, and `error.log` live in the corresponding shared configuration directory.
 - **Workspace Directory (Workdir)**: The user's chosen working directory. Session- and task-related state lives here.
@@ -568,7 +571,7 @@ Agent/
 ├─ init.py                  # workspace selection, model config init
 ├─ prompts.py               # centralized management of all LLM prompts
 ├─ version.py               # version number and update server URL configuration
-├─ updater.py               # Windows standalone updater (replaces exe after main exits)
+├─ updater.py               # Windows/Linux standalone transactional updater
 ├─ requirements.txt         # project dependencies
 ├─ README.md
 ├─ README_en.md
@@ -721,8 +724,8 @@ flowchart TD
 - `system/models.py` provides model configuration management with multi-model persistence, favorites, `max_context`, and `reasoning_effort` settings.
 - `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
 - `tools/ask_user.py` allows agents to proactively ask users questions when uncertain, supporting option lists and custom input via a TUI interactive panel.
-- `system/updater.py` implements Windows in-app auto-update logic: version checking, download with progress, SHA256 verification, and launching the standalone updater; macOS only prompts for a manual download.
-- `updater.py` is the Windows standalone updater that replaces the exe file after the main program exits.
+- `system/updater.py` implements Windows/Linux in-app updates: platform asset selection, version checking, progress downloads, file-size and SHA256 verification, and standalone updater launch; macOS only prompts for a manual download.
+- `updater.py` is the Windows/Linux standalone transactional updater that replaces the complete onedir application, verifies the new version starts, and rolls back on failure.
 - `version.py` manages version number and update server URL configuration.
 
 ---

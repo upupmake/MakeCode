@@ -826,7 +826,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 return None
 
             self.console.print("[bold green]✅ 下载完成！正在退出主程序并启动更新程序...[/bold green]")
-            self.console.print("[#aaaaaa]程序将自动退出并完成更新，更新后请手动重启程序[/#aaaaaa]")
+            self.console.print("[#aaaaaa]更新程序将完成替换并自动启动新版本[/#aaaaaa]")
             return new_exe_path
         finally:
             set_agent_loop_active(False)
