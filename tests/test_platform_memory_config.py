@@ -313,6 +313,16 @@ def test_launch_updater_rejects_unsupported_platform(tmp_path):
             updater.launch_updater(tmp_path / "MakeCode")
 
 
+def test_signal_legacy_updater_ready(monkeypatch, tmp_path):
+    ready_file = tmp_path / "legacy.ready"
+    monkeypatch.setenv("MAKECODE_UPDATE_READY_FILE", str(ready_file))
+
+    main_module._signal_legacy_updater_ready()
+
+    assert ready_file.is_file()
+    assert "MAKECODE_UPDATE_READY_FILE" not in main_module.os.environ
+
+
 def test_ts_validator_platform_key_detection(monkeypatch):
     monkeypatch.setattr(ts_validator.sys, "platform", "win32")
     monkeypatch.setattr(ts_validator.platform, "machine", lambda: "AMD64")

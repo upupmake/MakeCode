@@ -198,6 +198,7 @@ Linux 更新包可保留 PyInstaller 相对符号链接，但链接目标必须�
 
 - macOS 暂不做应用内自动更新；发布包使用 `MakeCode.command + MakeCode/ onedir`，用户从 GitHub Release 手动下载并替换。
 - 从旧 onefile 版本迁移到首个 onedir 版本应手动完成。安装 onedir 版本后，后续 Windows/Linux 版本才能使用完整目录自动更新。
+- 从 5.3.1 或更早版本升级到 5.3.2 时仍由旧 updater 自动启动新版并等待 `MAKECODE_UPDATE_READY_FILE`；5.3.2 主程序必须保留该一次性兼容信号。5.3.2 内置的新 updater 不设置此变量，也不自动启动后续版本。
 - Windows/Linux 的 `.makecode` 位于安装目录内，目录更新时必须保留；macOS 打包版配置位于 `~/Library/Application Support/MakeCode`。
 - 不得只替换 onedir 中的 `MakeCode.exe`，否则会造成 EXE 与 `_internal` 依赖版本混合。
 

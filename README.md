@@ -475,6 +475,8 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 5. 释放当前平台 updater，主程序退出
 6. updater 事务替换应用；失败时回滚旧版本，成功时提示用户手动重新启动 MakeCode
 
+> **迁移说明**：从 `5.3.1` 或更早版本升级到 `5.3.2` 时，首次更新仍由旧客户端内置的 updater 执行，因此旧 updater 会自动启动 `5.3.2` 一次以完成兼容确认。从 `5.3.2` 开始，内置的新 updater 不再自动启动后续版本，更新成功后由用户在原工作目录手动重新启动。
+
 Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 等受保护目录时需手动更新或调整安装位置。
 
 #### 相关组件

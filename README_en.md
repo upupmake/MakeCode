@@ -507,6 +507,8 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 5. It releases the current platform updater and exits the main program
 6. The updater transactionally replaces the application; failures roll back to the old version, while success prompts the user to restart MakeCode manually
 
+> **Migration note**: When upgrading from `5.3.1` or earlier to `5.3.2`, the first update still runs through the old client-bundled updater, so that updater launches `5.3.2` once to complete its compatibility check. Starting with `5.3.2`, the bundled updater no longer launches subsequent versions automatically; after a successful update, users restart MakeCode manually from their original workspace.
+
 On Linux, the installation directory must be writable by the current user. Installations under protected locations such as `/opt` or `/usr/local` require a manual update or a user-writable installation location.
 
 #### Related Components

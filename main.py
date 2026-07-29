@@ -110,6 +110,12 @@ TITLE_GENERATION_TOOLS = [pydantic_function_tool(GenerateConversationTitle)]
 _PENDING_UPDATE_EXE_PATH = None
 
 
+def _signal_legacy_updater_ready() -> None:
+    ready_file = os.environ.pop("MAKECODE_UPDATE_READY_FILE", None)
+    if ready_file:
+        Path(ready_file).touch()
+
+
 def _current_workdir():
     return paths.workdir()
 
@@ -747,6 +753,7 @@ if __name__ == "__main__":
 
     startup_workdir = resolve_startup_workdir()
     _apply_workdir(startup_workdir)
+    _signal_legacy_updater_ready()
     prompt_for_workdir = should_prompt_for_workdir()
 
     _render_startup_banner()
