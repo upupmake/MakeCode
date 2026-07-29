@@ -143,12 +143,17 @@ class SkillLoader:
             f"  - `{skills_dir.absolute().as_posix()}`" for skills_dir in self.skills_dirs
         )
         default_install_path = paths.workspace_skills_dir().absolute().as_posix()
+        installation_hint = (
+            "- To install one skill, move the complete directory containing its `SKILL.md`; for a skill group, "
+            "move the complete collection directory, according to the user's requested scope.\n"
+        )
         if not self.skills:
             return (
                 "\n\n# Skills Catalog Status\n"
                 "- Status: ON\n"
                 f"- Source directories (highest priority first):\n{skills_paths}\n"
                 f"- Default installation directory for user skills: `{default_install_path}`\n"
+                f"{installation_hint}"
                 "- No skills are currently available in this workspace."
             )
 
@@ -157,6 +162,7 @@ class SkillLoader:
             "- Status: ON\n"
             f"- Source directories (highest priority first):\n{skills_paths}\n"
             f"- Default installation directory for user skills: `{default_install_path}`\n"
+            f"{installation_hint}"
             "- The following skills are preloaded into context. When relevant, call `LoadSkill` directly using the exact skill name below.\n\n"
             "## Available Skills\n"
             f"{self.get_descriptions()}"

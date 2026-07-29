@@ -85,6 +85,11 @@ class SkillLoaderTests(unittest.TestCase):
                 f"Default installation directory for user skills: `{expected}`",
                 prompt,
             )
+            self.assertIn(
+                "move the complete directory containing its `SKILL.md`",
+                prompt,
+            )
+            self.assertIn("move the complete collection directory", prompt)
 
     def test_creates_install_and_workspace_skill_directories_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:

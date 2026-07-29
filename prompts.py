@@ -55,6 +55,7 @@ def _environment_section(workdir: str, terminal_label: str) -> str:
         f"Platform: {platform.system().lower()}",
         f"Shell: {terminal_label}",
         f"OS Version: {_get_os_version()}",
+        f"MCP configuration file: {paths.mcp_config_file()}",
     ]
 
     return "# Environment\n" + "\n".join(f" - {item}" for item in items)

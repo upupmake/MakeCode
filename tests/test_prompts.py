@@ -84,6 +84,12 @@ class PromptPolicyTests(unittest.TestCase):
         self.assertIn(expected, self._orchestrator_prompt(plan_mode=False))
         self.assertIn(expected, self._sub_agent_prompt())
 
+    def test_orchestrator_prompt_includes_dynamic_mcp_config_path(self):
+        with patch("prompts.paths.mcp_config_file", return_value="/config/mcp_config.json"):
+            prompt = self._orchestrator_prompt(plan_mode=False)
+
+        self.assertIn("MCP configuration file: /config/mcp_config.json", prompt)
+
     def test_mode_prompts_keep_one_current_mode_statement(self):
         plan_prompt = self._orchestrator_prompt(plan_mode=True)
         act_prompt = self._orchestrator_prompt(plan_mode=False)
