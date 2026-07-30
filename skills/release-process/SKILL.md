@@ -175,6 +175,8 @@ GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务
 2. 从 `platforms` 严格选择 `windows-x86_64` 或 `linux-x86_64` 资产并下载、校验和安装
 3. macOS 不支持应用内自动更新，用户需从 GitHub Release 手动下载最新版
 
+冻结版 Windows/Linux 同时支持 TUI `/update` 与外部 `--update`。外部命令必须在工作区、模型客户端、MCP 和 TUI 初始化前执行，展示版本与发布日志后默认通过 `[y/N]` 确认；仅显式传入 `-y`/`--yes` 时可跳过确认，非交互终端未传免确认参数时必须拒绝下载。源码运行与 macOS 不支持外部自动安装。`--check-update` 继续保持只读，不下载或安装。
+
 下载必须使用 HTTPS 和系统证书验证。客户端要求 manifest 提供有效 `sha256` 与正整数 `size`，下载后同时校验大小和 SHA-256。Linux 不得回退使用兼容旧客户端的 Windows 顶层字段。
 
 ### 4.2 Windows/Linux 更新执行流程

@@ -500,9 +500,9 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 #### Update Flow
 
-1. User executes the `/update` command
+1. The user runs the TUI `/update` command or external `--update` option
 2. The system fetches `version.json`, compares versions, and selects the Windows/Linux platform asset
-3. If a new version is available, it displays the version and release notes and waits for confirmation
+3. If a new version is available, it displays the version and release notes and waits for confirmation; automation can explicitly pass `-y`/`--yes`
 4. It downloads the current platform's complete onedir ZIP and verifies file size and SHA256
 5. It releases the current platform updater and exits the main program
 6. The updater transactionally replaces the application; failures roll back to the old version, while success prompts the user to restart MakeCode manually
@@ -516,7 +516,8 @@ On Linux, the installation directory must be writable by the current user. Insta
 - `system/updater.py`: Core update logic (platform asset selection, version check, download, verification, updater launch)
 - `updater.py`: Windows/Linux standalone updater for transactional replacement, failure rollback, and completion notification
 - `version.py`: Version number and update server URL configuration
-- `system/commands.py`: `/update` command handling and interactive confirmation
+- `system/commands.py`: `/update` command handling and TUI confirmation
+- `system/cli.py`: External `--update`, terminal confirmation, and `-y`/`--yes` non-interactive authorization
 
 ### 2.20 Centralized Path Module (`utils/paths.py`) (New)
 
@@ -589,7 +590,9 @@ Agent/
 │  ├─ skills.py             # skill tools and content loading
 │  ├─ skill_catalog.py      # lightweight skill discovery and priority deduplication
 │  ├─ file_access.py        # file access control and fine-grained concurrency locks
+│  ├─ mcp_config.py         # lightweight MCP add parsing and configuration writes
 │  ├─ mcp_manager.py        # MCP service manager, config loading & tool registration
+│  ├─ memory_catalog.py     # lightweight long-term memory reads and display sorting
 │  ├─ paths.py              # centralized path module (install / workspace path derivation)
 │  ├─ plan_mode.py          # Plan Mode state management and tool interception
 │  ├─ tasks.py              # TaskManager topology and status logic
@@ -712,9 +715,8 @@ flowchart TD
   failure context recovery.
 - `utils/skills.py` discovers and loads skills by priority from the install directory, workspace `.makecode/skills/`, and legacy workspace `skills/` directory.
 - `utils/llm_client.py` provides unified OpenAI Chat / Anthropic Messages streaming adapters through the official async SDKs, propagates `reasoning_effort`, reconstructs cross-protocol history, manages Anthropic prefix caching, and configures a 120-second total timeout, 10-second connection timeout, and at most five retries.
-- `utils/memory.py` handles long-session compaction, long-term memory management, and transcript storage.
-- `utils/mcp_manager.py` manages MCP service configuration loading, client lifecycle, tool extraction and
-  registration, with support for dynamic enable/disable.
+- `utils/memory.py` handles long-session compaction, long-term memory management, and transcript storage; `utils/memory_catalog.py` provides lightweight memory reads and display sorting without loading the TUI or model clients.
+- `utils/mcp_manager.py` manages MCP service configuration loading, client lifecycle, tool extraction, and registration; `utils/mcp_config.py` shares argument parsing and configuration writes between internal `/mcp-add` and external `--mcp-add`.
 - `utils/paths.py` provides centralized install-directory and workspace-directory path derivation; all consumers access paths through shared getters; automatically adapts to PyInstaller frozen and source-code environments.
 - `utils/plan_mode.py` manages Plan/Act mode state and intercepts restricted tool calls in Plan Mode.
 - `system/ts_validator.py` provides Tree-sitter syntax validation, automatically detecting code syntax errors before file writes.
@@ -823,18 +825,24 @@ The following options execute and exit immediately without starting the workspac
 | `--commands` | List all slash commands available in the TUI |
 | `--models-list` | List configured models and the current selection without showing API keys |
 | `--mcp-list` | List MCP service state, transport, and a safe target summary without connecting |
+| `--mcp-add <name> ...` | Add MCP configuration using the same arguments as `/mcp-add`; the new service remains disabled and is not connected immediately |
 | `--skills-list` | List available Skills using the current workspace directory priority |
+| `--memory-list` | List active long-term memories in the current workspace by ascending update time |
 | `--check-update` | Check online for a newer version without downloading or installing it |
+| `--update` | Check, download, and install updates in frozen Windows/Linux builds; asks for confirmation after displaying release notes |
+| `-y`, `--yes` | Use only with `--update` to explicitly skip installation confirmation |
 
 For a source run, use `python main.py <option>`. For packaged releases, use the platform entry point, for example:
 
 ```bash
-MakeCode.exe --version                 # Windows
-./MakeCode/MakeCode --models-list      # Linux
+MakeCode.exe --update                  # Windows, update after confirmation
+MakeCode.exe --update --yes            # Windows, explicit non-interactive authorization
+MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
+./MakeCode/MakeCode --memory-list      # Linux
 ./MakeCode.command --skills-list       # macOS
 ```
 
-These list options and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. To install an update, start MakeCode normally and run `/update` so the download confirmation and safe update workflow remain in place.
+`--models-list`, `--mcp-list`, `--skills-list`, `--memory-list`, and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. `--mcp-add` only changes configuration and keeps the new service disabled without connecting it. `--update` reuses the TUI `/update` HTTPS download, size/SHA256 verification, and transactional replacement flow. It requires terminal confirmation by default; non-interactive environments must explicitly pass `-y`/`--yes`. It supports only frozen Windows X64/Linux X64 builds; macOS and source runs still require manual updates.
 
 ### 6.5 Built-in Slash Commands
 

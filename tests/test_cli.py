@@ -68,13 +68,17 @@ def test_help_exits_before_interactive_startup():
     assert "usage: MakeCode" in result.stdout
     assert "--models-list" in result.stdout
     assert "--mcp-list" in result.stdout
+    assert "--mcp-add" in result.stdout
     assert "--skills-list" in result.stdout
+    assert "--memory-list" in result.stdout
     assert "--check-update" in result.stdout
+    assert "--update" in result.stdout
+    assert "-y, --yes" in result.stdout
     assert "当前工作目录" not in result.stdout
     assert result.stderr == ""
 
 
-@pytest.mark.parametrize("option", ["--models-list", "--mcp-list", "--skills-list"])
+@pytest.mark.parametrize("option", ["--models-list", "--mcp-list", "--skills-list", "--memory-list"])
 def test_list_commands_do_not_import_interactive_runtime_modules(option):
     script = f"""
 import sys
@@ -103,6 +107,43 @@ def test_commands_reuses_slash_command_catalog(capsys):
     assert exit_code == 0
     assert "MakeCode 内置斜杠命令" in output
     assert all(command in output for command in COMMAND_DESCRIPTIONS)
+
+
+def test_update_exits_before_interactive_startup_in_source_environment():
+    result = _run_main("--update", "--yes")
+
+    assert result.returncode == 1
+    assert "源码运行环境不支持自动更新" in result.stderr
+    assert "当前工作目录" not in result.stdout
+
+
+def test_mcp_add_does_not_import_interactive_or_mcp_runtime_modules():
+    script = """
+import sys
+import tempfile
+from pathlib import Path
+
+from system.cli import run_external_cli
+from utils import paths
+
+with tempfile.TemporaryDirectory() as directory:
+    config_file = Path(directory) / "mcp_config.json"
+    paths.mcp_config_file = lambda *, create=True: config_file
+    assert run_external_cli(["--mcp-add", "api", "--url", "https://example.com/mcp"]) == 0
+
+forbidden = {"init", "system.commands", "system.tui_app", "utils.mcp_manager", "fastmcp"}.intersection(sys.modules)
+assert not forbidden, sorted(forbidden)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_model_list_marks_current_model_without_exposing_api_key(tmp_path, monkeypatch, capsys):
@@ -207,6 +248,127 @@ def test_skill_list_uses_existing_directory_priority(tmp_path, monkeypatch, caps
     assert "legacy description" not in output
 
 
+def test_memory_list_reads_active_records_in_updated_order(tmp_path, monkeypatch, capsys):
+    makecode_dir = tmp_path / ".makecode"
+    memory_file = makecode_dir / "memory" / "memory.jsonl"
+    memory_file.parent.mkdir(parents=True)
+    memory_file.write_text(
+        "\n".join(
+            [
+                json.dumps({
+                    "id": "newer",
+                    "status": "active",
+                    "category": "workflow",
+                    "updated_at": "2026-07-30 12:00:00",
+                    "insight": "newer insight",
+                    "reuse_condition": "newer reuse",
+                }),
+                json.dumps({
+                    "id": "deleted",
+                    "status": "deleted",
+                    "category": "workflow",
+                    "updated_at": "2026-07-30 10:00:00",
+                    "insight": "deleted insight",
+                    "reuse_condition": "deleted reuse",
+                }),
+                json.dumps({
+                    "id": "older",
+                    "status": "active",
+                    "category": "preference",
+                    "created_at": "2026-07-30 11:00:00",
+                    "insight": "older\ninsight",
+                    "reuse_condition": "older\treuse",
+                }),
+            ]
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "utils.paths.workspace_makecode_dir",
+        lambda *, create=True: makecode_dir,
+    )
+
+    assert run_external_cli(["--memory-list"]) == 0
+
+    output = capsys.readouterr().out
+    assert "active: 2" in output
+    assert output.index("older") < output.index("newer")
+    assert "older insight" in output
+    assert "older reuse" in output
+    assert "deleted" not in output
+
+
+def test_mcp_add_writes_disabled_config_without_printing_secrets(tmp_path, monkeypatch, capsys):
+    config_file = tmp_path / "mcp_config.json"
+    monkeypatch.setattr(
+        "utils.paths.mcp_config_file",
+        lambda *, create=True: config_file,
+    )
+
+    assert run_external_cli([
+        "--mcp-add",
+        "api",
+        "--url",
+        "https://example.com/mcp",
+        "--transport",
+        "http",
+        "--header",
+        "Authorization=Bearer-secret",
+    ]) == 0
+
+    config = json.loads(config_file.read_text(encoding="utf-8"))["mcpServers"]["api"]
+    assert config == {
+        "url": "https://example.com/mcp",
+        "transport": "streamable-http",
+        "disabled": True,
+        "headers": {"Authorization": "Bearer-secret"},
+    }
+    output = capsys.readouterr().out
+    assert "已添加 MCP 服务: api" in output
+    assert "默认为禁用状态" in output
+    assert "Bearer-secret" not in output
+
+
+def test_mcp_add_stdio_preserves_command_arguments_after_separator(tmp_path, monkeypatch):
+    config_file = tmp_path / "mcp_config.json"
+    monkeypatch.setattr(
+        "utils.paths.mcp_config_file",
+        lambda *, create=True: config_file,
+    )
+
+    assert run_external_cli([
+        "--mcp-add",
+        "filesystem",
+        "--",
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        ".",
+    ]) == 0
+
+    config = json.loads(config_file.read_text(encoding="utf-8"))["mcpServers"]["filesystem"]
+    assert config == {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        "disabled": True,
+        "transport": "stdio",
+    }
+
+
+def test_mcp_add_preserves_invalid_existing_config(tmp_path, monkeypatch, capsys):
+    config_file = tmp_path / "mcp_config.json"
+    original = b"{invalid-json"
+    config_file.write_bytes(original)
+    monkeypatch.setattr(
+        "utils.paths.mcp_config_file",
+        lambda *, create=True: config_file,
+    )
+
+    assert run_external_cli(["--mcp-add", "api", "--url", "https://example.com/mcp"]) == 1
+    assert config_file.read_bytes() == original
+    assert "无法添加 MCP 服务配置" in capsys.readouterr().err
+
+
 def test_check_update_only_reports_available_version(monkeypatch, capsys):
     monkeypatch.setattr(
         "system.updater.check_update",
@@ -224,3 +386,81 @@ def test_check_update_only_reports_available_version(monkeypatch, capsys):
     assert "发现新版本: 9.9.9" in output
     assert "Test release" in output
     assert "只执行检查" in output
+
+
+class _TTYInput:
+    def isatty(self):
+        return True
+
+
+@pytest.mark.parametrize("yes_option", ["-y", "--yes"])
+def test_update_yes_downloads_and_launches_updater(yes_option, tmp_path, monkeypatch, capsys):
+    version_info = {"version": "9.9.9", "release_log": "Test release"}
+    update_archive = tmp_path / "update.zip"
+    launched = []
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr("system.updater.AUTO_UPDATE_SUPPORTED", True)
+    monkeypatch.setattr("system.updater.check_update", lambda *, raise_errors: version_info)
+
+    def download_update(info, progress_callback):
+        assert info is version_info
+        progress_callback(5, 10)
+        return update_archive
+
+    monkeypatch.setattr("system.updater.download_update", download_update)
+    monkeypatch.setattr("system.updater.launch_updater", launched.append)
+
+    assert run_external_cli(["--update", yes_option]) == 0
+
+    output = capsys.readouterr().out
+    assert "发现新版本: 9.9.9" in output
+    assert "Test release" in output
+    assert "下载进度:" in output
+    assert launched == [update_archive]
+
+
+def test_update_requires_confirmation_before_download(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "stdin", _TTYInput())
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    monkeypatch.setattr("system.updater.AUTO_UPDATE_SUPPORTED", True)
+    monkeypatch.setattr(
+        "system.updater.check_update",
+        lambda *, raise_errors: {"version": "9.9.9"},
+    )
+    monkeypatch.setattr(
+        "system.updater.download_update",
+        lambda *args, **kwargs: pytest.fail("cancelled update must not download"),
+    )
+
+    assert run_external_cli(["--update"]) == 0
+    assert "已取消更新" in capsys.readouterr().out
+
+
+def test_update_without_tty_requires_explicit_yes(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr("system.updater.AUTO_UPDATE_SUPPORTED", True)
+    monkeypatch.setattr(
+        "system.updater.check_update",
+        lambda *, raise_errors: {"version": "9.9.9"},
+    )
+    monkeypatch.setattr(
+        "system.updater.download_update",
+        lambda *args, **kwargs: pytest.fail("unconfirmed update must not download"),
+    )
+
+    assert run_external_cli(["--update"]) == 1
+    assert "非交互终端无法确认更新" in capsys.readouterr().err
+
+
+def test_update_rejects_unsupported_platform_before_network(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr("system.updater.AUTO_UPDATE_SUPPORTED", False)
+    monkeypatch.setattr(
+        "system.updater.check_update",
+        lambda *args, **kwargs: pytest.fail("unsupported platform must not check for updates"),
+    )
+
+    assert run_external_cli(["--update", "--yes"]) == 1
+    assert "当前平台不支持自动更新" in capsys.readouterr().err

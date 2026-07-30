@@ -534,6 +534,13 @@ def test_parse_mcp_add_rejects_disabled_option():
         raise AssertionError("Expected ValueError")
 
 
+def test_parse_mcp_add_rejects_disabled_field_override():
+    handler = make_handler()
+
+    with pytest.raises(ValueError, match="始终以禁用状态添加"):
+        handler._parse_mcp_add_config("/mcp-add api --url https://example.com/mcp disabled=")
+
+
 def test_parse_mcp_add_rejects_old_command_arg_syntax():
     handler = make_handler()
 

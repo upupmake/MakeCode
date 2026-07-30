@@ -1,9 +1,7 @@
 """
 斜杠命令模块 - 负责处理所有内置命令和交互式界面
 """
-import argparse
 import json
-import shlex
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -25,6 +23,8 @@ from system.models import get_model_manager
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.llm_client import strip_native_message_payloads
+from utils.mcp_config import parse_mcp_add_query
+from utils.memory_catalog import sort_memory_records
 from utils.plan_mode import toggle_plan_mode
 from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
 from utils.teams import list_team_histories, load_team_history, get_history_title
@@ -60,11 +60,6 @@ class CommandAction(Enum):
 class CommandResult:
     action: CommandAction
     payload: Any = None
-
-
-class SlashArgumentParser(argparse.ArgumentParser):
-    def error(self, message):
-        raise ValueError(message)
 
 
 # ============================================================================
@@ -492,119 +487,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             lines.extend(self._format_mcp_delete_lines(item.get("server", ""), item.get("result", {})))
         return lines
 
-    def _parse_mcp_bool(self, value: str) -> bool:
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on", "启用", "是"}:
-            return True
-        if normalized in {"0", "false", "no", "off", "禁用", "否"}:
-            return False
-        raise ValueError(f"无法解析布尔值: {value}")
-
-    def _parse_mcp_pair(self, value: str, option_name: str) -> tuple[str, str]:
-        if "=" not in value:
-            raise ValueError(f"{option_name} 需要 KEY=VALUE 格式")
-        key, item_value = value.split("=", 1)
-        key = key.strip()
-        if not key:
-            raise ValueError(f"{option_name} 的 KEY 不能为空")
-        return key, item_value
-
-    def _set_mcp_nested_field(self, cfg: dict, key: str, value: str) -> None:
-        if "." not in key:
-            cfg[key] = value
-            return
-        parent, child = key.split(".", 1)
-        if not parent or not child:
-            raise ValueError(f"字段格式无效: {key}")
-        target = cfg.setdefault(parent, {})
-        if not isinstance(target, dict):
-            raise ValueError(f"字段 {parent} 已存在且不是对象，不能设置 {key}")
-        target[child] = value
-
-    def _build_mcp_add_parser(self) -> argparse.ArgumentParser:
-        parser = SlashArgumentParser(prog="/mcp-add", add_help=False)
-        parser.add_argument("name")
-        parser.add_argument("--url")
-        parser.add_argument("--transport", choices=["stdio", "streamable-http", "http", "sse"])
-        parser.add_argument("--env", action="append", default=[])
-        parser.add_argument("--header", action="append", default=[])
-        parser.add_argument("--cwd")
-        parser.add_argument("--auth")
-        parser.add_argument("--timeout", type=int)
-        parser.add_argument("--sse-read-timeout", dest="sse_read_timeout", type=float)
-        parser.add_argument("--keep-alive", dest="keep_alive")
-        return parser
-
     def _parse_mcp_add_config(self, query: str) -> tuple[str, dict]:
-        try:
-            tokens = shlex.split(query)
-        except ValueError as exc:
-            raise ValueError(f"命令参数解析失败: {exc}") from exc
-        if len(tokens) < 2:
-            raise ValueError("用法：/mcp-add <name> [options] -- <cmd> [args...] 或 /mcp-add <name> --url <url> [options]")
-
-        command_parts = []
-        parse_tokens = tokens[1:]
-        if "--" in parse_tokens:
-            separator_index = parse_tokens.index("--")
-            command_parts = parse_tokens[separator_index + 1:]
-            parse_tokens = parse_tokens[:separator_index]
-
-        parser = self._build_mcp_add_parser()
-        try:
-            namespace, extra_fields = parser.parse_known_args(parse_tokens)
-        except SystemExit as exc:
-            raise ValueError("参数格式无效") from exc
-
-        server_name = namespace.name
-        if server_name.startswith("-"):
-            raise ValueError("/mcp-add 需要先提供服务名")
-        if not command_parts and not namespace.url:
-            raise ValueError("/mcp-add 必须提供 -- 后的启动命令或 --url")
-        if command_parts and namespace.url:
-            raise ValueError("--url 不能和 -- 后的启动命令同时使用")
-
-        cfg = {}
-        if command_parts:
-            cfg["command"] = command_parts[0]
-            if len(command_parts) > 1:
-                cfg["args"] = command_parts[1:]
-        if namespace.url:
-            cfg["url"] = namespace.url
-        if namespace.transport:
-            cfg["transport"] = namespace.transport
-        if namespace.cwd:
-            cfg["cwd"] = namespace.cwd
-        if namespace.auth:
-            cfg["auth"] = namespace.auth
-        if namespace.timeout is not None:
-            cfg["timeout"] = namespace.timeout
-        if namespace.sse_read_timeout is not None:
-            cfg["sse_read_timeout"] = namespace.sse_read_timeout
-        if namespace.keep_alive is not None:
-            cfg["keep_alive"] = self._parse_mcp_bool(namespace.keep_alive)
-        cfg["disabled"] = True
-
-        for item in namespace.env:
-            key, value = self._parse_mcp_pair(item, "--env")
-            cfg.setdefault("env", {})[key] = value
-        for item in namespace.header:
-            key, value = self._parse_mcp_pair(item, "--header")
-            cfg.setdefault("headers", {})[key] = value
-        for item in extra_fields:
-            if "=" not in item:
-                raise ValueError(f"未知参数: {item}")
-            key, value = self._parse_mcp_pair(item, "字段")
-            self._set_mcp_nested_field(cfg, key, value)
-
-        if "url" in cfg and "transport" not in cfg:
-            cfg["transport"] = "sse" if "/sse" in cfg["url"] else "streamable-http"
-        if cfg.get("transport") == "http":
-            cfg["transport"] = "streamable-http"
-        if "command" in cfg and "transport" not in cfg:
-            cfg["transport"] = "stdio"
-
-        return server_name, cfg
+        return parse_mcp_add_query(query)
 
     def handle_mcp_add(self, query: str) -> bool:
         try:
@@ -954,7 +838,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
     def handle_memory_list(self) -> bool:
         """处理 /memory-list 命令"""
-        memories = list_long_term_memories()
+        memories = sort_memory_records(list_long_term_memories())
         active_count = len(memories)
         if not memories:
             self.console.print("\n[bold yellow]暂无长期记忆。[/bold yellow] [#aaaaaa](active: 0)[/#aaaaaa]")

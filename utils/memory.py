@@ -21,6 +21,7 @@ from system.console_render import (
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion, post_tui
 from utils.common import sanitize_title
+from utils.memory_catalog import read_memory_records, sort_memory_records
 from utils.llm_client import (
     close_async_llm_client,
     create_current_async_llm_client,
@@ -352,22 +353,7 @@ def get_active_memory_count() -> int:
 
 
 def _read_memory_records(include_deleted: bool = False) -> list[dict]:
-    if not MEMORY_JSONL_FILE.exists():
-        return []
-
-    records = []
-    with open(MEMORY_JSONL_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if include_deleted or record.get("status") == "active":
-                records.append(record)
-    return records
+    return read_memory_records(MEMORY_JSONL_FILE, include_deleted=include_deleted)
 
 
 def _write_memory_records(records: list[dict]) -> None:
@@ -399,10 +385,7 @@ def list_long_term_memories() -> list[dict]:
 
 
 def _sorted_active_memory_records() -> list[dict]:
-    return sorted(
-        list_long_term_memories(),
-        key=lambda record: record.get("updated_at") or record.get("created_at") or "",
-    )
+    return sort_memory_records(list_long_term_memories())
 
 
 def render_long_term_memory_markdown(include_evidence: bool = True) -> str:

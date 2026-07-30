@@ -10,6 +10,7 @@ from rich.markup import escape
 
 from system.tui_app import TuiRegion, post_tui, refresh_status
 from utils import paths
+from utils.mcp_config import add_mcp_server_config
 
 
 def print_formatted_text(value):
@@ -441,22 +442,9 @@ class GlobalMCPManager:
 
         self.start_background()
 
-    def _read_or_create_config_dict(self) -> dict:
-        if not self.config_path or not self.config_path.exists():
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_dict = {"mcpServers": {}}
-            self._save_config_dict(config_dict)
-            return config_dict
-        return self._load_config_dict()
-
     def add_server_config(self, server_name: str, cfg: dict) -> dict:
-        config_dict = self._read_or_create_config_dict()
-        servers = config_dict.setdefault("mcpServers", {})
-        if server_name in servers:
-            raise ValueError(f"MCP 服务已存在: {server_name}。请先执行 /mcp-delete {server_name} 后再添加。")
-
-        servers[server_name] = cfg
-        self._save_config_dict(config_dict)
+        config_dict = add_mcp_server_config(self.config_path, server_name, cfg)
+        servers = config_dict["mcpServers"]
         self.server_configs = servers
 
         enable_targets = [] if cfg.get("disabled", False) else [server_name]

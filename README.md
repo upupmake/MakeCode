@@ -468,9 +468,9 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 #### 更新流程
 
-1. 用户执行 `/update` 命令
+1. 用户执行 TUI `/update` 或外部 `--update` 命令
 2. 系统从 GitHub latest Release 获取 `version.json`，比较版本号并选择 Windows/Linux 平台资产
-3. 若有新版本，展示版本号与更新说明，等待用户确认
+3. 若有新版本，展示版本号与更新说明，等待用户确认；自动化脚本可显式传入 `-y`/`--yes`
 4. 下载当前平台完整 onedir ZIP，并校验文件大小与 SHA256
 5. 释放当前平台 updater，主程序退出
 6. updater 事务替换应用；失败时回滚旧版本，成功时提示用户手动重新启动 MakeCode
@@ -484,7 +484,8 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 - `system/updater.py`：核心更新逻辑（平台资产选择、版本检查、下载、校验、启动更新器）
 - `updater.py`：Windows/Linux 独立更新器，负责事务替换、失败回滚与完成提示
 - `version.py`：版本号与更新服务器地址配置
-- `system/commands.py`：`/update` 命令处理与交互确认
+- `system/commands.py`：`/update` 命令处理与 TUI 确认
+- `system/cli.py`：`--update` 外部命令、终端确认和 `-y`/`--yes` 非交互授权
 
 ### 2.20 集中路径模块（`utils/paths.py`）（新增）
 
@@ -557,7 +558,9 @@ Agent/
 │  ├─ skills.py             # 技能工具与内容加载
 │  ├─ skill_catalog.py      # 轻量技能发现与优先级去重
 │  ├─ file_access.py        # 文件访问控制与细粒度并发锁
+│  ├─ mcp_config.py         # 轻量 MCP add 参数解析与配置写入
 │  ├─ mcp_manager.py        # MCP 服务管理器，配置加载与工具注册
+│  ├─ memory_catalog.py     # 轻量长期记忆读取与展示排序
 │  ├─ paths.py              # 集中路径模块（安装/工作区路径派生）
 │  ├─ plan_mode.py          # Plan Mode 状态管理与工具拦截
 │  ├─ tasks.py              # TaskManager 任务拓扑与状态管理
@@ -677,8 +680,8 @@ flowchart TD
 - `utils/teams.py` 负责把最新可执行任务并发委派给子智能体，回收结果，并支持失败上下文恢复。
 - `utils/skills.py` 从安装目录、工作区 `.makecode/skills/` 和工作区旧 `skills/` 目录按优先级发现并加载技能。
 - `utils/llm_client.py` 使用官方异步 SDK 统一提供 OpenAI Chat / Anthropic Messages 流式 adapter，传递 `reasoning_effort`，重建跨协议历史，管理 Anthropic 前缀缓存，并配置 120 秒总超时、10 秒连接超时与最多 5 次重试。
-- `utils/memory.py` 负责长会话压缩、长期记忆管理与转录保存。
-- `utils/mcp_manager.py` 负责 MCP 服务配置加载、客户端生命周期管理、工具提取与注册，支持动态启用/禁用服务。
+- `utils/memory.py` 负责长会话压缩、长期记忆管理与转录保存；`utils/memory_catalog.py` 提供不加载 TUI/模型客户端的轻量记忆读取与展示排序。
+- `utils/mcp_manager.py` 负责 MCP 服务配置加载、客户端生命周期管理、工具提取与注册；`utils/mcp_config.py` 为内部 `/mcp-add` 和外部 `--mcp-add` 共享参数解析与配置写入。
 - `utils/paths.py` 集中提供安装目录与工作区目录下的路径派生，所有消费者通过共享 getter 访问；PyInstaller 冻结与源码运行环境自动适配。
 - `utils/plan_mode.py` 管理 Plan/Act 模式状态，拦截 Plan Mode 下的受限工具调用。
 - `system/ts_validator.py` 提供 Tree-sitter 语法验证，在文件写入前自动检测语法错误。
@@ -785,18 +788,24 @@ python main.py
 | `--commands` | 列出 TUI 中可用的全部斜杠命令 |
 | `--models-list` | 列出已配置模型及当前选择，不显示 API Key |
 | `--mcp-list` | 列出 MCP 服务的启用状态、传输方式和安全目标摘要，不连接服务 |
+| `--mcp-add <name> ...` | 使用与 `/mcp-add` 相同的参数添加 MCP 配置；新服务默认禁用且不会立即连接 |
 | `--skills-list` | 按当前工作区的目录优先级列出可用 Skills |
+| `--memory-list` | 按更新时间升序列出当前工作区的 active 长期记忆 |
 | `--check-update` | 联网检查是否有新版本，但不下载或安装 |
+| `--update` | Windows/Linux 冻结版检查、下载并安装更新；展示更新说明后要求确认 |
+| `-y`, `--yes` | 仅与 `--update` 配合使用，显式跳过安装确认 |
 
 源码版使用 `python main.py <参数>`。打包版可直接使用对应平台入口，例如：
 
 ```bash
-MakeCode.exe --version                 # Windows
-./MakeCode/MakeCode --models-list      # Linux
+MakeCode.exe --update                  # Windows，确认后更新
+MakeCode.exe --update --yes            # Windows，脚本中显式免确认
+MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
+./MakeCode/MakeCode --memory-list      # Linux
 ./MakeCode.command --skills-list       # macOS
 ```
 
-这些列表参数和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。需要安装更新时，仍需正常启动 MakeCode 并执行 `/update`，以保留下载确认和安全更新流程。
+`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它只支持 Windows X64/Linux X64 冻结版，macOS 与源码运行仍需手动更新。
 
 ### 6.5 内置快捷命令（Slash Commands）
 
