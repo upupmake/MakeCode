@@ -8,6 +8,15 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from system.cli import run_external_cli
+
+
+if __name__ == "__main__":
+    external_cli_exit_code = run_external_cli(sys.argv[1:])
+    if external_cli_exit_code is not None:
+        raise SystemExit(external_cli_exit_code)
+
+
 from rich.console import Console
 from rich.markup import escape
 from rich.markdown import Markdown

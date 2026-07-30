@@ -8,7 +8,6 @@ if _is_frozen and sys.platform == "darwin":
     _INSTALL_MAKECODE_DIR = Path.home() / "Library" / "Application Support" / "MakeCode"
 else:
     _INSTALL_MAKECODE_DIR = _INSTALL_DIR / ".makecode"
-_INSTALL_MAKECODE_DIR.mkdir(parents=True, exist_ok=True)
 
 _WORKDIR = Path.cwd().resolve()
 
@@ -17,8 +16,9 @@ def install_dir() -> Path:
     return _INSTALL_DIR
 
 
-def install_makecode_dir() -> Path:
-    _INSTALL_MAKECODE_DIR.mkdir(parents=True, exist_ok=True)
+def install_makecode_dir(*, create: bool = True) -> Path:
+    if create:
+        _INSTALL_MAKECODE_DIR.mkdir(parents=True, exist_ok=True)
     return _INSTALL_MAKECODE_DIR
 
 
@@ -26,9 +26,10 @@ def workdir() -> Path:
     return _WORKDIR
 
 
-def workspace_makecode_dir() -> Path:
+def workspace_makecode_dir(*, create: bool = True) -> Path:
     path = _WORKDIR / ".makecode"
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -71,15 +72,17 @@ def workspace_team_runs_dir() -> Path:
     return workspace_team_dir() / "runs"
 
 
-def install_skills_dir() -> Path:
+def install_skills_dir(*, create: bool = True) -> Path:
     path = _INSTALL_DIR / ".makecode" / "skills"
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def workspace_skills_dir() -> Path:
-    path = workspace_makecode_dir() / "skills"
-    path.mkdir(parents=True, exist_ok=True)
+def workspace_skills_dir(*, create: bool = True) -> Path:
+    path = workspace_makecode_dir(create=create) / "skills"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -91,8 +94,8 @@ def layout_config_file() -> Path:
     return install_makecode_dir() / "layout_config.json"
 
 
-def mcp_config_file() -> Path:
-    return install_makecode_dir() / "mcp_config.json"
+def mcp_config_file(*, create: bool = True) -> Path:
+    return install_makecode_dir(create=create) / "mcp_config.json"
 
 
 def mcp_stderr_log_file() -> Path:

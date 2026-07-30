@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-import frontmatter
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 from rich.markup import escape
@@ -9,15 +8,11 @@ from rich.markup import escape
 from init import log_error_traceback
 from system.tui_app import TuiRegion, post_tui
 from utils import paths
+from utils.skill_catalog import discover_skills, skill_directories
 
 
 def _skills_dirs() -> list[Path]:
-    directories = [
-        paths.install_skills_dir(),
-        paths.workspace_skills_dir(),
-        paths.workspace_legacy_skills_dir(),
-    ]
-    return list(dict.fromkeys(directories))
+    return skill_directories()
 
 
 def print_formatted_text(value):
@@ -75,32 +70,13 @@ class SkillLoader:
         return "skills已加载" if self.is_enabled else "skills已关闭"
 
     def _load_all(self):
-        self.skills = {}
-        for skills_dir in reversed(self.skills_dirs):
-            if not skills_dir.exists():
-                continue
-            for f in sorted(skills_dir.rglob("SKILL.md")):
-                text = f.read_text(encoding="utf-8")
-                meta, body = self._parse_frontmatter(text)
-                name = meta.get("name")
-                description = meta.get("description")
-                if not isinstance(name, str) or not name.strip():
-                    continue
-                if not isinstance(description, str) or not description.strip():
-                    continue
-                self.skills[name.strip()] = {"meta": meta, "body": body, "path": str(f)}
-
-    @staticmethod
-    def _parse_frontmatter(text: str) -> tuple:
-        """Parse YAML frontmatter using python-frontmatter."""
-        try:
-            post = frontmatter.loads(text)
-            return post.metadata, post.content
-        except Exception as e:
+        def report_parse_error(skill_file: Path, exc: Exception) -> None:
             print_formatted_text(
-                f"[yellow]Warning: Failed to parse frontmatter: {escape(str(e))}[/yellow]"
+                f"[yellow]Warning: Failed to parse frontmatter in {escape(str(skill_file))}: "
+                f"{escape(str(exc))}[/yellow]"
             )
-            return {}, text
+
+        self.skills = discover_skills(self.skills_dirs, report_parse_error)
 
     def get_descriptions(self) -> str:
         """Short descriptions for UI/system prompt injection."""

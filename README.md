@@ -460,7 +460,7 @@ MakeCode 内置了完整的自动更新系统，支持版本检查、完整目�
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "5.3.2"
+CURRENT_VERSION = "5.3.3"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -554,7 +554,8 @@ Agent/
 │  ├─ llm_client.py         # LLM 标准适配器 (Chat vs Response) 
 │  ├─ hitl.py               # 高危操作人工拦截与可视化 UI
 │  ├─ common.py             # 文件/终端/搜索等基础工具
-│  ├─ skills.py             # 技能发现与内容加载
+│  ├─ skills.py             # 技能工具与内容加载
+│  ├─ skill_catalog.py      # 轻量技能发现与优先级去重
 │  ├─ file_access.py        # 文件访问控制与细粒度并发锁
 │  ├─ mcp_manager.py        # MCP 服务管理器，配置加载与工具注册
 │  ├─ paths.py              # 集中路径模块（安装/工作区路径派生）
@@ -563,7 +564,8 @@ Agent/
 │  ├─ teams.py              # 子智能体并发委派与执行日志
 │  └─ memory.py             # 会话压缩、长期记忆管理与转录保存
 ├─ system/
-│  ├─ commands.py           # 斜杠命令模块（命令描述、补全器、交互面板）
+│  ├─ cli.py                # 外部命令行参数与轻量命令目录
+│  ├─ commands.py           # 斜杠命令路由与交互面板
 │  ├─ console_render.py     # 控制台渲染模块（多线程安全渲染、流式输出）
 │  ├─ stream_render.py      # 流式渲染模块（两阶段渲染、接力Live、节流刷新）
 │  ├─ stream_cancel.py      # 流式取消与状态同步
@@ -772,7 +774,31 @@ python main.py
 2. **进入交互式终端**：开始与主代理对话，运行期可随时使用 `/cd <path>` 切换到另一个工作区。
 3. **配置模型**：使用 `/models` 命令添加和管理你的模型配置。
 
-### 6.4 内置快捷命令（Slash Commands）
+### 6.4 外部命令行参数
+
+以下参数会直接执行并退出，不启动工作区向导、模型客户端、MCP 连接或 Textual TUI：
+
+| 参数 | 说明 |
+|------|------|
+| `-V`, `--version` | 显示当前 MakeCode 版本 |
+| `-h`, `--help` | 显示外部命令行帮助 |
+| `--commands` | 列出 TUI 中可用的全部斜杠命令 |
+| `--models-list` | 列出已配置模型及当前选择，不显示 API Key |
+| `--mcp-list` | 列出 MCP 服务的启用状态、传输方式和安全目标摘要，不连接服务 |
+| `--skills-list` | 按当前工作区的目录优先级列出可用 Skills |
+| `--check-update` | 联网检查是否有新版本，但不下载或安装 |
+
+源码版使用 `python main.py <参数>`。打包版可直接使用对应平台入口，例如：
+
+```bash
+MakeCode.exe --version                 # Windows
+./MakeCode/MakeCode --models-list      # Linux
+./MakeCode.command --skills-list       # macOS
+```
+
+这些列表参数和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。需要安装更新时，仍需正常启动 MakeCode 并执行 `/update`，以保留下载确认和安全更新流程。
+
+### 6.5 内置快捷命令（Slash Commands）
 
 在交互式 CLI 中，支持输入斜杠 `/` 来触发快捷命令（带有输入补全提示）：
 

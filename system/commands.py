@@ -17,7 +17,9 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
 from init import log_error_traceback
+from system.cli import COMMAND_DESCRIPTIONS
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
@@ -63,45 +65,6 @@ class CommandResult:
 class SlashArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         raise ValueError(message)
-
-
-# ============================================================================
-# 命令描述定义
-# ============================================================================
-
-COMMAND_DESCRIPTIONS = {
-    "/cmds": "列出所有可用内置命令和功能描述。",
-    "/models": "打开模型管理面板，可添加、删除、标记常用、选择当前模型。",
-    "/layout": "调整 TUI 面板高度比例：左侧 Content/Tools，右侧 Task/Background/Sub-Agent。",
-    "/flush": "完整刷新 TUI 屏幕，不改变任何面板中已有的内容。",
-    "/mcp-view": "查看当前已加载的 MCP 服务器和工具。",
-    "/mcp-help": "显示 MCP 相关命令介绍。",
-    "/mcp-add": "<name> 添加 MCP 服务配置；stdio 示例：/mcp-add fs -- npx -y @server/pkg；HTTP 示例：/mcp-add api --url https://example.com/mcp --header X-Api-Key=xxx。服务名已存在时请先 /mcp-delete <name>。",
-    "/mcp-delete": "<name> 删除 MCP 服务配置；会二次确认并停用运行中的服务。",
-    "/mcp-restart": "重新启动 MCP 管理器并加载配置。",
-    "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存。",
-    "/load": "列出历史 checkpoint 并选择加载。",
-    "/skills-switch": "切换 skills 目录摘要注入状态（开启/关闭）。",
-    "/skills-list": "列出当前工作区可用的 skills。",
-    "/compact": "[prompt] 压缩当前对话上下文；prompt 可选，不填则使用默认压缩提示，并自动尝试提取关键记忆信息。",
-    "/memory-list": "列出当前保存的长期记忆。",
-    "/memory-panel": "打开长期记忆交互面板，可查看详情并二次确认删除。",
-    "/memory-delete": "<memory_id> [memory_id ...] 按 ID 删除一条或多条长期记忆。",
-    "/memory-config": "打开记忆配置面板，修改 memory_size 和 keep_recent_tool_call。",
-    "/memory-update": "[prompt] 根据用户请求主动管理长期记忆；prompt 可选，不填则根据当前对话使用默认记忆管理提示。",
-    "/tasks": "查看完整任务看板和当前执行进度。",
-    "/copy": "打开只读弹窗查看对话内容（user/assistant），支持选择文本并按 C 键复制。",
-    "/plan": "进入或退出 Plan Mode；规划阶段只允许只读和任务规划工具。",
-    "/sub-agent-console": "切换 Sub-Agent 的控制台输出状态，默认开启。",
-    "/help": "显示帮助信息和所有可用命令。",
-    "/new": "清空当前对话历史，并开启当前工作区的全新对话。",
-    "/pwd": "显示当前工作目录。",
-    "/cd": "<path> 切换当前工作目录，例如 /cd D:\\Projects\\Demo。",
-    "/hitl": "切换 Human-in-the-Loop 拦截状态（开启/关闭）。",
-    "/quit": "退出程序。",
-    "/exit": "退出程序。",
-    "/update": "检查并安装最新版本更新。",
-}
 
 
 # ============================================================================

@@ -492,7 +492,7 @@ MakeCode includes a complete built-in auto-update system supporting version chec
 #### Version Configuration (`version.py`)
 
 ```python
-CURRENT_VERSION = "5.3.2"
+CURRENT_VERSION = "5.3.3"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -586,7 +586,8 @@ Agent/
 │  ├─ llm_client.py         # Async LLM adapters (OpenAI Chat / Anthropic Messages)
 │  ├─ hitl.py               # Human-In-The-Loop interceptor and UI
 │  ├─ common.py             # file / terminal / grep primitives
-│  ├─ skills.py             # skill discovery and content loading
+│  ├─ skills.py             # skill tools and content loading
+│  ├─ skill_catalog.py      # lightweight skill discovery and priority deduplication
 │  ├─ file_access.py        # file access control and fine-grained concurrency locks
 │  ├─ mcp_manager.py        # MCP service manager, config loading & tool registration
 │  ├─ paths.py              # centralized path module (install / workspace path derivation)
@@ -595,7 +596,8 @@ Agent/
 │  ├─ teams.py              # concurrent delegation and execution logs
 │  └─ memory.py             # long-session compaction, long-term memory management, and transcript storage
 ├─ system/
-│  ├─ commands.py           # slash command module (descriptions, completer, interactive panels)
+│  ├─ cli.py                # external CLI arguments and lightweight command catalog
+│  ├─ commands.py           # slash command routing and interactive panels
 │  ├─ console_render.py     # console rendering module (multi-thread-safe, streaming)
 │  ├─ stream_render.py      # streaming render module (two-phase, relay Live, throttled refresh)
 │  ├─ stream_cancel.py      # streaming cancellation and state synchronization
@@ -810,7 +812,31 @@ After startup, you will enter a wizard flow:
 2. **Enter the interactive terminal**: Begin your conversation with the main agent; you can switch to another workspace at any time via `/cd <path>`.
 3. **Configure the model**: Use the `/models` command to add and manage model configurations.
 
-### 6.4 Built-in Slash Commands
+### 6.4 External Command-Line Options
+
+The following options execute and exit immediately without starting the workspace wizard, model clients, MCP connections, or Textual TUI:
+
+| Option | Description |
+|--------|-------------|
+| `-V`, `--version` | Show the current MakeCode version |
+| `-h`, `--help` | Show external command-line help |
+| `--commands` | List all slash commands available in the TUI |
+| `--models-list` | List configured models and the current selection without showing API keys |
+| `--mcp-list` | List MCP service state, transport, and a safe target summary without connecting |
+| `--skills-list` | List available Skills using the current workspace directory priority |
+| `--check-update` | Check online for a newer version without downloading or installing it |
+
+For a source run, use `python main.py <option>`. For packaged releases, use the platform entry point, for example:
+
+```bash
+MakeCode.exe --version                 # Windows
+./MakeCode/MakeCode --models-list      # Linux
+./MakeCode.command --skills-list       # macOS
+```
+
+These list options and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. To install an update, start MakeCode normally and run `/update` so the download confirmation and safe update workflow remain in place.
+
+### 6.5 Built-in Slash Commands
 
 In the interactive CLI, you can type `/` to trigger quick commands (with auto-completion support):
 
