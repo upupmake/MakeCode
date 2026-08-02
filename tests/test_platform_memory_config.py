@@ -107,7 +107,7 @@ def test_memory_recall_model_stays_cleared_after_reload(tmp_path):
     assert saved["memory_recall_model"] is None
 
 
-def test_model_manager_preserves_unknown_top_level_fields(tmp_path):
+def test_model_manager_preserves_unknown_top_level_fields_and_removes_legacy_max_context(tmp_path):
     config_file = tmp_path / "model_config.json"
     config_file.write_text(json.dumps({
         "version": 2,
@@ -129,6 +129,7 @@ def test_model_manager_preserves_unknown_top_level_fields(tmp_path):
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert saved["extra_field"] == {"keep": True}
     assert saved["models"][0]["is_favorite"] is True
+    assert "max_context" not in saved["models"][0]
 
 
 def test_model_manager_does_not_overwrite_unreadable_config(tmp_path):
@@ -274,29 +275,43 @@ def test_append_long_term_memory_evicts_least_recently_updated(tmp_path, monkeyp
     assert result["deleted_overflow_ids"] == ["mem_updated_first"]
 
 
-def test_memory_recall_window_size_config_preserves_existing_fields(tmp_path):
-    memory.refresh_workspace_paths()
-    original_config_file = memory.MEMORY_CONFIG_FILE
-    original_cache = memory._MEMORY_CONFIG_CACHE
-    try:
-        memory.MEMORY_CONFIG_FILE = tmp_path / "memory_config.json"
-        memory._MEMORY_CONFIG_CACHE = None
-        memory.MEMORY_CONFIG_FILE.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
+def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tmp_path, monkeypatch):
+    config_file = tmp_path / "memory_config.json"
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", config_file)
+    config_file.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
 
-        assert memory.get_memory_recall_window_size() == 3
-        assert memory.set_memory_recall_window_size(5) == 5
+    assert memory.get_memory_recall_window_size() == 3
+    assert memory.get_context_length() == 200
+    assert memory.get_context_token_limit() == 200 * 1024
+    assert memory.set_context_length(300) == 300
 
-        saved = json.loads(memory.MEMORY_CONFIG_FILE.read_text(encoding="utf-8"))
-        assert saved["memory_size"] == 9
-        assert saved["memory_recall_window_size"] == 5
-    finally:
-        memory.MEMORY_CONFIG_FILE = original_config_file
-        memory._MEMORY_CONFIG_CACHE = original_cache
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["memory_size"] == 9
+    assert saved["memory_recall_window_size"] == 3
+    assert saved["context_length"] == 300
+
+    config_file.write_text(json.dumps({
+        "memory_size": 11,
+        "memory_recall_window_size": 4,
+        "context_length": 256,
+    }), encoding="utf-8")
+
+    assert memory.get_memory_size() == 11
+    assert memory.get_memory_recall_window_size() == 4
+    assert memory.get_context_length() == 256
+    assert memory.get_context_token_limit() == 256 * 1024
+    assert memory.set_memory_recall_window_size(5) == 5
+
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["memory_size"] == 11
+    assert saved["context_length"] == 256
+    assert saved["memory_recall_window_size"] == 5
 
 
-def test_memory_config_modal_includes_recall_window_size_field():
+def test_memory_config_modal_includes_global_context_length_field():
     fields = MemoryConfigModal._FIELDS
 
+    assert fields["context_length"]["input_id"] == "memory-config-context-length"
     assert "memory_size" in fields
     assert "keep_recent_tool_call" in fields
     assert fields["memory_recall_window_size"]["input_id"] == "memory-config-memory-recall-window-size"
@@ -1594,6 +1609,49 @@ async def test_agent_loop_creates_and_closes_request_local_client():
     assert committed is True
     create_client.assert_called_once_with()
     close_client.assert_awaited_once_with(local_client)
+
+
+@pytest.mark.anyio
+async def test_agent_loop_reads_current_context_limit_for_render_and_compaction():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+
+    class FakeClient:
+        @staticmethod
+        def append_assistant_message(current_messages, raw_message):
+            current_messages.append(raw_message)
+
+    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
+            patch.object(main_module, "micro_compact"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage") as render_token_usage, \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                AsyncMock(return_value=(
+                    "done",
+                    [],
+                    {"role": "assistant", "content": "done", "stop_reason": "end_turn"},
+                    False,
+                )),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module, "estimate_tokens", return_value=1500), \
+            patch.object(main_module, "get_context_token_limit", side_effect=[2048, 1024]) as get_limit, \
+            patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
+            patch.object(main_module, "_apply_pending_title"), \
+            patch.object(main_module, "refresh_status"), \
+            patch.object(main_module.console, "print"):
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert committed is True
+    assert get_limit.call_count == 2
+    assert render_token_usage.call_args.kwargs["threshold"] == 2048
+    assert "1500 exceeded threshold 1024" in auto_compact.await_args.kwargs["reason"]
 
 
 @pytest.mark.anyio

@@ -178,7 +178,7 @@ def test_model_list_marks_current_model_without_exposing_api_key(tmp_path, monke
     output = capsys.readouterr().out
     assert "selected-model" in output
     assert "effort=high" in output
-    assert "context=256k" in output
+    assert "context=" not in output
     assert "当前" in output
     assert "example.com" in output
     assert "secret-model-key" not in output

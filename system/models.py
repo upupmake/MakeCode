@@ -33,7 +33,6 @@ class ModelConfig:
     api_key: str
     model_id: str
     is_favorite: bool = False
-    max_context: int = 128  # 单位: k (千tokens)
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
     message_format: str = DEFAULT_MESSAGE_FORMAT
 
@@ -91,7 +90,6 @@ class ModelConfig:
             api_key=data.get("api_key", ""),
             model_id=data.get("model_id", ""),
             is_favorite=data.get("is_favorite", False),
-            max_context=data.get("max_context", 128),
             reasoning_effort=normalize_reasoning_effort(data.get("reasoning_effort")),
             message_format=normalize_message_format(data.get("message_format")),
         )
@@ -280,7 +278,7 @@ class ModelManager:
         return model.get_display_text() if model else "同主模型"
 
     def set_memory_recall_model_by_key(self, key: Optional[ModelKey]) -> bool:
-        if not self._ensure_config_loaded_for_save():
+        if not self._reload_from_disk():
             return False
         if key is not None and self._get_model_by_key(key) is None:
             return False
@@ -319,27 +317,19 @@ class ModelManager:
         base_url: str,
         api_key: str,
         model_ids: list[str],
-        max_contexts: Optional[list[int]] = None,
         message_format: str = DEFAULT_MESSAGE_FORMAT,
     ) -> list[ModelConfig]:
         self._reload_from_disk()
         if self.load_error is not None or message_format not in MESSAGE_FORMATS:
             return []
 
-        if max_contexts is None:
-            max_contexts = [128] * len(model_ids)
-
-        while len(max_contexts) < len(model_ids):
-            max_contexts.append(128)
-
         new_models = []
-        for i, model_id in enumerate(model_ids):
+        for model_id in model_ids:
             model = ModelConfig(
                 base_url=base_url.rstrip("/"),
                 api_key=api_key,
                 model_id=model_id.strip(),
                 is_favorite=False,
-                max_context=max_contexts[i] if i < len(max_contexts) else 128,
                 message_format=message_format,
             )
             existing = any(existing_model.key == model.key for existing_model in self.models)

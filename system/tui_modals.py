@@ -1634,6 +1634,10 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
     ]
 
     _FIELDS = {
+        "context_length": {
+            "label": "全局上下文长度（k tokens）",
+            "input_id": "memory-config-context-length",
+        },
         "memory_size": {
             "label": "长期记忆容量上限",
             "input_id": "memory-config-memory-size",

@@ -39,16 +39,15 @@ ORCHESTRATOR_AGENT_ID = "Orchestrator"
 def print_formatted_text(value):
     post_tui(TuiRegion.STATUS, str(value))
 
-THRESHOLD = 1024 * 200
+DEFAULT_CONTEXT_LENGTH = 200  # 单位: k (千 tokens)
 DEFAULT_MEMORY_SIZE = 30
 DEFAULT_MEMORY_RECALL_WINDOW_SIZE = MEMORY_RECALL_WINDOW_SIZE
-_MEMORY_CONFIG_CACHE: dict | None = None
 _MEMORY_RECALL_WINDOWS: dict[str, list[list[str]]] = {}
 _MEMORY_RECORDS_LOCK = threading.RLock()
 
 
 def refresh_workspace_paths() -> None:
-    global MAKECODE_DIR, TRANSCRIPT_DIR, CHECKPOINT_DIR, MEMORY_DIR, MEMORY_JSONL_FILE, MEMORY_CONFIG_FILE, _MEMORY_CONFIG_CACHE, _MEMORY_RECALL_WINDOWS
+    global MAKECODE_DIR, TRANSCRIPT_DIR, CHECKPOINT_DIR, MEMORY_DIR, MEMORY_JSONL_FILE, MEMORY_CONFIG_FILE, _MEMORY_RECALL_WINDOWS
 
     MAKECODE_DIR = paths.workspace_makecode_dir()
     TRANSCRIPT_DIR = paths.workspace_transcript_dir()
@@ -56,7 +55,6 @@ def refresh_workspace_paths() -> None:
     MEMORY_DIR = paths.workspace_memory_dir()
     MEMORY_JSONL_FILE = paths.workspace_memory_jsonl_file()
     MEMORY_CONFIG_FILE = paths.workspace_memory_config_file()
-    _MEMORY_CONFIG_CACHE = None
     reset_memory_recall_windows()
 
 
@@ -266,6 +264,12 @@ def _validate_memory_recall_window_size(size) -> int:
     return size
 
 
+def _validate_context_length(length) -> int:
+    if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
+        raise ValueError("context length must be a positive integer")
+    return length
+
+
 def _load_memory_config_from_disk() -> dict:
     if not MEMORY_CONFIG_FILE.exists():
         return {}
@@ -279,24 +283,16 @@ def _load_memory_config_from_disk() -> dict:
     return data
 
 
-def _get_memory_config_cache() -> dict:
-    global _MEMORY_CONFIG_CACHE
-    if _MEMORY_CONFIG_CACHE is None:
-        _MEMORY_CONFIG_CACHE = _load_memory_config_from_disk()
-    return _MEMORY_CONFIG_CACHE
-
-
 def _write_memory_config_field(field: str, value) -> None:
-    data = dict(_get_memory_config_cache())
+    data = _load_memory_config_from_disk()
     data[field] = value
     MEMORY_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(MEMORY_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    _get_memory_config_cache()[field] = value
 
 
 def _get_memory_config_field(field: str, default, validator):
-    data = _get_memory_config_cache()
+    data = _load_memory_config_from_disk()
     if field not in data:
         _write_memory_config_field(field, default)
         return default
@@ -346,6 +342,24 @@ def set_memory_recall_window_size(size: int) -> int:
     size = _validate_memory_recall_window_size(size)
     _write_memory_config_field("memory_recall_window_size", size)
     return size
+
+
+def get_context_length() -> int:
+    return _get_memory_config_field(
+        "context_length",
+        DEFAULT_CONTEXT_LENGTH,
+        _validate_context_length,
+    )
+
+
+def set_context_length(length: int) -> int:
+    length = _validate_context_length(length)
+    _write_memory_config_field("context_length", length)
+    return length
+
+
+def get_context_token_limit() -> int:
+    return get_context_length() * 1024
 
 
 def get_active_memory_count() -> int:

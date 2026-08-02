@@ -220,8 +220,9 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - **Bounded Memory Agent**: memory decisions run in a no-user-interaction tool loop with at most 5 iterations; it does not ask clarifying questions or continue the original task.
 - **Evidence-only inputs**: reason, summary, current memories, and conversation transcript are treated as evidence data. Embedded instructions inside the transcript are not followed.
 - **Selection policy**: stores only stable information with reuse value across future sessions, such as user preferences, project conventions, workflow rules, repeated pitfalls, and confirmed release norms. It does not store one-off task progress, temporary implementation details, or facts that can be directly re-read from the repository.
+- **Global context length**: `context_length` in `memory_config.json` controls the context threshold for all models in thousands of tokens and defaults to `200`; the runtime rereads the configuration file before each use and automatically compacts history after the threshold is exceeded.
 - **Capacity and eviction policy**: long-term memory capacity is configurable; when the limit is exceeded, older active memories are evicted in chronological order.
-- **Storage paths**: long-term memories are stored in `.makecode/memory/memory.jsonl`, and memory settings are stored in `.makecode/memory/memory_config.json`. JSONL reads skip invalid lines without rewriting the file.
+- **Storage paths**: long-term memories are stored in `.makecode/memory/memory.jsonl`, while memory and global context settings are stored in `.makecode/memory/memory_config.json`. JSONL reads skip invalid lines without rewriting the file.
 - **Rendering order**: long-term memory rendering and the `/memory-panel` view are both sorted by `updated_at` ascending (falling back to `created_at` when missing); this affects only the display layer and never changes the JSONL storage order or CRUD logic.
 
 #### Long-Term Memory Commands
@@ -229,7 +230,7 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - `/memory-list`: list current active long-term memories.
 - `/memory-panel`: open the long-term memory panel for viewing, copying, and management.
 - `/memory-delete`: delete one or more long-term memories by ID.
-- `/memory-config`: open the memory configuration panel to edit `memory_size` and `keep_recent_tool_call`.
+- `/memory-config`: open the memory configuration panel to edit the global context length, `memory_size`, `keep_recent_tool_call`, recall window, and recall model.
 - `/memory-update [prompt]`: proactively add, refine, or remove long-term memories from an explicit user request; the prompt is optional — when omitted, the system infers from the current conversation transcript.
 
 #### Streaming Summary Generation
@@ -362,7 +363,6 @@ MakeCode provides a visual model configuration management interface with multi-m
 - **Disk Persistence**: Model configuration is saved to `model_config.json` in the platform-specific shared configuration directory and persists across sessions. Model configuration, MCP configuration, pane layout configuration (`layout_config.json`), and error logs stay outside the workspace, with paths supplied uniformly by `utils/paths.py`: Windows and source runs use `install_dir/.makecode/`, while packaged macOS builds use `~/Library/Application Support/MakeCode/`, allowing multiple projects to share one configuration set.
 - **Multi-Model Support**: Can manage multiple API endpoints and model IDs simultaneously
 - **Favorite Management**: Supports marking favorite models with priority sorting
-- **Context Configuration**: Each model can independently set `max_context` (in thousand tokens)
 - **Reasoning Effort Configuration**: Each model can independently set `reasoning_effort` (`low` / `medium` / `high` / `xhigh` / `max`, default `medium`); use the left and right arrow keys in the model panel to adjust it, and the model display text shows the current value
 - **Smart Display**: Automatically extracts domain prefix, displaying in `model_id (domain)` format
 
@@ -375,7 +375,6 @@ class ModelConfig:
     api_key: str                      # API key
     model_id: str                     # Model identifier
     is_favorite: bool = False         # Is favorite
-    max_context: int = 128            # Max context (k)
     reasoning_effort: str = "medium" # Reasoning effort
 ```
 
@@ -727,7 +726,7 @@ flowchart TD
 - `system/tui_app.py` is the Textual TUI main application responsible for pane layout, event dispatch, status bar, and key binding.
 - `system/tui_modals.py` provides unified TUI dialogs/panels (model, memory, MCP, layout, info panels, etc.).
 - `system/tui_types.py` defines the `TuiRegion` enum (Content / Reasoning / Task / Tools / Background / Sub-Agent / Status / RuntimeInfo) and default layout ratios, with backward-compatible `reasoning→task` key migration.
-- `system/models.py` provides model configuration management with multi-model persistence, favorites, `max_context`, and `reasoning_effort` settings.
+- `system/models.py` provides model configuration management with multi-model persistence, favorites, and `reasoning_effort` settings.
 - `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
 - `tools/ask_user.py` allows agents to proactively ask users questions when uncertain, supporting option lists and custom input via a TUI interactive panel.
 - `system/updater.py` implements Windows/Linux in-app updates: platform asset selection, version checking, progress downloads, file-size and SHA256 verification, and standalone updater launch; macOS only prompts for a manual download.
@@ -874,7 +873,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/memory-list`       | List current active long-term memories                                                                                                           |
 | `/memory-panel`      | Open the long-term memory panel (sorted by `updated_at` ascending)                                                                               |
 | `/memory-delete`     | Delete one or more long-term memories by ID                                                                                                       |
-| `/memory-config`     | Open memory configuration to edit memory size, retained tool calls, recall window, and recall model                                              |
+| `/memory-config`     | Open memory configuration to edit global context length, memory size, retained tool calls, recall window, and recall model                       |
 | `/memory-update [prompt]` | Proactively add, refine, or remove long-term memories; prompt is optional                                                                  |
 | `/hitl`               | Toggle Human-in-the-Loop interception status (On/Off)                                                                                            |
 | `/sub-agent-console`  | Toggle Sub-Agent console output status, disabled by default                                                                                      |

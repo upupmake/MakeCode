@@ -77,7 +77,6 @@ from utils.llm_client import (
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
 from utils.memory import (
-    THRESHOLD,
     MEMORY_RECALL_TOOLS,
     MEMORY_RECALL_TOOLS_HANDLERS,
     MEMORY_SELF_MANAGEMENT_TOOLS,
@@ -85,6 +84,7 @@ from utils.memory import (
     auto_compact,
     estimate_tokens,
     get_active_memory_count,
+    get_context_token_limit,
     list_checkpoints,
     load_checkpoint,
     manual_memory_update,
@@ -361,11 +361,12 @@ async def _agent_loop_with_client(messages: list, llm_client) -> bool:
     while True:
         # Update system prompt to reflect current plan mode state
         messages[0] = {"role": "system", "content": get_dynamic_system_prompt()}
+        context_token_limit = get_context_token_limit()
 
         _render_token_usage(
             messages,
             tools_definition=current_super_tools,
-            threshold=THRESHOLD,
+            threshold=context_token_limit,
             estimate_tokens_fn=estimate_tokens,
         )
 
@@ -471,10 +472,11 @@ async def _agent_loop_with_client(messages: list, llm_client) -> bool:
     current_context_tokens = estimate_tokens(
         messages, tools_definition=current_super_tools
     )
-    if current_context_tokens > THRESHOLD:
+    context_token_limit = get_context_token_limit()
+    if current_context_tokens > context_token_limit:
         compact_reason = (
             f"Post agent_loop auto compact triggered: estimated tokens "
-            f"{current_context_tokens} exceeded threshold {THRESHOLD}."
+            f"{current_context_tokens} exceeded threshold {context_token_limit}."
         )
         try:
             await auto_compact(
@@ -696,7 +698,7 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
             history,
             tools_definition=get_current_tools_definition(),
         )
-        return format_runtime_info(tokens, THRESHOLD)
+        return format_runtime_info(tokens, get_context_token_limit())
 
     def header_info_provider() -> str:
         workdir = paths.workdir()

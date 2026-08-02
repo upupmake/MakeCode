@@ -199,8 +199,9 @@ Team 模块支持：
 - **证据数据边界**：`reason`、`summary`、当前记忆和对话转录只作为记忆决策证据处理；即使转录中包含嵌入指令，也不会被当作需要执行的指令。
 - **筛选原则**：仅保存对未来会话有复用价值的稳定信息，例如用户偏好、项目约定、工作流规则、常见陷阱和已确认的发布规范；不保存一次性任务进度、临时实现细节或可直接从仓库重新读取的事实。
 - **决策消息生成**：当摘要为空时，记忆决策消息会省略 Summary 段落，而不是渲染空的 Summary 区块。
+- **全局上下文长度**：`memory_config.json` 中的 `context_length` 统一控制所有模型的上下文阈值，单位为千 tokens，默认 `200`；运行时每次使用前都会重新读取配置文件，超过阈值后自动压缩上下文。
 - **容量与淘汰策略**：长期记忆容量可配置；超出上限时，系统会按时间顺序淘汰较旧的 active 记忆。
-- **存储位置**：长期记忆保存于 `.makecode/memory/memory.jsonl`，记忆配置保存于 `.makecode/memory/memory_config.json`。
+- **存储位置**：长期记忆保存于 `.makecode/memory/memory.jsonl`，记忆及全局上下文配置保存于 `.makecode/memory/memory_config.json`。
 - **容错读取**：读取记忆 JSONL 时会跳过无效行，并保持原文件内容不被重写。
 - **渲染顺序**：长期记忆渲染与 `/memory-panel` 面板均按 `updated_at` 升序排列（缺失时回退 `created_at`），只影响展示层，不改变 JSONL 存储顺序和增删改查逻辑。
 
@@ -209,7 +210,7 @@ Team 模块支持：
 - `/memory-list`：列出当前 active 长期记忆。
 - `/memory-panel`：打开长期记忆面板，可查看/复制/管理记忆。
 - `/memory-delete`：按 ID 删除一条或多条长期记忆。
-- `/memory-config`：打开记忆配置面板，可修改 `memory_size` 和 `keep_recent_tool_call`。
+- `/memory-config`：打开记忆配置面板，可修改全局上下文长度、`memory_size`、`keep_recent_tool_call`、召回窗口和召回模型。
 - `/memory-update [prompt]`：根据用户提供的请求主动新增、修正或清理长期记忆；prompt 可选，省略时基于当前转录自动推断。
 
 #### 流式摘要生成
@@ -330,7 +331,6 @@ MakeCode 提供可视化的模型配置管理功能，支持多模型切换和�
 - **磁盘持久化**：模型配置自动保存到平台共享配置目录的 `model_config.json`，跨会话保留。模型配置、MCP 配置、面板布局配置（`layout_config.json`）及错误日志均不存放在工作区，路径由 `utils/paths.py` 统一提供：Windows 与源码运行使用 `install_dir/.makecode/`，macOS 打包版使用 `~/Library/Application Support/MakeCode/`，确保多项目共享同一套配置。
 - **多模型支持**：可同时管理多个 API 端点和模型 ID
 - **收藏管理**：支持标记收藏模型，优先排序显示
-- **上下文配置**：每个模型可独立设置 `max_context`（单位：千 tokens）
 - **推理强度配置**：每个模型可独立设置 `reasoning_effort`（`low` / `medium` / `high` / `xhigh` / `max`，默认 `medium`）；模型面板使用左右方向键调整，模型显示文本同步展示当前值
 - **智能显示**：自动提取域名前缀，在面板中显示为 `model_id (域名)` 格式
 
@@ -343,7 +343,6 @@ class ModelConfig:
     api_key: str                     # API 密钥
     model_id: str                    # 模型标识
     is_favorite: bool = False        # 是否收藏
-    max_context: int = 128           # 最大上下文 (k)
     reasoning_effort: str = "medium" # 推理强度
 ```
 
@@ -692,7 +691,7 @@ flowchart TD
 - `system/tui_app.py` 是 Textual TUI 主应用，负责面板布局、事件分发、状态栏与快捷键绑定。
 - `system/tui_modals.py` 提供统一的 TUI 弹窗/面板（模型、记忆、MCP、布局、信息面板等）。
 - `system/tui_types.py` 定义 TUI 区柚枚 `TuiRegion`（Content / Reasoning / Task / Tools / Background / Sub-Agent / Status / RuntimeInfo）与默认布局比例。
-- `system/models.py` 提供模型配置管理，支持多模型配置持久化、收藏、`max_context` 与 `reasoning_effort` 设置。
+- `system/models.py` 提供模型配置管理，支持多模型配置持久化、收藏与 `reasoning_effort` 设置。
 - `tools/todo.py` 供子智能体在多步骤任务中维护内部待办。
 - `tools/ask_user.py` 允许智能体在不确定时主动向用户提问，支持选项列表与自定义输入，基于 TUI 交互面板实现。
 - `system/updater.py` 实现 Windows/Linux 应用内自动更新逻辑：平台资产选择、版本检查、带进度下载、大小与 SHA256 校验，并启动独立更新器；macOS 仅提示手动下载。
@@ -837,7 +836,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 | `/memory-list`       | 列出当前 active 长期记忆                                                |
 | `/memory-panel`      | 打开长期记忆面板（按 `updated_at` 升序展示）                            |
 | `/memory-delete`     | 按 ID 删除一条或多条长期记忆                                            |
-| `/memory-config`     | 打开记忆配置面板，修改记忆大小、保留工具调用数、召回窗口和召回模型                 |
+| `/memory-config`     | 打开记忆配置面板，修改全局上下文长度、记忆大小、保留工具调用数、召回窗口和召回模型          |
 | `/memory-update [prompt]` | 主动新增/修正/清理长期记忆，prompt 可选                              |
 | `/hitl`               | 切换 Human-in-the-Loop 拦截状态 (开启/关闭)                               |
 | `/sub-agent-console`  | 切换 Sub-Agent 的控制台输出状态，默认关闭                                      |

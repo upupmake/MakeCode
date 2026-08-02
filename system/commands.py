@@ -32,12 +32,14 @@ from utils.memory import (
     delete_long_term_memory,
     get_active_memory_count,
     get_checkpoint_title,
+    get_context_length,
     get_keep_recent_tool_call,
     get_memory_recall_window_size,
     get_memory_size,
     list_long_term_memories,
     manual_memory_update,
     reset_memory_recall_windows,
+    set_context_length,
     set_keep_recent_tool_call,
     set_memory_recall_window_size,
     set_memory_size,
@@ -913,6 +915,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         model_manager = get_model_manager()
         current_values = {
+            "context_length": get_context_length(),
             "memory_size": get_memory_size(),
             "keep_recent_tool_call": get_keep_recent_tool_call(),
             "memory_recall_window_size": get_memory_recall_window_size(),
@@ -947,15 +950,18 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             current_values["memory_recall_model_key"] = keys[selected_index]
             current_values["memory_recall_model_display"] = "同主模型" if selected_index == 0 else options[selected_index]
 
+        set_context_length(result["context_length"])
         set_memory_size(result["memory_size"])
         set_keep_recent_tool_call(result["keep_recent_tool_call"])
         set_memory_recall_window_size(result["memory_recall_window_size"])
         if model_manager is not None:
             model_manager.set_memory_recall_model_by_key(result.get("memory_recall_model_key"))
         refresh_tools_title()
+        refresh_status()
         recall_model_text = model_manager.get_memory_recall_model_display_text() if model_manager else "同主模型"
         self.console.print(
             "\n[bold green]记忆配置已更新[/bold green]\n"
+            f"  context_length: {result['context_length']}k tokens\n"
             f"  memory_size: {result['memory_size']} "
             f"[#aaaaaa](当前 active：{get_active_memory_count()})[/#aaaaaa]\n"
             f"  keep_recent_tool_call: {result['keep_recent_tool_call']}\n"

@@ -26,7 +26,7 @@ COMMAND_DESCRIPTIONS = {
     "/memory-list": "列出当前保存的长期记忆。",
     "/memory-panel": "打开长期记忆交互面板，可查看详情并二次确认删除。",
     "/memory-delete": "<memory_id> [memory_id ...] 按 ID 删除一条或多条长期记忆。",
-    "/memory-config": "打开记忆配置面板，修改 memory_size 和 keep_recent_tool_call。",
+    "/memory-config": "打开记忆配置面板，修改全局上下文长度和记忆设置。",
     "/memory-update": "[prompt] 根据用户请求主动管理长期记忆；prompt 可选，不填则根据当前对话使用默认记忆管理提示。",
     "/tasks": "查看完整任务看板和当前执行进度。",
     "/copy": "打开只读弹窗查看对话内容（user/assistant），支持选择文本并按 C 键复制。",
@@ -98,8 +98,7 @@ def _models_list() -> int:
         label_text = f" ({', '.join(labels)})" if labels else ""
         print(
             f"  {index}. {_plain_text(model.model_id)} · {_display_model_host(model.base_url)} · "
-            f"{model.message_format} · effort={model.reasoning_effort} · "
-            f"context={_plain_text(model.max_context)}k{label_text}"
+            f"{model.message_format} · effort={model.reasoning_effort}{label_text}"
         )
     return 0
 
