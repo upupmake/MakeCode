@@ -204,28 +204,8 @@ def _render_tool_call(
         tui_region: TuiRegion = TuiRegion.TOOLS,
 ):
     """渲染工具调用"""
-    display_data = arguments
-    is_complex = False
+    body = Text(format_tool_arguments(arguments), style="white")
 
-    # 1. 解析参数
-    if isinstance(arguments, str):
-        stripped = arguments.strip()
-        if stripped and (stripped.startswith('{') or stripped.startswith('[')):
-            try:
-                display_data = json.loads(stripped)
-                is_complex = True
-            except json.JSONDecodeError:
-                pass
-    elif isinstance(arguments, (dict, list)):
-        is_complex = True
-
-    # 2. 渲染 UI
-    if is_complex:
-        body = Text(format_tool_arguments(display_data), style="white")
-    else:
-        body = Text(str(display_data))
-
-    # 3. 输出 Panel
     console.print(
         Panel(
             body,
@@ -247,26 +227,7 @@ def _render_tool_output(
 ):
     """渲染工具输出"""
     text = _stringify_output(output).strip()
-
-    is_complex = False
-    display_data = text
-
-    # 尝试判断并解析 JSON 结构
-    if text.startswith("{") or text.startswith("["):
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, (dict, list)):
-                display_data = parsed
-                is_complex = True
-        except json.JSONDecodeError:
-            # 静默处理，非有效 JSON 直接作为普通文本渲染
-            pass
-
-    # 渲染 UI
-    if is_complex:
-        body = _terminal_output_text(format_tool_value(display_data), style="white")
-    else:
-        body = _terminal_output_text(text)
+    body = _terminal_output_text(format_tool_value(text), style="white")
 
     console.print(
         Panel(

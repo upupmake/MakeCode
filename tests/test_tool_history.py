@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock, patch
 
 import pytest
@@ -125,6 +126,43 @@ def test_tool_history_preserves_data_and_formats_arguments_as_indented_json():
         '}'
     )
     assert format_tool_value("plain result") == "plain result"
+
+
+def test_tool_formatting_decodes_nested_json_for_display_without_mutating_source():
+    nested_json = json.dumps(
+        {
+            "content": "first line\n\nsecond line",
+            "literal": r"first\nsecond",
+            "count": 2,
+        },
+        ensure_ascii=False,
+    )
+    source = {"payload": nested_json, "enabled": True}
+
+    rendered = format_tool_value(source)
+
+    assert '"payload": {' in rendered
+    assert '"content": "\n    first line\n    \n    second line"' in rendered
+    assert '"literal": "first\\\\nsecond"' in rendered
+    assert '"count": 2' in rendered
+    assert '"enabled": true' in rendered
+    assert '\\"content\\"' not in rendered
+    assert source == {"payload": nested_json, "enabled": True}
+
+
+def test_tool_formatting_decodes_repeated_top_level_json_string_layers_for_display():
+    structured = json.dumps(
+        {"summary": "first line\nsecond line", "items": [1, 2]},
+        ensure_ascii=False,
+    )
+    double_encoded = json.dumps(structured, ensure_ascii=False)
+
+    rendered = format_tool_value(double_encoded)
+
+    assert rendered.startswith("{\n")
+    assert '"summary": "\n  first line\n  second line"' in rendered
+    assert '"items": [' in rendered
+    assert '\\"summary\\"' not in rendered
 
 
 def test_tool_history_rebuilds_openai_and_normalized_checkpoint_messages():

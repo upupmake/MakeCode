@@ -1,3 +1,4 @@
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -13,7 +14,12 @@ from system.console_render import (
 )
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion
-from utils.llm_client import build_llm_result
+from utils.llm_client import (
+    AsyncChatAPIClient,
+    build_anthropic_request_messages,
+    build_llm_result,
+    sanitize_openai_messages,
+)
 
 
 def _render_tool_event(render, value):
@@ -119,6 +125,56 @@ def test_plain_tool_output_remains_plain_text():
     assert "first line\n" in rendered
     assert "second line" in rendered
     assert '"first line' not in rendered
+
+
+def test_json_scalar_like_tool_output_remains_original_text():
+    assert _render_terminal_output("true").strip() == "true"
+    assert _render_terminal_output("123").strip() == "123"
+    assert _render_terminal_output('"quoted"').strip() == '"quoted"'
+
+
+def test_live_display_formatting_does_not_change_tool_result_sent_to_model():
+    nested_json = json.dumps(
+        {"content": "first line\nsecond line", "literal": r"first\nsecond"},
+        ensure_ascii=False,
+    )
+    output = {"payload": nested_json, "count": 2}
+    expected_model_content = json.dumps(output, ensure_ascii=False)
+
+    rendered = _render_terminal_output(output)
+    tool_message = AsyncChatAPIClient(None, "test").format_tool_result(
+        "call_1",
+        "RunTerminalCommand",
+        output,
+    )
+
+    assert '"payload": {' in rendered
+    assert '\\"content\\"' not in rendered
+    assert output == {"payload": nested_json, "count": 2}
+    assert tool_message["content"] == expected_model_content
+    assert sanitize_openai_messages([tool_message])[0]["content"] == expected_model_content
+
+    _, anthropic_messages = build_anthropic_request_messages([tool_message], "claude-test")
+    assert anthropic_messages[0]["content"][0]["content"] == expected_model_content
+
+
+def test_live_display_expands_double_encoded_json_without_changing_model_content():
+    structured = json.dumps(
+        {"summary": "first line\nsecond line", "items": [1, 2]},
+        ensure_ascii=False,
+    )
+    output = json.dumps(structured, ensure_ascii=False)
+
+    rendered = _render_terminal_output(output)
+    tool_message = AsyncChatAPIClient(None, "test").format_tool_result(
+        "call_1",
+        "RunTerminalCommand",
+        output,
+    )
+
+    assert '"summary": "\n  first line\n  second line"' in rendered
+    assert '\\"summary\\"' not in rendered
+    assert tool_message["content"] == output
 
 
 def _render_to_plain_text(renderable):

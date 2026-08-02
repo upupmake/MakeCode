@@ -75,18 +75,45 @@ def _format_json_lines(value: Any, indent_level: int = 0) -> list[str]:
     return [f"{indent}{json.dumps(value, ensure_ascii=False, default=str)}"]
 
 
+def _normalize_json_for_display(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _normalize_json_for_display(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_json_for_display(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    parsed = _decode_structured_json(value)
+    return value if parsed is None else parsed
+
+
+def _decode_structured_json(value: str) -> Any | None:
+    current: Any = value
+    while isinstance(current, str):
+        try:
+            current = json.loads(current)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(current, (dict, list)):
+        return None
+    return _normalize_json_for_display(current)
+
+
 def _format_json(value: Any) -> str:
     normalized = json.loads(json.dumps(value, ensure_ascii=False, default=str))
-    if not _contains_multiline_string(normalized):
-        return json.dumps(normalized, ensure_ascii=False, indent=2, default=str)
-    return "\n".join(_format_json_lines(normalized))
+    display_value = _normalize_json_for_display(normalized)
+    if not _contains_multiline_string(display_value):
+        return json.dumps(display_value, ensure_ascii=False, indent=2, default=str)
+    return "\n".join(_format_json_lines(display_value))
 
 
 def format_tool_value(value: Any) -> str:
     if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
+        parsed = _decode_structured_json(value)
+        if parsed is None:
             return value
         return _format_json(parsed)
     return _format_json(value)
@@ -94,10 +121,10 @@ def format_tool_value(value: Any) -> str:
 
 def format_tool_arguments(value: Any) -> str:
     if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError:
-            pass
+        parsed = _decode_structured_json(value)
+        if parsed is None:
+            return value
+        return _format_json(parsed)
     return _format_json(value)
 
 
