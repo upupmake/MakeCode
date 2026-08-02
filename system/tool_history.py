@@ -350,6 +350,15 @@ class ToolExecutionHistory:
             self._next_sequence = sequence
         return len(recovered)
 
+    def replace_with(self, other: "ToolExecutionHistory") -> None:
+        with other._lock:
+            records = dict(other._records)
+            next_sequence = other._next_sequence
+        with self._lock:
+            self._records = records
+            self._started_monotonic.clear()
+            self._next_sequence = next_sequence
+
     @staticmethod
     def _tool_call_parts(tool_call: Any) -> tuple[str, str, Any]:
         if not isinstance(tool_call, dict):

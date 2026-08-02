@@ -20,7 +20,7 @@ from init import log_error_traceback
 from system.cli import COMMAND_DESCRIPTIONS
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
-from system.tool_history import TOOL_EXECUTION_HISTORY
+from system.tool_history import TOOL_EXECUTION_HISTORY, ToolExecutionHistory
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationStore
@@ -1034,6 +1034,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 snapshot.conversation_id,
                 snapshot.sub_agent_history,
             )
+            next_tool_history = ToolExecutionHistory()
+            next_tool_history.rebuild_from_messages(loaded)
         except Exception as exc:
             log_error_traceback("commands handle_load error", exc)
             self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]", tui_region=TuiRegion.TOOLS)
@@ -1048,7 +1050,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         tasks_module.TASK_MANAGER = next_task_manager
         teams_module.TEAM = next_team
-        TOOL_EXECUTION_HISTORY.rebuild_from_messages(loaded)
+        TOOL_EXECUTION_HISTORY.replace_with(next_tool_history)
         reset_memory_recall_windows()
         hitl_mod.SESSION_WHITELIST.clear()
         hitl_mod.PATH_WHITELIST.clear()

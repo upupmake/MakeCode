@@ -153,6 +153,7 @@ class ConversationStore:
         manifest = self._validate_manifest(path)
         conversation_id = manifest["conversation_id"]
         root = path.parent
+        self._validate_sidecar_paths(root)
 
         task_plan_path = root / TASK_PLAN_FILE
         task_plan = None
@@ -190,6 +191,7 @@ class ConversationStore:
 
     def activate(self, snapshot: ConversationSnapshot) -> None:
         manifest = self._validate_manifest(snapshot.path)
+        self._validate_sidecar_paths(snapshot.root)
         if manifest["conversation_id"] != snapshot.conversation_id:
             raise ValueError("Conversation snapshot ID mismatch")
         self._active_id = snapshot.conversation_id
@@ -200,6 +202,7 @@ class ConversationStore:
     def delete(self, path: Path) -> None:
         path = Path(path)
         manifest = self._validate_manifest(path)
+        self._validate_sidecar_paths(path.parent)
         if self._active_id == manifest["conversation_id"]:
             raise ValueError("当前对话正在使用，不能删除。")
         shutil.rmtree(path.parent)
@@ -217,6 +220,13 @@ class ConversationStore:
             isinstance(message, dict) for message in data["messages"]
         ):
             raise ValueError(f"Invalid conversation messages: {path}")
+        for message in data["messages"]:
+            tool_calls = message.get("tool_calls")
+            if tool_calls is not None and (
+                not isinstance(tool_calls, list)
+                or any(not isinstance(tool_call, dict) for tool_call in tool_calls)
+            ):
+                raise ValueError(f"Invalid conversation tool calls: {path}")
         if not isinstance(data.get("created_at"), str) or not isinstance(data.get("updated_at"), str):
             raise ValueError(f"Invalid conversation timestamps: {path}")
         title = data.get("title")
@@ -232,6 +242,7 @@ class ConversationStore:
         return data
 
     def _validate_conversation_path(self, path: Path) -> None:
+        self._validate_root()
         root = self.root.resolve()
         if (
             path.name != CONVERSATION_FILE
@@ -242,6 +253,27 @@ class ConversationStore:
             or path.parent.resolve() != root / path.parent.name
         ):
             raise ValueError(f"Invalid 6.0 conversation path: {path}")
+
+    def _validate_root(self) -> None:
+        if self.root.is_symlink() or self.root.parent.is_symlink():
+            raise ValueError(f"Invalid 6.0 conversation root: {self.root}")
+
+    @staticmethod
+    def _validate_sidecar_paths(root: Path) -> None:
+        paths_to_validate = (
+            root / TASK_PLAN_FILE,
+            root / "sub_agents",
+            root / SUB_AGENT_HISTORY_FILE,
+            root / SUB_AGENT_RUNS_DIR,
+        )
+        sub_agents_dir = root / "sub_agents"
+        runs_dir = root / SUB_AGENT_RUNS_DIR
+        if (
+            any(path.is_symlink() for path in paths_to_validate)
+            or (sub_agents_dir.exists() and not sub_agents_dir.is_dir())
+            or (runs_dir.exists() and not runs_dir.is_dir())
+        ):
+            raise ValueError(f"Invalid conversation storage path: {root}")
 
     @staticmethod
     def _validate_sidecar(data: dict[str, Any], conversation_id: str, path: Path) -> None:

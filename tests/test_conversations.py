@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -162,6 +163,53 @@ def test_conversation_store_rejects_manifest_outside_its_root(tmp_path):
 
     with pytest.raises(ValueError, match="Invalid 6.0 conversation path"):
         store.load(outside_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink behavior")
+def test_conversation_store_rejects_symlinked_storage_root(tmp_path):
+    outside_store = ConversationStore(tmp_path / "outside")
+    outside_path = outside_store.save_messages([{"role": "system", "content": "outside"}])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    linked_root = workspace / "conversations"
+    linked_root.symlink_to(outside_store.root, target_is_directory=True)
+    store = ConversationStore(linked_root)
+    linked_path = linked_root / outside_path.parent.name / CONVERSATION_FILE
+
+    with pytest.raises(ValueError, match="Invalid 6.0 conversation root"):
+        store.save_messages([{"role": "system", "content": "new"}])
+    with pytest.raises(ValueError, match="Invalid 6.0 conversation root"):
+        store.delete(linked_path)
+
+    assert outside_path.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink behavior")
+@pytest.mark.parametrize(
+    ("relative_path", "target_is_directory"),
+    [
+        (TASK_PLAN_FILE, False),
+        (SUB_AGENT_HISTORY_FILE, False),
+        ("sub_agents", True),
+        ("sub_agents/runs", True),
+    ],
+)
+def test_conversation_store_rejects_broken_symlink_storage(
+        tmp_path,
+        relative_path,
+        target_is_directory,
+):
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "system"}])
+    unsafe_path = conversation.parent / relative_path
+    unsafe_path.parent.mkdir(parents=True, exist_ok=True)
+    unsafe_path.symlink_to(
+        tmp_path / f"missing-{relative_path.replace('/', '-')}",
+        target_is_directory=target_is_directory,
+    )
+
+    with pytest.raises(ValueError, match="Invalid conversation storage path"):
+        store.load(conversation)
 
 
 def test_task_manager_rejects_invalid_loaded_plan(tmp_path):

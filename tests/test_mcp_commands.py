@@ -289,7 +289,7 @@ def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp
     assert tasks_module.TASK_MANAGER._data == task_plan
     assert teams_module.TEAM.conversation_id == conversation.parent.name
     assert teams_module.TEAM.history == team_history
-    tool_history.rebuild_from_messages.assert_called_once_with(expected_messages)
+    tool_history.replace_with.assert_called_once()
 
 
 def test_load_conversation_without_sidecars_activates_empty_histories(tmp_path, monkeypatch):
@@ -321,6 +321,52 @@ def test_load_conversation_without_sidecars_activates_empty_histories(tmp_path, 
     assert tasks_module.TASK_MANAGER._data["tasks"] == {}
     assert teams_module.TEAM.conversation_id == conversation.parent.name
     assert teams_module.TEAM.history == []
+
+
+def test_load_malformed_messages_keeps_previous_state(tmp_path, monkeypatch):
+    from system.tool_history import ToolExecutionHistory
+    from utils import tasks as tasks_module
+    from utils import teams as teams_module
+
+    store = ConversationStore(tmp_path / "conversations")
+    previous = store.save_messages([{"role": "system", "content": "previous"}])
+    previous_snapshot = store.load(previous)
+    previous_task_manager = tasks_module.TaskManager(previous.parent, previous.parent.name)
+    previous_team = teams_module.TeammateManager(previous.parent, previous.parent.name, [])
+    store.reset()
+    malformed = store.save_messages([
+        {"role": "system", "content": "malformed"},
+        {"role": "assistant", "tool_calls": 1},
+    ])
+    store.activate(previous_snapshot)
+    monkeypatch.setattr(tasks_module, "TASK_MANAGER", previous_task_manager)
+    monkeypatch.setattr(teams_module, "TEAM", previous_team)
+    tool_history = ToolExecutionHistory()
+    tool_history.start("FileRead", "{}")
+    monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
+    monkeypatch.setattr(
+        "system.commands.interactive_choose_conversation",
+        lambda conversations, **kwargs: str(malformed),
+    )
+    handler = make_handler(store)
+    handler.console = Mock()
+    original_history = [{"role": "system", "content": "previous"}]
+
+    loaded_history, active_path = handler.handle_load(
+        original_history,
+        previous,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    )
+
+    assert loaded_history is original_history
+    assert active_path == previous
+    assert store.active_path == previous
+    assert tasks_module.TASK_MANAGER is previous_task_manager
+    assert teams_module.TEAM is previous_team
+    assert len(tool_history.query()) == 1
+    assert tool_history.query()[0].tool_name == "FileRead"
 
 
 def test_load_failure_keeps_previous_conversation_and_managers(tmp_path, monkeypatch):
