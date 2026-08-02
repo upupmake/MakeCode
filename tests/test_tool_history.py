@@ -262,6 +262,11 @@ async def test_tool_history_modal_searches_toggles_summary_and_shows_full_detail
 
     async with app.run_test(size=(140, 40)) as pilot:
         await pilot.pause()
+        history_list = modal.query_one("#tool-history-list")
+        detail = modal.query_one("#tool-history-detail")
+        pane_width = history_list.size.width + detail.size.width
+        assert history_list.size.width / pane_width == pytest.approx(0.35, abs=0.02)
+
         search = modal.query_one("#tool-history-search")
         search.value = "needle"
         await pilot.pause()

@@ -201,7 +201,7 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     #tool-history-list {
-        width: 42%;
+        width: 35fr;
         height: 1fr;
         border: round #475569;
     }
@@ -216,7 +216,7 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     #tool-history-detail {
-        width: 1fr;
+        width: 65fr;
         height: 1fr;
         margin-left: 1;
         border: round #3b82f6;
