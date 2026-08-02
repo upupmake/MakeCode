@@ -234,7 +234,7 @@ async def test_wide_layout_keeps_both_columns_and_hides_compact_toggle():
         assert not right_column.has_class("hidden")
         assert toggle.has_class("hidden")
         assert left_column.region.width + right_column.region.width == main_grid.region.width
-        assert abs(right_column.region.width / main_grid.region.width - 0.3) < 0.02
+        assert abs(right_column.region.width / main_grid.region.width - 0.28) < 0.02
 
         await pilot.press("f6")
         await pilot.pause()

@@ -587,12 +587,12 @@ class MakeCodeTuiApp(App[None]):
     }
 
     #left-column {
-        width: 7fr;
+        width: 72fr;
         height: 1fr;
     }
 
     #right-column {
-        width: 3fr;
+        width: 28fr;
         height: 1fr;
     }
 
