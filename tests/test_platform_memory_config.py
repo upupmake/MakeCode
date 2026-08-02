@@ -1417,6 +1417,38 @@ async def test_first_title_request_starts_after_agent_loop_returns():
     ]
 
 
+@pytest.mark.anyio
+async def test_regenerate_title_uses_all_user_message_content():
+    history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "第一条用户消息"},
+        {"role": "assistant", "content": "assistant"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "第二条用户消息"},
+                {"type": "text", "text": "补充内容"},
+            ],
+        },
+        {"role": "tool", "content": "tool result"},
+    ]
+
+    with patch.object(main_module, "CURRENT_CHECKPOINT", Path(
+            "/tmp/ckpt_旧标题_20260715_120000_abcd1234.json"
+    )), patch.object(main_module, "_pending_title", None), \
+            patch.object(main_module, "generate_title", AsyncMock(return_value="新标题")) as generate, \
+            patch.object(main_module, "_apply_pending_title") as apply_title, \
+            patch.object(main_module, "refresh_status") as refresh:
+        await main_module._regenerate_conversation_title(history)
+
+        generate.assert_awaited_once_with(
+            "第一条用户消息\n\n第二条用户消息\n\n补充内容"
+        )
+        assert main_module._pending_title == "新标题"
+        apply_title.assert_called_once_with()
+        refresh.assert_called_once_with()
+
+
 def test_applied_pending_title_becomes_current_display_title(tmp_path):
     checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
     checkpoint.write_text("[]", encoding="utf-8")

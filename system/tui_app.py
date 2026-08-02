@@ -14,7 +14,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
-from textual.events import Key, Resize
+from textual.events import Click, Key, Resize
 from textual.widgets import Button, Footer, Input, Label, RichLog, Static, TextArea
 
 from system.tui_types import (
@@ -469,6 +469,15 @@ class MakeCodeInput(TextArea):
         self.call_after_refresh(app.update_slash_hint)
 
 
+class ConversationTitle(Static):
+    def on_click(self, event: Click) -> None:
+        app = self.app
+        if not isinstance(app, MakeCodeTuiApp):
+            return
+        app.open_conversation_title_regeneration_modal()
+        event.stop()
+
+
 class MakeCodeTuiApp(App[None]):
     ENABLE_COMMAND_PALETTE = False
 
@@ -707,6 +716,7 @@ class MakeCodeTuiApp(App[None]):
         runtime_info_provider: Callable[[], str] | None = None,
         header_info_provider: Callable[[], str] | None = None,
         conversation_title_provider: Callable[[], str | None] | None = None,
+        conversation_title_regenerate_handler: Callable[[], Awaitable[None]] | None = None,
         startup_workdir_provider: Callable[[], Any] | None = None,
         startup_workdir_handler: Callable[[str], None] | None = None,
     ) -> None:
@@ -721,6 +731,7 @@ class MakeCodeTuiApp(App[None]):
         self._runtime_info_provider = runtime_info_provider
         self._header_info_provider = header_info_provider
         self._conversation_title_provider = conversation_title_provider
+        self._conversation_title_regenerate_handler = conversation_title_regenerate_handler
         self._startup_workdir_provider = startup_workdir_provider
         self._startup_workdir_handler = startup_workdir_handler
         self._mode_label = "ACT"
@@ -751,7 +762,7 @@ class MakeCodeTuiApp(App[None]):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-bar"):
-            yield Static("MakeCode", id="top-title")
+            yield ConversationTitle("MakeCode", id="top-title")
             yield Button("▸ 快捷面板", id="quick-panel-toggle")
             yield Button("运行面板 F6", id="compact-pane-toggle", classes="hidden")
             yield Static("", id="top-status")
@@ -1085,6 +1096,54 @@ class MakeCodeTuiApp(App[None]):
         self.push_screen(
             ChoiceModal(title, options, allow_custom, delete_handler, preview_handler), _done
         )
+
+    def open_conversation_title_regeneration_modal(self) -> None:
+        if (
+            self._agent_loop_active
+            or self._submit_lock.locked()
+            or self._modal_active
+            or self._conversation_title_regenerate_handler is None
+            or self._conversation_title_provider is None
+        ):
+            return
+        try:
+            if not self._conversation_title_provider():
+                return
+        except Exception:
+            return
+
+        confirm_option = "确认重新生成"
+
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if value == confirm_option:
+                self._start_conversation_title_regeneration()
+                return
+            self.query_one("#input-box", MakeCodeInput).focus()
+
+        self._modal_active = True
+        self.push_screen(
+            ChoiceModal(
+                "重新生成对话标题？\n将使用当前对话中全部用户消息生成新标题。",
+                [confirm_option, "取消"],
+            ),
+            _done,
+        )
+
+    def _start_conversation_title_regeneration(self) -> None:
+        if self._agent_loop_active or self._conversation_title_regenerate_handler is None:
+            return
+        if not self._submit_lock.acquire(blocking=False):
+            return
+        self.set_agent_loop_active(True)
+        self.run_worker(self._run_conversation_title_regeneration())
+
+    async def _run_conversation_title_regeneration(self) -> None:
+        try:
+            await self._conversation_title_regenerate_handler()
+        finally:
+            self._submit_lock.release()
+            self.set_agent_loop_active(False)
 
     def open_delegate_tasks_modal(
         self,

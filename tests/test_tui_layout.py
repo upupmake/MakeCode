@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from unittest.mock import Mock
 
@@ -6,7 +7,7 @@ import pytest
 from system.console_render import _render_startup_banner
 from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import MakeCodeTuiApp, TuiBridge
-from system.tui_modals import ToolHistoryModal
+from system.tui_modals import ChoiceModal, ToolHistoryModal
 
 
 @pytest.mark.anyio
@@ -55,6 +56,51 @@ async def test_top_bar_displays_and_refreshes_conversation_title():
 
         assert str(title.render()) == "MakeCode"
         assert title.tooltip is None
+
+
+@pytest.mark.anyio
+async def test_clicking_conversation_title_opens_regeneration_confirmation():
+    regenerated = threading.Event()
+
+    async def regenerate_title():
+        regenerated.set()
+
+    app = MakeCodeTuiApp(
+        conversation_title_provider=lambda: "现有标题",
+        conversation_title_regenerate_handler=regenerate_title,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        await pilot.click("#top-title")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ChoiceModal)
+
+        await pilot.press("enter")
+        assert await asyncio.to_thread(regenerated.wait, 1)
+        await pilot.pause()
+
+        assert not app._agent_loop_active
+        assert not app._submit_lock.locked()
+
+
+@pytest.mark.anyio
+async def test_clicking_conversation_title_does_not_open_modal_while_agent_is_active():
+    app = MakeCodeTuiApp(
+        conversation_title_provider=lambda: "现有标题",
+        conversation_title_regenerate_handler=Mock(),
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+
+        await pilot.click("#top-title")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, ChoiceModal)
+        assert not app._modal_active
 
 
 @pytest.mark.anyio

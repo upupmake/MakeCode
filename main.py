@@ -228,7 +228,7 @@ def _parse_arguments(arguments: Any) -> dict:
 
 
 async def generate_title(user_query: str, max_rounds: int = 8) -> str | None:
-    """Generate a short title for the conversation based on the first user query."""
+    """Generate a short title from the provided user conversation content."""
     title_client = None
     try:
         title_client = create_current_async_llm_client()
@@ -581,6 +581,49 @@ def _apply_pending_title():
         log_error_traceback("Failed to apply pending title", exc)
 
 
+async def _regenerate_conversation_title(history: list) -> None:
+    global _pending_title
+    if CURRENT_CHECKPOINT is None:
+        return
+
+    user_contents = []
+    for message in history:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            text = "\n\n".join(
+                block.get("text", "").strip()
+                for block in content
+                if isinstance(block, dict) and block.get("text", "").strip()
+            )
+        else:
+            text = ""
+        if text:
+            user_contents.append(text)
+
+    if not user_contents:
+        return
+
+    post_tui(TuiRegion.BACKGROUND, active=True)
+    post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 正在根据全部用户消息重新生成对话标题...[/#aaaaaa]")
+    try:
+        title = await generate_title("\n\n".join(user_contents))
+        if title:
+            _pending_title = title
+            _apply_pending_title()
+            post_tui(TuiRegion.BACKGROUND, f"[bold green]🏷️ 对话标题已更新：{title}[/bold green]")
+        else:
+            post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 对话标题重新生成结束：未生成可用标题[/#aaaaaa]")
+    except Exception as exc:
+        log_error_traceback("Failed to regenerate title", exc)
+        post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题重新生成失败：{escape(str(exc))}[/bold red]")
+    finally:
+        refresh_status()
+        post_tui(TuiRegion.BACKGROUND, active=False)
+
 
 def _background_update_check():
     """后台检查更新，有新版本时提示用户（不阻塞启动）。"""
@@ -700,6 +743,9 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
     async def submit_handler(query: str) -> str | None:
         return await _process_user_query(query, history, command_handler)
 
+    async def conversation_title_regenerate_handler() -> None:
+        await _regenerate_conversation_title(history)
+
     def startup_workdir_provider():
         return _current_workdir()
 
@@ -750,6 +796,7 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         runtime_info_provider=runtime_info_provider,
         header_info_provider=header_info_provider,
         conversation_title_provider=_get_current_conversation_title,
+        conversation_title_regenerate_handler=conversation_title_regenerate_handler,
         startup_workdir_provider=startup_workdir_provider if prompt_for_workdir else None,
         startup_workdir_handler=startup_workdir_handler if prompt_for_workdir else None,
     )
