@@ -4,11 +4,11 @@
 import json
 import re
 import threading
-from typing import Any, List
+from typing import Any
 
 from markdown_it import MarkdownIt
 from rich import box
-from rich.console import Console, Group
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
@@ -17,6 +17,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
+from system.tool_history import format_tool_arguments, format_tool_value
 from system.tui_app import TuiRegion, post_tui
 from utils import paths
 
@@ -183,49 +184,6 @@ def _extract_message_text(msg: dict) -> str:
     return "\n\n".join(chunks).strip()
 
 
-def _format_readable_ui(data: Any, indent_level: int = 0, decode_ansi: bool = False) -> List[Text]:
-    """递归解析结构化数据，将其转换为符合人类直觉的 Rich 组件列表"""
-    renderables = []
-    indent = "  " * indent_level
-    make_text = _terminal_output_text if decode_ansi else Text
-
-    def key_value_text(prefix: str, value: Any) -> Text:
-        line = Text()
-        line.append_text(make_text(prefix, style="green"))
-        line.append_text(make_text(str(value), style="white"))
-        return line
-
-    if isinstance(data, dict):
-        for key, value in data.items():
-            if isinstance(value, str) and '\n' in value:
-                renderables.append(make_text(f"{indent}❖ {key}:", style="green"))
-                lines = value.split('\n')
-                block_text = make_text("\n".join(f"{indent}{line}" for line in lines), style="white")
-                renderables.append(block_text)
-
-            elif isinstance(value, (dict, list)):
-                renderables.append(make_text(f"{indent}❖ {key}:", style="green"))
-                renderables.extend(_format_readable_ui(value, indent_level + 1, decode_ansi))
-
-            else:
-                renderables.append(key_value_text(f"{indent}❖ {key}: ", value))
-
-    elif isinstance(data, list):
-        for i, item in enumerate(data):
-            if isinstance(item, (dict, list)):
-                renderables.append(Text(f"{indent}• [Item {i + 1}]", style="blue"))
-                renderables.extend(_format_readable_ui(item, indent_level + 1, decode_ansi))
-            else:
-                line = Text(f"{indent}• ", style="blue")
-                line.append_text(make_text(str(item), style="white"))
-                renderables.append(line)
-
-    else:
-        renderables.append(make_text(f"{indent}{data}", style="white"))
-
-    return renderables
-
-
 def _render_agent_response_message(
         text: str,
         identity: str = "Assistant",
@@ -263,9 +221,7 @@ def _render_tool_call(
 
     # 2. 渲染 UI
     if is_complex:
-        # 使用 Group 将列表里的多行元素组合在一起
-        ui_items = _format_readable_ui(display_data)
-        body = Group(*ui_items)
+        body = Text(format_tool_arguments(display_data), style="white")
     else:
         body = Text(str(display_data))
 
@@ -308,9 +264,7 @@ def _render_tool_output(
 
     # 渲染 UI
     if is_complex:
-        # 复用之前写的结构化 UI 生成器
-        ui_items = _format_readable_ui(display_data, decode_ansi=True)
-        body = Group(*ui_items)
+        body = _terminal_output_text(format_tool_value(display_data), style="white")
     else:
         body = _terminal_output_text(text)
 

@@ -19,14 +19,77 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
 
 
+def _contains_multiline_string(value: Any) -> bool:
+    if isinstance(value, str):
+        return "\n" in value
+    if isinstance(value, dict):
+        return any(_contains_multiline_string(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_multiline_string(item) for item in value)
+    return False
+
+
+def _format_json_lines(value: Any, indent_level: int = 0) -> list[str]:
+    indent = "  " * indent_level
+    child_indent = "  " * (indent_level + 1)
+
+    if isinstance(value, dict):
+        if not value:
+            return [f"{indent}{{}}"]
+        lines = [f"{indent}{{"]
+        items = list(value.items())
+        for index, (key, item) in enumerate(items):
+            item_lines = _format_json_lines(item, indent_level + 1)
+            first_line = item_lines[0][len(child_indent):]
+            lines.append(
+                f"{child_indent}{json.dumps(str(key), ensure_ascii=False)}: {first_line}"
+            )
+            lines.extend(item_lines[1:])
+            if index < len(items) - 1:
+                lines[-1] += ","
+        lines.append(f"{indent}}}")
+        return lines
+
+    if isinstance(value, list):
+        if not value:
+            return [f"{indent}[]"]
+        lines = [f"{indent}["]
+        for index, item in enumerate(value):
+            item_lines = _format_json_lines(item, indent_level + 1)
+            lines.extend(item_lines)
+            if index < len(value) - 1:
+                lines[-1] += ","
+        lines.append(f"{indent}]")
+        return lines
+
+    if isinstance(value, str) and "\n" in value:
+        encoded_lines = [
+            json.dumps(line, ensure_ascii=False)[1:-1]
+            for line in value.split("\n")
+        ]
+        lines = [f'{indent}"']
+        lines.extend(f"{indent}{line}" for line in encoded_lines[:-1])
+        lines.append(f'{indent}{encoded_lines[-1]}"')
+        return lines
+
+    return [f"{indent}{json.dumps(value, ensure_ascii=False, default=str)}"]
+
+
+def _format_json(value: Any) -> str:
+    normalized = json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    if not _contains_multiline_string(normalized):
+        return json.dumps(normalized, ensure_ascii=False, indent=2, default=str)
+    return "\n".join(_format_json_lines(normalized))
+
+
 def format_tool_value(value: Any) -> str:
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
             return value
-        return json.dumps(parsed, ensure_ascii=False, indent=2, default=str)
-    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+        return _format_json(parsed)
+    return _format_json(value)
 
 
 def format_tool_arguments(value: Any) -> str:
@@ -35,7 +98,7 @@ def format_tool_arguments(value: Any) -> str:
             value = json.loads(value)
         except json.JSONDecodeError:
             pass
-    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    return _format_json(value)
 
 
 def tool_result_status(*, is_error: bool, output: Any) -> str:
@@ -206,7 +269,7 @@ class ToolExecutionHistory:
             if role == "assistant":
                 for call_index, tool_call in enumerate(message.get("tool_calls") or []):
                     call_id, name, arguments = self._tool_call_parts(tool_call)
-                    call_id = call_id or f"checkpoint-{message_index}-{call_index}"
+                    call_id = call_id or f"conversation-{message_index}-{call_index}"
                     recovered.append(
                         ToolExecutionRecord(
                             sequence=sequence,
@@ -227,7 +290,7 @@ class ToolExecutionHistory:
                     by_call_id[call_id] = len(recovered) - 1
                     sequence += 1
             elif message.get("type") == "function_call":
-                call_id = message.get("call_id") or f"checkpoint-{message_index}"
+                call_id = message.get("call_id") or f"conversation-{message_index}"
                 recovered.append(
                     ToolExecutionRecord(
                         sequence=sequence,

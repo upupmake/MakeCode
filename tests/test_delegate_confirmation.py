@@ -19,7 +19,10 @@ class DelegateConfirmationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
-        self.manager = TeammateManager(Path(self.temp_dir.name) / "team")
+        self.manager = TeammateManager(
+            Path(self.temp_dir.name) / "conv_test",
+            "conv_test",
+        )
         self.tasks = [
             {
                 "task_id": "1",
@@ -48,8 +51,6 @@ class DelegateConfirmationTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def _delegate(self, action: str):
-        run_dir = Path(self.temp_dir.name) / "runs"
-        run_dir.mkdir()
         raw_client = SimpleNamespace(close=AsyncMock())
         llm_client = SimpleNamespace(client=raw_client)
 
@@ -59,7 +60,6 @@ class DelegateConfirmationTests(unittest.IsolatedAsyncioTestCase):
             patch("utils.teams.request_window_attention"),
             patch("utils.teams.post_tui"),
             patch("utils.teams.print_formatted_text"),
-            patch("utils.teams._runs_dir", return_value=run_dir),
             patch("utils.teams._workdir", return_value=Path(self.temp_dir.name)),
             patch("utils.teams.get_current_model_config", return_value=object()),
             patch("utils.teams._create_async_chat_client", return_value=llm_client),
@@ -96,6 +96,27 @@ class DelegateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         recall.assert_awaited()
         self.assertIn("Sub-Agents Execution Reports", result)
 
+    async def test_trace_history_is_not_injected_into_provider_prompt(self):
+        trace_marker = "TRACE_SECRET_MUST_NOT_ENTER_PROVIDER"
+        trace_path = self.manager.runs_dir / "old" / "task_1_trace.jsonl"
+        trace_path.parent.mkdir(parents=True)
+        trace_path.write_text(
+            json.dumps({"event": "agent_llm_output", "data": {"text": trace_marker}}) + "\n",
+            encoding="utf-8",
+        )
+        self.manager.history = [{
+            "conversation_id": "conv_test",
+            "plan_task_id": "1",
+            "status": "failed",
+            "trace_log": str(trace_path.relative_to(self.manager.conversation_root)),
+        }]
+
+        _, _, sub_agent_loop, _ = await self._delegate("approve")
+
+        delegated_prompts = [call.args[2] for call in sub_agent_loop.await_args_list]
+        self.assertTrue(delegated_prompts)
+        self.assertTrue(all(trace_marker not in prompt for prompt in delegated_prompts))
+
     async def test_orchestrator_choice_does_not_start_delegation(self):
         result, _, sub_agent_loop, recall = await self._delegate("orchestrator")
 
@@ -112,8 +133,6 @@ class DelegateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("Sub-agent delegation cancelled by the user.", result)
 
     async def test_approved_delegation_closes_async_client(self):
-        run_dir = Path(self.temp_dir.name) / "runs"
-        run_dir.mkdir()
         raw_client = SimpleNamespace(close=AsyncMock())
         llm_client = SimpleNamespace(client=raw_client)
 
@@ -128,7 +147,6 @@ class DelegateConfirmationTests(unittest.IsolatedAsyncioTestCase):
             patch("utils.teams.request_window_attention"),
             patch("utils.teams.post_tui"),
             patch("utils.teams.print_formatted_text"),
-            patch("utils.teams._runs_dir", return_value=run_dir),
             patch("utils.teams._workdir", return_value=Path(self.temp_dir.name)),
             patch("utils.teams.get_current_model_config", return_value=object()),
             patch("utils.teams._create_async_chat_client", return_value=llm_client) as create_client,

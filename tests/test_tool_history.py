@@ -242,6 +242,37 @@ async def test_tool_history_modal_searches_toggles_summary_and_shows_full_detail
 
 
 @pytest.mark.anyio
+async def test_tool_history_modal_expands_multiline_json_strings():
+    history = ToolExecutionHistory()
+    execution_id = history.start(
+        "FileEdit",
+        {
+            "edits": [{
+                "search_content": "old line\n\nold code",
+                "replace_content": "new line\n\nnew code",
+            }],
+        },
+    )
+    history.finish(
+        execution_id,
+        '{"summary":"first line\\n\\nsecond line","details":{"code":"def run():\\n    return 1"}}',
+    )
+    modal = ToolHistoryModal(history)
+    app = ToolHistoryModalHost(modal)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        detail_text = modal.query_one("#tool-history-detail", TextArea).text
+
+        assert '"search_content": "\n      old line\n      \n      old code"' in detail_text
+        assert '"replace_content": "\n      new line\n      \n      new code"' in detail_text
+        assert '"summary": "\n  first line\n  \n  second line"' in detail_text
+        assert '"code": "\n    def run():\n        return 1"' in detail_text
+        assert "old line\\n\\nold code" not in detail_text
+        assert "first line\\n\\nsecond line" not in detail_text
+
+
+@pytest.mark.anyio
 async def test_tool_history_modal_omits_unavailable_checkpoint_metadata():
     history = ToolExecutionHistory()
     history.rebuild_from_messages([

@@ -9,13 +9,8 @@ from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, field_validator
 
 from init import log_error_traceback
-from utils import paths
-from utils.common import sanitize_title
+from utils.conversations import SCHEMA_VERSION, TASK_PLAN_FILE
 from utils.hitl import check_permission
-
-
-def _tasks_dir() -> Path:
-    return paths.workspace_tasks_dir()
 
 
 VALID_STATUS = {
@@ -232,38 +227,6 @@ class GetTaskTable(BaseModel):
     """
 
 
-def list_task_plans() -> list[Path]:
-    tasks_dir = _tasks_dir()
-    if not tasks_dir.exists():
-        return []
-    files = list(tasks_dir.glob("task_plan_*.json"))
-    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-    return files
-
-
-def get_task_plan_title(filepath: Path) -> str:
-    """Extract title from task plan filename if available."""
-    stem = filepath.stem
-    if not stem.startswith("task_plan_"):
-        return None
-    parts = stem.split("_")
-    # task_plan_{title_parts...}_{epic_id}
-    # epic_id is 8 hex chars, always the last part
-    if len(parts) > 2:
-        title_parts = parts[2:-1]
-        if title_parts:
-            return " ".join(title_parts)
-    return None
-
-
-def load_task_plan(filepath: Path) -> dict:
-    with open(filepath, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    TASK_MANAGER.path = filepath
-    TASK_MANAGER._data = data
-    return data
-
-
 class TaskManager:
     """
     Agent-facing topology task manager.
@@ -277,56 +240,86 @@ class TaskManager:
       6) get_task_table
     """
 
-    def __init__(self, workspace: Path | None = None, title: str = None):
-        self.workspace = workspace or _tasks_dir()
-        self.workspace.mkdir(parents=True, exist_ok=True)
-        epic_id = uuid.uuid4().hex[:8]
-        
-        # Use title in filename if provided
-        if title:
-            safe_title = sanitize_title(title)
-            if safe_title:
-                self.path = self.workspace / f"task_plan_{safe_title}_{epic_id}.json"
-            else:
-                self.path = self.workspace / f"task_plan_{epic_id}.json"
-        else:
-            self.path = self.workspace / f"task_plan_{epic_id}.json"
-            
+    def __init__(
+            self,
+            conversation_root: Path | None = None,
+            conversation_id: str | None = None,
+            data: dict[str, Any] | None = None,
+    ):
+        self.conversation_root = conversation_root
+        self.conversation_id = conversation_id
+        self.path = conversation_root / TASK_PLAN_FILE if conversation_root is not None else None
+        if data is not None:
+            self._validate_loaded_data(data, conversation_id)
+            self._data = data
+            self._validate_topology()
+            return
         self._data: dict[str, Any] = {
-            "epic_id": epic_id,
+            "schema_version": SCHEMA_VERSION,
+            "conversation_id": conversation_id,
+            "epic_id": uuid.uuid4().hex[:8],
             "next_id": 1,
             "tasks": {},
         }
 
     def _save(self) -> None:
-        self.path.write_text(
+        self._validate_storage_path()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(
             json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        temporary.replace(self.path)
         render_task_pane()
 
-    def rename_with_title(self, title: str) -> bool:
-        """Rename the task plan file on disk to include *title*.
+    def _validate_storage_path(self) -> None:
+        if self.path is None or self.conversation_root is None or self.conversation_id is None:
+            raise RuntimeError("No active conversation for TaskManager")
+        if (
+            self.conversation_root.name != self.conversation_id
+            or self.conversation_root.is_symlink()
+            or self.path.is_symlink()
+            or self.path.parent.resolve() != self.conversation_root.resolve()
+        ):
+            raise RuntimeError("Invalid TaskManager storage path")
 
-        The epic_id is always the last ``_``-delimited segment of the stem,
-        so we can safely extract it regardless of whether a title was present
-        before.  The file content is unchanged; only the filename differs.
-        Returns True if the file was actually renamed.
-        """
-        safe_title = sanitize_title(title)
-        if not safe_title:
-            return False
-
-        stem = self.path.stem  # e.g. "task_plan_abc12345" or "task_plan_old_abc12345"
-        epic_id = stem.rsplit("_", 1)[-1]  # always the last segment
-        new_path = self.path.parent / f"task_plan_{safe_title}_{epic_id}.json"
-
-        if new_path == self.path:
-            return False
-
-        if self.path.exists():
-            self.path.rename(new_path)
-        self.path = new_path
-        return True
+    @classmethod
+    def _validate_loaded_data(cls, data: dict[str, Any], conversation_id: str | None) -> None:
+        if data.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError("Unsupported task plan schema")
+        if data.get("conversation_id") != conversation_id:
+            raise ValueError("Task plan conversation ID mismatch")
+        if not isinstance(data.get("epic_id"), str) or not data["epic_id"]:
+            raise ValueError("Invalid task plan epic_id")
+        if not isinstance(data.get("next_id"), int) or data["next_id"] < 1:
+            raise ValueError("Invalid task plan next_id")
+        tasks = data.get("tasks")
+        if not isinstance(tasks, dict):
+            raise ValueError("Invalid task plan tasks")
+        numeric_ids = []
+        for task_id, task in tasks.items():
+            if (
+                not isinstance(task_id, str)
+                or not task_id.isdigit()
+                or int(task_id) < 1
+                or not isinstance(task, dict)
+                or task.get("id") != task_id
+            ):
+                raise ValueError("Invalid task plan task identity")
+            numeric_ids.append(int(task_id))
+            if not isinstance(task.get("subject"), str) or not task["subject"].strip():
+                raise ValueError(f"Invalid task subject: {task_id}")
+            if not isinstance(task.get("description"), str):
+                raise ValueError(f"Invalid task description: {task_id}")
+            if task.get("status") not in VALID_STATUS:
+                raise ValueError(f"Invalid task status: {task_id}")
+            depend_on = task.get("depend_on")
+            if not isinstance(depend_on, list) or not all(isinstance(dep, str) for dep in depend_on):
+                raise ValueError(f"Invalid task dependencies: {task_id}")
+            if any(dep not in tasks for dep in depend_on):
+                raise ValueError(f"Task dependencies not found: {task_id}")
+        if numeric_ids and data["next_id"] <= max(numeric_ids):
+            raise ValueError("Invalid task plan next_id")
 
     @staticmethod
     def _id_str(task_id: str | int) -> str:
@@ -685,9 +678,21 @@ def render_task_pane() -> None:
 TASK_MANAGER = TaskManager()
 
 
+
+def activate_conversation(
+        conversation_root: Path,
+        conversation_id: str,
+        data: dict[str, Any] | None = None,
+) -> None:
+    global TASK_MANAGER
+    TASK_MANAGER = TaskManager(conversation_root, conversation_id, data)
+    render_task_pane()
+
+
+
 def refresh_workspace_paths() -> None:
     global TASK_MANAGER
-    TASK_MANAGER = TaskManager(_tasks_dir())
+    TASK_MANAGER = TaskManager()
     render_task_pane()
 
 

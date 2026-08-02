@@ -68,7 +68,7 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 - 支持按模型配置选择消息格式：
     - `openai_chat`（OpenAI Chat Completions 消息格式）
     - `anthropic`（Anthropic Messages 协议）
-- **路径集中管理**：工作区路径、安装目录路径、`.makecode/` 子目录（`tasks/`、`team/`、`memory/`、`transcripts/`、`checkpoint/`等）及安装目录下的 `model_config.json`、`mcp_config.json`、`layout_config.json`、`error.log` 均由 `utils/paths.py` 统一提供。
+- **路径集中管理**：工作区路径、安装目录路径、`.makecode/` 子目录（`conversations/`、`memory/`、`transcripts/` 等）及安装目录下的 `model_config.json`、`mcp_config.json`、`layout_config.json`、`error.log` 均由 `utils/paths.py` 统一提供。
 - **模型配置**：通过内置的 `/models` 命令进行管理（详见 2.15 节）
 
 ### 2.3 文件与终端工具（`utils/common.py`）与文件访问控制（`utils/file_access.py`）
@@ -133,7 +133,7 @@ TaskManager 提供：
 - 批量创建、内容更新、状态更新和依赖更新会先校验完整批次，失败时不会保留部分修改。
 - 活跃任务执行 DAG 校验，批量依赖更新产生环时回滚整个批次。
 - 可执行任务定义为：状态为 `pending` 且所有依赖均已完成。
-- 每次运行的任务计划会写入工作区 `.makecode/tasks/`。
+- 当前任务计划写入活动会话目录中的 `task_plan.json`，并通过 `conversation_id` 与对话绑定。
 - `/tasks` 保留完整任务表格视图，并支持选中任务后按 `d` 发起删除、再按 `y`/`n` 确认或取消；删除任务时会同步移除其他任务对该任务的依赖引用。
 - `DeleteAllTasks` 提供了一键清空重置任务拓扑的能力，方便在复杂场景下推翻重来。
 
@@ -149,13 +149,10 @@ Team 模块支持：
 
 运行过程会生成：
 
-- `.makecode/team/task_history_{session_id}.json`
-- `.makecode/team/runs/<run_id>/..._trace.jsonl`
+- `.makecode/conversations/conv_<uuid>/sub_agents/history.json`
+- `.makecode/conversations/conv_<uuid>/sub_agents/runs/<run_id>/..._trace.jsonl`
 
-#### 🔄 失败上下文恢复（新增）
-
-- 子智能体任务失败后，系统会自动读取该任务的 `trace_log`。
-- 失败记录（包括 LLM 输出、工具调用、参数、结果等）会被格式化并注入到重试任务的上下文中。
+- Trace 仅用于本地审计与 UI 恢复，不会注入 Orchestrator 或 Sub-Agent 的 provider 请求体。
 
 ### 2.8 技能系统（`utils/skills.py`）
 
@@ -234,25 +231,21 @@ Team 模块支持：
 
 ### 2.11 会话记录与历史加载 (`/load`)
 
-- `/load` 命令支持从 Checkpoint 恢复任意历史会话，包括主智能体对话链路与子智能体执行历史。
-- **全量 UI 重绘**：加载历史记录后，系统会自动清屏（`console.clear()`）并按照最新终端 UI 样式重新渲染每一条消息（包括 User
-  输入、AI 文本、Tool 调用意图及 Tool 执行结果）。
-- **配置防污染**：在加载历史 Checkpoint 时，系统会自动同步最新的 System Prompt 和全局配置（如当前日期、MCP/Skills
-  开关状态），防止被旧数据覆盖。
-- Checkpoint 选择列表支持选中后按 `d` 发起删除、再按 `y`/`n` 确认或取消；若删除的是当前绑定 Checkpoint，会同步清空绑定，避免后续保存重新创建已删除文件。
-- 对于子智能体历史，仅当任务看板成功加载后才提示加载。若任务看板中所有任务已全部完成，则自动跳过询问。
+- `/load` 只列出 6.0 格式的 `.makecode/conversations/conv_<uuid>/conversation.json`，一次选择即可恢复主智能体消息、任务计划和 Sub-Agent 历史。
+- 会话目录内的 `conversation.json`、`task_plan.json` 与 `sub_agents/history.json` 物理分离，并由不可变 `conversation_id` 严格绑定；Sub-Agent trace 位于 `sub_agents/runs/`。
+- **全量 UI 重绘**：加载后按当前终端 UI 样式重新渲染 User 输入、AI 文本、Tool 调用、任务计划和 Sub-Agent 历史。
+- **配置防污染**：加载时用当前 System Prompt 替换历史中的 System Prompt，避免旧配置覆盖当前日期、MCP 或 Skills 状态。
+- 选择列表支持按 `d` 发起删除并二次确认；当前活动会话不能删除。
+- 6.0 不读取或迁移旧版 checkpoint、task 或 team 历史格式。
 
 ### 2.12 会话标题自动生成
 
-MakeCode 会在用户首次提问后，自动基于查询内容生成简短的会话标题，并将其嵌入到相关文件名中，方便会话识别与管理：
+MakeCode 会根据用户请求生成简短会话标题。标题只保存在 `conversation.json` 元数据中，用于会话列表和状态栏展示：
 
-- **自动标题生成**：使用 LLM 根据用户首次查询，自动生成简短且有意义的会话标题
-- **文件名关联**：生成的标题会自动同步到以下文件的文件名中：
-    - 检查点文件：`ckpt_{title}_{timestamp}_{uid}.json`
-    - 任务计划文件：`task_plan_{title}_{epic_id}.json`
-    - 任务历史文件：`task_history_{title}_{session_id}.json`
-- **标题安全处理**：通过 `sanitize_title()` 确保标题仅包含文件名安全字符，不影响文件系统
-- **懒加载工具绑定**：工具处理器采用延迟解析模式，确保标题变更后工具调用自动指向最新实例
+- **自动标题生成**：使用 LLM 根据用户请求生成简短且有意义的标题
+- **路径稳定**：标题更新不会重命名 `conv_<uuid>` 目录或任何会话文件
+- **标题安全处理**：通过 `sanitize_title()` 清理不安全字符
+- **手动重新生成**：空闲时点击标题并确认，可基于全部 User 消息重新生成标题
 
 ### 2.13 子智能体 Todo 工具（`tools/todo.py`）
 
@@ -459,7 +452,7 @@ MakeCode 内置了完整的自动更新系统，支持版本检查、完整目�
 #### 版本配置（`version.py`）
 
 ```python
-CURRENT_VERSION = "5.3.3"
+CURRENT_VERSION = "6.0.0"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -497,7 +490,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
     - macOS 打包版的共享配置位于 `~/Library/Application Support/MakeCode/`，避免升级替换应用目录时丢失配置。
     - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 均位于对应的共享配置目录。
 - **工作区目录（Workdir）**：用户当前交互选择的工程目录，存放会话/任务相关的状态。
-    - `tasks/`、`team/runs/`、`memory/memory.jsonl`、`memory/memory_config.json`、`transcripts/`、`checkpoint/` 均位于 `workdir/.makecode/`。
+    - `conversations/`、`memory/memory.jsonl`、`memory/memory_config.json` 和 `transcripts/` 均位于 `workdir/.makecode/`。
     - 用户技能默认位于 `workdir/.makecode/skills/`，旧路径 `workdir/skills/` 仍兼容。
 
 #### 核心 API
@@ -507,7 +500,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 - `paths.set_workdir(path)`：切换工作区时代替手动拼接，`/cd` 命令内部调用该函数。
 - `paths.install_skills_dir()`：返回安装目录内的内置技能目录 `install_dir/.makecode/skills/`。
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`：分别返回 `workdir/.makecode/skills/` 与兼容旧路径 `workdir/skills/`。
-- 面向任务/记忆/转录/检查点/MCP/模型配置的各级 getter（如 `workspace_tasks_dir()`、`workspace_memory_jsonl_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
+- 面向会话/记忆/转录/MCP/模型配置的各级 getter（如 `workspace_conversations_dir()`、`workspace_memory_jsonl_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
 
 #### 设计收益
 
@@ -518,16 +511,16 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 ### 2.21 工作目录切换与快捷查看（`/pwd` 与 `/cd`）（新增）
 
 - `/pwd`：在 Content 区展示当前工作目录；启动时、工作区切换后、`/new` 清空会话后也会自动调用。
-- `/cd <路径>`：切换工作目录并开启全新会话。支持绝对/相对/带引号路径；切换后会完整重置五区 UI、重建 history、重置 HITL 白名单、清空 `visited_files`、重置 checkpoint，并使用 `paths.set_workdir(...)` 同步路径状态。`/new` 与 `/cd` 共用同一套会话重置逻辑。
+- `/cd <路径>`：切换工作目录并开启全新会话。支持绝对/相对/带引号路径；切换后会完整重置五区 UI、重建 history、重置 HITL 白名单、清空 `visited_files`、重置当前 conversation，并使用 `paths.set_workdir(...)` 同步路径状态。`/new` 与 `/cd` 共用同一套会话重置逻辑。
 
 ### 2.22 LLM 客户端适配与请求健壮性（`utils/llm_client.py`）（新增）
 
 - **统一异步流式接口**：主智能体、子智能体、标题、摘要、长期记忆管理和记忆召回均通过 `generate_stream()` 返回统一事件与 `LLMResult`；OpenAI Chat 使用官方 `AsyncOpenAI`，Anthropic Messages 使用官方 `AsyncAnthropic`。
-- **双协议历史重建**：checkpoint/history 保存 OpenAI 风格的规范化消息超集，而不是 provider 请求体；发起请求时按模型的 `message_format` 重建 OpenAI Chat 消息或 Anthropic content blocks，并仅在来源格式和模型兼容时回放原生 blocks。
+- **双协议历史重建**：conversation 保存 OpenAI 风格的规范化消息超集，而不是 provider 请求体；任务计划、Sub-Agent history 和 trace 均不进入 provider messages。发起请求时按模型的 `message_format` 重建 OpenAI Chat 消息或 Anthropic content blocks，并仅在来源格式和模型兼容时回放原生 blocks。
 - **Anthropic 前缀缓存**：Anthropic 请求同时设置顶层和 system text block 的 ephemeral `cache_control`。工具定义按名称确定性排序，并在单次主/子智能体运行开始时固定 MCP 工具与 handler 原子快照，使 `tools → system → messages` 前缀保持稳定。
 - **超时与重试**：请求总超时为 120 秒，连接超时为 10 秒；SDK 最多重试 5 次。实际发生重试时，运行栏显示 `Client: REQUESTING · RETRY n/5`。
 - **请求状态生命周期**：所有 LLM 请求在实际网络调用前增加线程安全计数；成功、异常、超时或流式取消均在 `finally` 中清理，最后一个并发请求结束后取消标识。并发请求的重试状态按请求独立追踪。
-- **取消与 `pause_turn`**：取消会丢弃部分 assistant 输出，不执行工具，也不会为首次请求创建 checkpoint 或标题；主循环和标题、摘要、记忆、召回、子智能体报告等二级路径按各自上限有界续接 `pause_turn`。
+- **取消与 `pause_turn`**：取消会丢弃部分 assistant 输出，不执行工具，也不会为首次请求保存 conversation 或生成标题；主循环和标题、摘要、记忆、召回、子智能体报告等二级路径按各自上限有界续接 `pause_turn`。
 - **请求隔离与资源释放**：长期记忆预召回和标题生成使用独立临时 client 并在完成后关闭；模型运行配置变化时关闭旧缓存 client，每次 Textual 提交结束后也关闭本次事件循环使用的缓存 client，避免跨 `asyncio.run()` 复用连接池。
 - **推理强度与运行缓存键**：客户端从 `ModelConfig.reasoning_effort` 读取 `low` / `medium` / `high` / `xhigh` / `max`；运行缓存键包含消息格式、模型身份和 effort，切换后会为新协议与配置重建 adapter。
 
@@ -588,11 +581,9 @@ Agent/
 
 运行中还会生成：
 
-- `.makecode/tasks/`：任务计划 JSON
-- `.makecode/team/`：子智能体历史与运行日志
+- `.makecode/conversations/`：按不可变 `conversation_id` 聚合会话消息、任务计划、Sub-Agent 历史与 trace
 - `.makecode/transcripts/`：压缩前会话转录
 - `.makecode/memory/`：长期记忆数据与容量配置
-- `.makecode/checkpoint/`：会话 Checkpoint 记录（供 `/load` 恢复）
 - `.makecode/skills/`：当前工作区的用户技能（兼容工作区根目录旧 `skills/`）
 
 以及安装目录下的（跨项目共享）：
@@ -637,8 +628,8 @@ flowchart TD
     S --> SK["install/workdir .makecode/skills\nlegacy workdir/skills"]
     MM --> TR[".makecode/transcripts/"]
     MM --> LTM[".makecode/memory/memory.jsonl"]
-    TM --> TP[".makecode/tasks/"]
-    T --> TH[".makecode/team/"]
+    TM --> TP[".makecode/conversations/<id>/task_plan.json"]
+    T --> TH[".makecode/conversations/<id>/sub_agents/"]
     MCP --> MC["mcp_config.json\nshared config dir"]
     MCP --> MT["MCP Services\nExternal Tools"]
     PA --> ID["shared config\ninstall .makecode / macOS App Support"]
@@ -676,7 +667,7 @@ flowchart TD
 - `utils/hitl.py` 负责高风险命令的安全拦截、全局并发锁追踪，以及基于 TUI 阻止破坏性操作。
 - `utils/file_access.py` 实现文件访问控制机制：强制读取后编辑、修改时间锁校验、细粒度文件级并发锁。
 - `utils/tasks.py` 维护任务 DAG、状态流转与 runnable frontier。
-- `utils/teams.py` 负责把最新可执行任务并发委派给子智能体，回收结果，并支持失败上下文恢复。
+- `utils/teams.py` 负责把最新可执行任务并发委派给子智能体、回收结果，并将 history/trace 限制在当前会话目录内而不注入 provider 请求。
 - `utils/skills.py` 从安装目录、工作区 `.makecode/skills/` 和工作区旧 `skills/` 目录按优先级发现并加载技能。
 - `utils/llm_client.py` 使用官方异步 SDK 统一提供 OpenAI Chat / Anthropic Messages 流式 adapter，传递 `reasoning_effort`，重建跨协议历史，管理 Anthropic 前缀缓存，并配置 120 秒总超时、10 秒连接超时与最多 5 次重试。
 - `utils/memory.py` 负责长会话压缩、长期记忆管理与转录保存；`utils/memory_catalog.py` 提供不加载 TUI/模型客户端的轻量记忆读取与展示排序。
@@ -820,7 +811,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 | `/mcp-add`           | 使用 `<name> [options] -- <cmd> [args...]` 语法添加 MCP 服务；远程服务使用 `--url`；默认 disabled |
 | `/mcp-delete`        | 删除指定 MCP 服务配置，并安全停用运行中的实例（需二次确认）                  |
 | `/mcp-help`          | 显示 MCP 相关命令的使用介绍                                                |
-| `/load`              | 列出历史 checkpoint，可选择加载或经二次确认删除                                |
+| `/load`              | 列出 6.0 会话；一次选择自动恢复消息、任务计划和 Sub-Agent 历史，可二次确认删除非活动会话       |
 | `/skills-switch`     | 切换 skills 目录摘要注入状态 (开启/关闭)                                     |
 | `/skills-list`       | 列出当前工作区可用的 skills                                              |
 | `/compact [prompt]`  | 压缩当前对话上下文，prompt 可选                                            |

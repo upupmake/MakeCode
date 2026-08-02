@@ -19,7 +19,7 @@ COMMAND_DESCRIPTIONS = {
     "/mcp-delete": "<name> 删除 MCP 服务配置；会二次确认并停用运行中的服务。",
     "/mcp-restart": "重新启动 MCP 管理器并加载配置。",
     "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存。",
-    "/load": "列出历史 checkpoint 并选择加载。",
+    "/load": "列出 6.0 会话并选择加载；自动恢复任务计划和 Sub-Agent 历史。",
     "/skills-switch": "切换 skills 目录摘要注入状态（开启/关闭）。",
     "/skills-list": "列出当前工作区可用的 skills。",
     "/compact": "[prompt] 压缩当前对话上下文；prompt 可选，不填则使用默认压缩提示，并自动尝试提取关键记忆信息。",

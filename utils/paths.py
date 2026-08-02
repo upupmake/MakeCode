@@ -40,12 +40,12 @@ def set_workdir(path: Path) -> Path:
     return _WORKDIR
 
 
+def workspace_conversations_dir() -> Path:
+    return workspace_makecode_dir() / "conversations"
+
+
 def workspace_transcript_dir() -> Path:
     return workspace_makecode_dir() / "transcripts"
-
-
-def workspace_checkpoint_dir() -> Path:
-    return workspace_makecode_dir() / "checkpoint"
 
 
 def workspace_memory_dir() -> Path:
@@ -58,18 +58,6 @@ def workspace_memory_jsonl_file() -> Path:
 
 def workspace_memory_config_file() -> Path:
     return workspace_memory_dir() / "memory_config.json"
-
-
-def workspace_tasks_dir() -> Path:
-    return workspace_makecode_dir() / "tasks"
-
-
-def workspace_team_dir() -> Path:
-    return workspace_makecode_dir() / "team"
-
-
-def workspace_team_runs_dir() -> Path:
-    return workspace_team_dir() / "runs"
 
 
 def install_skills_dir(*, create: bool = True) -> Path:

@@ -5,7 +5,7 @@ from rich.console import Console
 import pytest
 
 from system.console_render import (
-    _format_readable_ui,
+    _render_tool_call,
     _render_tool_output,
     _terminal_output_text,
     render_content_assistant_message,
@@ -16,18 +16,32 @@ from system.tui_app import TuiRegion
 from utils.llm_client import build_llm_result
 
 
-def _render_terminal_output(output):
+def _render_tool_event(render, value):
     posted = []
     with patch(
         "system.console_render.post_tui",
         side_effect=lambda region, payload=None, **kwargs: posted.append(payload),
     ):
-        _render_tool_output("RunTerminalCommand", output)
+        render(value)
 
     panel = next(payload for payload in posted if payload is not None)
     buffer = StringIO()
-    Console(file=buffer, force_terminal=True, width=100).print(panel)
+    Console(file=buffer, force_terminal=False, width=120, color_system=None).print(panel.renderable)
     return buffer.getvalue()
+
+
+def _render_terminal_output(output):
+    return _render_tool_event(
+        lambda value: _render_tool_output("RunTerminalCommand", value),
+        output,
+    )
+
+
+def _render_tool_arguments(arguments):
+    return _render_tool_event(
+        lambda value: _render_tool_call("FileEdit", value),
+        arguments,
+    )
 
 
 def test_tool_output_does_not_emit_terminal_screen_control_sequences():
@@ -50,6 +64,47 @@ def test_structured_tool_output_does_not_emit_terminal_screen_control_sequences(
     assert "\x1b[10;10H" not in rendered
 
 
+def test_structured_tool_arguments_use_json_layout_and_expand_multiline_strings():
+    rendered = _render_tool_arguments({
+        "edits": [{
+            "search_content": "old line\n\nold code",
+            "replace_content": "new line\n\nnew code",
+        }],
+        "count": 3,
+        "enabled": True,
+    })
+
+    assert '"edits": [' in rendered
+    assert '"search_content": "\n      old line\n      \n      old code"' in rendered
+    assert "old line\\n\\nold code" not in rendered
+    assert '"count": 3' in rendered
+    assert '"enabled": true' in rendered
+    assert "❖" not in rendered
+    assert "[Item 1]" not in rendered
+
+
+def test_json_string_tool_arguments_expand_real_newlines_but_preserve_literal_escapes():
+    rendered = _render_tool_arguments(
+        '{"content":"first line\\n\\nsecond line","literal":"first\\\\nsecond"}'
+    )
+
+    assert '"content": "\n  first line\n  \n  second line"' in rendered
+    assert "first line\\n\\nsecond line" not in rendered
+    assert '"literal": "first\\\\nsecond"' in rendered
+
+
+def test_structured_tool_output_uses_json_layout_and_expands_multiline_strings():
+    rendered = _render_terminal_output(
+        '{"summary":"first line\\n\\nsecond line","details":{"code":"def run():\\n    return 1"}}'
+    )
+
+    assert '"summary": "\n  first line\n  \n  second line"' in rendered
+    assert "first line\\n\\nsecond line" not in rendered
+    assert '"details": {' in rendered
+    assert '"code": "\n    def run():\n        return 1"' in rendered
+    assert "❖" not in rendered
+
+
 def test_terminal_output_preserves_text_before_carriage_return_control_sequences():
     rendered = _terminal_output_text(
         "session manager\r\x1b[2K\nstarted\r\x1b[2K\nshutting down"
@@ -58,36 +113,12 @@ def test_terminal_output_preserves_text_before_carriage_return_control_sequences
     assert rendered == "session manager\nstarted\nshutting down"
 
 
-def test_structured_tool_output_uses_distinct_key_and_value_colors():
-    lines = _format_readable_ui({"name": "MakeCode", "count": 3}, decode_ansi=True)
-    console = Console()
+def test_plain_tool_output_remains_plain_text():
+    rendered = _render_terminal_output("first line\nsecond line")
 
-    key_style = lines[0].get_style_at_offset(console, 1)
-    string_style = lines[0].get_style_at_offset(console, len(lines[0].plain) - 1)
-    number_style = lines[1].get_style_at_offset(console, len(lines[1].plain) - 1)
-
-    assert not key_style.bold
-    assert key_style.color.name == "green"
-    assert string_style.color.name == "white"
-    assert number_style.color.name == "white"
-
-
-def test_structured_tool_arguments_support_numeric_values():
-    lines = _format_readable_ui({"count": 3})
-
-    assert lines[0].plain == "❖ count: 3"
-
-
-def test_list_of_json_objects_keeps_key_and_value_colors_distinct():
-    lines = _format_readable_ui([{"enabled": True}], decode_ansi=True)
-    console = Console()
-    key_value_line = lines[1]
-
-    key_style = key_value_line.get_style_at_offset(console, 3)
-    value_style = key_value_line.get_style_at_offset(console, len(key_value_line.plain) - 1)
-
-    assert key_style.color.name == "green"
-    assert value_style.color.name == "white"
+    assert "first line\n" in rendered
+    assert "second line" in rendered
+    assert '"first line' not in rendered
 
 
 def _render_to_plain_text(renderable):

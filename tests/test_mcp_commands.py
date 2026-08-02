@@ -1,13 +1,15 @@
 import asyncio
+import json
 import threading
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from rich.console import Console
 
-from system.commands import COMMAND_DESCRIPTIONS, CommandAction, CommandHandler, _checkpoint_preview, _task_plan_preview
+from system.commands import COMMAND_DESCRIPTIONS, CommandAction, CommandHandler, _conversation_preview, _task_plan_preview
 from system.tui_app import MakeCodeInput, MakeCodeTuiApp
 from system.tui_types import TuiEvent, TuiRegion
+from utils.conversations import ConversationStore, SCHEMA_VERSION, SUB_AGENT_HISTORY_FILE, TASK_PLAN_FILE
 from utils.mcp_manager import GlobalMCPManager
 
 
@@ -22,15 +24,14 @@ class DummyMcpManager:
         return {"config_path": "test"}
 
 
-def make_handler():
+def make_handler(conversation_store=None):
+    store = conversation_store or Mock(active_path=None)
     return CommandHandler(
         Console(),
         DummyMcpManager(),
         skill_loader=None,
         get_system_prompt_fn=lambda: "",
-        save_checkpoint_fn=lambda history, checkpoint: checkpoint,
-        load_checkpoint_fn=lambda path: None,
-        list_checkpoints_fn=lambda: [],
+        conversation_store=store,
         auto_compact_fn=lambda *args, **kwargs: None,
     )
 
@@ -44,7 +45,7 @@ async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypa
     handler = make_handler()
     handler.console = Mock()
     history = [{"role": "system", "content": "system"}]
-    checkpoint = object()
+    conversation = object()
 
     sync_handlers = {
         "handle_mcp_help": None,
@@ -65,14 +66,14 @@ async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypa
         "handle_new": None,
         "handle_cd": False,
         "handle_memory_list": True,
-        "handle_memory_panel": checkpoint,
-        "handle_memory_delete": checkpoint,
+        "handle_memory_panel": conversation,
+        "handle_memory_delete": conversation,
         "handle_memory_config": True,
-        "handle_load": (history, checkpoint),
+        "handle_load": (history, conversation),
     }
     for name, return_value in sync_handlers.items():
         monkeypatch.setattr(handler, name, Mock(return_value=return_value))
-    monkeypatch.setattr(handler, "handle_compact", AsyncMock(return_value=("summary", checkpoint)))
+    monkeypatch.setattr(handler, "handle_compact", AsyncMock(return_value=("summary", conversation)))
     monkeypatch.setattr(handler, "handle_memory_update", AsyncMock(return_value=[]))
     monkeypatch.setattr("system.commands.flush_tui_screen", Mock())
     monkeypatch.setattr("system.commands.toggle_plan_mode", Mock(return_value=True))
@@ -95,7 +96,7 @@ async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypa
         result = await handler.process_command(
             query_by_command.get(command, command),
             history,
-            checkpoint,
+            conversation,
             render_banner_fn=Mock(),
             render_hint_fn=Mock(),
             render_history_fn=Mock(),
@@ -125,8 +126,8 @@ def test_mcp_registry_snapshot_copies_tools_and_handlers_under_one_lock():
     )
 
 
-def test_checkpoint_preview_only_contains_user_messages():
-    preview = _checkpoint_preview([
+def test_conversation_preview_only_contains_user_messages():
+    preview = _conversation_preview([
         {"role": "system", "content": "system prompt"},
         {"role": "user", "content": "first question"},
         {"role": "assistant", "content": "first answer"},
@@ -167,7 +168,7 @@ async def test_flush_command_registered_and_does_not_run_agent(monkeypatch):
     result = await handler.process_command(
         "/flush",
         history=[],
-        current_checkpoint=None,
+        current_conversation=None,
         render_banner_fn=lambda: None,
         render_hint_fn=lambda: None,
         render_history_fn=lambda history: None,
@@ -189,146 +190,86 @@ def test_flush_screen_clears_terminal_and_requests_full_repaint():
     app._driver.flush.assert_called_once_with()
     app.refresh.assert_called_once_with(repaint=True, layout=True)
 
-
-def test_load_cannot_delete_current_checkpoint(tmp_path, monkeypatch):
-    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
-    checkpoint.write_text("[]", encoding="utf-8")
-    handler = make_handler()
+def test_load_cannot_delete_current_conversation(tmp_path, monkeypatch):
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "system"}])
+    handler = make_handler(store)
     handler.console = Mock()
-    handler.list_checkpoints = lambda: [checkpoint]
 
-    def choose_checkpoint(checkpoints, title=None, delete_handler=None, preview_handler=None):
-        assert checkpoints == [checkpoint]
-        assert delete_handler is not None
-        assert preview_handler is not None
-        with pytest.raises(ValueError, match="当前 checkpoint 正在使用"):
-            delete_handler(checkpoint)
+    def choose_conversation(conversations, **kwargs):
+        assert conversations == [conversation]
+        assert kwargs["delete_handler"] is not None
+        assert kwargs["preview_handler"] is not None
+        assert kwargs["title_handler"] is not None
+        with pytest.raises(ValueError, match="当前对话正在使用"):
+            kwargs["delete_handler"](conversation)
         return "abort"
 
-    monkeypatch.setattr("system.commands.interactive_choose_checkpoint", choose_checkpoint)
+    monkeypatch.setattr("system.commands.interactive_choose_conversation", choose_conversation)
 
     history = [{"role": "system", "content": "system"}]
-    loaded_history, current_checkpoint = handler.handle_load(
+    loaded_history, current_conversation = handler.handle_load(
         history,
-        checkpoint,
+        conversation,
         render_banner_fn=lambda: None,
         render_hint_fn=lambda: None,
         render_history_fn=lambda messages: None,
     )
 
     assert loaded_history is history
-    assert current_checkpoint == checkpoint
-    assert checkpoint.exists()
+    assert current_conversation == conversation
+    assert conversation.exists()
 
 
-def test_load_task_plan_list_cannot_delete_current_plan(tmp_path, monkeypatch):
-    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
-    checkpoint.write_text("[]", encoding="utf-8")
-    current_plan = tmp_path / "task_plan_current_abcd1234.json"
-    current_plan.write_text("{}", encoding="utf-8")
-    other_plan = tmp_path / "task_plan_other_efgh5678.json"
-    other_plan.write_text("{}", encoding="utf-8")
-    handler = make_handler()
-    handler.console = Mock()
-    handler.list_checkpoints = lambda: [checkpoint]
-    handler.load_checkpoint = lambda path: [{"role": "system", "content": "system"}]
-    chooser_calls = 0
-
-    def choose_checkpoint(checkpoints, title=None, delete_handler=None, preview_handler=None):
-        nonlocal chooser_calls
-        chooser_calls += 1
-        assert preview_handler is not None
-        if chooser_calls == 1:
-            return str(checkpoint)
-        assert checkpoints == [current_plan, other_plan]
-        assert "Select a Task Plan to Load" in title
-        assert delete_handler is not None
-        with pytest.raises(ValueError, match="当前 Task Plan 正在使用"):
-            delete_handler(current_plan)
-        delete_handler(other_plan)
-        return "abort"
-
-    reset_task_plan = Mock()
-    monkeypatch.setattr("system.commands.interactive_choose_checkpoint", choose_checkpoint)
-    monkeypatch.setattr("system.commands.list_task_plans", lambda: [current_plan, other_plan])
-    monkeypatch.setattr("utils.tasks.TASK_MANAGER", Mock(path=current_plan))
-    monkeypatch.setattr("system.commands.refresh_task_workspace_paths", reset_task_plan)
-    monkeypatch.setattr("system.commands.render_current_task_plan", lambda console: None)
-
-    loaded_history, loaded_checkpoint = handler.handle_load(
-        [{"role": "system", "content": "system"}],
-        checkpoint,
-        render_banner_fn=lambda: None,
-        render_hint_fn=lambda: None,
-        render_history_fn=lambda messages: None,
-    )
-
-    assert loaded_history == [{"role": "system", "content": ""}]
-    assert loaded_checkpoint == checkpoint
-    assert current_plan.exists()
-    assert not other_plan.exists()
-    reset_task_plan.assert_called_once_with()
-
-
-def test_load_without_saved_task_plans_resets_current_plan(tmp_path, monkeypatch):
-    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
-    checkpoint.write_text("[]", encoding="utf-8")
-    handler = make_handler()
-    handler.console = Mock()
-    handler.list_checkpoints = lambda: [checkpoint]
-    handler.load_checkpoint = lambda path: [{"role": "system", "content": "system"}]
-    reset_task_plan = Mock()
-
-    monkeypatch.setattr(
-        "system.commands.interactive_choose_checkpoint",
-        lambda checkpoints, title=None, delete_handler=None, preview_handler=None: str(checkpoint),
-    )
-    monkeypatch.setattr("system.commands.list_task_plans", lambda: [])
-    monkeypatch.setattr("system.commands.refresh_task_workspace_paths", reset_task_plan)
-    monkeypatch.setattr("system.commands.render_current_task_plan", lambda console: None)
-
-    loaded_history, loaded_checkpoint = handler.handle_load(
-        [{"role": "system", "content": "system"}],
-        checkpoint,
-        render_banner_fn=lambda: None,
-        render_hint_fn=lambda: None,
-        render_history_fn=lambda messages: None,
-    )
-
-    assert loaded_history == [{"role": "system", "content": ""}]
-    assert loaded_checkpoint == checkpoint
-    reset_task_plan.assert_called_once_with()
-
-
-
-def test_load_rebuilds_tool_history_after_rendering_checkpoint(tmp_path, monkeypatch):
-    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
-    checkpoint.write_text("[]", encoding="utf-8")
+def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp_path, monkeypatch):
+    store = ConversationStore(tmp_path / "conversations")
     loaded = [
-        {"role": "system", "content": "system"},
+        {"role": "system", "content": "saved system"},
+        {"role": "user", "content": "question"},
         {
             "role": "assistant",
             "tool_calls": [{"id": "call_1", "name": "FileRead", "arguments": "{}"}],
         },
         {"role": "tool", "tool_call_id": "call_1", "name": "FileRead", "content": "file"},
     ]
-    handler = make_handler()
+    conversation = store.save_messages(loaded)
+    task_plan = {
+        "schema_version": SCHEMA_VERSION,
+        "conversation_id": store.active_id,
+        "epic_id": "abcd1234",
+        "next_id": 2,
+        "tasks": {"1": {"id": "1", "subject": "Task", "description": "", "status": "pending", "depend_on": []}},
+    }
+    (conversation.parent / TASK_PLAN_FILE).write_text(json.dumps(task_plan), encoding="utf-8")
+    history_path = conversation.parent / SUB_AGENT_HISTORY_FILE
+    history_path.parent.mkdir(parents=True)
+    team_history = [{
+        "conversation_id": store.active_id,
+        "plan_task_id": "1",
+        "role": "Tester",
+        "status": "completed",
+    }]
+    history_path.write_text(json.dumps({
+        "schema_version": SCHEMA_VERSION,
+        "conversation_id": store.active_id,
+        "records": team_history,
+    }), encoding="utf-8")
+    store.reset()
+
+    handler = make_handler(store)
     handler.console = Mock()
-    handler.list_checkpoints = lambda: [checkpoint]
-    handler.load_checkpoint = lambda path: loaded
     tool_history = Mock()
     events = []
 
     monkeypatch.setattr(
-        "system.commands.interactive_choose_checkpoint",
-        lambda checkpoints, title=None, delete_handler=None, preview_handler=None: str(checkpoint),
+        "system.commands.interactive_choose_conversation",
+        lambda conversations, **kwargs: str(conversation),
     )
-    monkeypatch.setattr("system.commands.list_task_plans", lambda: [])
-    monkeypatch.setattr("system.commands.refresh_task_workspace_paths", Mock())
     monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+    monkeypatch.setattr("system.commands.post_tui", Mock())
     monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
 
-    handler.handle_load(
+    loaded_history, loaded_conversation = handler.handle_load(
         [{"role": "system", "content": "old"}],
         None,
         render_banner_fn=lambda: None,
@@ -336,8 +277,135 @@ def test_load_rebuilds_tool_history_after_rendering_checkpoint(tmp_path, monkeyp
         render_history_fn=lambda messages: events.append(("render", messages)),
     )
 
-    assert events == [("render", loaded)]
-    tool_history.rebuild_from_messages.assert_called_once_with(loaded)
+    expected_messages = list(loaded)
+    expected_messages[0] = {"role": "system", "content": ""}
+    assert loaded_history == expected_messages
+    assert loaded_conversation == conversation
+    assert events == [("render", expected_messages)]
+    from utils import tasks as tasks_module
+    from utils import teams as teams_module
+
+    assert tasks_module.TASK_MANAGER.conversation_id == conversation.parent.name
+    assert tasks_module.TASK_MANAGER._data == task_plan
+    assert teams_module.TEAM.conversation_id == conversation.parent.name
+    assert teams_module.TEAM.history == team_history
+    tool_history.rebuild_from_messages.assert_called_once_with(expected_messages)
+
+
+def test_load_conversation_without_sidecars_activates_empty_histories(tmp_path, monkeypatch):
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "saved"}])
+    store.reset()
+    handler = make_handler(store)
+    handler.console = Mock()
+
+    monkeypatch.setattr(
+        "system.commands.interactive_choose_conversation",
+        lambda conversations, **kwargs: str(conversation),
+    )
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+    monkeypatch.setattr("system.commands.post_tui", Mock())
+
+    handler.handle_load(
+        [{"role": "system", "content": "old"}],
+        None,
+        render_banner_fn=lambda: None,
+        render_hint_fn=lambda: None,
+        render_history_fn=lambda messages: None,
+    )
+
+    from utils import tasks as tasks_module
+    from utils import teams as teams_module
+
+    assert tasks_module.TASK_MANAGER.conversation_id == conversation.parent.name
+    assert tasks_module.TASK_MANAGER._data["tasks"] == {}
+    assert teams_module.TEAM.conversation_id == conversation.parent.name
+    assert teams_module.TEAM.history == []
+
+
+def test_load_failure_keeps_previous_conversation_and_managers(tmp_path, monkeypatch):
+    from utils import tasks as tasks_module
+    from utils import teams as teams_module
+
+    store = ConversationStore(tmp_path / "conversations")
+    previous = store.save_messages([{"role": "system", "content": "previous"}])
+    previous_snapshot = store.load(previous)
+    previous_task_manager = tasks_module.TaskManager(previous.parent, previous.parent.name)
+    previous_team = teams_module.TeammateManager(previous.parent, previous.parent.name, [])
+
+    store.reset()
+    invalid = store.save_messages([{"role": "system", "content": "invalid"}])
+    (invalid.parent / TASK_PLAN_FILE).write_text(json.dumps({
+        "schema_version": SCHEMA_VERSION,
+        "conversation_id": invalid.parent.name,
+        "epic_id": "abcd1234",
+        "next_id": 1,
+        "tasks": {
+            "1": {
+                "id": "1",
+                "subject": "Broken",
+                "description": "",
+                "status": "pending",
+                "depend_on": [],
+            }
+        },
+    }), encoding="utf-8")
+    store.activate(previous_snapshot)
+
+    monkeypatch.setattr(tasks_module, "TASK_MANAGER", previous_task_manager)
+    monkeypatch.setattr(teams_module, "TEAM", previous_team)
+    monkeypatch.setattr(
+        "system.commands.interactive_choose_conversation",
+        lambda conversations, **kwargs: str(invalid),
+    )
+    handler = make_handler(store)
+    handler.console = Mock()
+    original_history = [{"role": "system", "content": "previous"}]
+
+    loaded_history, active_path = handler.handle_load(
+        original_history,
+        previous,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    )
+
+    assert loaded_history is original_history
+    assert active_path == previous
+    assert store.active_path == previous
+    assert tasks_module.TASK_MANAGER is previous_task_manager
+    assert teams_module.TEAM is previous_team
+
+
+
+def test_new_resets_conversation_task_and_team_bindings(tmp_path, monkeypatch):
+    from utils import tasks as tasks_module
+    from utils import teams as teams_module
+
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "system"}])
+    task_manager = tasks_module.TaskManager(conversation.parent, conversation.parent.name)
+    team = teams_module.TeammateManager(conversation.parent, conversation.parent.name, [])
+    monkeypatch.setattr(tasks_module, "TASK_MANAGER", task_manager)
+    monkeypatch.setattr(teams_module, "TEAM", team)
+    monkeypatch.setattr(tasks_module, "render_task_pane", Mock())
+    monkeypatch.setattr("system.commands.post_tui", Mock())
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+    monkeypatch.setattr("system.commands.render_current_workdir", Mock())
+    monkeypatch.setattr("system.commands.refresh_status", Mock())
+    handler = make_handler(store)
+    handler.console = Mock()
+    history = [
+        {"role": "system", "content": "old system"},
+        {"role": "user", "content": "old conversation"},
+    ]
+
+    handler.handle_new(history, conversation)
+
+    assert store.active_path is None
+    assert tasks_module.TASK_MANAGER.conversation_id is None
+    assert teams_module.TEAM.conversation_id is None
+    assert history == [{"role": "system", "content": ""}]
 
 
 def test_reset_conversation_view_clears_tool_history(monkeypatch):
@@ -352,45 +420,6 @@ def test_reset_conversation_view_clears_tool_history(monkeypatch):
 
     assert history == [{"role": "system", "content": ""}]
     tool_history.clear.assert_called_once_with()
-
-
-def test_load_selected_task_plan_does_not_reset_it(tmp_path, monkeypatch):
-    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
-    checkpoint.write_text("[]", encoding="utf-8")
-    task_plan = tmp_path / "task_plan_selected_abcd1234.json"
-    task_plan.write_text("{}", encoding="utf-8")
-    handler = make_handler()
-    handler.console = Mock()
-    handler.list_checkpoints = lambda: [checkpoint]
-    handler.load_checkpoint = lambda path: [{"role": "system", "content": "system"}]
-    chooser_calls = 0
-
-    def choose_checkpoint(checkpoints, title=None, delete_handler=None, preview_handler=None):
-        nonlocal chooser_calls
-        chooser_calls += 1
-        assert preview_handler is not None
-        return str(checkpoint) if chooser_calls == 1 else str(task_plan)
-
-    load_selected_plan = Mock(return_value={"tasks": {}})
-    reset_task_plan = Mock()
-    monkeypatch.setattr("system.commands.interactive_choose_checkpoint", choose_checkpoint)
-    monkeypatch.setattr("system.commands.list_task_plans", lambda: [task_plan])
-    monkeypatch.setattr("system.commands.load_task_plan", load_selected_plan)
-    monkeypatch.setattr("system.commands.refresh_task_workspace_paths", reset_task_plan)
-    monkeypatch.setattr("system.commands.render_current_task_plan", lambda console: None)
-
-    loaded_history, loaded_checkpoint = handler.handle_load(
-        [{"role": "system", "content": "system"}],
-        checkpoint,
-        render_banner_fn=lambda: None,
-        render_hint_fn=lambda: None,
-        render_history_fn=lambda messages: None,
-    )
-
-    assert loaded_history == [{"role": "system", "content": ""}]
-    assert loaded_checkpoint == checkpoint
-    load_selected_plan.assert_called_once_with(task_plan)
-    reset_task_plan.assert_not_called()
 
 
 def test_tasks_command_opens_task_management_panel(monkeypatch):

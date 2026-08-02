@@ -23,16 +23,14 @@ from system.models import get_model_manager
 from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
+from utils.conversations import ConversationStore
 from utils.llm_client import strip_native_message_payloads
 from utils.mcp_config import parse_mcp_add_query
 from utils.memory_catalog import sort_memory_records
 from utils.plan_mode import toggle_plan_mode
-from utils.tasks import list_task_plans, load_task_plan, get_task_plan_title, refresh_workspace_paths as refresh_task_workspace_paths
-from utils.teams import list_team_histories, load_team_history, get_history_title
 from utils.memory import (
     delete_long_term_memory,
     get_active_memory_count,
-    get_checkpoint_title,
     get_context_length,
     get_keep_recent_tool_call,
     get_memory_recall_window_size,
@@ -52,8 +50,7 @@ class CommandAction(Enum):
     EXIT = auto()
     CONTINUE = auto()
     RUN_AGENT = auto()
-    RESET_CHECKPOINT = auto()
-    UPDATE_CHECKPOINT = auto()
+    RESET_CONVERSATION = auto()
     LOAD_HISTORY = auto()
     UPDATE_SYSTEM_PROMPT = auto()
     LAUNCH_UPDATER_AND_EXIT = auto()
@@ -66,48 +63,31 @@ class CommandResult:
 
 
 # ============================================================================
-# Checkpoint 选择器
+# Conversation 选择器
 # ============================================================================
 
-def interactive_choose_checkpoint(
-        checkpoints: list,
-        title: str = "\n📌 Select a Checkpoint to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
+def interactive_choose_conversation(
+        conversations: list,
+        title: str = "\n📌 Select a Conversation to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
         delete_handler: Callable[[Path], None] | None = None,
         preview_handler: Callable[[Path], tuple[str, Any]] | None = None,
+        title_handler: Callable[[Path], str | None] | None = None,
 ) -> str:
-    """交互式选择 checkpoint"""
-    if not checkpoints:
+    """交互式选择 6.0 conversation。"""
+    if not conversations:
         return "abort"
 
     options = []
-    for cp in checkpoints:
-        stem = cp.stem
-        parts = stem.split("_")
-        if stem.startswith("ckpt_"):
-            uid = parts[-1] if len(parts) >= 4 else cp.name
-        elif stem.startswith("task_plan_") or stem.startswith("task_history_"):
-            uid = parts[-1]  # epic_id / session_id is always last
-        else:
-            uid = cp.name
-        mtime = cp.stat().st_mtime
+    for conversation in conversations:
+        conversation_id = conversation.parent.name
+        mtime = conversation.stat().st_mtime
         date_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
-
-        # Extract title based on file type
-        if stem.startswith("ckpt_"):
-            cp_title = get_checkpoint_title(cp)
-        elif stem.startswith("task_plan_"):
-            cp_title = get_task_plan_title(cp)
-        elif stem.startswith("task_history_"):
-            cp_title = get_history_title(cp)
+        conversation_title = title_handler(conversation) if title_handler is not None else None
+        if conversation_title:
+            desc = f"{conversation_id} - {conversation_title} (最近一次更新时间：{date_str})"
         else:
-            cp_title = None
-
-        if cp_title:
-            desc = f"{uid} - {cp_title} (最近一次更新时间：{date_str})"
-        else:
-            desc = f"{uid} (最近一次更新时间：{date_str})"
-
-        options.append((str(cp), desc))
+            desc = f"{conversation_id} - 未命名对话 (最近一次更新时间：{date_str})"
+        options.append((str(conversation), desc))
 
     choices = []
     lookup = {}
@@ -133,7 +113,7 @@ def interactive_choose_checkpoint(
     return lookup.get(selected, "abort")
 
 
-def _checkpoint_preview(messages: list) -> Text:
+def _conversation_preview(messages: list) -> Text:
     preview = Text()
     user_messages = [message for message in messages if message.get("role") == "user"]
     if not user_messages:
@@ -200,9 +180,7 @@ class CommandHandler:
             mcp_manager,
             skill_loader,
             get_system_prompt_fn,
-            save_checkpoint_fn,
-            load_checkpoint_fn,
-            list_checkpoints_fn,
+            conversation_store: ConversationStore,
             auto_compact_fn,
             apply_workdir_fn=None,
     ):
@@ -210,9 +188,7 @@ class CommandHandler:
         self.mcp_manager = mcp_manager
         self.skill_loader = skill_loader
         self.get_system_prompt_fn = get_system_prompt_fn
-        self.save_checkpoint = save_checkpoint_fn
-        self.load_checkpoint = load_checkpoint_fn
-        self.list_checkpoints = list_checkpoints_fn
+        self.conversation_store = conversation_store
         self.auto_compact = auto_compact_fn
         self.apply_workdir = apply_workdir_fn
 
@@ -750,9 +726,14 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         show_tool_history_tui(TOOL_EXECUTION_HISTORY)
         return True
 
-    def handle_new(self, history: list, current_checkpoint: Optional[Path]) -> tuple:
-        """处理 /new 命令，返回 (should_continue, new_checkpoint)"""
-        refresh_task_workspace_paths()
+    def handle_new(self, history: list, current_conversation: Optional[Path]) -> tuple:
+        """处理 /new 命令，返回 (should_continue, new_conversation)。"""
+        from utils import tasks as tasks_module
+        from utils import teams as teams_module
+
+        self.conversation_store.reset()
+        tasks_module.refresh_workspace_paths()
+        teams_module.refresh_workspace_paths()
         reset_memory_recall_windows()
         self._reset_hitl_session()
         self._reset_conversation_view(history)
@@ -823,8 +804,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             post_tui(region, "", clear=True)
         render_current_task_plan(self.console)
 
-    async def handle_compact(self, query: str, history: list, current_checkpoint: Optional[Path]) -> tuple:
-        """处理 /compact [prompt] 命令，返回 (should_continue, new_checkpoint)"""
+    async def handle_compact(self, query: str, history: list, current_conversation: Optional[Path]) -> tuple:
+        """处理 /compact [prompt] 命令，返回当前 conversation 路径。"""
         parts = query.split(maxsplit=1)
         reason = parts[1].strip() if len(parts) == 2 and parts[1].strip() else self.DEFAULT_COMPACT_PROMPT
 
@@ -839,9 +820,9 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             self.console.print(
                 "\n[bold green]✨ 当前对话上下文已成功压缩并保存！[/bold green]"
             )
-            new_checkpoint = self.save_checkpoint(history, current_checkpoint)
+            conversation_path = self.conversation_store.save_messages(history)
             refresh_status()
-            return True, new_checkpoint
+            return True, conversation_path
         finally:
             set_agent_loop_active(False)
 
@@ -875,12 +856,12 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         self.console.print(table)
         return True
 
-    def handle_memory_delete(self, query: str, history: list, current_checkpoint: Optional[Path]) -> Optional[Path]:
+    def handle_memory_delete(self, query: str, history: list, current_conversation: Optional[Path]) -> Optional[Path]:
         """处理 /memory-delete <id> [id...] 命令"""
         parts = query.split()
         if len(parts) < 2:
             self.console.print("\n[bold yellow]用法：/memory-delete <memory_id> [memory_id ...][/bold yellow]")
-            return current_checkpoint
+            return current_conversation
 
         deleted_ids = []
         missing_ids = []
@@ -890,29 +871,29 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             else:
                 missing_ids.append(memory_id)
 
-        new_checkpoint = current_checkpoint
+        conversation_path = current_conversation
         if deleted_ids:
             if history and history[0].get("role") == "system":
                 history[0]["content"] = self.get_system_prompt_fn()
-            new_checkpoint = self.save_checkpoint(history, current_checkpoint)
+            conversation_path = self.conversation_store.save_messages(history)
             self.console.print(f"\n[bold green]已删除长期记忆：{', '.join(deleted_ids)}[/bold green]")
         if missing_ids:
             self.console.print(f"\n[bold yellow]未找到 active 长期记忆：{', '.join(missing_ids)}[/bold yellow]")
-        return new_checkpoint
+        return conversation_path
 
-    def handle_memory_panel(self, history: list, current_checkpoint: Optional[Path]) -> Optional[Path]:
+    def handle_memory_panel(self, history: list, current_conversation: Optional[Path]) -> Optional[Path]:
         """处理 /memory-panel 命令"""
         import utils.memory as memory_provider
 
         deleted_ids = manage_memories_tui(memory_provider)
         if not deleted_ids:
-            return current_checkpoint
+            return current_conversation
 
         if history and history[0].get("role") == "system":
             history[0]["content"] = self.get_system_prompt_fn()
-        new_checkpoint = self.save_checkpoint(history, current_checkpoint)
+        conversation_path = self.conversation_store.save_messages(history)
         self.console.print(f"\n[bold green]已删除长期记忆：{', '.join(deleted_ids)}[/bold green]")
-        return new_checkpoint
+        return conversation_path
 
     def handle_memory_config(self, query: str) -> bool:
         """处理 /memory-config 命令"""
@@ -995,54 +976,84 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
     def handle_load(
             self,
             history: list,
-            current_checkpoint: Optional[Path],
+            current_conversation: Optional[Path],
             render_banner_fn,
             render_hint_fn,
             render_history_fn,
     ) -> tuple:
-        """处理 /load 命令，返回 (new_history, new_checkpoint)"""
-        checkpoints = self.list_checkpoints()
-        if not checkpoints:
+        """加载一份 6.0 conversation，并自动恢复其任务与 Sub-Agent 历史。"""
+        conversations = self.conversation_store.list_conversations()
+        if not conversations:
             self.console.print(
-                "\n[bold yellow]📂 没有找到任何历史对话记录 (No checkpoints found).[/bold yellow]",
+                "\n[bold yellow]📂 没有找到任何 6.0 对话记录。[/bold yellow]",
                 tui_region=TuiRegion.TOOLS,
             )
-            return history, current_checkpoint
+            return history, self.conversation_store.active_path
 
-        if len(history) > 1 and current_checkpoint is None:
-            current_checkpoint = self.save_checkpoint(history)
+        if len(history) > 1 and self.conversation_store.active_path is None:
+            self.conversation_store.save_messages(history)
 
-        def _delete_checkpoint(path: Path) -> None:
-            if current_checkpoint is not None and path.resolve() == current_checkpoint.resolve():
-                raise ValueError("当前 checkpoint 正在使用，不能删除。")
-            path.unlink()
+        def _delete_conversation(path: Path) -> None:
+            self.conversation_store.delete(path)
 
-        def _preview_checkpoint(path: Path) -> tuple[str, Text]:
-            return f"对话预览 · {path.stem}", _checkpoint_preview(self.load_checkpoint(path))
+        def _preview_conversation(path: Path) -> tuple[str, Text]:
+            snapshot = self.conversation_store.load(path)
+            return f"对话预览 · {snapshot.title or '未命名对话'}", _conversation_preview(snapshot.messages)
 
         try:
-            selected_path = interactive_choose_checkpoint(
-                checkpoints,
-                delete_handler=_delete_checkpoint,
-                preview_handler=_preview_checkpoint,
+            selected_path = interactive_choose_conversation(
+                conversations,
+                delete_handler=_delete_conversation,
+                preview_handler=_preview_conversation,
+                title_handler=self.conversation_store.get_title,
             )
         except Exception as exc:
-            log_error_traceback("commands handle_load checkpoint", exc)
+            log_error_traceback("commands handle_load conversation", exc)
             selected_path = "abort"
 
         if selected_path == "abort":
             self.console.print("[#aaaaaa]已取消加载。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
-            return history, current_checkpoint
+            return history, self.conversation_store.active_path
 
         try:
-            selected_checkpoint = Path(selected_path)
-            current_checkpoint_path = current_checkpoint.resolve() if current_checkpoint else None
-            is_different_checkpoint = current_checkpoint_path is None or selected_checkpoint.resolve() != current_checkpoint_path
-            loaded = self.load_checkpoint(selected_checkpoint)
+            snapshot = self.conversation_store.load(Path(selected_path))
+            loaded = snapshot.messages
             if loaded and loaded[0].get("role") == "system":
                 loaded[0]["content"] = self.get_system_prompt_fn()
-            new_checkpoint = selected_checkpoint
 
+            from utils import tasks as tasks_module
+            from utils import teams as teams_module
+
+            next_task_manager = tasks_module.TaskManager(
+                snapshot.root,
+                snapshot.conversation_id,
+                snapshot.task_plan,
+            )
+            next_team = teams_module.TeammateManager(
+                snapshot.root,
+                snapshot.conversation_id,
+                snapshot.sub_agent_history,
+            )
+        except Exception as exc:
+            log_error_traceback("commands handle_load error", exc)
+            self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]", tui_region=TuiRegion.TOOLS)
+            return history, self.conversation_store.active_path
+
+        try:
+            self.conversation_store.activate(snapshot)
+        except Exception as exc:
+            log_error_traceback("commands handle_load activation", exc)
+            self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]", tui_region=TuiRegion.TOOLS)
+            return history, self.conversation_store.active_path
+
+        tasks_module.TASK_MANAGER = next_task_manager
+        teams_module.TEAM = next_team
+        TOOL_EXECUTION_HISTORY.rebuild_from_messages(loaded)
+        reset_memory_recall_windows()
+        hitl_mod.SESSION_WHITELIST.clear()
+        hitl_mod.PATH_WHITELIST.clear()
+
+        try:
             for region in (
                 TuiRegion.CONTENT,
                 TuiRegion.TOOLS,
@@ -1056,119 +1067,28 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 render_banner_fn()
                 render_hint_fn()
                 render_history_fn(loaded)
+                render_current_task_plan(self.console)
+                if snapshot.sub_agent_history:
+                    post_tui(
+                        TuiRegion.SUB_AGENT,
+                        json.dumps(snapshot.sub_agent_history, ensure_ascii=False, indent=2),
+                    )
             finally:
                 end_tui_batch_render()
-            TOOL_EXECUTION_HISTORY.rebuild_from_messages(loaded)
-
-            self.console.print(
-                f"\n[bold green]🚀 成功加载对话记录！当前上下文包含 {len(loaded)} 条消息。[/bold green]",
-                tui_region=TuiRegion.TOOLS,
-            )
-            if is_different_checkpoint:
-                reset_memory_recall_windows()
-            hitl_mod.SESSION_WHITELIST.clear()
-            hitl_mod.PATH_WHITELIST.clear()
         except Exception as exc:
-            log_error_traceback("commands handle_load error", exc)
-            self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]", tui_region=TuiRegion.TOOLS)
-            return history, current_checkpoint
+            log_error_traceback("commands handle_load render", exc)
 
-        # 检查任务看板
-        task_plan_loaded = False
-        task_plans = list_task_plans()
-        if task_plans:
-            self.console.print(
-                "\n[bold cyan]📋 发现保存的任务看板 (Task Plans)，是否要加载？[/bold cyan]",
-                tui_region=TuiRegion.TOOLS,
-            )
-
-            def _delete_task_plan(path: Path) -> None:
-                from utils.tasks import TASK_MANAGER
-
-                if path.resolve() == TASK_MANAGER.path.resolve():
-                    raise ValueError("当前 Task Plan 正在使用，不能删除。")
-                path.unlink()
-
-            def _preview_task_plan(path: Path) -> tuple[str, Group]:
-                with open(path, "r", encoding="utf-8") as file:
-                    plan_data = json.load(file)
-                return f"任务规划预览 · {path.stem}", _task_plan_preview(plan_data)
-
-            try:
-                selected_task_path = interactive_choose_checkpoint(
-                    task_plans,
-                    title="\n📌 Select a Task Plan to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
-                    delete_handler=_delete_task_plan,
-                    preview_handler=_preview_task_plan,
-                )
-            except Exception as exc:
-                log_error_traceback("commands handle_load task plan", exc)
-                selected_task_path = "abort"
-
-            if selected_task_path != "abort":
-                try:
-                    plan_data = load_task_plan(Path(selected_task_path))
-                    task_plan_loaded = True
-                    self.console.print(
-                        "[bold green]🚀 成功加载任务看板！[/bold green]",
-                        tui_region=TuiRegion.TOOLS,
-                    )
-
-                    has_incomplete = any(
-                        task.get("status") != "completed"
-                        for task in plan_data.get("tasks", {}).values()
-                    )
-
-                    if has_incomplete:
-                        team_histories = list_team_histories()
-                        if team_histories:
-                            self.console.print(
-                                "\n[bold cyan]💡 发现子代理执行历史 (Team Histories)，是否要加载？[/bold cyan]",
-                                tui_region=TuiRegion.TOOLS,
-                            )
-
-                            try:
-                                selected_team_path = interactive_choose_checkpoint(
-                                    team_histories,
-                                    title="\n📌 Select a Team History to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
-                                )
-                            except Exception as exc:
-                                log_error_traceback(
-                                    "commands handle_load team history", exc
-                                )
-                                selected_team_path = "abort"
-
-                            if selected_team_path != "abort":
-                                try:
-                                    load_team_history(Path(selected_team_path))
-                                    self.console.print(
-                                        "[bold green]✅ 成功加载子代理执行历史！[/bold green]",
-                                        tui_region=TuiRegion.TOOLS,
-                                    )
-                                except Exception as exc:
-                                    log_error_traceback(
-                                        "commands handle_load team history error", exc
-                                    )
-                                    self.console.print(
-                                        f"[bold red]❌ 加载子代理执行历史失败: {exc}[/bold red]",
-                                        tui_region=TuiRegion.TOOLS,
-                                    )
-                except Exception as exc:
-                    log_error_traceback("commands handle_load task plan error", exc)
-                    self.console.print(
-                        f"\n[bold red]❌ 加载任务看板失败: {exc}[/bold red]",
-                        tui_region=TuiRegion.TOOLS,
-                    )
-        if not task_plan_loaded:
-            refresh_task_workspace_paths()
-        render_current_task_plan(self.console)
-        return loaded, new_checkpoint
+        self.console.print(
+            f"\n[bold green]🚀 成功加载对话、任务与子智能体历史！当前上下文包含 {len(loaded)} 条消息。[/bold green]",
+            tui_region=TuiRegion.TOOLS,
+        )
+        return loaded, snapshot.path
 
     async def process_command(
             self,
             query: str,
             history: list,
-            current_checkpoint: Optional[Path],
+            current_conversation: Optional[Path],
             render_banner_fn,
             render_hint_fn,
             render_history_fn,
@@ -1295,8 +1215,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         # /new - 清空历史
         if query == "/new":
-            self.handle_new(history, current_checkpoint)
-            return CommandResult(action=CommandAction.RESET_CHECKPOINT)
+            self.handle_new(history, current_conversation)
+            return CommandResult(action=CommandAction.RESET_CONVERSATION)
 
         # /pwd - 显示当前工作目录
         if query == "/pwd":
@@ -1307,13 +1227,13 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         if query == "/cd" or query.startswith("/cd "):
             changed = self.handle_cd(query, history)
             if changed:
-                return CommandResult(action=CommandAction.RESET_CHECKPOINT)
+                return CommandResult(action=CommandAction.RESET_CONVERSATION)
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /compact [prompt] - 压缩上下文
         if query == "/compact" or query.startswith("/compact "):
-            _, new_checkpoint = await self.handle_compact(query, history, current_checkpoint)
-            return CommandResult(action=CommandAction.UPDATE_CHECKPOINT, payload=new_checkpoint)
+            await self.handle_compact(query, history, current_conversation)
+            return CommandResult(action=CommandAction.CONTINUE)
 
         # /memory-list - 列出长期记忆
         if query == "/memory-list":
@@ -1322,13 +1242,13 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         # /memory-panel - 交互式查看和删除长期记忆
         if query == "/memory-panel":
-            new_checkpoint = self.handle_memory_panel(history, current_checkpoint)
-            return CommandResult(action=CommandAction.UPDATE_CHECKPOINT, payload=new_checkpoint)
+            self.handle_memory_panel(history, current_conversation)
+            return CommandResult(action=CommandAction.CONTINUE)
 
         # /memory-delete <id> - 删除长期记忆
         if query == "/memory-delete" or query.startswith("/memory-delete "):
-            new_checkpoint = self.handle_memory_delete(query, history, current_checkpoint)
-            return CommandResult(action=CommandAction.UPDATE_CHECKPOINT, payload=new_checkpoint)
+            self.handle_memory_delete(query, history, current_conversation)
+            return CommandResult(action=CommandAction.CONTINUE)
 
         # /memory-config - 查看或设置记忆配置
         if query == "/memory-config" or query.startswith("/memory-config "):
@@ -1343,14 +1263,14 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         # /load - 加载历史
         if query == "/load":
-            new_history, new_checkpoint = self.handle_load(
+            new_history, new_conversation = self.handle_load(
                 history,
-                current_checkpoint,
+                current_conversation,
                 render_banner_fn,
                 render_hint_fn,
                 render_history_fn,
             )
-            return CommandResult(action=CommandAction.LOAD_HISTORY, payload=(new_history, new_checkpoint))
+            return CommandResult(action=CommandAction.LOAD_HISTORY, payload=(new_history, new_conversation))
 
         # 其他命令 - 让 LLM 处理
         # 对于在 COMMAND_DESCRIPTIONS 中的命令，附加描述（与原始逻辑一致）

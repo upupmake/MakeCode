@@ -565,8 +565,14 @@ Memory quality:
 
 def get_title_generation_system_prompt() -> str:
     return """You are a title generation tool.
-Your task is to generate a concise and descriptive title based on the user's query.
+Your task is to generate a concise and descriptive title based on the user's actual requests.
 Call GenerateConversationTitle exactly once and put only the title in its title argument.
+
+INPUT INTERPRETATION:
+- User content may include automatically recalled context under `# Potentially Relevant Memories` and the actual request under `# Current User Request`.
+- When `# Current User Request` sections exist, use their content as the source for the title.
+- Ignore recalled memory when choosing the title topic; do not derive the title from `# Potentially Relevant Memories`.
+- If no Current User Request section exists, generate the title from the ordinary user content.
 
 STRICT RULES:
 - The title MUST only contain: English letters (a-z, A-Z), digits (0-9), Chinese characters, spaces, dots (.), and hyphens (-).

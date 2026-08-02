@@ -40,7 +40,6 @@ from utils.common import (
     COMMON_TOOLS_HANDLERS,
     STARTUP_TERMINAL_SOURCE,
     STARTUP_TERMINAL_TYPE,
-    sanitize_title,
     file_read,
     file_create,
     file_edit,
@@ -59,20 +58,13 @@ from utils.skills import (
     SKILL_TOOLS_HANDLERS,
 )
 from utils.memory import recall_long_term_memories
+from utils.conversations import SCHEMA_VERSION, SUB_AGENT_HISTORY_FILE, SUB_AGENT_RUNS_DIR
 from utils import tasks as tasks_module
+
 
 
 def _workdir() -> Path:
     return paths.workdir()
-
-
-def _team_dir() -> Path:
-    return paths.workspace_team_dir()
-
-
-def _runs_dir() -> Path:
-    return paths.workspace_team_runs_dir()
-
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 
@@ -186,43 +178,66 @@ class DelegateTasks(BaseModel):
 
 
 class TeammateManager:
-    def __init__(self, team_dir: Path | None = None):
-        self.dir = team_dir or _team_dir()
-        self.dir.mkdir(parents=True, exist_ok=True)
-        _runs_dir().mkdir(parents=True, exist_ok=True)
-
-        self.session_id = uuid.uuid4().hex[:8]
-        self.history_path = self.dir / f"task_history_{self.session_id}.json"
-        self.history = self._load_history()
-
-    def _load_history(self) -> list:
-        if self.history_path.exists():
-            return json.loads(self.history_path.read_text(encoding="utf-8"))
-        return []
+    def __init__(
+            self,
+            conversation_root: Path | None = None,
+            conversation_id: str | None = None,
+            history: list[dict[str, Any]] | None = None,
+    ):
+        self.conversation_root = conversation_root
+        self.conversation_id = conversation_id
+        self.history_path = (
+            conversation_root / SUB_AGENT_HISTORY_FILE
+            if conversation_root is not None
+            else None
+        )
+        self.runs_dir = (
+            conversation_root / SUB_AGENT_RUNS_DIR
+            if conversation_root is not None
+            else None
+        )
+        self.history = list(history or [])
+        if conversation_id is not None:
+            for record in self.history:
+                if record.get("conversation_id") != conversation_id:
+                    raise ValueError("Sub-Agent history conversation ID mismatch")
 
     async def _save_history(self, lock: asyncio.Lock):
         """写入时加锁，保证多子节点并发完成时不会写坏文件"""
+        self._validate_storage_paths()
         async with lock:
-            async with aiofiles.open(self.history_path, "w", encoding="utf-8") as f:
-                await f.write(json.dumps(self.history, ensure_ascii=False, indent=2))
+            self.history_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.history_path.with_name(
+                f".{self.history_path.name}.{uuid.uuid4().hex}.tmp"
+            )
+            async with aiofiles.open(temporary, "w", encoding="utf-8") as f:
+                await f.write(json.dumps({
+                    "schema_version": SCHEMA_VERSION,
+                    "conversation_id": self.conversation_id,
+                    "records": self.history,
+                }, ensure_ascii=False, indent=2))
+            temporary.replace(self.history_path)
 
-    def rename_history_with_title(self, title: str) -> bool:
-        """Rename the task history file on disk to include *title*."""
-        safe_title = sanitize_title(title)
-        if not safe_title:
-            return False
-
-        stem = self.history_path.stem
-        session_id = stem.rsplit("_", 1)[-1]
-        new_path = self.history_path.parent / f"task_history_{safe_title}_{session_id}.json"
-
-        if new_path == self.history_path:
-            return False
-
-        if self.history_path.exists():
-            self.history_path.rename(new_path)
-        self.history_path = new_path
-        return True
+    def _validate_storage_paths(self) -> None:
+        if (
+            self.conversation_root is None
+            or self.history_path is None
+            or self.runs_dir is None
+            or self.conversation_id is None
+        ):
+            raise RuntimeError("No active conversation for Sub-Agent history")
+        root = self.conversation_root.resolve()
+        sub_agents_dir = self.history_path.parent
+        if (
+            self.conversation_root.name != self.conversation_id
+            or self.conversation_root.is_symlink()
+            or self.history_path.is_symlink()
+            or sub_agents_dir.is_symlink()
+            or self.runs_dir.is_symlink()
+            or sub_agents_dir.resolve() != root / "sub_agents"
+            or self.runs_dir.resolve() != root / SUB_AGENT_RUNS_DIR
+        ):
+            raise RuntimeError("Invalid Sub-Agent storage path")
 
     def _validate_delegation_tasks(self, tasks: Any) -> list[dict]:
         try:
@@ -279,72 +294,6 @@ class TeammateManager:
 
         return normalized
 
-    async def _get_last_failed_context(
-            self, plan_task_id: str, lock: asyncio.Lock
-    ) -> str:
-        last_record = None
-        async with lock:
-            for record in reversed(self.history):
-                if record.get("plan_task_id") == plan_task_id:
-                    last_record = record
-                    break
-
-        if not last_record or last_record.get("status") == "completed":
-            return ""
-
-        trace_log_path = _workdir() / last_record.get("trace_log", "")
-        if not trace_log_path.exists():
-            return ""
-
-        formatted_log = [
-            f"\n### PREVIOUS ATTEMPT LOG (Task #{plan_task_id}) ###",
-            "A previous agent attempted this task but did not finish successfully. Below is the complete trace of their actions:\n",
-        ]
-
-        try:
-            async with aiofiles.open(trace_log_path, "r", encoding="utf-8") as f:
-                async for line in f:
-                    if not line.strip():
-                        continue
-                    event = json.loads(line)
-                    evt_type = event.get("event")
-                    data = event.get("data", {})
-                    timestamp = event.get("timestamp")
-
-                    formatted_log.append(f"--- [{timestamp}] Event: {evt_type} ---")
-                    if evt_type.endswith("_llm_output"):
-                        text = data.get("text", "")
-                        tools = data.get("tool_calls", [])
-                        if text:
-                            formatted_log.append(f"Thoughts:\n{text}")
-                        if tools:
-                            formatted_log.append(f"Tool Intent: {tools}")
-                    elif evt_type.endswith("_tool_execution"):
-                        t_name = data.get("tool_name", "")
-                        t_args = data.get("arguments", {})
-                        t_out = data.get("output", "")
-                        formatted_log.append(f"Tool Call: {t_name}")
-                        formatted_log.append(
-                            f"Arguments:\n{json.dumps(t_args, ensure_ascii=False, indent=2)}"
-                        )
-                        formatted_log.append(f"Result:\n{t_out}")
-                    else:
-                        if isinstance(data, dict):
-                            formatted_log.append(
-                                json.dumps(data, ensure_ascii=False, indent=2)
-                            )
-                        else:
-                            formatted_log.append(str(data))
-                    formatted_log.append("")
-        except Exception as e:
-            return f"\n[Error reading previous trace log: {e}]\n"
-
-        formatted_log.append("### END OF PREVIOUS ATTEMPT LOG ###")
-        formatted_log.append(
-            "Please review the previous agent's work, continue from where it left off, and complete the task.\n"
-        )
-        return "\n".join(formatted_log)
-
     async def delegate_concurrently(self, tasks: list[dict]) -> str:
         if not tasks:
             return "Error: No tasks provided to delegate."
@@ -377,13 +326,14 @@ class TeammateManager:
             )
         if delegation_action != "approve":
             return "Sub-agent delegation cancelled by the user."
+        self._validate_storage_paths()
         post_tui(TuiRegion.SUB_AGENT, active=True)
         post_tui(TuiRegion.BACKGROUND, active=True)
         # 1. 创建本次调用的专属文件夹
         run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_id = f"run_{run_timestamp}"
-        current_run_dir = _runs_dir() / run_id
-        current_run_dir.mkdir(exist_ok=True)
+        run_id = f"run_{run_timestamp}_{uuid.uuid4().hex[:6]}"
+        current_run_dir = self.runs_dir / run_id
+        current_run_dir.mkdir(parents=True, exist_ok=True)
 
         print_formatted_text(
             f"\n[yellow][Orchestrator] 正在并发唤醒 {len(tasks)} 个子节点... 日志目录: {escape(run_id)}[/yellow]\n"
@@ -413,15 +363,6 @@ class TeammateManager:
                     recall_result.get("content", "") if isinstance(recall_result, dict) else "",
                 )
 
-                previous_context = await self._get_last_failed_context(
-                    plan_task_id, lock
-                )
-                if previous_context:
-                    prompt = f"{prompt}\n\n{previous_context}"
-                    print_formatted_text(
-                        f"[magenta]  [Recovery] 发现子节点 '{escape(str(role))}' (Task #{plan_task_id}) 之前的失败记录，已加载并注入到新任务的上下文中。[/magenta]"
-                    )
-
                 runtime_task_id = f"task_{plan_task_id}_{uuid.uuid4().hex[:6]}"
                 start_time = datetime.now().isoformat()
 
@@ -430,6 +371,8 @@ class TeammateManager:
 
                 # 记录初始信息到总的 history
                 task_record = {
+                    "conversation_id": self.conversation_id,
+                    "task_plan_id": tasks_module.TASK_MANAGER._data["epic_id"],
                     "run_id": run_id,
                     "task_id": runtime_task_id,
                     "plan_task_id": plan_task_id,
@@ -437,9 +380,7 @@ class TeammateManager:
                     "status": "running",
                     "start_time": start_time,
                     "prompt": prompt,
-                    "trace_log": str(
-                        log_file_path.relative_to(_workdir())
-                    ),  # 保存相对路径方便查看
+                    "trace_log": str(log_file_path.relative_to(self.conversation_root)),
                 }
 
                 async with lock:
@@ -482,6 +423,7 @@ class TeammateManager:
                         if record["task_id"] == runtime_task_id:
                             record["status"] = history_status
                             record["end_time"] = datetime.now().isoformat()
+                            record["report"] = report
                 await self._save_history(lock)
 
                 print_formatted_text(
@@ -825,47 +767,23 @@ class TeammateManager:
         )
         await append_trace("task_completed", final_report)
         return {"report": final_report}
-
-
 TEAM = TeammateManager()
+
+
+
+def activate_conversation(
+        conversation_root: Path,
+        conversation_id: str,
+        history: list[dict[str, Any]] | None = None,
+) -> None:
+    global TEAM
+    TEAM = TeammateManager(conversation_root, conversation_id, history)
+
 
 
 def refresh_workspace_paths() -> None:
     global TEAM
-    TEAM = TeammateManager(_team_dir())
-
-
-def get_history_title(filepath: Path) -> str:
-    """Extract title from task history filename if available."""
-    stem = filepath.stem
-    if not stem.startswith("task_history_"):
-        return None
-    parts = stem.split("_")
-    # task_history_{title_parts...}_{session_id}
-    # session_id is 8 hex chars, always the last part
-    if len(parts) > 2:
-        title_parts = parts[2:-1]
-        if title_parts:
-            return " ".join(title_parts)
-    return None
-
-
-def list_team_histories() -> list[Path]:
-    team_dir = _team_dir()
-    if not team_dir.exists():
-        return []
-    files = list(team_dir.glob("task_history_*.json"))
-    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-    return files
-
-
-def load_team_history(filepath: Path) -> list:
-    with open(filepath, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    TEAM.history_path = filepath
-    TEAM.session_id = filepath.stem.split("_")[-1]
-    TEAM.history = data
-    return data
+    TEAM = TeammateManager()
 
 
 TEAM_NAMESPACE_TOOLS = [pydantic_function_tool(DelegateTasks)]

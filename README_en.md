@@ -72,7 +72,7 @@ chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode sou
 - Supports per-model message format selection:
     - `openai_chat` (OpenAI Chat Completions message format)
     - `anthropic` (Anthropic Messages protocol)
-- **Centralized Paths**: workspace paths, install-directory paths, `.makecode/` subdirectories (`tasks/`, `team/`, `memory/`, `transcripts/`, `checkpoint/`, etc.), as well as `model_config.json`, `mcp_config.json`, `layout_config.json`, and `error.log` under the install directory are all provided by `utils/paths.py`.
+- **Centralized Paths**: workspace paths, install-directory paths, `.makecode/` subdirectories (`conversations/`, `memory/`, `transcripts/`, etc.), as well as `model_config.json`, `mcp_config.json`, `layout_config.json`, and `error.log` under the install directory are all provided by `utils/paths.py`.
 - **Model Configuration**: Managed via the built-in `/models` command (see section 2.14)
 
 ### 2.3 File and Terminal Tools (`utils/common.py`) & File Access Control (`utils/file_access.py`)
@@ -152,7 +152,7 @@ Key characteristics:
 - Batch creation, content, status, and dependency updates validate the entire batch first and leave no partial changes on failure
 - DAG validation for active tasks rolls back the entire dependency batch when an update creates a cycle
 - A task is runnable when it is `pending` and all dependencies are completed
-- Each run writes a task-plan file under `.makecode/tasks/`
+- The active task plan is written to `task_plan.json` inside the active conversation directory and bound by `conversation_id`
 - `/tasks` retains the full task-table view and lets users select a task, press `d`, then confirm or cancel with `y`/`n`; deleting a task also removes references to it from other tasks' dependency lists.
 - `DeleteAllTasks` provides a one-click topology reset capability, making it easy to start a fresh plan on complex
   failures.
@@ -169,15 +169,10 @@ The Team module supports:
 
 Runtime artifacts include:
 
-- `.makecode/team/task_history_{session_id}.json`
-- `.makecode/team/runs/<run_id>/..._trace.jsonl`
+- `.makecode/conversations/conv_<uuid>/sub_agents/history.json`
+- `.makecode/conversations/conv_<uuid>/sub_agents/runs/<run_id>/..._trace.jsonl`
 
-#### 🔄 Failure Context Recovery (New)
-
-- When a sub-agent task fails, the system automatically reads that task's `trace_log`.
-- Failure records (including LLM output, tool calls, arguments, results, etc.) are formatted and injected into the retry
-  task's context.
-- The new sub-agent can resume from where the previous one left off, avoiding repeated errors.
+- Traces are retained only for local auditing and UI restoration; they are never injected into orchestrator or Sub-Agent provider requests.
 
 ### 2.8 Skill System (`utils/skills.py`)
 
@@ -256,29 +251,21 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 
 ### 2.11 Conversation History and Loading (`/load`)
 
-- The `/load` command supports restoring any historical session from a Checkpoint, including the main agent conversation
-  chain and sub-agent execution histories.
-- **Full UI Re-rendering**: After loading a history record, the system automatically clears the screen (
-  `console.clear()`) and re-renders every message (including User inputs, AI text, Tool call intents, and Tool execution
-  results) according to the latest terminal UI styling.
-- **Configuration Anti-Pollution**: When loading a historical Checkpoint, the system automatically syncs the latest
-  System Prompt and global configurations (such as the current date, MCP/Skills toggle status) to prevent them from
-  being overwritten by old data.
-- The Checkpoint picker lets users select an item, press `d`, then confirm or cancel with `y`/`n`; deleting the currently bound Checkpoint also clears the binding so a later save does not recreate the deleted file.
-- For sub-agent histories, the system only prompts for loading after the task plan is successfully loaded. If all tasks
-  in the plan are already completed, it automatically skips the prompt.
+- `/load` lists only 6.0-format `.makecode/conversations/conv_<uuid>/conversation.json` manifests. One selection restores orchestrator messages, the task plan, and Sub-Agent history.
+- `conversation.json`, `task_plan.json`, and `sub_agents/history.json` remain physically separate and are strictly bound by an immutable `conversation_id`; Sub-Agent traces live under `sub_agents/runs/`.
+- **Full UI Re-rendering**: After loading, MakeCode re-renders User inputs, AI text, Tool calls, the task plan, and Sub-Agent history using the current terminal UI.
+- **Configuration Anti-Pollution**: The saved System Prompt is replaced with the current one so stale date, MCP, or Skills configuration cannot override current settings.
+- The picker supports pressing `d` and confirming deletion; the active conversation cannot be deleted.
+- Version 6.0 does not read or migrate legacy checkpoint, task, or team history formats.
 
 ### 2.12 Auto Session Title Generation
 
-MakeCode automatically generates a concise session title based on the user's first query, and embeds it into the relevant file names for easy session identification and management:
+MakeCode generates concise session titles from user requests. Titles are metadata in `conversation.json` and are used only for the conversation list and status display:
 
-- **Automatic Title Generation**: Uses LLM to generate a short, meaningful session title from the user's first query
-- **File Name Association**: The generated title is automatically synced to the following file names:
-    - Checkpoint files: `ckpt_{title}_{timestamp}_{uid}.json`
-    - Task plan files: `task_plan_{title}_{epic_id}.json`
-    - Task history files: `task_history_{title}_{session_id}.json`
-- **Title Sanitization**: `sanitize_title()` ensures the title contains only filename-safe characters, preventing file system issues
-- **Lazy Tool Binding**: Tool handlers use deferred resolution, ensuring tool calls automatically target the latest instance after title changes
+- **Automatic Title Generation**: Uses an LLM to generate a short, meaningful title from a user request
+- **Stable Paths**: Updating a title never renames the `conv_<uuid>` directory or any conversation file
+- **Title Sanitization**: `sanitize_title()` removes unsafe characters
+- **Manual Regeneration**: While idle, click the title and confirm to regenerate it from all User messages
 
 ### 2.13 Sub-Agent Todo Tool (`tools/todo.py`)
 
@@ -491,7 +478,7 @@ MakeCode includes a complete built-in auto-update system supporting version chec
 #### Version Configuration (`version.py`)
 
 ```python
-CURRENT_VERSION = "5.3.3"
+CURRENT_VERSION = "6.0.0"
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
 DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
@@ -529,7 +516,7 @@ To centrally manage workspace paths and install-directory global configuration, 
     - In the packaged macOS release, shared configuration lives under `~/Library/Application Support/MakeCode/`, preventing application replacement during upgrades from deleting configuration.
     - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, and `error.log` live in the corresponding shared configuration directory.
 - **Workspace Directory (Workdir)**: The user's chosen working directory. Session- and task-related state lives here.
-    - `tasks/`, `team/runs/`, `memory/memory.jsonl`, `memory/memory_config.json`, `transcripts/`, and `checkpoint/` reside under `workdir/.makecode/`.
+    - `conversations/`, `memory/memory.jsonl`, `memory/memory_config.json`, and `transcripts/` reside under `workdir/.makecode/`.
     - User skills default to `workdir/.makecode/skills/`; legacy `workdir/skills/` remains supported.
 
 #### Core API
@@ -539,7 +526,7 @@ To centrally manage workspace paths and install-directory global configuration, 
 - `paths.set_workdir(path)`: switch workspace at runtime, used internally by the `/cd` command.
 - `paths.install_skills_dir()`: return the bundled-skill directory at `install_dir/.makecode/skills/`.
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`: return `workdir/.makecode/skills/` and the legacy `workdir/skills/` respectively.
-- Task/memory/transcript/checkpoint/MCP/model-config getters are all unified here (`workspace_tasks_dir()`, `workspace_memory_jsonl_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
+- Conversation/memory/transcript/MCP/model-config getters are all unified here (`workspace_conversations_dir()`, `workspace_memory_jsonl_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
 
 #### Design Benefits
 
@@ -550,16 +537,16 @@ To centrally manage workspace paths and install-directory global configuration, 
 ### 2.21 Workspace Directory Commands (`/pwd` and `/cd`) (New)
 
 - `/pwd`: display the current working directory in the Content pane; also displayed automatically on startup, after workspace switching, and after `/new`.
-- `/cd <path>`: switch the working directory and start a fresh session. Supports absolute, relative, and quoted paths. Switching triggers a full reset: clears all five panes, rebuilds history, resets the HITL directory allowlist, clears `visited_files`, and resets the checkpoint. Uses `paths.set_workdir(...)` to synchronize path state. Both `/new` and `/cd` share the same session-reset logic.
+- `/cd <path>`: switch the working directory and start a fresh session. Supports absolute, relative, and quoted paths. Switching triggers a full reset: clears all five panes, rebuilds history, resets the HITL directory allowlist, clears `visited_files`, and resets the active conversation. Uses `paths.set_workdir(...)` to synchronize path state. Both `/new` and `/cd` share the same session-reset logic.
 
 ### 2.22 LLM Client Adaptation and Request Resilience (`utils/llm_client.py`) (New)
 
 - **Unified Async Streaming Interface**: The orchestrator, sub-agents, title generation, summaries, long-term memory management, and memory recall all use `generate_stream()` with unified events and `LLMResult`. OpenAI Chat uses the official `AsyncOpenAI` client, while Anthropic Messages uses the official `AsyncAnthropic` client.
-- **Dual-Protocol History Reconstruction**: Checkpoints and history store an OpenAI-style normalized message superset, not a provider request body. Each request rebuilds OpenAI Chat messages or Anthropic content blocks according to the model's `message_format`, replaying native blocks only when the source format and model are compatible.
+- **Dual-Protocol History Reconstruction**: Conversations store an OpenAI-style normalized message superset, not a provider request body; task plans, Sub-Agent history, and traces never enter provider messages. Each request rebuilds OpenAI Chat messages or Anthropic content blocks according to the model's `message_format`, replaying native blocks only when the source format and model are compatible.
 - **Anthropic Prefix Caching**: Anthropic requests set ephemeral `cache_control` at both the request and system-text-block levels. Tool definitions are sorted deterministically by name, and each orchestrator or sub-agent run takes one atomic snapshot of MCP tools and handlers, stabilizing the `tools → system → messages` prefix.
 - **Timeouts and Retries**: The total request timeout is 120 seconds and the connection timeout is 10 seconds. The SDK retries at most five times; actual retries appear as `Client: REQUESTING · RETRY n/5` in the runtime bar.
 - **Request State Lifecycle**: Every LLM request increments a thread-safe counter before the network call. Success, failure, timeout, and stream cancellation all clean up in `finally`, and the indicator clears after the final concurrent request ends. Retry state is tracked independently per concurrent request.
-- **Cancellation and `pause_turn`**: Cancellation discards partial assistant output, does not execute tools, and does not create a first checkpoint or title. The main loop and secondary title, summary, memory, recall, and sub-agent report paths resume `pause_turn` with path-specific bounds.
+- **Cancellation and `pause_turn`**: Cancellation discards partial assistant output, does not execute tools, and does not save a first conversation or generate a title. The main loop and secondary title, summary, memory, recall, and sub-agent report paths resume `pause_turn` with path-specific bounds.
 - **Request Isolation and Resource Cleanup**: Long-term-memory pre-recall and title generation use independent temporary clients that close on completion. A model runtime configuration change closes the stale cached client, and each Textual submission closes the cached client used by that event loop to avoid reusing connection pools across `asyncio.run()` boundaries.
 - **Reasoning Effort and Runtime Cache Key**: Clients accept `low` / `medium` / `high` / `xhigh` / `max`. The runtime cache key includes message format, model identity, and effort, so switching configuration rebuilds the adapter for the new protocol and settings.
 
@@ -620,11 +607,9 @@ Agent/
 
 Runtime-generated directories:
 
-- `.makecode/tasks/`: task-plan JSON files
-- `.makecode/team/`: sub-agent history and run logs
+- `.makecode/conversations/`: messages, task plans, Sub-Agent history, and traces grouped by immutable `conversation_id`
 - `.makecode/transcripts/`: transcripts saved before compaction
 - `.makecode/memory/`: long-term memory data and capacity settings
-- `.makecode/checkpoint/`: session checkpoints (for `/load` to restore from)
 - `.makecode/skills/`: user skills for the current workspace (with legacy workspace-root `skills/` compatibility)
 
 Additionally, under the install directory (cross-project shared):
@@ -669,8 +654,8 @@ flowchart TD
     S --> SK["install/workdir .makecode/skills\nlegacy workdir/skills"]
     MM --> TR[".makecode/transcripts/"]
     MM --> LTM[".makecode/memory/memory.jsonl"]
-    TM --> TP[".makecode/tasks/"]
-    T --> TH[".makecode/team/"]
+    TM --> TP[".makecode/conversations/<id>/task_plan.json"]
+    T --> TH[".makecode/conversations/<id>/sub_agents/"]
     MCP --> MC["mcp_config.json\nshared config dir"]
     MCP --> MT["MCP Services\nExternal Tools"]
     PA --> ID["shared config\ninstall .makecode / macOS App Support"]
@@ -857,7 +842,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/mcp-add`           | Add an MCP service using `<name> [options] -- <cmd> [args...]` syntax; remote services use `--url`; written as disabled by default               |
 | `/mcp-delete`        | Delete a specific MCP service configuration and safely shut down the running instance (requires confirmation)                                    |
 | `/mcp-help`          | Show an introduction to MCP-related commands                                                                                                     |
-| `/load`              | List historical checkpoints and select one to load or delete with confirmation                                                                  |
+| `/load`              | List 6.0 conversations; one selection restores messages, task plan, and Sub-Agent history, with confirmation before deleting an inactive conversation |
 | `/skills-switch`     | Toggle skills catalog injection status (On/Off)                                                                                                  |
 | `/skills-list`       | List available skills in the current workspace                                                                                                   |
 | `/compact [prompt]`  | Compact the current conversation context; prompt is optional                                                                                     |

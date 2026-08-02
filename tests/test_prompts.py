@@ -179,6 +179,14 @@ class PromptPolicyTests(unittest.TestCase):
         long_title = "a" * 50
         self.assertEqual(long_title, sanitize_title(long_title))
 
+    def test_title_prompt_prioritizes_current_user_request_over_recalled_memory(self):
+        prompt = get_title_generation_system_prompt()
+
+        self.assertIn("# Current User Request", prompt)
+        self.assertIn("# Potentially Relevant Memories", prompt)
+        self.assertIn("Ignore recalled memory when choosing the title topic", prompt)
+        self.assertIn("If no Current User Request section exists", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

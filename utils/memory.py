@@ -21,7 +21,6 @@ from system.console_render import (
 from system.stream_render import StreamRenderer
 from system.tool_history import TOOL_EXECUTION_HISTORY, tool_result_status
 from system.tui_app import TuiRegion, post_tui
-from utils.common import sanitize_title
 from utils.memory_catalog import read_memory_records, sort_memory_records
 from utils.llm_client import (
     close_async_llm_client,
@@ -48,11 +47,10 @@ _MEMORY_RECORDS_LOCK = threading.RLock()
 
 
 def refresh_workspace_paths() -> None:
-    global MAKECODE_DIR, TRANSCRIPT_DIR, CHECKPOINT_DIR, MEMORY_DIR, MEMORY_JSONL_FILE, MEMORY_CONFIG_FILE, _MEMORY_RECALL_WINDOWS
+    global MAKECODE_DIR, TRANSCRIPT_DIR, MEMORY_DIR, MEMORY_JSONL_FILE, MEMORY_CONFIG_FILE, _MEMORY_RECALL_WINDOWS
 
     MAKECODE_DIR = paths.workspace_makecode_dir()
     TRANSCRIPT_DIR = paths.workspace_transcript_dir()
-    CHECKPOINT_DIR = paths.workspace_checkpoint_dir()
     MEMORY_DIR = paths.workspace_memory_dir()
     MEMORY_JSONL_FILE = paths.workspace_memory_jsonl_file()
     MEMORY_CONFIG_FILE = paths.workspace_memory_config_file()
@@ -858,105 +856,6 @@ async def manual_memory_update(prompt: str, history: list = None) -> list[dict]:
         tools=LONG_TERM_MEMORY_TOOLS,
         mode="active",
     )
-
-
-def save_checkpoint(messages: list, filepath: Path = None, title: str = None) -> Path:
-    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    if filepath is None:
-        uid = uuid.uuid4().hex[:8]
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if title:
-            safe_title = sanitize_title(title)
-            if safe_title:
-                filename = f"ckpt_{safe_title}_{timestamp}_{uid}.json"
-            else:
-                filename = f"ckpt_{timestamp}_{uid}.json"
-        else:
-            filename = f"ckpt_{timestamp}_{uid}.json"
-        filepath = CHECKPOINT_DIR / filename
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(messages, f, ensure_ascii=False, indent=2)
-    return filepath
-
-
-def get_checkpoint_title(filepath: Path) -> str:
-    """Extract title from checkpoint filename if available."""
-    stem = filepath.stem
-    if not stem.startswith("ckpt_"):
-        return None
-        
-    parts = stem.split("_")
-    # Check if it has title format: ckpt_title_YYYYMMDD_HHMMSS_uid
-    # Timestamp format is YYYYMMDD_HHMMSS which is 8_6 chars
-    
-    # Try to find timestamp
-    for i, part in enumerate(parts):
-        if len(part) == 8 and part.isdigit():  # YYYYMMDD
-            # Check next part for time
-            if i + 1 < len(parts) and len(parts[i+1]) == 6 and parts[i+1].isdigit():
-                # Found timestamp at index i
-                if i > 1:  # There is a title (ckpt_title_...)
-                    title_parts = parts[1:i]
-                    return " ".join(title_parts).replace("_", " ")
-                return None
-    return None
-
-
-# --- Checkpoint rename --- #
-
-
-def rename_checkpoint_with_title(filepath: Path, title: str) -> Path:
-    """Rename an existing checkpoint file to include *title* in its name.
-
-    Because ``sanitize_title`` never allows ``_``, we can discover the
-    timestamp anchor by splitting on ``_`` and finding the 8-digit date
-    segment followed by a 6-digit time segment.
-    Everything between ``ckpt`` and that date is the (possibly empty)
-    old title portion.
-    """
-    safe_title = sanitize_title(title)
-    if not safe_title:
-        return filepath
-
-    stem = filepath.stem
-    if not stem.startswith("ckpt_"):
-        return filepath
-
-    parts = stem.split("_")
-    # Find date segment: 8-digit, followed by 6-digit time
-    try:
-        date_idx = next(
-            i for i, p in enumerate(parts)
-            if len(p) == 8 and p.isdigit()
-               and i + 1 < len(parts)
-               and len(parts[i + 1]) == 6 and parts[i + 1].isdigit()
-        )
-    except StopIteration:
-        return filepath
-
-    ts = f"{parts[date_idx]}_{parts[date_idx + 1]}"
-    uid = parts[-1]
-    new_path = filepath.parent / f"ckpt_{safe_title}_{ts}_{uid}.json"
-
-    if new_path == filepath:
-        return filepath
-
-    if filepath.exists():
-        filepath.rename(new_path)
-    return new_path
-
-
-def list_checkpoints() -> list:
-    if not CHECKPOINT_DIR.exists():
-        return []
-    files = list(CHECKPOINT_DIR.glob("ckpt_*.json"))
-    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-    return files
-
-
-def load_checkpoint(filepath: Path) -> list:
-    with open(filepath, "r", encoding="utf-8") as f:
-        return json.load(f)
 
 
 try:

@@ -85,17 +85,13 @@ from utils.memory import (
     auto_compact,
     estimate_tokens,
     get_active_memory_count,
-    get_checkpoint_title,
     get_context_token_limit,
-    list_checkpoints,
-    load_checkpoint,
     manual_memory_update,
     micro_compact,
     prepend_recalled_memory_to_query,
     recall_long_term_memories,
-    rename_checkpoint_with_title,
-    save_checkpoint,
 )
+from utils.conversations import CONVERSATION_STORE
 from utils.skills import SKILL_LOADER, SKILL_TOOLS, SKILL_TOOLS_HANDLERS
 import utils.tasks as _tasks_module
 import utils.teams as _teams_module
@@ -315,7 +311,6 @@ async def _run_tool_handler(handler, arguments: dict):
 async def agent_loop(
     messages: list,
     llm_client=None,
-    title_source: str | None = None,
 ) -> bool:
     """Agent 主循环：每次业务请求独占一个 LLM client。"""
     owns_client = llm_client is None
@@ -327,7 +322,7 @@ async def agent_loop(
         )
         return False
     try:
-        return await _agent_loop_with_client(messages, llm_client, title_source)
+        return await _agent_loop_with_client(messages, llm_client)
     finally:
         if owns_client:
             await close_async_llm_client(llm_client)
@@ -336,9 +331,7 @@ async def agent_loop(
 async def _agent_loop_with_client(
     messages: list,
     llm_client,
-    title_source: str | None = None,
 ) -> bool:
-    global CURRENT_CHECKPOINT
     micro_compact(messages)
     committed_response = False
     was_cancelled = False
@@ -404,6 +397,7 @@ async def _agent_loop_with_client(
 
         llm_client.append_assistant_message(messages, raw_message)
         committed_response = True
+        CONVERSATION_STORE.save_messages(messages)
         has_tool_call = len(tool_calls) > 0
         stop_reason = raw_message.get("stop_reason") if isinstance(raw_message, dict) else None
 
@@ -482,11 +476,8 @@ async def _agent_loop_with_client(
                 tool_result["is_error"] = True
             messages.append(tool_result)
 
-        CURRENT_CHECKPOINT = save_checkpoint(messages, CURRENT_CHECKPOINT)
-        title_generated = await _generate_title_if_missing(title_source)
-        _apply_pending_title()
-        if title_generated:
-            refresh_status()
+        if has_tool_call:
+            CONVERSATION_STORE.save_messages(messages)
 
         if not has_tool_call and stop_reason != "pause_turn":
             break
@@ -495,6 +486,11 @@ async def _agent_loop_with_client(
         return False
     if was_cancelled:
         return True
+
+    title_generated = await _generate_title_if_missing(messages)
+    _apply_pending_title()
+    if title_generated:
+        refresh_status()
 
     current_context_tokens = estimate_tokens(
         messages, tools_definition=current_super_tools
@@ -511,7 +507,7 @@ async def _agent_loop_with_client(
                 reason=compact_reason,
                 system_prompt_fn=get_dynamic_system_prompt,
             )
-            CURRENT_CHECKPOINT = save_checkpoint(messages, CURRENT_CHECKPOINT)
+            CONVERSATION_STORE.save_messages(messages)
             console.print(
                 "\n[bold green]✨ 当前对话上下文已成功压缩并保存！[/bold green]"
             )
@@ -541,14 +537,15 @@ def _start_tree_sitter_cache_init_background():
     threading.Thread(target=_init_tree_sitter_cache, args=(console,), daemon=True).start()
 
 
-CURRENT_CHECKPOINT = None
 _pending_title = None
 
 
+
 def _get_current_conversation_title() -> str | None:
-    if CURRENT_CHECKPOINT is None:
+    active_path = CONVERSATION_STORE.active_path
+    if active_path is None or not active_path.exists():
         return None
-    return get_checkpoint_title(Path(CURRENT_CHECKPOINT)) or "未命名对话"
+    return CONVERSATION_STORE.active_title or "未命名对话"
 
 
 def _refresh_workspace_state() -> None:
@@ -557,6 +554,7 @@ def _refresh_workspace_state() -> None:
     from utils import teams as teams_module
 
     memory_module.refresh_workspace_paths()
+    CONVERSATION_STORE.refresh_workspace()
     tasks_module.refresh_workspace_paths()
     teams_module.refresh_workspace_paths()
     SKILL_LOADER.refresh_workspace()
@@ -569,36 +567,65 @@ def _apply_workdir(path) -> None:
 
 
 
-def _apply_pending_title():
-    """Apply a pending title that was generated in the background.
+def _ensure_active_conversation() -> None:
+    path = CONVERSATION_STORE.ensure_active()
+    conversation_id = CONVERSATION_STORE.active_id
+    root = path.parent
+    if _tasks_module.TASK_MANAGER.conversation_id != conversation_id:
+        _tasks_module.activate_conversation(root, conversation_id)
+    if _teams_module.TEAM.conversation_id != conversation_id:
+        _teams_module.activate_conversation(root, conversation_id)
 
-    Called synchronously from the main thread (agent_loop) after each
-    save_checkpoint to avoid race conditions with file I/O.
-    """
-    global _pending_title, CURRENT_CHECKPOINT
-    if _pending_title is None or CURRENT_CHECKPOINT is None:
-        if _pending_title is not None and CURRENT_CHECKPOINT is None:
-            _pending_title = None  # checkpoint was reset — discard pending title
+
+
+def _apply_pending_title():
+    """Apply a generated title to the active conversation metadata."""
+    global _pending_title
+    active_path = CONVERSATION_STORE.active_path
+    if _pending_title is None or active_path is None or not active_path.exists():
+        if _pending_title is not None and active_path is None:
+            _pending_title = None
         return
     title = _pending_title
     _pending_title = None
     try:
-        new_ckpt = rename_checkpoint_with_title(CURRENT_CHECKPOINT, title)
-        if new_ckpt != CURRENT_CHECKPOINT:
-            CURRENT_CHECKPOINT = new_ckpt
-        _tasks_module.TASK_MANAGER.rename_with_title(title)
-        _teams_module.TEAM.rename_history_with_title(title)
+        CONVERSATION_STORE.update_title(title)
     except Exception as exc:
         log_error_traceback("Failed to apply pending title", exc)
 
 
-async def _generate_title_if_missing(title_source: str | None) -> bool:
+def _collect_user_message_content(history: list) -> str:
+    user_contents = []
+    for message in history:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            text = "\n\n".join(
+                block.get("text", "").strip()
+                for block in content
+                if isinstance(block, dict) and block.get("text", "").strip()
+            )
+        else:
+            text = ""
+        if text:
+            user_contents.append(text)
+    return "\n\n".join(user_contents)
+
+
+async def _generate_title_if_missing(history: list) -> bool:
     global _pending_title
     if (
-        not title_source
-        or CURRENT_CHECKPOINT is None
-        or get_checkpoint_title(Path(CURRENT_CHECKPOINT))
+        CONVERSATION_STORE.active_path is None
+        or not CONVERSATION_STORE.active_path.exists()
+        or CONVERSATION_STORE.active_title
     ):
+        return False
+
+    title_source = _collect_user_message_content(history)
+    if not title_source:
         return False
 
     post_tui(TuiRegion.BACKGROUND, active=True)
@@ -620,34 +647,17 @@ async def _generate_title_if_missing(title_source: str | None) -> bool:
 
 async def _regenerate_conversation_title(history: list) -> None:
     global _pending_title
-    if CURRENT_CHECKPOINT is None:
+    if CONVERSATION_STORE.active_path is None or not CONVERSATION_STORE.active_path.exists():
         return
 
-    user_contents = []
-    for message in history:
-        if message.get("role") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str):
-            text = content.strip()
-        elif isinstance(content, list):
-            text = "\n\n".join(
-                block.get("text", "").strip()
-                for block in content
-                if isinstance(block, dict) and block.get("text", "").strip()
-            )
-        else:
-            text = ""
-        if text:
-            user_contents.append(text)
-
-    if not user_contents:
+    title_source = _collect_user_message_content(history)
+    if not title_source:
         return
 
     post_tui(TuiRegion.BACKGROUND, active=True)
     post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 正在根据全部用户消息重新生成对话标题...[/#aaaaaa]")
     try:
-        title = await generate_title("\n\n".join(user_contents))
+        title = await generate_title(title_source)
         if title:
             _pending_title = title
             _apply_pending_title()
@@ -695,7 +705,7 @@ def _get_previous_assistant_content(history: list) -> str:
 
 
 async def _process_user_query(query: str, history: list, command_handler: CommandHandler) -> str | None:
-    global CURRENT_CHECKPOINT, _pending_title, _PENDING_UPDATE_EXE_PATH
+    global _pending_title, _PENDING_UPDATE_EXE_PATH
 
     query = query.strip()
     if not query:
@@ -704,7 +714,7 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
     command_result = await command_handler.process_command(
         query=query,
         history=history,
-        current_checkpoint=CURRENT_CHECKPOINT,
+        current_conversation=CONVERSATION_STORE.active_path,
         render_banner_fn=_render_startup_banner,
         render_hint_fn=_render_env_customization_hint,
         render_history_fn=_render_history,
@@ -721,6 +731,7 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
         user_query = command_result.payload
         try:
             set_agent_loop_active(True)
+            _ensure_active_conversation()
             previous_assistant_content = _get_previous_assistant_content(history)
             recall_result = await recall_long_term_memories(
                 user_query,
@@ -731,7 +742,7 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
             user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
             history.append({"role": "user", "content": user_message})
 
-            await agent_loop(history, title_source=query)
+            await agent_loop(history)
         except RuntimeError as exc:
             console.print(f"[bold yellow]⚠️ {escape(str(exc))}[/bold yellow]")
         finally:
@@ -739,16 +750,12 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
         _apply_pending_title()
         refresh_status()
         return None
-    if command_result.action == CommandAction.RESET_CHECKPOINT:
-        CURRENT_CHECKPOINT = None
+    if command_result.action == CommandAction.RESET_CONVERSATION:
         _pending_title = None
         refresh_status()
     elif command_result.action == CommandAction.LOAD_HISTORY:
-        history[:], CURRENT_CHECKPOINT = command_result.payload
+        history[:], _ = command_result.payload
         _pending_title = None
-        refresh_status()
-    elif command_result.action == CommandAction.UPDATE_CHECKPOINT:
-        CURRENT_CHECKPOINT = command_result.payload
         refresh_status()
     elif command_result.action == CommandAction.UPDATE_SYSTEM_PROMPT:
         history[0] = {"role": "system", "content": command_result.payload}
@@ -875,9 +882,7 @@ if __name__ == "__main__":
         mcp_manager=GLOBAL_MCP_MANAGER,
         skill_loader=SKILL_LOADER,
         get_system_prompt_fn=get_dynamic_system_prompt,
-        save_checkpoint_fn=save_checkpoint,
-        load_checkpoint_fn=load_checkpoint,
-        list_checkpoints_fn=list_checkpoints,
+        conversation_store=CONVERSATION_STORE,
         auto_compact_fn=auto_compact,
         apply_workdir_fn=_apply_workdir,
     )

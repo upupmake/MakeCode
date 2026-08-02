@@ -15,6 +15,7 @@ from system.commands import CommandAction, CommandResult
 from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
 from system.tui_modals import ChoiceModal, InfoPanelModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal, ModelManagerModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
+from utils.conversations import ConversationStore
 from utils.llm_client import (
     AsyncChatAPIClient,
     build_llm_result,
@@ -921,7 +922,7 @@ def test_llm_result_preserves_serializable_message_superset():
     json.dumps(result.assistant_message)
 
 
-def test_strip_native_message_payloads_preserves_checkpoint_source_messages():
+def test_strip_native_message_payloads_preserves_persisted_source_messages():
     messages = [{
         "role": "assistant",
         "content": "answer",
@@ -951,7 +952,7 @@ def test_strip_native_message_payloads_preserves_checkpoint_source_messages():
     assert messages[0]["tool_calls"][0]["raw"] == {"provider": "payload"}
 
 
-def test_checkpoint_round_trip_preserves_unified_message_superset(tmp_path):
+def test_conversation_round_trip_preserves_unified_message_superset(tmp_path):
     message = build_llm_result(
         text="answer",
         reasoning="summary",
@@ -961,16 +962,15 @@ def test_checkpoint_round_trip_preserves_unified_message_superset(tmp_path):
         stop_reason="end_turn",
         usage={"input_tokens": 1, "output_tokens": 2},
     ).assistant_message
-    checkpoint = tmp_path / "checkpoint.json"
+    store = ConversationStore(tmp_path / "conversations")
 
-    memory.save_checkpoint([message], checkpoint)
+    conversation = store.save_messages([message])
 
-    assert memory.load_checkpoint(checkpoint) == [message]
+    assert store.load(conversation).messages == [message]
 
 
-def test_old_openai_checkpoint_can_be_loaded_and_rebuilt_for_anthropic(tmp_path):
-    checkpoint = tmp_path / "old-openai.json"
-    old_messages = [
+def test_openai_shaped_messages_can_be_rebuilt_for_anthropic_from_conversation(tmp_path):
+    messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "read"},
         {
@@ -984,10 +984,11 @@ def test_old_openai_checkpoint_can_be_loaded_and_rebuilt_for_anthropic(tmp_path)
         },
         {"role": "tool", "tool_call_id": "call_1", "name": "Read", "content": "file"},
     ]
-    checkpoint.write_text(json.dumps(old_messages), encoding="utf-8")
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages(messages)
 
     system, rebuilt = llm_client_module.build_anthropic_request_messages(
-        memory.load_checkpoint(checkpoint),
+        store.load(conversation).messages,
         "claude-test",
     )
 
@@ -1359,8 +1360,8 @@ async def test_user_request_pre_recall_receives_previous_assistant_content():
     ]
 
     with patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "_ensure_active_conversation"), \
             patch.object(main_module, "recall_long_term_memories", AsyncMock(return_value={"content": ""})) as recall, \
-            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
             patch.object(main_module, "agent_loop", new_callable=AsyncMock), \
             patch.object(main_module, "refresh_status"):
         await main_module._process_user_query("新的用户请求", history, command_handler)
@@ -1370,15 +1371,15 @@ async def test_user_request_pre_recall_receives_previous_assistant_content():
 
 
 @pytest.mark.anyio
-async def test_process_user_query_delegates_title_detection_to_agent_loop():
+async def test_process_user_query_runs_agent_loop_for_title_detection():
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(
         action=CommandAction.RUN_AGENT,
         payload="hello",
     ))
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
-            patch.object(main_module, "set_agent_loop_active"), \
+    with patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "_ensure_active_conversation"), \
             patch.object(main_module, "recall_long_term_memories", AsyncMock(return_value={"content": ""})), \
             patch.object(main_module, "agent_loop", new_callable=AsyncMock, return_value=True) as run_agent_loop, \
             patch.object(main_module, "generate_title", new_callable=AsyncMock) as generate_title, \
@@ -1387,12 +1388,12 @@ async def test_process_user_query_delegates_title_detection_to_agent_loop():
         history = [{"role": "system", "content": "system"}]
         await main_module._process_user_query("hello", history, command_handler)
 
-    run_agent_loop.assert_awaited_once_with(history, title_source="hello")
+    run_agent_loop.assert_awaited_once_with(history)
     generate_title.assert_not_awaited()
 
 
 @pytest.mark.anyio
-async def test_agent_loop_checks_for_missing_title_after_every_iteration():
+async def test_agent_loop_checks_for_missing_title_once_after_all_iterations():
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -1422,78 +1423,91 @@ async def test_agent_loop_checks_for_missing_title_after_every_iteration():
         def append_assistant_message(current_messages, raw_message):
             current_messages.append(raw_message)
 
-    def save_checkpoint(current_messages, current_checkpoint):
+    def save_messages(current_messages):
         events.append("save")
-        return "checkpoint"
 
-    async def generate_title_if_missing(title_source):
-        events.append(f"title:{title_source}")
+    async def generate_title_if_missing(current_messages):
+        assert current_messages is messages
+        events.append("title")
         return False
 
     def apply_pending_title():
         events.append("apply")
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
-            patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "micro_compact"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module, "save_checkpoint", side_effect=save_checkpoint), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages", side_effect=save_messages), \
             patch.object(main_module, "_generate_title_if_missing", side_effect=generate_title_if_missing), \
             patch.object(main_module, "_apply_pending_title", side_effect=apply_pending_title), \
             patch.object(main_module, "estimate_tokens", return_value=0):
         committed = await main_module.agent_loop(
             messages,
             llm_client=FakeClient(),
-            title_source="hello",
         )
 
     assert committed is True
     assert events == [
         "stream",
         "save",
-        "title:hello",
-        "apply",
         "stream",
         "save",
-        "title:hello",
+        "title",
         "apply",
     ]
 
 
 @pytest.mark.anyio
-async def test_title_detection_generates_when_checkpoint_has_no_title():
-    with patch.object(
-        main_module,
-        "CURRENT_CHECKPOINT",
-        Path("/tmp/ckpt_20260715_120000_abcd1234.json"),
-    ), patch.object(main_module, "_pending_title", None), \
+async def test_title_detection_uses_all_user_message_content_when_conversation_has_no_title(tmp_path):
+    history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "第一条用户消息"},
+        {"role": "assistant", "content": "assistant"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "第二条用户消息"},
+                {"type": "text", "text": "补充内容"},
+            ],
+        },
+    ]
+    store = ConversationStore(tmp_path / "conversations")
+    store.save_messages(history)
+
+    with patch.object(main_module, "CONVERSATION_STORE", store), \
+            patch.object(main_module, "_pending_title", None), \
             patch.object(main_module, "generate_title", AsyncMock(return_value="新标题")) as generate_title, \
             patch.object(main_module, "post_tui"):
-        generated = await main_module._generate_title_if_missing("hello")
+        generated = await main_module._generate_title_if_missing(history)
 
         assert generated is True
         assert main_module._pending_title == "新标题"
-        generate_title.assert_awaited_once_with("hello")
+        generate_title.assert_awaited_once_with(
+            "第一条用户消息\n\n第二条用户消息\n\n补充内容"
+        )
 
 
 @pytest.mark.anyio
-async def test_title_detection_skips_generation_when_checkpoint_already_has_title():
-    with patch.object(
-        main_module,
-        "CURRENT_CHECKPOINT",
-        Path("/tmp/ckpt_现有标题_20260715_120000_abcd1234.json"),
-    ), patch.object(main_module, "generate_title", new_callable=AsyncMock) as generate_title:
-        generated = await main_module._generate_title_if_missing("hello")
+async def test_title_detection_skips_generation_when_conversation_has_title(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    store.save_messages([{"role": "system", "content": "system"}])
+    store.update_title("现有标题")
+
+    with patch.object(main_module, "CONVERSATION_STORE", store), \
+            patch.object(main_module, "generate_title", new_callable=AsyncMock) as generate_title:
+        generated = await main_module._generate_title_if_missing([
+            {"role": "user", "content": "hello"},
+        ])
 
     assert generated is False
     generate_title.assert_not_awaited()
 
 
 @pytest.mark.anyio
-async def test_regenerate_title_uses_all_user_message_content():
+async def test_regenerate_title_uses_all_user_message_content(tmp_path):
     history = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "第一条用户消息"},
@@ -1508,9 +1522,11 @@ async def test_regenerate_title_uses_all_user_message_content():
         {"role": "tool", "content": "tool result"},
     ]
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", Path(
-            "/tmp/ckpt_旧标题_20260715_120000_abcd1234.json"
-    )), patch.object(main_module, "_pending_title", None), \
+    store = ConversationStore(tmp_path / "conversations")
+    store.save_messages(history)
+
+    with patch.object(main_module, "CONVERSATION_STORE", store), \
+            patch.object(main_module, "_pending_title", None), \
             patch.object(main_module, "generate_title", AsyncMock(return_value="新标题")) as generate, \
             patch.object(main_module, "_apply_pending_title") as apply_title, \
             patch.object(main_module, "refresh_status") as refresh:
@@ -1525,40 +1541,36 @@ async def test_regenerate_title_uses_all_user_message_content():
 
 
 def test_applied_pending_title_becomes_current_display_title(tmp_path):
-    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
-    checkpoint.write_text("[]", encoding="utf-8")
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "system"}])
+    original_root = conversation.parent
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", checkpoint), \
-            patch.object(main_module, "_pending_title", "标题展示优化"), \
-            patch.object(main_module._tasks_module.TASK_MANAGER, "rename_with_title"), \
-            patch.object(main_module._teams_module.TEAM, "rename_history_with_title"):
+    with patch.object(main_module, "CONVERSATION_STORE", store), \
+            patch.object(main_module, "_pending_title", "标题展示优化"):
         main_module._apply_pending_title()
 
-        assert main_module.CURRENT_CHECKPOINT.name == (
-            "ckpt_标题展示优化_20260715_120000_abcd1234.json"
-        )
+        assert store.active_path == conversation
+        assert store.active_path.parent == original_root
         assert main_module._get_current_conversation_title() == "标题展示优化"
 
 
 @pytest.mark.anyio
-async def test_loaded_title_refreshes_after_checkpoint_assignment():
-    loaded_checkpoint = Path(
-        "/tmp/ckpt_加载标题_20260715_120000_abcd1234.json"
-    )
+async def test_loaded_title_refreshes_after_conversation_activation(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
     loaded_history = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "loaded"},
     ]
+    loaded_conversation = store.save_messages(loaded_history)
+    store.update_title("加载标题")
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(
         action=CommandAction.LOAD_HISTORY,
-        payload=(loaded_history, loaded_checkpoint),
+        payload=(loaded_history, loaded_conversation),
     ))
     refreshed_titles = []
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", Path(
-            "/tmp/ckpt_旧标题_20260714_120000_abcd1234.json"
-    )), patch.object(
+    with patch.object(main_module, "CONVERSATION_STORE", store), patch.object(
             main_module,
             "refresh_status",
             side_effect=lambda: refreshed_titles.append(
@@ -1572,12 +1584,11 @@ async def test_loaded_title_refreshes_after_checkpoint_assignment():
     assert refreshed_titles == ["加载标题"]
 
 
-def test_untitled_checkpoint_has_stable_display_fallback():
-    with patch.object(
-            main_module,
-            "CURRENT_CHECKPOINT",
-            Path("/tmp/ckpt_20260715_120000_abcd1234.json"),
-    ):
+def test_untitled_conversation_has_stable_display_fallback(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    store.save_messages([{"role": "system", "content": "system"}])
+
+    with patch.object(main_module, "CONVERSATION_STORE", store):
         assert main_module._get_current_conversation_title() == "未命名对话"
 
 
@@ -1713,7 +1724,7 @@ async def test_run_tool_handler_threads_sync_handlers_and_awaits_async_handlers_
 
 
 @pytest.mark.anyio
-async def test_agent_loop_cancel_discards_response_without_tools_or_checkpoint():
+async def test_agent_loop_cancel_discards_response_without_tools_or_conversation_save():
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -1721,8 +1732,7 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_checkpoint()
     fake_client = Mock()
     tool_call = {"id": "call_1", "name": "DoWork", "arguments": "{}"}
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
-            patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "micro_compact"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
@@ -1732,15 +1742,14 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_checkpoint()
                 AsyncMock(return_value=("partial", [tool_call], {"role": "assistant"}, True)),
             ), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module, "save_checkpoint") as save_checkpoint, \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages") as save_messages, \
             patch.object(main_module, "estimate_tokens", return_value=0):
         committed = await main_module.agent_loop(messages, llm_client=fake_client)
-        assert main_module.CURRENT_CHECKPOINT is None
 
     assert committed is False
     fake_client.append_assistant_message.assert_not_called()
     fake_client.format_tool_result.assert_not_called()
-    save_checkpoint.assert_not_called()
+    save_messages.assert_not_called()
     assert messages == [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -1760,8 +1769,7 @@ async def test_agent_loop_creates_and_closes_request_local_client():
             current_messages.append(raw_message)
 
     local_client = FakeClient()
-    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
-            patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "micro_compact"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
@@ -1778,7 +1786,7 @@ async def test_agent_loop_creates_and_closes_request_local_client():
             patch.object(main_module, "create_current_async_llm_client", return_value=local_client) as create_client, \
             patch.object(main_module, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
             patch.object(main_module, "estimate_tokens", return_value=0), \
             patch.object(main_module, "_apply_pending_title"):
         committed = await main_module.agent_loop(messages)
@@ -1800,8 +1808,7 @@ async def test_agent_loop_reads_current_context_limit_for_render_and_compaction(
         def append_assistant_message(current_messages, raw_message):
             current_messages.append(raw_message)
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
-            patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "micro_compact"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage") as render_token_usage, \
@@ -1816,7 +1823,7 @@ async def test_agent_loop_reads_current_context_limit_for_render_and_compaction(
                 )),
             ), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
             patch.object(main_module, "estimate_tokens", return_value=1500), \
             patch.object(main_module, "get_context_token_limit", side_effect=[2048, 1024]) as get_limit, \
             patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
@@ -1867,14 +1874,13 @@ async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check(
                 "content": output,
             }
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
-            patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "micro_compact"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", AsyncMock(side_effect=responses)), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
             patch.object(main_module, "estimate_tokens") as estimate_tokens, \
             patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
             patch.object(main_module, "_render_tool_call"), \
@@ -1941,14 +1947,13 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
                 "content": output,
             }
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
-            patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "micro_compact"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module, "save_checkpoint", return_value="checkpoint") as save_checkpoint, \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages") as save_messages, \
             patch.object(main_module, "estimate_tokens", return_value=0), \
             patch.object(main_module, "_render_tool_call"), \
             patch.object(main_module, "_render_tool_output"), \
@@ -1968,7 +1973,7 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
     assert history_record.source == "orchestrator"
     assert history_record.actor == "Orchestrator"
     assert history_record.status == TOOL_STATUS_FAILED
-    assert save_checkpoint.call_count == 3
+    assert save_messages.call_count == 4
 
 
 def test_deleting_current_model_selects_a_valid_process_local_fallback(tmp_path):
@@ -2005,8 +2010,7 @@ async def test_agent_loops_close_only_their_own_request_local_clients():
             False,
         )
 
-    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
-            patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "micro_compact"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
@@ -2014,7 +2018,7 @@ async def test_agent_loops_close_only_their_own_request_local_clients():
             patch.object(main_module, "create_current_async_llm_client", side_effect=clients), \
             patch.object(main_module, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
             patch.object(main_module, "estimate_tokens", return_value=0), \
             patch.object(main_module, "_apply_pending_title"):
         results = await asyncio.gather(
