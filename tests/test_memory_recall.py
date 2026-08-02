@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import utils.memory as memory
 from prompts import get_orchestrator_system_prompt, get_sub_agent_system_prompt
+from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
 from utils.teams import build_sub_agent_recall_query, prepend_recalled_memory_to_sub_agent_prompt
 
 
@@ -124,6 +125,35 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["content"], "selected context")
         self.assertEqual(events, [("touch", ["mem_new"]), ("render", ["mem_new"])])
+
+    async def test_recall_background_places_ids_and_details_on_following_lines(self):
+        memory_context = "## mem_new\n- Insight: selected context"
+
+        with patch.object(
+                memory,
+                "select_relevant_memory_ids",
+                AsyncMock(return_value=["mem_new", "mem_old"]),
+        ), patch.object(memory, "_touch_recalled_memories"), patch.object(
+                memory,
+                "render_selected_memory_context",
+                return_value=memory_context,
+        ), patch.object(memory, "post_tui") as post_tui, patch.object(
+                memory,
+                "Markdown",
+                side_effect=lambda content: ("markdown", content),
+        ):
+            await memory.recall_long_term_memories("query")
+
+        payloads = [call.args[1] for call in post_tui.call_args_list if len(call.args) > 1]
+        summary_index = next(
+            index for index, payload in enumerate(payloads)
+            if isinstance(payload, str) and "记忆召回命中" in payload
+        )
+        self.assertEqual(
+            payloads[summary_index],
+            "[bold green]🧠 记忆召回命中 2 条：\nmem_new, mem_old\n[/bold green]",
+        )
+        self.assertEqual(payloads[summary_index + 1], ("markdown", memory_context))
 
     def test_prepend_recalled_memory_to_query_only_changes_query_when_context_exists(self):
         original = "请处理当前项目的测试。"
@@ -291,13 +321,15 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "assistant", "content": None, "stop_reason": "tool_use"},
             ),
         ]
+        tool_history = ToolExecutionHistory()
 
         with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
                 patch.object(memory, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
                 patch.object(memory.StreamRenderer, "render_text_stream_async", new_callable=AsyncMock, side_effect=stream_results), \
                 patch.object(memory, "post_tui"), \
                 patch.object(memory, "_render_agent_response_message"), \
-                patch.object(memory, "_render_tool_output"):
+                patch.object(memory, "_render_tool_output"), \
+                patch.object(memory, "TOOL_EXECUTION_HISTORY", tool_history):
             outputs = await memory.memory_agent_loop(
                 conversation_text="[]",
                 summary="",
@@ -312,6 +344,10 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initial_messages[2]["stop_reason"], "pause_turn")
         tool_result = next(item for item in initial_messages if item.get("role") == "tool")
         self.assertTrue(tool_result["is_error"])
+        history_record = tool_history.snapshot()[0]
+        self.assertEqual(history_record.tool_name, "MissingMemoryTool")
+        self.assertEqual(history_record.source, "memory")
+        self.assertEqual(history_record.status, TOOL_STATUS_FAILED)
         close_client.assert_awaited_once_with(fake_client)
 
     def test_recall_window_filters_only_current_agent_candidates(self):

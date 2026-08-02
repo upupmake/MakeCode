@@ -56,6 +56,7 @@ async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypa
         "handle_cmds": True,
         "handle_task_table": True,
         "handle_copy": True,
+        "handle_tool_history": True,
         "handle_models": None,
         "handle_layout": None,
         "handle_update": None,
@@ -297,6 +298,60 @@ def test_load_without_saved_task_plans_resets_current_plan(tmp_path, monkeypatch
     assert loaded_history == [{"role": "system", "content": ""}]
     assert loaded_checkpoint == checkpoint
     reset_task_plan.assert_called_once_with()
+
+
+
+def test_load_rebuilds_tool_history_after_rendering_checkpoint(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
+    checkpoint.write_text("[]", encoding="utf-8")
+    loaded = [
+        {"role": "system", "content": "system"},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call_1", "name": "FileRead", "arguments": "{}"}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "name": "FileRead", "content": "file"},
+    ]
+    handler = make_handler()
+    handler.console = Mock()
+    handler.list_checkpoints = lambda: [checkpoint]
+    handler.load_checkpoint = lambda path: loaded
+    tool_history = Mock()
+    events = []
+
+    monkeypatch.setattr(
+        "system.commands.interactive_choose_checkpoint",
+        lambda checkpoints, title=None, delete_handler=None, preview_handler=None: str(checkpoint),
+    )
+    monkeypatch.setattr("system.commands.list_task_plans", lambda: [])
+    monkeypatch.setattr("system.commands.refresh_task_workspace_paths", Mock())
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+    monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
+
+    handler.handle_load(
+        [{"role": "system", "content": "old"}],
+        None,
+        render_banner_fn=lambda: None,
+        render_hint_fn=lambda: None,
+        render_history_fn=lambda messages: events.append(("render", messages)),
+    )
+
+    assert events == [("render", loaded)]
+    tool_history.rebuild_from_messages.assert_called_once_with(loaded)
+
+
+def test_reset_conversation_view_clears_tool_history(monkeypatch):
+    handler = make_handler()
+    tool_history = Mock()
+    monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
+    monkeypatch.setattr("system.commands.post_tui", Mock())
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+    history = [{"role": "system", "content": "old"}, {"role": "user", "content": "question"}]
+
+    handler._reset_conversation_view(history)
+
+    assert history == [{"role": "system", "content": ""}]
+    tool_history.clear.assert_called_once_with()
 
 
 def test_load_selected_task_plan_does_not_reset_it(tmp_path, monkeypatch):

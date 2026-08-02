@@ -7,12 +7,25 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.events import Key
+from textual.events import Key, Resize
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, TextArea, DataTable
 
 from system.models import MESSAGE_FORMATS, ModelKey, REASONING_EFFORTS
 from system.clipboard import copy_to_system_clipboard
+from system.tool_history import (
+    TOOL_STATUS_BLOCKED,
+    TOOL_STATUS_COMPACTED,
+    TOOL_STATUS_FAILED,
+    TOOL_STATUS_INCOMPLETE,
+    TOOL_STATUS_RUNNING,
+    TOOL_STATUS_SUCCEEDED,
+    ToolExecutionHistory,
+    ToolExecutionRecord,
+    ToolExecutionSummary,
+    format_tool_arguments,
+    format_tool_value,
+)
 from system.tui_types import (
     LAYOUT_DEFAULT_RATIOS,
     LAYOUT_LEFT_KEYS,
@@ -64,7 +77,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal {
         align: center middle;
     }
 
@@ -143,6 +156,90 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #task-close {
         width: 16;
+    }
+
+    #tool-history-dialog {
+        width: 94%;
+        height: 90%;
+        border: round #22d3ee;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #tool-history-title {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #tool-history-filter-row {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #tool-history-search {
+        width: 1fr;
+    }
+
+    .tool-history-filter {
+        width: 20;
+        margin-left: 1;
+    }
+
+    #tool-history-filter-row.compact {
+        height: auto;
+        layout: vertical;
+    }
+
+    #tool-history-filter-row.compact > .tool-history-filter {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    #tool-history-content {
+        height: 1fr;
+        margin-top: 1;
+    }
+
+    #tool-history-list {
+        width: 42%;
+        height: 1fr;
+        border: round #475569;
+    }
+
+    #tool-history-list > ListItem {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #tool-history-list > ListItem > Label {
+        width: 1fr;
+    }
+
+    #tool-history-detail {
+        width: 1fr;
+        height: 1fr;
+        margin-left: 1;
+        border: round #3b82f6;
+        padding: 0 1;
+    }
+
+    #tool-history-content.compact {
+        layout: vertical;
+    }
+
+    #tool-history-content.compact > #tool-history-list,
+    #tool-history-content.compact > #tool-history-detail {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    .tool-history-hidden {
+        display: none;
+    }
+
+    #tool-history-status {
+        height: 1;
+        color: #94a3b8;
     }
 
     #info-content {
@@ -782,6 +879,346 @@ class TaskPanelModal(ClosableModalScreen[str]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "task-close":
             self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss("closed")
+
+
+class ToolHistoryModal(ClosableModalScreen[str]):
+    CSS = ChoiceModal.CSS
+    BINDINGS: list[Binding] = []
+
+    _STATUS_OPTIONS = [
+        ("全部状态", ""),
+        ("执行中", TOOL_STATUS_RUNNING),
+        ("成功", TOOL_STATUS_SUCCEEDED),
+        ("失败", TOOL_STATUS_FAILED),
+        ("已阻止", TOOL_STATUS_BLOCKED),
+        ("已压缩", TOOL_STATUS_COMPACTED),
+        ("结果缺失", TOOL_STATUS_INCOMPLETE),
+    ]
+    _SOURCE_OPTIONS = [
+        ("全部来源", ""),
+        ("Orchestrator", "orchestrator"),
+        ("记忆代理", "memory"),
+        ("Sub-Agent", "sub_agent"),
+    ]
+    _STATUS_MARKERS = {
+        TOOL_STATUS_RUNNING: "…",
+        TOOL_STATUS_SUCCEEDED: "✓",
+        TOOL_STATUS_FAILED: "✗",
+        TOOL_STATUS_BLOCKED: "⊘",
+        TOOL_STATUS_COMPACTED: "≈",
+        TOOL_STATUS_INCOMPLETE: "?",
+    }
+
+    def __init__(self, history: ToolExecutionHistory) -> None:
+        super().__init__()
+        self._history = history
+        self._view = "timeline"
+        self._tool_filter = ""
+        self._row_values: list[ToolExecutionRecord | ToolExecutionSummary] = []
+        self._last_signature: tuple[Any, ...] | None = None
+        self._compact = False
+        self._detail_open = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="tool-history-dialog"):
+            yield ModalHeader(self._title_text(), title_id="tool-history-title")
+            with Horizontal(id="tool-history-filter-row"):
+                yield Input(placeholder="搜索工具名、参数、结果、错误或执行者…", id="tool-history-search")
+                yield Select(self._STATUS_OPTIONS, value="", allow_blank=False, id="tool-history-status-filter", classes="tool-history-filter")
+                yield Select(self._SOURCE_OPTIONS, value="", allow_blank=False, id="tool-history-source-filter", classes="tool-history-filter")
+            with Horizontal(id="tool-history-content"):
+                yield ListView(id="tool-history-list")
+                yield TextArea(
+                    "",
+                    id="tool-history-detail",
+                    read_only=True,
+                    show_line_numbers=False,
+                    soft_wrap=True,
+                )
+            yield Label("", id="tool-history-status")
+
+    def on_mount(self) -> None:
+        self._apply_responsive_layout(self.app.size.width)
+        self._reload_rows(force=True)
+        self.set_interval(0.5, self._refresh_if_changed)
+        self.query_one("#tool-history-search", Input).focus()
+
+    def on_resize(self, event: Resize) -> None:
+        self._apply_responsive_layout(event.size.width)
+
+    def _apply_responsive_layout(self, width: int) -> None:
+        compact = width < 100
+        if compact == self._compact and self._last_signature is not None:
+            return
+        self._compact = compact
+        self.query_one("#tool-history-filter-row", Horizontal).set_class(compact, "compact")
+        self.query_one("#tool-history-content", Horizontal).set_class(compact, "compact")
+        self._update_compact_visibility()
+
+    def _update_compact_visibility(self) -> None:
+        history_list = self.query_one("#tool-history-list", ListView)
+        detail = self.query_one("#tool-history-detail", TextArea)
+        history_list.set_class(self._compact and self._detail_open, "tool-history-hidden")
+        detail.set_class(self._compact and not self._detail_open, "tool-history-hidden")
+
+    def _title_text(self) -> str:
+        records = self._history.snapshot()
+        failed = sum(record.status == TOOL_STATUS_FAILED for record in records)
+        tool_count = len({record.tool_name for record in records})
+        view = "时间线" if self._view == "timeline" else "按工具汇总"
+        tool_filter = f" · 工具: {self._tool_filter}" if self._tool_filter else ""
+        return (
+            f"🧰 工具执行历史 · {len(records)} 次 · {tool_count} 种工具 · 失败 {failed} 次 · {view}{tool_filter}\n"
+            "/ 搜索 · t 切换视图 · Enter 查看详情 · c 复制详情 · Esc 返回 · q 关闭"
+        )
+
+    def _filter_values(self) -> tuple[str, str, str]:
+        text = self.query_one("#tool-history-search", Input).value.strip()
+        status_value = self.query_one("#tool-history-status-filter", Select).value
+        source_value = self.query_one("#tool-history-source-filter", Select).value
+        status = status_value if isinstance(status_value, str) else ""
+        source = source_value if isinstance(source_value, str) else ""
+        return text, status, source
+
+    def _current_signature(self) -> tuple[Any, ...]:
+        records = self._history.snapshot()
+        record_states = tuple(
+            (record.sequence, record.status, record.finished_at)
+            for record in records
+        )
+        return (
+            record_states,
+            self._view,
+            self._tool_filter,
+            *self._filter_values(),
+        )
+
+    def _refresh_if_changed(self) -> None:
+        if self._current_signature() != self._last_signature:
+            self._reload_rows()
+
+    def _reload_rows(self, *, force: bool = False) -> None:
+        signature = self._current_signature()
+        if not force and signature == self._last_signature:
+            return
+        self._last_signature = signature
+        selected_row = self._current_row()
+        selected_key = self._row_key(selected_row) if selected_row is not None else None
+        text, status, source = self._filter_values()
+        if self._view == "summary":
+            self._row_values = list(self._history.summaries(text=text, status=status, source=source))
+        else:
+            self._row_values = list(
+                self._history.query(
+                    text=text,
+                    tool_name=self._tool_filter,
+                    status=status,
+                    source=source,
+                )
+            )
+        selected_index = next(
+            (
+                index
+                for index, item in enumerate(self._row_values)
+                if self._row_key(item) == selected_key
+            ),
+            0,
+        )
+
+        history_list = self.query_one("#tool-history-list", ListView)
+        history_list.clear()
+        labels = [self._row_label(item) for item in self._row_values]
+        if not labels:
+            labels = ["暂无匹配的工具执行记录"]
+
+        def _mount_rows() -> None:
+            history_list.extend(ListItem(Label(label, markup=False)) for label in labels)
+            history_list.index = min(selected_index, len(labels) - 1)
+            self.query_one("#tool-history-title", Label).update(self._title_text())
+            self.query_one("#tool-history-status", Label).update(
+                f"当前显示 {len(self._row_values)} 项"
+            )
+            self._update_detail()
+
+        self.call_after_refresh(_mount_rows)
+
+    def _selected_index(self) -> int:
+        history_list = self.query_one("#tool-history-list", ListView)
+        return history_list.index if history_list.index is not None else 0
+
+    def _current_row(self) -> ToolExecutionRecord | ToolExecutionSummary | None:
+        if not self._row_values:
+            return None
+        return self._row_values[min(self._selected_index(), len(self._row_values) - 1)]
+
+    def _row_label(self, item: ToolExecutionRecord | ToolExecutionSummary) -> str:
+        if isinstance(item, ToolExecutionSummary):
+            return (
+                f"{item.tool_name} · {item.total} 次\n"
+                f"    ✓ {item.succeeded}  ✗ {item.failed}  ⊘ {item.blocked}  … {item.running}"
+            )
+        marker = self._STATUS_MARKERS.get(item.status, "?")
+        timestamp = f"{item.started_at[11:19]} " if item.started_at else ""
+        duration = f" · {item.duration_ms}ms" if item.duration_ms is not None else ""
+        actor = item.actor or item.source
+        return f"{timestamp}{marker} {item.tool_name}{duration}\n    {actor} · {item.status}"
+
+    @staticmethod
+    def _row_key(item: ToolExecutionRecord | ToolExecutionSummary) -> str:
+        if isinstance(item, ToolExecutionSummary):
+            return f"summary:{item.tool_name}"
+        return f"execution:{item.execution_id}"
+
+    def _update_detail(self) -> None:
+        detail = self.query_one("#tool-history-detail", TextArea)
+        current = self._current_row()
+        if current is None:
+            detail.load_text("暂无详情。")
+            return
+        if isinstance(current, ToolExecutionSummary):
+            detail.load_text(
+                "\n".join(
+                    [
+                        f"工具: {current.tool_name}",
+                        f"调用总数: {current.total}",
+                        f"成功: {current.succeeded}",
+                        f"失败: {current.failed}",
+                        f"已阻止: {current.blocked}",
+                        f"执行中: {current.running}",
+                        "",
+                        "按 Enter 查看该工具的执行时间线。",
+                    ]
+                )
+            )
+            return
+
+        lines = [
+            f"工具: {current.tool_name}",
+            f"状态: {current.status}",
+            f"来源: {current.source}",
+            f"执行者: {current.actor}",
+        ]
+        if current.task_id:
+            lines.append(f"任务 ID: {current.task_id}")
+        lines.append(f"调用 ID: {current.tool_call_id or '-'}")
+        if current.started_at:
+            lines.append(f"开始: {current.started_at}")
+        if current.finished_at:
+            lines.append(f"结束: {current.finished_at}")
+        if current.duration_ms is not None:
+            lines.append(f"耗时: {current.duration_ms} ms")
+        lines.extend([
+            "",
+            "Arguments",
+            "─────────",
+            format_tool_arguments(current.arguments),
+            "",
+            "Result",
+            "──────",
+            format_tool_value(current.result),
+        ])
+        if current.error:
+            lines.extend(["", "Error", "─────", current.error])
+        detail.load_text("\n".join(lines))
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "tool-history-search":
+            self._last_signature = None
+            self._reload_rows()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id in {"tool-history-status-filter", "tool-history-source-filter"}:
+            self._last_signature = None
+            self._reload_rows()
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.list_view.id == "tool-history-list":
+            self._update_detail()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id == "tool-history-list":
+            self.action_open_detail()
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "c" and isinstance(self.focused, TextArea):
+            detail = self.query_one("#tool-history-detail", TextArea)
+            text_to_copy = detail.selected_text or detail.text
+            if copy_to_system_clipboard(text_to_copy):
+                status = "📋 已复制工具详情到系统剪贴板。"
+            else:
+                self.app.copy_to_clipboard(text_to_copy)
+                status = "📋 已发送复制请求；当前终端可能不支持系统剪贴板。"
+            self.query_one("#tool-history-status", Label).update(status)
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "q" and isinstance(self.focused, (Input, Select)):
+            return
+        if event.key == "q":
+            self.action_close()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "escape":
+            self.action_back()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "enter" and not isinstance(self.focused, (Input, Select)):
+            self.action_open_detail()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "t" and not isinstance(self.focused, (Input, Select)):
+            self.action_toggle_view()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "/" and not isinstance(self.focused, Input):
+            self.action_focus_search()
+            event.stop()
+            event.prevent_default()
+
+    def action_open_detail(self) -> None:
+        current = self._current_row()
+        if isinstance(current, ToolExecutionSummary):
+            self._tool_filter = current.tool_name
+            self._view = "timeline"
+            self._detail_open = False
+            self._last_signature = None
+            self._reload_rows()
+            return
+        if current is None:
+            return
+        self._detail_open = True
+        self._update_compact_visibility()
+        self.query_one("#tool-history-detail", TextArea).focus()
+
+    def action_back(self) -> None:
+        if self._compact and self._detail_open:
+            self._detail_open = False
+            self._update_compact_visibility()
+            self.query_one("#tool-history-list", ListView).focus()
+            return
+        if self._tool_filter:
+            self._tool_filter = ""
+            self._last_signature = None
+            self._reload_rows()
+            return
+        self.query_one("#tool-history-list", ListView).focus()
+
+    def action_toggle_view(self) -> None:
+        self._view = "summary" if self._view == "timeline" else "timeline"
+        self._tool_filter = ""
+        self._detail_open = False
+        self._last_signature = None
+        self._reload_rows()
+
+    def action_focus_search(self) -> None:
+        self.query_one("#tool-history-search", Input).focus()
 
     def action_close(self) -> None:
         self.dismiss("closed")

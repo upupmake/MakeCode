@@ -4,7 +4,9 @@ from unittest.mock import Mock
 import pytest
 
 from system.console_render import _render_startup_banner
+from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import MakeCodeTuiApp, TuiBridge
+from system.tui_modals import ToolHistoryModal
 
 
 @pytest.mark.anyio
@@ -23,6 +25,240 @@ async def test_content_pane_minimum_width_keeps_startup_banner_on_six_lines():
         assert content_pane.region.width == 86
         assert tools_pane.region.width == content_pane.region.width
         assert len(content_log.lines) == 10
+
+
+@pytest.mark.anyio
+async def test_top_bar_displays_and_refreshes_conversation_title():
+    current_title = {"value": None}
+    app = MakeCodeTuiApp(
+        conversation_title_provider=lambda: current_title["value"],
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        title = app.query_one("#top-title")
+
+        assert str(title.render()) == "MakeCode"
+        assert title.tooltip is None
+
+        current_title["value"] = "优化标题展示"
+        app.refresh_status()
+        await pilot.pause()
+
+        assert str(title.render()) == "MakeCode · 优化标题展示"
+        assert title.tooltip == "优化标题展示"
+        assert app.title == "MakeCode · 优化标题展示"
+
+        current_title["value"] = None
+        app.refresh_status()
+        await pilot.pause()
+
+        assert str(title.render()) == "MakeCode"
+        assert title.tooltip is None
+
+
+@pytest.mark.anyio
+async def test_quick_panel_toggle_follows_actual_title_width():
+    current_title = {"value": None}
+    app = MakeCodeTuiApp(
+        conversation_title_provider=lambda: current_title["value"],
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        title = app.query_one("#top-title")
+        quick_toggle = app.query_one("#quick-panel-toggle")
+        short_title_width = title.region.width
+
+        assert quick_toggle.region.x == title.region.x + short_title_width + 1
+
+        current_title["value"] = "优化标题展示"
+        app.refresh_status()
+        await pilot.pause()
+
+        assert title.region.width > short_title_width
+        assert quick_toggle.region.x == title.region.x + title.region.width + 1
+
+
+@pytest.mark.anyio
+async def test_title_keeps_header_status_visible_on_compact_layout():
+    app = MakeCodeTuiApp(
+        header_info_provider=lambda: "workspace · status",
+        conversation_title_provider=lambda: "这是一个很长的对话标题用于验证窄屏省略展示",
+    )
+
+    async with app.run_test(size=(86, 40)) as pilot:
+        await pilot.pause()
+
+        title = app.query_one("#top-title")
+        status = app.query_one("#top-status")
+        assert title.region.width > 0
+        assert status.region.width > title.region.width
+        assert title.tooltip == "这是一个很长的对话标题用于验证窄屏省略展示"
+        assert "workspace · status" in str(status.render())
+
+
+@pytest.mark.anyio
+async def test_f7_opens_tool_history_and_tools_title_advertises_shortcut():
+    TOOL_EXECUTION_HISTORY.clear()
+    execution_id = TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "README.md"})
+    TOOL_EXECUTION_HISTORY.finish(execution_id, "contents")
+    app = MakeCodeTuiApp()
+
+    try:
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            assert "F7 History" in str(app.query_one("#tools-pane").border_title)
+
+            await pilot.press("f7")
+            await pilot.pause()
+
+            assert isinstance(app.screen, ToolHistoryModal)
+            assert len(app.screen._row_values) == 1
+            assert app.screen._row_values[0].tool_name == "FileRead"
+            app.screen.action_close()
+            await pilot.pause()
+            assert not isinstance(app.screen, ToolHistoryModal)
+            assert app._modal_active is False
+    finally:
+        TOOL_EXECUTION_HISTORY.clear()
+
+
+@pytest.mark.anyio
+async def test_compact_layout_switches_between_main_and_runtime_panes():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        left_column = app.query_one("#left-column")
+        right_column = app.query_one("#right-column")
+        quick_toggle = app.query_one("#quick-panel-toggle")
+        toggle = app.query_one("#compact-pane-toggle")
+
+        assert not left_column.has_class("hidden")
+        assert right_column.has_class("hidden")
+        assert not toggle.has_class("hidden")
+        assert toggle.region.x == quick_toggle.region.x + quick_toggle.region.width + 1
+        assert str(toggle.label) == "运行面板 F6"
+
+        await pilot.press("f6")
+        await pilot.pause()
+
+        assert left_column.has_class("hidden")
+        assert not right_column.has_class("hidden")
+        assert str(toggle.label) == "主面板 F6"
+
+        await pilot.click("#compact-pane-toggle")
+        await pilot.pause()
+
+        assert not left_column.has_class("hidden")
+        assert right_column.has_class("hidden")
+        assert str(toggle.label) == "运行面板 F6"
+
+
+@pytest.mark.anyio
+async def test_wide_layout_keeps_both_columns_and_hides_compact_toggle():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        left_column = app.query_one("#left-column")
+        right_column = app.query_one("#right-column")
+        main_grid = app.query_one("#main-grid")
+        toggle = app.query_one("#compact-pane-toggle")
+
+        assert not left_column.has_class("hidden")
+        assert not right_column.has_class("hidden")
+        assert toggle.has_class("hidden")
+        assert left_column.region.width + right_column.region.width == main_grid.region.width
+        assert abs(right_column.region.width / main_grid.region.width - 0.3) < 0.02
+
+        await pilot.press("f6")
+        await pilot.pause()
+
+        assert not left_column.has_class("hidden")
+        assert not right_column.has_class("hidden")
+        assert toggle.has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_runtime_pane_selection_resets_after_returning_to_wide_layout():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("f6")
+        await pilot.resize_terminal(180, 40)
+        await pilot.pause()
+        await pilot.resize_terminal(100, 40)
+        await pilot.pause()
+
+        assert not app.query_one("#left-column").has_class("hidden")
+        assert app.query_one("#right-column").has_class("hidden")
+        assert str(app.query_one("#compact-pane-toggle").label) == "运行面板 F6"
+
+
+@pytest.mark.anyio
+async def test_quick_panel_tool_history_button_routes_to_history_command():
+    app = MakeCodeTuiApp()
+    app._run_quick_command = Mock()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        await pilot.click("#quick-panel-toggle")
+        await pilot.pause()
+
+        button = app.query_one("#quick-tool-history")
+        assert "工具历史" in str(button.label)
+
+        await pilot.click("#quick-tool-history")
+        await pilot.pause()
+
+        app._run_quick_command.assert_called_once_with("/tool-history")
+
+
+@pytest.mark.anyio
+async def test_compact_quick_panel_wraps_all_actions_into_two_rows():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(86, 40)) as pilot:
+        await pilot.pause()
+        await pilot.click("#quick-panel-toggle")
+        await pilot.pause()
+
+        buttons = list(app.query(".quick-panel-button"))
+        row_counts = {}
+        for button in buttons:
+            row_counts[button.region.y] = row_counts.get(button.region.y, 0) + 1
+
+        assert len(buttons) == 10
+        assert sorted(row_counts.values()) == [5, 5]
+        assert all(button.region.width > 0 for button in buttons)
+        assert all(button.region.x + button.region.width <= app.size.width for button in buttons)
+        assert all(
+            button.region.y + button.region.height <= app.query_one("#main-grid").region.y
+            for button in buttons
+        )
+        assert str(app.query_one("#quick-panel-toggle").label) == "▾ 快捷"
+
+
+@pytest.mark.anyio
+async def test_quick_panel_returns_to_one_row_after_widening_terminal():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        await pilot.click("#quick-panel-toggle")
+        await pilot.pause()
+        assert len({button.region.y for button in app.query(".quick-panel-button")}) == 2
+
+        await pilot.resize_terminal(180, 40)
+        await pilot.pause()
+
+        buttons = list(app.query(".quick-panel-button"))
+        assert len({button.region.y for button in buttons}) == 1
+        assert all(button.region.x + button.region.width <= app.size.width for button in buttons)
+        assert str(app.query_one("#quick-panel-toggle").label) == "▾ 快捷面板"
 
 
 @pytest.mark.anyio

@@ -12,6 +12,7 @@ from rich.text import Text
 from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandResult
+from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
 from system.tui_modals import ChoiceModal, InfoPanelModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal, ModelManagerModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.llm_client import (
@@ -1387,21 +1388,90 @@ async def test_first_title_request_starts_after_agent_loop_returns():
         events.append("title_start")
         return "title"
 
+    def apply_title():
+        events.append("title_applied")
+
+    def refresh_title():
+        events.append("title_refreshed")
+
     with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
             patch.object(main_module, "set_agent_loop_active"), \
             patch.object(main_module, "recall_long_term_memories", AsyncMock(return_value={"content": ""})), \
             patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
             patch.object(main_module, "agent_loop", side_effect=run_agent_loop), \
             patch.object(main_module, "generate_title", side_effect=generate_title), \
-            patch.object(main_module, "_apply_pending_title"), \
-            patch.object(main_module, "refresh_status"):
+            patch.object(main_module, "_apply_pending_title", side_effect=apply_title), \
+            patch.object(main_module, "refresh_status", side_effect=refresh_title):
         await main_module._process_user_query(
             "hello",
             [{"role": "system", "content": "system"}],
             command_handler,
         )
 
-    assert events == ["agent_loop_start", "agent_loop_end", "title_start"]
+    assert events == [
+        "agent_loop_start",
+        "agent_loop_end",
+        "title_start",
+        "title_applied",
+        "title_refreshed",
+    ]
+
+
+def test_applied_pending_title_becomes_current_display_title(tmp_path):
+    checkpoint = tmp_path / "ckpt_20260715_120000_abcd1234.json"
+    checkpoint.write_text("[]", encoding="utf-8")
+
+    with patch.object(main_module, "CURRENT_CHECKPOINT", checkpoint), \
+            patch.object(main_module, "_pending_title", "标题展示优化"), \
+            patch.object(main_module._tasks_module.TASK_MANAGER, "rename_with_title"), \
+            patch.object(main_module._teams_module.TEAM, "rename_history_with_title"):
+        main_module._apply_pending_title()
+
+        assert main_module.CURRENT_CHECKPOINT.name == (
+            "ckpt_标题展示优化_20260715_120000_abcd1234.json"
+        )
+        assert main_module._get_current_conversation_title() == "标题展示优化"
+
+
+@pytest.mark.anyio
+async def test_loaded_title_refreshes_after_checkpoint_assignment():
+    loaded_checkpoint = Path(
+        "/tmp/ckpt_加载标题_20260715_120000_abcd1234.json"
+    )
+    loaded_history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "loaded"},
+    ]
+    command_handler = Mock()
+    command_handler.process_command = AsyncMock(return_value=CommandResult(
+        action=CommandAction.LOAD_HISTORY,
+        payload=(loaded_history, loaded_checkpoint),
+    ))
+    refreshed_titles = []
+
+    with patch.object(main_module, "CURRENT_CHECKPOINT", Path(
+            "/tmp/ckpt_旧标题_20260714_120000_abcd1234.json"
+    )), patch.object(
+            main_module,
+            "refresh_status",
+            side_effect=lambda: refreshed_titles.append(
+                main_module._get_current_conversation_title()
+            ),
+    ):
+        history = [{"role": "system", "content": "system"}]
+        await main_module._process_user_query("/load", history, command_handler)
+
+    assert history == loaded_history
+    assert refreshed_titles == ["加载标题"]
+
+
+def test_untitled_checkpoint_has_stable_display_fallback():
+    with patch.object(
+            main_module,
+            "CURRENT_CHECKPOINT",
+            Path("/tmp/ckpt_20260715_120000_abcd1234.json"),
+    ):
+        assert main_module._get_current_conversation_title() == "未命名对话"
 
 
 @pytest.mark.anyio
@@ -1777,6 +1847,7 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
             patch.object(main_module, "_render_tool_output"), \
             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "post_tui"), \
+            patch.object(main_module, "TOOL_EXECUTION_HISTORY", ToolExecutionHistory()) as tool_history, \
             patch.object(main_module, "is_plan_mode", return_value=False):
         committed = await main_module.agent_loop(messages, llm_client=FakeClient())
 
@@ -1786,6 +1857,10 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
     tool_result = next(message for message in requests[2] if message.get("role") == "tool")
     assert tool_result["name"] == "MissingTool"
     assert tool_result["is_error"] is True
+    history_record = tool_history.snapshot()[0]
+    assert history_record.source == "orchestrator"
+    assert history_record.actor == "Orchestrator"
+    assert history_record.status == TOOL_STATUS_FAILED
     assert save_checkpoint.call_count == 3
 
 

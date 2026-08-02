@@ -26,6 +26,7 @@ from system.console_render import (
     _render_tool_output,
     get_sub_agent_console,
 )
+from system.tool_history import TOOL_EXECUTION_HISTORY, tool_result_status
 from system.tui_app import TuiRegion, choose_delegate_tasks_tui, post_tui
 from system.window_attention import request_window_attention
 
@@ -722,6 +723,14 @@ class TeammateManager:
                 tool_name = tc["name"]
                 tool_id = tc["id"]
                 tool_args = tc["arguments"]
+                execution_id = TOOL_EXECUTION_HISTORY.start(
+                    tool_name,
+                    tool_args,
+                    tool_call_id=tool_id,
+                    source="sub_agent",
+                    actor=f"#{plan_task_id} - {role}",
+                    task_id=plan_task_id,
+                )
                 # 回显工具调用参数到主控制台（如果启用）
                 if get_sub_agent_console():
                     kw_args = {
@@ -746,6 +755,7 @@ class TeammateManager:
                             args = tool_args or {}
 
                         if not isinstance(args, dict):
+                            tool_error = True
                             output = f"Error: {tool_name} arguments must be a dict, got {type(args).__name__}"
                         elif inspect.iscoroutinefunction(handler):
                             output = await handler(**args)
@@ -764,6 +774,12 @@ class TeammateManager:
                         e,
                     )
                     output = f"Error: {e}."
+                TOOL_EXECUTION_HISTORY.finish(
+                    execution_id,
+                    output,
+                    status=tool_result_status(is_error=tool_error, output=output),
+                    error=str(output) if tool_error else "",
+                )
                 # 回显工具输出结果到主控制台（如果启用）
                 if get_sub_agent_console():
                     kw_args = {

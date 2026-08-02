@@ -19,6 +19,7 @@ from system.console_render import (
     console as _compact_console,
 )
 from system.stream_render import StreamRenderer
+from system.tool_history import TOOL_EXECUTION_HISTORY, tool_result_status
 from system.tui_app import TuiRegion, post_tui
 from utils.common import sanitize_title
 from utils.memory_catalog import read_memory_records, sort_memory_records
@@ -664,7 +665,11 @@ async def recall_long_term_memories(
         _touch_recalled_memories(selected_ids)
         memory_context = render_selected_memory_context(selected_ids)
         if selected_ids:
-            post_tui(TuiRegion.BACKGROUND, f"[bold green]🧠 记忆召回命中 {len(selected_ids)} 条：{escape(', '.join(selected_ids))}[/bold green]")
+            recalled_ids = escape(", ".join(selected_ids))
+            post_tui(
+                TuiRegion.BACKGROUND,
+                f"[bold green]🧠 记忆召回命中 {len(selected_ids)} 条：\n{recalled_ids}\n[/bold green]",
+            )
             post_tui(TuiRegion.BACKGROUND, Markdown(memory_context))
         else:
             post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 记忆召回未命中相关长期记忆。[/#aaaaaa]")
@@ -755,8 +760,17 @@ async def memory_agent_loop(
             for tool_call in memory_tool_calls:
                 tool_name = tool_call.get("name")
                 tool_id = tool_call.get("id")
+                tool_args = tool_call.get("arguments")
                 handler = LONG_TERM_MEMORY_TOOL_HANDLERS.get(tool_name)
                 tool_error = False
+                output = ""
+                execution_id = TOOL_EXECUTION_HISTORY.start(
+                    tool_name,
+                    tool_args,
+                    tool_call_id=tool_id or "",
+                    source="memory",
+                    actor=MEMORY_AGENT_IDENTITY,
+                )
                 if not handler:
                     tool_error = True
                     output = f"未知记忆工具：{tool_name}"
@@ -764,9 +778,9 @@ async def memory_agent_loop(
                 else:
                     tool_changed = False
                     post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 准备执行记忆写入工具：{escape(tool_name)}[/#aaaaaa]")
-                    _render_tool_call(tool_name, tool_call.get("arguments"), identity=MEMORY_AGENT_IDENTITY)
+                    _render_tool_call(tool_name, tool_args, identity=MEMORY_AGENT_IDENTITY)
                     try:
-                        arguments = _parse_tool_arguments(tool_call.get("arguments"))
+                        arguments = _parse_tool_arguments(tool_args)
                         output = await asyncio.to_thread(handler, **arguments)
                         if tool_name == "AppendLongTermMemory" and isinstance(output, dict) and "error" not in output:
                             tool_changed = True
@@ -783,6 +797,12 @@ async def memory_agent_loop(
                     else:
                         post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 记忆工具执行完成：{escape(tool_name)}[/#aaaaaa]")
                     _render_tool_output(tool_name, output, identity=MEMORY_AGENT_IDENTITY)
+                TOOL_EXECUTION_HISTORY.finish(
+                    execution_id,
+                    output,
+                    status=tool_result_status(is_error=tool_error, output=output),
+                    error=str(output) if tool_error else "",
+                )
                 saved_outputs.append({"tool": tool_name, "output": output})
                 if tool_id:
                     tool_result = llm_client.format_tool_result(tool_id, tool_name, output)

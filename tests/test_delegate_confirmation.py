@@ -10,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Button, Label
 
+from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
 from system.tui_modals import DelegateTasksModal
 from utils.teams import DelegateTasks, TeammateManager
 
@@ -390,8 +391,10 @@ async def test_sub_agent_marks_unknown_tool_result_as_error(tmp_path):
             return {"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": output}
 
     client = FakeClient()
+    tool_history = ToolExecutionHistory()
     with patch("utils.teams.get_sub_agent_console", return_value=False), \
-            patch("utils.teams.GLOBAL_MCP_MANAGER.get_registry_snapshot", return_value=([], {})):
+            patch("utils.teams.GLOBAL_MCP_MANAGER.get_registry_snapshot", return_value=([], {})), \
+            patch("utils.teams.TOOL_EXECUTION_HISTORY", tool_history):
         await manager._sub_agent_loop(
             "1",
             "Test Engineer",
@@ -404,6 +407,11 @@ async def test_sub_agent_marks_unknown_tool_result_as_error(tmp_path):
     assert tool_result["role"] == "tool"
     assert tool_result["name"] == "MissingTool"
     assert tool_result["is_error"] is True
+    history_record = tool_history.snapshot()[0]
+    assert history_record.source == "sub_agent"
+    assert history_record.actor == "#1 - Test Engineer"
+    assert history_record.task_id == "1"
+    assert history_record.status == TOOL_STATUS_FAILED
 
 
 class DelegateModalHost(App):

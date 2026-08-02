@@ -58,6 +58,7 @@ from utils.plan_mode import (
     PLAN_MODE_ALLOWED_COMMANDS,
 )
 from system.stream_render import StreamRenderer
+from system.tool_history import TOOL_EXECUTION_HISTORY, tool_result_status
 from system.ts_validator import init_ts_cache
 from system.tui_app import MakeCodeTuiApp, post_tui, TuiRegion, set_agent_loop_active, refresh_status, refresh_tools_title
 from utils.common import (
@@ -84,6 +85,7 @@ from utils.memory import (
     auto_compact,
     estimate_tokens,
     get_active_memory_count,
+    get_checkpoint_title,
     get_context_token_limit,
     list_checkpoints,
     load_checkpoint,
@@ -402,6 +404,14 @@ async def _agent_loop_with_client(messages: list, llm_client) -> bool:
             tool_id = tc["id"]
             tool_args = tc["arguments"]
             tool_error = False
+            output = ""
+            execution_id = TOOL_EXECUTION_HISTORY.start(
+                tool_name,
+                tool_args,
+                tool_call_id=tool_id,
+                source="orchestrator",
+                actor="Orchestrator",
+            )
 
             post_tui(TuiRegion.TOOLS, active=True)
             try:
@@ -447,6 +457,12 @@ async def _agent_loop_with_client(messages: list, llm_client) -> bool:
 
                 _render_tool_output(tool_name, output)
             finally:
+                TOOL_EXECUTION_HISTORY.finish(
+                    execution_id,
+                    output,
+                    status=tool_result_status(is_error=tool_error, output=output),
+                    error=str(output) if tool_error else "",
+                )
                 post_tui(TuiRegion.TOOLS, active=False)
 
             tool_result = llm_client.format_tool_result(
@@ -516,6 +532,12 @@ def _start_tree_sitter_cache_init_background():
 
 CURRENT_CHECKPOINT = None
 _pending_title = None
+
+
+def _get_current_conversation_title() -> str | None:
+    if CURRENT_CHECKPOINT is None:
+        return None
+    return get_checkpoint_title(Path(CURRENT_CHECKPOINT)) or "未命名对话"
 
 
 def _refresh_workspace_state() -> None:
@@ -727,6 +749,7 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         submit_handler=submit_handler,
         runtime_info_provider=runtime_info_provider,
         header_info_provider=header_info_provider,
+        conversation_title_provider=_get_current_conversation_title,
         startup_workdir_provider=startup_workdir_provider if prompt_for_workdir else None,
         startup_workdir_handler=startup_workdir_handler if prompt_for_workdir else None,
     )

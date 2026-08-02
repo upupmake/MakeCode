@@ -29,6 +29,7 @@ COMMAND_DESCRIPTIONS = {
     "/memory-config": "打开记忆配置面板，修改全局上下文长度和记忆设置。",
     "/memory-update": "[prompt] 根据用户请求主动管理长期记忆；prompt 可选，不填则根据当前对话使用默认记忆管理提示。",
     "/tasks": "查看完整任务看板和当前执行进度。",
+    "/tool-history": "打开工具执行历史浏览器，支持按工具汇总、全文搜索、状态和来源筛选以及完整详情。",
     "/copy": "打开只读弹窗查看对话内容（user/assistant），支持选择文本并按 C 键复制。",
     "/plan": "进入或退出 Plan Mode；规划阶段只允许只读和任务规划工具。",
     "/sub-agent-console": "切换 Sub-Agent 的控制台输出状态，默认开启。",

@@ -13,7 +13,7 @@ from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Grid, Horizontal, Vertical
 from textual.events import Key, Resize
 from textual.widgets import Button, Footer, Input, Label, RichLog, Static, TextArea
 
@@ -39,6 +39,7 @@ from system.tui_modals import (
     RecallModelPickerModal,
     StartupWorkdirModal,
     TaskPanelModal,
+    ToolHistoryModal,
 )
 
 
@@ -201,6 +202,18 @@ class TuiBridge:
             app.open_copy_content_modal(messages, future)
         else:
             app.call_from_thread(app.open_copy_content_modal, messages, future)
+        return future.result()
+
+    def show_tool_history(self, history: Any) -> str:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_tool_history_modal(history, future)
+        else:
+            app.call_from_thread(app.open_tool_history_modal, history, future)
         return future.result()
 
     def manage_models(self, model_manager: Any) -> str:
@@ -478,7 +491,8 @@ class MakeCodeTuiApp(App[None]):
 
     #top-title {
         width: auto;
-        min-width: 10;
+        max-width: 44;
+        min-width: 0;
         height: 1;
         color: #e5e7eb;
         text-style: bold;
@@ -486,7 +500,7 @@ class MakeCodeTuiApp(App[None]):
     }
 
     #top-status {
-        width: 1fr;
+        width: 2fr;
         height: 1;
         color: #e5e7eb;
         content-align: right middle;
@@ -512,15 +526,45 @@ class MakeCodeTuiApp(App[None]):
         height: 1;
         min-height: 1;
         max-height: 1;
+        margin: 0 0 0 1;
         background: #374151;
         color: #e5e7eb;
         border: none;
+    }
+
+    #quick-panel-toggle.compact {
+        width: 12;
+        min-width: 12;
+    }
+
+    #compact-pane-toggle {
+        width: 18;
+        min-width: 18;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        margin: 0 0 0 1;
+        background: #374151;
+        color: #e5e7eb;
+        border: none;
+    }
+
+    #compact-pane-toggle.compact {
+        width: 14;
+        min-width: 14;
     }
 
     #quick-panel-buttons {
         height: auto;
         padding: 0 1;
         background: #111827;
+        grid-size: 10;
+        grid-rows: 3;
+        grid-gutter: 0 1;
+    }
+
+    #quick-panel-buttons.compact {
+        grid-size: 5;
     }
 
     #quick-panel-buttons.hidden {
@@ -529,18 +573,17 @@ class MakeCodeTuiApp(App[None]):
 
     .quick-panel-button {
         width: 1fr;
-        min-width: 12;
+        min-width: 10;
         height: 3;
-        margin: 0 1 1 0;
     }
 
     #left-column {
-        width: 2fr;
+        width: 7fr;
         height: 1fr;
     }
 
     #right-column {
-        width: 1fr;
+        width: 3fr;
         height: 1fr;
     }
 
@@ -654,6 +697,8 @@ class MakeCodeTuiApp(App[None]):
         Binding("ctrl+c", "cancel_response", "Cancel", priority=True),
         Binding("escape", "cancel_response", "Cancel", priority=True),
         Binding("ctrl+n", "insert_newline", "New line", priority=True),
+        Binding("f6", "toggle_compact_panes", "切换面板", priority=True, show=False),
+        Binding("f7", "open_tool_history", "工具历史", priority=True, show=False),
     ]
 
     def __init__(
@@ -661,6 +706,7 @@ class MakeCodeTuiApp(App[None]):
         submit_handler: Callable[[str], Awaitable[str | None]] | None = None,
         runtime_info_provider: Callable[[], str] | None = None,
         header_info_provider: Callable[[], str] | None = None,
+        conversation_title_provider: Callable[[], str | None] | None = None,
         startup_workdir_provider: Callable[[], Any] | None = None,
         startup_workdir_handler: Callable[[str], None] | None = None,
     ) -> None:
@@ -674,6 +720,7 @@ class MakeCodeTuiApp(App[None]):
         self._submit_lock = threading.Lock()
         self._runtime_info_provider = runtime_info_provider
         self._header_info_provider = header_info_provider
+        self._conversation_title_provider = conversation_title_provider
         self._startup_workdir_provider = startup_workdir_provider
         self._startup_workdir_handler = startup_workdir_handler
         self._mode_label = "ACT"
@@ -689,6 +736,7 @@ class MakeCodeTuiApp(App[None]):
         self._input_history_draft = ""
         self._modal_active = False
         self._right_column_visible = True
+        self._compact_show_runtime = False
         self._last_responsive_width = 0
         self._layout_ratios = load_layout_ratios()
         self._tool_result_count = 0
@@ -705,11 +753,12 @@ class MakeCodeTuiApp(App[None]):
         with Horizontal(id="top-bar"):
             yield Static("MakeCode", id="top-title")
             yield Button("▸ 快捷面板", id="quick-panel-toggle")
+            yield Button("运行面板 F6", id="compact-pane-toggle", classes="hidden")
             yield Static("", id="top-status")
             yield Static("", id="top-clock")
         with Vertical(id="quick-panel-shell"):
-            with Horizontal(id="quick-panel-buttons", classes="hidden"):
-                yield Button("📋 任务", id="quick-tasks", classes="quick-panel-button")
+            with Grid(id="quick-panel-buttons", classes="hidden"):
+                yield Button("🧰 工具历史", id="quick-tool-history", classes="quick-panel-button")
                 yield Button("🧠 记忆", id="quick-memory", classes="quick-panel-button")
                 yield Button("📚 技能", id="quick-skills", classes="quick-panel-button")
                 yield Button("🔌 MCP", id="quick-mcp", classes="quick-panel-button")
@@ -823,12 +872,35 @@ class MakeCodeTuiApp(App[None]):
         if width == self._last_responsive_width:
             return
         self._last_responsive_width = width
+        self._apply_responsive_layout()
+
+    def _apply_responsive_layout(self) -> None:
+        left_column = self.query_one("#left-column", Vertical)
         right_column = self.query_one("#right-column", Vertical)
-        should_show_right_column = width >= 140
-        if should_show_right_column == self._right_column_visible:
+        toggle = self.query_one("#compact-pane-toggle", Button)
+        compact = self._last_responsive_width < 140
+        self._right_column_visible = not compact or self._compact_show_runtime
+        self._update_quick_panel()
+        self._update_conversation_title()
+        toggle.set_class(compact, "compact")
+
+        if compact:
+            left_column.set_class(self._compact_show_runtime, "hidden")
+            right_column.set_class(not self._compact_show_runtime, "hidden")
+            toggle.set_class(False, "hidden")
+            toggle.label = "主面板 F6" if self._compact_show_runtime else "运行面板 F6"
             return
-        self._right_column_visible = should_show_right_column
-        right_column.set_class(not should_show_right_column, "hidden")
+
+        self._compact_show_runtime = False
+        left_column.set_class(False, "hidden")
+        right_column.set_class(False, "hidden")
+        toggle.set_class(True, "hidden")
+
+    def action_toggle_compact_panes(self) -> None:
+        if self.size.width >= 140:
+            return
+        self._compact_show_runtime = not self._compact_show_runtime
+        self._apply_responsive_layout()
 
     def _apply_layout_ratios(self) -> None:
         pane_ids = {
@@ -861,7 +933,7 @@ class MakeCodeTuiApp(App[None]):
 
     def _update_tools_title(self) -> None:
         self.query_one("#tools-pane", Vertical).border_title = (
-            f"Tools · Results: {self._tool_result_count}/{self._tool_result_keep_limit}"
+            f"Tools · Results: {self._tool_result_count}/{self._tool_result_keep_limit} · F7 History"
         )
 
     def refresh_tools_title(self) -> None:
@@ -1076,6 +1148,21 @@ class MakeCodeTuiApp(App[None]):
 
         self._modal_active = True
         self.push_screen(CopyContentModal(messages), _done)
+
+    def open_tool_history_modal(self, history: Any, future: Future[str] | None = None) -> None:
+        if self._modal_active:
+            if future is not None and not future.done():
+                future.set_result("<cancelled>")
+            return
+
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if future is not None and not future.done():
+                future.set_result(value or "<cancelled>")
+            self.query_one("#input-box", MakeCodeInput).focus()
+
+        self._modal_active = True
+        self.push_screen(ToolHistoryModal(history), _done)
 
     def open_model_manager_modal(self, model_manager: Any, future: Future[str]) -> None:
         def _done(value: str | None) -> None:
@@ -1332,7 +1419,25 @@ class MakeCodeTuiApp(App[None]):
         self.update_input_height()
         input_box.focus()
 
+    def _update_conversation_title(self) -> None:
+        conversation_title = ""
+        if self._conversation_title_provider is not None:
+            try:
+                conversation_title = self._conversation_title_provider() or ""
+            except Exception:
+                conversation_title = ""
+        display_title = f"MakeCode · {conversation_title}" if conversation_title else "MakeCode"
+        self.title = display_title
+        title_widget = self.query_one("#top-title", Static)
+        responsive_width = self._last_responsive_width or self.size.width
+        title_widget.styles.max_width = (
+            max(0, (responsive_width - 36) // 3) if responsive_width < 140 else 44
+        )
+        title_widget.update(Text(display_title, overflow="ellipsis", no_wrap=True))
+        title_widget.tooltip = conversation_title or None
+
     def _update_header_status(self) -> None:
+        self._update_conversation_title()
         parts = []
         if self._header_info_provider is not None:
             try:
@@ -1363,6 +1468,13 @@ class MakeCodeTuiApp(App[None]):
         if cancel_current_response():
             self.query_one("#input-box", MakeCodeInput).focus()
 
+    def action_open_tool_history(self) -> None:
+        if self._modal_active:
+            return
+        from system.tool_history import TOOL_EXECUTION_HISTORY
+
+        self.open_tool_history_modal(TOOL_EXECUTION_HISTORY)
+
     def action_toggle_hitl(self) -> None:
         from utils.hitl import toggle_hitl
 
@@ -1377,8 +1489,14 @@ class MakeCodeTuiApp(App[None]):
 
     def _update_quick_panel(self) -> None:
         toggle = self.query_one("#quick-panel-toggle", Button)
-        buttons = self.query_one("#quick-panel-buttons", Horizontal)
-        toggle.label = "▾ 快捷面板" if self._quick_panel_expanded else "▸ 快捷面板"
+        buttons = self.query_one("#quick-panel-buttons", Grid)
+        compact = self._last_responsive_width < 140
+        toggle.set_class(compact, "compact")
+        buttons.set_class(compact, "compact")
+        if compact:
+            toggle.label = "▾ 快捷" if self._quick_panel_expanded else "▸ 快捷"
+        else:
+            toggle.label = "▾ 快捷面板" if self._quick_panel_expanded else "▸ 快捷面板"
         buttons.set_class(not self._quick_panel_expanded, "hidden")
 
     def _run_quick_command(self, command: str) -> None:
@@ -1398,8 +1516,11 @@ class MakeCodeTuiApp(App[None]):
         if button_id == "quick-panel-toggle":
             self.action_toggle_quick_panel()
             return
+        if button_id == "compact-pane-toggle":
+            self.action_toggle_compact_panes()
+            return
         quick_commands = {
-            "quick-tasks": "/tasks",
+            "quick-tool-history": "/tool-history",
             "quick-memory": "/memory-panel",
             "quick-skills": "/skills-list",
             "quick-mcp": "/mcp-view",
@@ -1650,6 +1771,10 @@ def manage_tasks_tui(task_manager: Any) -> str:
 
 def show_copy_content_tui(messages: list[dict[str, str]]) -> str:
     return TUI_BRIDGE.show_copy_content(messages)
+
+
+def show_tool_history_tui(history: Any) -> str:
+    return TUI_BRIDGE.show_tool_history(history)
 
 
 def choose_add_model_tui() -> dict[str, str] | None:
