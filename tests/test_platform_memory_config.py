@@ -1370,51 +1370,126 @@ async def test_user_request_pre_recall_receives_previous_assistant_content():
 
 
 @pytest.mark.anyio
-async def test_first_title_request_starts_after_agent_loop_returns():
-    events = []
-
+async def test_process_user_query_delegates_title_detection_to_agent_loop():
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(
         action=CommandAction.RUN_AGENT,
         payload="hello",
     ))
 
-    async def run_agent_loop(history):
-        events.append("agent_loop_start")
-        events.append("agent_loop_end")
-        return True
-
-    async def generate_title(query):
-        events.append("title_start")
-        return "title"
-
-    def apply_title():
-        events.append("title_applied")
-
-    def refresh_title():
-        events.append("title_refreshed")
-
     with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
             patch.object(main_module, "set_agent_loop_active"), \
             patch.object(main_module, "recall_long_term_memories", AsyncMock(return_value={"content": ""})), \
-            patch.object(main_module, "save_checkpoint", return_value="checkpoint"), \
-            patch.object(main_module, "agent_loop", side_effect=run_agent_loop), \
-            patch.object(main_module, "generate_title", side_effect=generate_title), \
-            patch.object(main_module, "_apply_pending_title", side_effect=apply_title), \
-            patch.object(main_module, "refresh_status", side_effect=refresh_title):
-        await main_module._process_user_query(
-            "hello",
-            [{"role": "system", "content": "system"}],
-            command_handler,
+            patch.object(main_module, "agent_loop", new_callable=AsyncMock, return_value=True) as run_agent_loop, \
+            patch.object(main_module, "generate_title", new_callable=AsyncMock) as generate_title, \
+            patch.object(main_module, "_apply_pending_title"), \
+            patch.object(main_module, "refresh_status"):
+        history = [{"role": "system", "content": "system"}]
+        await main_module._process_user_query("hello", history, command_handler)
+
+    run_agent_loop.assert_awaited_once_with(history, title_source="hello")
+    generate_title.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_agent_loop_checks_for_missing_title_after_every_iteration():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    responses = [
+        (
+            "",
+            [],
+            {"role": "assistant", "content": "", "stop_reason": "pause_turn"},
+            False,
+        ),
+        (
+            "done",
+            [],
+            {"role": "assistant", "content": "done", "stop_reason": "end_turn"},
+            False,
+        ),
+    ]
+    events = []
+
+    async def stream_with_render(current_messages, current_tools, llm_client):
+        events.append("stream")
+        return responses.pop(0)
+
+    class FakeClient:
+        @staticmethod
+        def append_assistant_message(current_messages, raw_message):
+            current_messages.append(raw_message)
+
+    def save_checkpoint(current_messages, current_checkpoint):
+        events.append("save")
+        return "checkpoint"
+
+    async def generate_title_if_missing(title_source):
+        events.append(f"title:{title_source}")
+        return False
+
+    def apply_pending_title():
+        events.append("apply")
+
+    with patch.object(main_module, "CURRENT_CHECKPOINT", None), \
+            patch.object(main_module, "micro_compact"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "save_checkpoint", side_effect=save_checkpoint), \
+            patch.object(main_module, "_generate_title_if_missing", side_effect=generate_title_if_missing), \
+            patch.object(main_module, "_apply_pending_title", side_effect=apply_pending_title), \
+            patch.object(main_module, "estimate_tokens", return_value=0):
+        committed = await main_module.agent_loop(
+            messages,
+            llm_client=FakeClient(),
+            title_source="hello",
         )
 
+    assert committed is True
     assert events == [
-        "agent_loop_start",
-        "agent_loop_end",
-        "title_start",
-        "title_applied",
-        "title_refreshed",
+        "stream",
+        "save",
+        "title:hello",
+        "apply",
+        "stream",
+        "save",
+        "title:hello",
+        "apply",
     ]
+
+
+@pytest.mark.anyio
+async def test_title_detection_generates_when_checkpoint_has_no_title():
+    with patch.object(
+        main_module,
+        "CURRENT_CHECKPOINT",
+        Path("/tmp/ckpt_20260715_120000_abcd1234.json"),
+    ), patch.object(main_module, "_pending_title", None), \
+            patch.object(main_module, "generate_title", AsyncMock(return_value="新标题")) as generate_title, \
+            patch.object(main_module, "post_tui"):
+        generated = await main_module._generate_title_if_missing("hello")
+
+        assert generated is True
+        assert main_module._pending_title == "新标题"
+        generate_title.assert_awaited_once_with("hello")
+
+
+@pytest.mark.anyio
+async def test_title_detection_skips_generation_when_checkpoint_already_has_title():
+    with patch.object(
+        main_module,
+        "CURRENT_CHECKPOINT",
+        Path("/tmp/ckpt_现有标题_20260715_120000_abcd1234.json"),
+    ), patch.object(main_module, "generate_title", new_callable=AsyncMock) as generate_title:
+        generated = await main_module._generate_title_if_missing("hello")
+
+    assert generated is False
+    generate_title.assert_not_awaited()
 
 
 @pytest.mark.anyio

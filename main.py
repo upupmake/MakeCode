@@ -312,7 +312,11 @@ async def _run_tool_handler(handler, arguments: dict):
     return output
 
 
-async def agent_loop(messages: list, llm_client=None) -> bool:
+async def agent_loop(
+    messages: list,
+    llm_client=None,
+    title_source: str | None = None,
+) -> bool:
     """Agent 主循环：每次业务请求独占一个 LLM client。"""
     owns_client = llm_client is None
     if owns_client:
@@ -323,13 +327,17 @@ async def agent_loop(messages: list, llm_client=None) -> bool:
         )
         return False
     try:
-        return await _agent_loop_with_client(messages, llm_client)
+        return await _agent_loop_with_client(messages, llm_client, title_source)
     finally:
         if owns_client:
             await close_async_llm_client(llm_client)
 
 
-async def _agent_loop_with_client(messages: list, llm_client) -> bool:
+async def _agent_loop_with_client(
+    messages: list,
+    llm_client,
+    title_source: str | None = None,
+) -> bool:
     global CURRENT_CHECKPOINT
     micro_compact(messages)
     committed_response = False
@@ -475,7 +483,10 @@ async def _agent_loop_with_client(messages: list, llm_client) -> bool:
             messages.append(tool_result)
 
         CURRENT_CHECKPOINT = save_checkpoint(messages, CURRENT_CHECKPOINT)
+        title_generated = await _generate_title_if_missing(title_source)
         _apply_pending_title()
+        if title_generated:
+            refresh_status()
 
         if not has_tool_call and stop_reason != "pause_turn":
             break
@@ -581,6 +592,32 @@ def _apply_pending_title():
         log_error_traceback("Failed to apply pending title", exc)
 
 
+async def _generate_title_if_missing(title_source: str | None) -> bool:
+    global _pending_title
+    if (
+        not title_source
+        or CURRENT_CHECKPOINT is None
+        or get_checkpoint_title(Path(CURRENT_CHECKPOINT))
+    ):
+        return False
+
+    post_tui(TuiRegion.BACKGROUND, active=True)
+    post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 正在生成对话标题...[/#aaaaaa]")
+    try:
+        title = await generate_title(title_source)
+        if title:
+            _pending_title = title
+            post_tui(TuiRegion.BACKGROUND, f"[bold green]🏷️ 对话标题生成完成：{title}[/bold green]")
+            return True
+        post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 对话标题生成结束：未生成可用标题[/#aaaaaa]")
+    except Exception as exc:
+        log_error_traceback("Failed to generate title", exc)
+        post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题生成失败：{escape(str(exc))}[/bold red]")
+    finally:
+        post_tui(TuiRegion.BACKGROUND, active=False)
+    return False
+
+
 async def _regenerate_conversation_title(history: list) -> None:
     global _pending_title
     if CURRENT_CHECKPOINT is None:
@@ -682,7 +719,6 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
         return None
     if command_result.action == CommandAction.RUN_AGENT:
         user_query = command_result.payload
-        should_generate_title = False
         try:
             set_agent_loop_active(True)
             previous_assistant_content = _get_previous_assistant_content(history)
@@ -695,26 +731,7 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
             user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
             history.append({"role": "user", "content": user_message})
 
-            should_generate_title = CURRENT_CHECKPOINT is None
-            committed_response = await agent_loop(history)
-            if committed_response and CURRENT_CHECKPOINT is None:
-                CURRENT_CHECKPOINT = save_checkpoint(history)
-
-            if should_generate_title and committed_response:
-                post_tui(TuiRegion.BACKGROUND, active=True)
-                post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 正在生成对话标题...[/#aaaaaa]")
-                try:
-                    title = await generate_title(query)
-                    if title:
-                        _pending_title = title
-                        post_tui(TuiRegion.BACKGROUND, f"[bold green]🏷️ 对话标题生成完成：{title}[/bold green]")
-                    else:
-                        post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🏷️ 对话标题生成结束：未生成可用标题[/#aaaaaa]")
-                except Exception as exc:
-                    log_error_traceback("Failed to generate title", exc)
-                    post_tui(TuiRegion.BACKGROUND, f"[bold red]🏷️ 对话标题生成失败：{escape(str(exc))}[/bold red]")
-                finally:
-                    post_tui(TuiRegion.BACKGROUND, active=False)
+            await agent_loop(history, title_source=query)
         except RuntimeError as exc:
             console.print(f"[bold yellow]⚠️ {escape(str(exc))}[/bold yellow]")
         finally:
