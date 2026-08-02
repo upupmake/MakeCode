@@ -39,12 +39,22 @@ def _format_json_lines(value: Any, indent_level: int = 0) -> list[str]:
         lines = [f"{indent}{{"]
         items = list(value.items())
         for index, (key, item) in enumerate(items):
-            item_lines = _format_json_lines(item, indent_level + 1)
-            first_line = item_lines[0][len(child_indent):]
-            lines.append(
-                f"{child_indent}{json.dumps(str(key), ensure_ascii=False)}: {first_line}"
+            is_multiline = isinstance(item, str) and "\n" in item
+            item_lines = _format_json_lines(
+                item,
+                indent_level + 2 if is_multiline else indent_level + 1,
             )
-            lines.extend(item_lines[1:])
+            if is_multiline:
+                lines.append(
+                    f"{child_indent}{json.dumps(str(key), ensure_ascii=False)}:"
+                )
+                lines.extend(item_lines)
+            else:
+                first_line = item_lines[0][len(child_indent):]
+                lines.append(
+                    f"{child_indent}{json.dumps(str(key), ensure_ascii=False)}: {first_line}"
+                )
+                lines.extend(item_lines[1:])
             if index < len(items) - 1:
                 lines[-1] += ","
         lines.append(f"{indent}}}")
@@ -66,7 +76,8 @@ def _format_json_lines(value: Any, indent_level: int = 0) -> list[str]:
         content_lines = value.split("\n")
         lines = [f'{indent}"']
         lines.extend(f"{indent}{line}" for line in content_lines[:-1])
-        lines.append(f'{indent}{content_lines[-1]}"')
+        lines.append(f"{indent}{content_lines[-1]}")
+        lines.append(f'{indent}"')
         return lines
 
     return [f"{indent}{json.dumps(value, ensure_ascii=False, default=str)}"]

@@ -81,7 +81,7 @@ def test_structured_tool_arguments_use_json_layout_and_expand_multiline_strings(
     })
 
     assert '"edits": [' in rendered
-    assert '"search_content": "\n      old line\n      \n      old code"' in rendered
+    assert '"search_content":\n        "\n        old line\n        \n        old code\n        "' in rendered
     assert "old line\\n\\nold code" not in rendered
     assert '"count": 3' in rendered
     assert '"enabled": true' in rendered
@@ -94,7 +94,7 @@ def test_json_string_tool_arguments_expand_real_newlines_but_preserve_literal_es
         '{"content":"first line\\n\\nsecond line","literal":"first\\\\nsecond"}'
     )
 
-    assert '"content": "\n  first line\n  \n  second line"' in rendered
+    assert '"content":\n    "\n    first line\n    \n    second line\n    "' in rendered
     assert "first line\\n\\nsecond line" not in rendered
     assert '"literal": "first\\\\nsecond"' in rendered
 
@@ -104,10 +104,10 @@ def test_structured_tool_output_uses_json_layout_and_expands_multiline_strings()
         '{"summary":"first line\\n\\nsecond line","details":{"code":"def run():\\n    return 1"}}'
     )
 
-    assert '"summary": "\n  first line\n  \n  second line"' in rendered
+    assert '"summary":\n    "\n    first line\n    \n    second line\n    "' in rendered
     assert "first line\\n\\nsecond line" not in rendered
     assert '"details": {' in rendered
-    assert '"code": "\n    def run():\n        return 1"' in rendered
+    assert '"code":\n      "\n      def run():\n          return 1\n      "' in rendered
     assert "❖" not in rendered
 
 
@@ -172,7 +172,7 @@ def test_live_display_expands_double_encoded_json_without_changing_model_content
         output,
     )
 
-    assert '"summary": "\n  first line\n  second line"' in rendered
+    assert '"summary":\n    "\n    first line\n    second line\n    "' in rendered
     assert '\\"summary\\"' not in rendered
     assert tool_message["content"] == output
 

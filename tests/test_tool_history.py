@@ -142,7 +142,7 @@ def test_tool_formatting_decodes_nested_json_for_display_without_mutating_source
     rendered = format_tool_value(source)
 
     assert '"payload": {' in rendered
-    assert '"content": "\n    first line\n    \n    second line"' in rendered
+    assert '"content":\n      "\n      first line\n      \n      second line\n      "' in rendered
     assert '"literal": "first\\\\nsecond"' in rendered
     assert '"count": 2' in rendered
     assert '"enabled": true' in rendered
@@ -161,7 +161,7 @@ def test_multiline_code_displays_quotes_without_adding_escape_characters():
 
     assert 'if not stripped or stripped[0] not in "{[":' in rendered
     assert r'not in \"{[\"' not in rendered
-    assert 'literal = r\'\\"\'' in rendered
+    assert '"content":\n    "\n    if not stripped or stripped[0] not in "{[":\n        literal = r\'\\"\'\n    "' in rendered
     assert source == {"content": code}
 
 
@@ -175,7 +175,7 @@ def test_tool_formatting_decodes_repeated_top_level_json_string_layers_for_displ
     rendered = format_tool_value(double_encoded)
 
     assert rendered.startswith("{\n")
-    assert '"summary": "\n  first line\n  second line"' in rendered
+    assert '"summary":\n    "\n    first line\n    second line\n    "' in rendered
     assert '"items": [' in rendered
     assert '\\"summary\\"' not in rendered
 
@@ -317,10 +317,10 @@ async def test_tool_history_modal_expands_multiline_json_strings():
         await pilot.pause()
         detail_text = modal.query_one("#tool-history-detail", TextArea).text
 
-        assert '"search_content": "\n      old line\n      \n      old code"' in detail_text
-        assert '"replace_content": "\n      new line\n      \n      new code"' in detail_text
-        assert '"summary": "\n  first line\n  \n  second line"' in detail_text
-        assert '"code": "\n    def run():\n        return 1"' in detail_text
+        assert '"search_content":\n        "\n        old line\n        \n        old code\n        "' in detail_text
+        assert '"replace_content":\n        "\n        new line\n        \n        new code\n        "' in detail_text
+        assert '"summary":\n    "\n    first line\n    \n    second line\n    "' in detail_text
+        assert '"code":\n      "\n      def run():\n          return 1\n      "' in detail_text
         assert "old line\\n\\nold code" not in detail_text
         assert "first line\\n\\nsecond line" not in detail_text
 
