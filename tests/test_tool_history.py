@@ -150,6 +150,21 @@ def test_tool_formatting_decodes_nested_json_for_display_without_mutating_source
     assert source == {"payload": nested_json, "enabled": True}
 
 
+def test_multiline_code_displays_quotes_without_adding_escape_characters():
+    code = (
+        'if not stripped or stripped[0] not in "{[":\n'
+        '    literal = r\'\\"\''
+    )
+    source = {"content": code}
+
+    rendered = format_tool_arguments(source)
+
+    assert 'if not stripped or stripped[0] not in "{[":' in rendered
+    assert r'not in \"{[\"' not in rendered
+    assert 'literal = r\'\\"\'' in rendered
+    assert source == {"content": code}
+
+
 def test_tool_formatting_decodes_repeated_top_level_json_string_layers_for_display():
     structured = json.dumps(
         {"summary": "first line\nsecond line", "items": [1, 2]},

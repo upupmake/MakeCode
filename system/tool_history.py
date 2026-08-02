@@ -63,13 +63,10 @@ def _format_json_lines(value: Any, indent_level: int = 0) -> list[str]:
         return lines
 
     if isinstance(value, str) and "\n" in value:
-        encoded_lines = [
-            json.dumps(line, ensure_ascii=False)[1:-1]
-            for line in value.split("\n")
-        ]
+        content_lines = value.split("\n")
         lines = [f'{indent}"']
-        lines.extend(f"{indent}{line}" for line in encoded_lines[:-1])
-        lines.append(f'{indent}{encoded_lines[-1]}"')
+        lines.extend(f"{indent}{line}" for line in content_lines[:-1])
+        lines.append(f'{indent}{content_lines[-1]}"')
         return lines
 
     return [f"{indent}{json.dumps(value, ensure_ascii=False, default=str)}"]
