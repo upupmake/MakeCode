@@ -64,12 +64,8 @@ from system.tui_app import MakeCodeTuiApp, post_tui, TuiRegion, set_agent_loop_a
 from utils.common import (
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
-    file_edit,
-    file_read,
-    file_create,
     sanitize_title,
 )
-from utils.file_access import AgentFileAccess
 from utils.llm_client import (
     close_async_llm_client,
     create_current_async_llm_client,
@@ -174,8 +170,6 @@ def _get_all_tools_definition(mcp_tools: list | None = None, llm_client=None):
 
 
 
-orchestrator_access = AgentFileAccess()
-
 BASE_SUPER_TOOLS_HANDLERS = {
     **COMMON_TOOLS_HANDLERS,
     **MEMORY_RECALL_TOOLS_HANDLERS,
@@ -183,15 +177,6 @@ BASE_SUPER_TOOLS_HANDLERS = {
     **TASK_MANAGER_TOOLS_HANDLERS,
     **TEAM_TOOLS_HANDLERS,
     **ASK_USER_TOOLS_HANDLERS,
-    "FileRead": lambda path, regions, **kwargs: file_read(
-        path, regions, orchestrator_access
-    ),
-    "FileCreate": lambda path, content, **kwargs: file_create(
-        path, content, orchestrator_access
-    ),
-    "FileEdit": lambda path, edits, **kwargs: file_edit(
-        path, edits, orchestrator_access
-    ),
 }
 
 
@@ -562,7 +547,6 @@ def _refresh_workspace_state() -> None:
 
 def _apply_workdir(path) -> None:
     set_workdir(path)
-    orchestrator_access.visited_files.clear()
     _refresh_workspace_state()
 
 

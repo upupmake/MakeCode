@@ -259,8 +259,8 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     #copy-dialog {
-        width: 88%;
-        height: 86%;
+        width: 92%;
+        height: 90%;
         border: round #38bdf8;
         background: $surface;
         padding: 1 2;
@@ -271,18 +271,40 @@ class ChoiceModal(ClosableModalScreen[str]):
         margin-bottom: 0;
     }
 
+    #copy-summary {
+        height: 1;
+        margin-top: 1;
+    }
+
     #copy-text {
         height: 1fr;
+        margin-top: 1;
+    }
+
+    #copy-status {
+        height: auto;
+        min-height: 1;
         margin-top: 1;
     }
 
     #copy-actions {
         height: 3;
         margin-top: 1;
+        align: right middle;
+    }
+
+    #copy-selection {
+        width: 18;
+        margin-right: 1;
+    }
+
+    #copy-all {
+        width: 16;
+        margin-right: 1;
     }
 
     #copy-close {
-        width: 16;
+        width: 12;
     }
 
     #choice-dialog {
@@ -1269,30 +1291,59 @@ class CopyContentModal(ClosableModalScreen[str]):
         Binding("q", "close", "Close", priority=True),
     ]
 
-    def __init__(self, messages: list[dict[str, str]]) -> None:
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
         super().__init__()
         self._messages = messages
+        self._text = self._build_text()
 
     def compose(self) -> ComposeResult:
+        question_count = sum(
+            message.get("role") == "user" and bool(self._content_text(message))
+            for message in self._messages
+        )
+        answer_count = sum(
+            message.get("role") == "assistant" and bool(self._content_text(message))
+            for message in self._messages
+        )
+        terminal_input_count = sum(
+            len(self._terminal_commands(message)) for message in self._messages
+        )
+        terminal_output_count = sum(
+            message.get("role") in {"tool", "function"}
+            and message.get("name") == "RunTerminalCommand"
+            and (
+                message.get("content") is not None
+                or message.get("output") is not None
+            )
+            for message in self._messages
+        )
         with Vertical(id="copy-dialog"):
             yield ModalHeader(
-                "📝 对话内容（只读）\nc 复制选中文本（无选区则复制全部）· q 关闭",
+                "对话内容导出\nc 复制选区（无选区则复制全部） · a 复制全部 · q 关闭",
                 title_id="copy-title",
             )
+            yield Label(
+                f"提问 {question_count} · 回答 {answer_count} · "
+                f"终端输入 {terminal_input_count} · 输出 {terminal_output_count} · "
+                f"{len(self._text)} 字符",
+                id="copy-summary",
+            )
             yield TextArea(
-                self._build_text(),
+                self._text,
                 id="copy-text",
                 read_only=True,
                 show_line_numbers=False,
+                soft_wrap=True,
             )
-            yield Label("", id="copy-status")
+            yield Label("选择正文后可复制选区，也可直接复制全部内容。", id="copy-status")
             with Horizontal(id="copy-actions"):
-                yield Button("关闭", id="copy-close", variant="primary")
+                yield Button("复制选中", id="copy-selection", variant="primary")
+                yield Button("复制全部", id="copy-all", variant="success")
+                yield Button("关闭", id="copy-close", variant="warning")
 
     def on_mount(self) -> None:
         text_area = self.query_one("#copy-text", TextArea)
         text_area.focus()
-        # Scroll to end
         last_line = text_area.document.line_count - 1
         last_col = len(text_area.document.get_line(last_line)) if last_line >= 0 else 0
         text_area.move_cursor((last_line, last_col))
@@ -1300,20 +1351,16 @@ class CopyContentModal(ClosableModalScreen[str]):
 
     def _on_key(self, event: Key) -> None:
         if event.key == "c":
-            text_area = self.query_one("#copy-text", TextArea)
-            selected = text_area.selected_text
-            text_to_copy = selected if selected else text_area.text
-            if copy_to_system_clipboard(text_to_copy):
-                status = "📋 已复制文本到系统剪贴板。"
-            else:
-                self.app.copy_to_clipboard(text_to_copy)
-                status = "📋 已发送复制请求；当前终端可能不支持系统剪贴板。"
-            self.query_one("#copy-status", Label).update(status)
+            self._copy_selected_or_all()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "a":
+            self._copy_all()
             event.stop()
             event.prevent_default()
             return
         if event.key == "q":
-            # Don't close if TextArea has selection (let it handle q normally)
             text_area = self.query_one("#copy-text", TextArea)
             if text_area.selected_text:
                 return
@@ -1322,40 +1369,136 @@ class CopyContentModal(ClosableModalScreen[str]):
             event.prevent_default()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "copy-close":
+        if event.button.id == "copy-selection":
+            self._copy_selection()
+        elif event.button.id == "copy-all":
+            self._copy_all()
+        elif event.button.id == "copy-close":
             self.action_close()
+
+    def _copy_selected_or_all(self) -> None:
+        text_area = self.query_one("#copy-text", TextArea)
+        selected = text_area.selected_text
+        self._copy_text(selected or text_area.text, "选中文本" if selected else "全部内容")
+
+    def _copy_selection(self) -> None:
+        selected = self.query_one("#copy-text", TextArea).selected_text
+        if not selected:
+            self.query_one("#copy-status", Label).update("请先在正文中选择要复制的文本。")
+            return
+        self._copy_text(selected, "选中文本")
+
+    def _copy_all(self) -> None:
+        self._copy_text(self.query_one("#copy-text", TextArea).text, "全部内容")
+
+    def _copy_text(self, text: str, scope: str) -> None:
+        if copy_to_system_clipboard(text):
+            status = f"已复制{scope}（{len(text)} 个字符）到系统剪贴板。"
+        else:
+            self.app.copy_to_clipboard(text)
+            status = f"已发送{scope}（{len(text)} 个字符）复制请求；当前终端可能不支持系统剪贴板。"
+        self.query_one("#copy-status", Label).update(status)
 
     def action_close(self) -> None:
         self.dismiss("closed")
 
+    @staticmethod
+    def _content_text(message: dict[str, Any]) -> str:
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            return content
+        if isinstance(content, list):
+            chunks = [
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict)
+                and block.get("type") == "text"
+                and block.get("text")
+            ]
+            if chunks:
+                return "\n\n".join(chunks)
+        return "".join(
+            block.get("text", "")
+            for block in message.get("content_blocks") or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+
+    @staticmethod
+    def _tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            return [call for call in tool_calls if isinstance(call, dict)]
+        return [
+            block
+            for block in message.get("content_blocks") or []
+            if isinstance(block, dict) and block.get("type") == "tool_call"
+        ]
+
+    @staticmethod
+    def _tool_call_parts(tool_call: dict[str, Any]) -> tuple[str, Any]:
+        function = tool_call.get("function")
+        if isinstance(function, dict):
+            return function.get("name", ""), function.get("arguments", "")
+        return tool_call.get("name", ""), tool_call.get("arguments", "")
+
+    @classmethod
+    def _terminal_commands(cls, message: dict[str, Any]) -> list[str]:
+        commands: list[str] = []
+        for tool_call in cls._tool_calls(message):
+            name, arguments = cls._tool_call_parts(tool_call)
+            if name != "RunTerminalCommand":
+                continue
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    continue
+            if not isinstance(arguments, dict):
+                continue
+            command = arguments.get("command")
+            if isinstance(command, str) and command:
+                commands.append(command)
+        return commands
+
     def _build_text(self) -> str:
         parts: list[str] = []
-        for msg in self._messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+        user_number = 0
+        assistant_number = 0
+        terminal_input_number = 0
+        terminal_output_number = 0
+        for message in self._messages:
+            role = message.get("role", "")
             if role == "user":
-                parts.append(f"{'─' * 8} User {'─' * 8}\n{content}")
-            elif role == "assistant":
-                section_parts = []
+                content = self._content_text(message)
                 if content:
-                    section_parts.append(content)
-                for tc in msg.get("tool_calls", []):
-                    func = tc.get("function", {})
-                    if func.get("name") == "RunTerminalCommand":
-                        try:
-                            raw_args = func.get("arguments", "{}")
-                            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                            cmd = args.get("command", "")
-                            if cmd:
-                                section_parts.append(f"[RunTerminalCommand] $ {cmd}")
-                        except (json.JSONDecodeError, AttributeError):
-                            pass
-                if section_parts:
-                    parts.append(f"{'─' * 4} Assistant {'─' * 4}\n" + "\n".join(section_parts))
-            elif role == "tool" and msg.get("name") == "RunTerminalCommand":
-                output = content.strip() if content else ""
-                if output:
-                    parts.append(f"{'─' * 4} Terminal Output {'─' * 4}\n{output}")
+                    user_number += 1
+                    parts.append(f"──────── User · {user_number} ────────\n{content}")
+                continue
+
+            if role == "assistant":
+                content = self._content_text(message)
+                if content:
+                    assistant_number += 1
+                    parts.append(f"──── Assistant · {assistant_number} ────\n{content}")
+                for command in self._terminal_commands(message):
+                    terminal_input_number += 1
+                    parts.append(
+                        f"──── Terminal Input · {terminal_input_number} ────\n$ {command}"
+                    )
+                continue
+
+            if role in {"tool", "function"} and message.get("name") == "RunTerminalCommand":
+                output = message.get("content")
+                if output is None:
+                    output = message.get("output")
+                if output is None:
+                    continue
+                terminal_output_number += 1
+                output_text = output if isinstance(output, str) else format_tool_value(output)
+                parts.append(
+                    f"──── Terminal Output · {terminal_output_number} ────\n"
+                    f"{output_text}"
+                )
         return "\n\n".join(parts)
 
 

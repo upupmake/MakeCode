@@ -425,7 +425,7 @@ def merge_intervals(intervals: list[list[int]]) -> list[list[int]]:
 
 
 def file_read(
-        path: str, regions: list[dict], agent_access=None
+        path: str, regions: list[dict]
 ) -> str:
     try:
         try:
@@ -447,10 +447,6 @@ def file_read(
 
             # 显式指定 utf-8 编码，并使用 replace 处理无法解码的字节，防止读取崩溃
             text = fp.read_text(encoding="utf-8", errors="replace")
-
-            mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
-            if agent_access:
-                agent_access.record_access(str(fp.resolve()), mtime)
 
             lines = text.splitlines()
             total_lines = len(lines)
@@ -498,7 +494,7 @@ class FileCreate(BaseModel):
 
     CRITICAL REQUIREMENTS:
     1. Use this tool ONLY when the target file does NOT exist yet, or is empty.
-    2. If the file already exists and has content, use FileRead first, then FileEdit.
+    2. If the file already exists and has content, use FileEdit.
     3. Parent directories will be automatically created if they don't exist.
 
     ENCODING: Files are written in UTF-8 encoding.
@@ -511,7 +507,7 @@ class FileCreate(BaseModel):
     content: str = Field(..., description="The content to write to the file.")
 
 
-def file_create(path: str, content: str, agent_access=None) -> str:
+def file_create(path: str, content: str) -> str:
     try:
         try:
             validated = FileCreate.model_validate({"path": path, "content": content})
@@ -536,7 +532,7 @@ def file_create(path: str, content: str, agent_access=None) -> str:
                     return (
                         f"Error: File {path} already exists and is not empty. "
                         "FileCreate is only for creating new files or writing to empty ones. "
-                        "For modifications, call FileRead first, then FileEdit."
+                        "For modifications, use FileEdit."
                     )
             fp.parent.mkdir(parents=True, exist_ok=True)
 
@@ -546,10 +542,6 @@ def file_create(path: str, content: str, agent_access=None) -> str:
             is_valid, err_msg = validate_code(path, content)
             if not is_valid:
                 return f"Success with Warning: 文件已写入，但检测到语法错误(Syntax error)\n\n{err_msg}"
-
-            mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
-            if agent_access:
-                agent_access.record_access(str(fp.resolve()), mtime)
 
             return f"Created {path}: {content.count('\n') + 1} lines written"
     except Exception as e:
@@ -602,13 +594,10 @@ class FileEdit(BaseModel):
     """
     Replace specific text blocks in a file with new content.
 
-    PREREQUISITE: You MUST call FileRead first to get the current file content.
-
     HOW TO USE PERFECTLY:
-    1. Read the file first using `FileRead`.
-    2. Identify the exact lines you want to change.
-    3. Copy those lines into `search_content`, adding 2-3 lines of unchanged code above and below as context.
-    4. Write the modified version into `replace_content`, making sure to KEEP the unchanged context lines!
+    1. Provide the exact lines to change in `search_content`.
+    2. Copy those lines into `search_content`, adding 2-3 lines of unchanged code above and below as context.
+    3. Write the modified version into `replace_content`, making sure to KEEP the unchanged context lines!
 
     MATCHING RULES (in order):
     1. Exact match tried first
@@ -661,7 +650,7 @@ def apply_edit_block(file_text: str, search: str, replace: str) -> tuple[bool, s
     if count == 1:
         return True, file_text.replace(search, replace), ""
     elif count > 1:
-        return False, file_text, "Search content found multiple times. Please include more context to make it unique. IMPORTANT: Please call FileRead to re-read the file and obtain the latest content before retrying."
+        return False, file_text, "Search content found multiple times. Please include more context to make it unique. IMPORTANT: Verify the current file contents before retrying."
 
     # 2. 尝试容错匹配 (去除首尾空白)
     search_stripped = search.strip()
@@ -675,7 +664,7 @@ def apply_edit_block(file_text: str, search: str, replace: str) -> tuple[bool, s
         new_text = file_text[:start_idx] + replace.strip() + file_text[end_idx:]
         return True, new_text, ""
     elif count_stripped > 1:
-        return False, file_text, "Stripped search content matches multiple locations. Please include more context. IMPORTANT: Please call FileRead to re-read the file and obtain the latest content before retrying."
+        return False, file_text, "Stripped search content matches multiple locations. Please include more context. IMPORTANT: Verify the current file contents before retrying."
 
     # 3. difflib 模糊匹配兜底
     SIMILARITY_THRESHOLD = 0.95
@@ -686,7 +675,7 @@ def apply_edit_block(file_text: str, search: str, replace: str) -> tuple[bool, s
 
     search_len = len(search_lines)
     if search_len == 0 or not file_lines:
-        return False, file_text, "Search content NOT found. IMPORTANT: Please call FileRead to re-read the file and obtain the latest content before retrying."
+        return False, file_text, "Search content NOT found. IMPORTANT: Verify the current file contents before retrying."
 
     best_ratio = 0.0
     best_start_idx = -1
@@ -714,11 +703,11 @@ def apply_edit_block(file_text: str, search: str, replace: str) -> tuple[bool, s
     return False, file_text, (
         f"Search content NOT found. Best match similarity was {best_ratio:.2f} "
         f"(needs >= {SIMILARITY_THRESHOLD}). Ensure exact indentation and spaces. "
-        f"IMPORTANT: The file may have been modified since your last read. Please call FileRead again to get the latest content before retrying the edit."
+        f"IMPORTANT: Verify the current file contents before retrying the edit."
     )
 
 
-def file_edit(path: str, edits: Any, agent_access=None) -> str:
+def file_edit(path: str, edits: Any) -> str:
     try:
         try:
             validated = FileEdit.model_validate({"path": path, "edits": edits})
@@ -737,12 +726,6 @@ def file_edit(path: str, edits: Any, agent_access=None) -> str:
             if not fp.exists():
                 return f"Error: File {path} not found."
 
-            current_mtime = GLOBAL_FILE_CONTROLLER.get_real_mtime(fp)
-            if agent_access:
-                allowed, msg = agent_access.can_edit(str(fp.resolve()), current_mtime)
-                if not allowed:
-                    return msg
-
             text = fp.read_text(encoding="utf-8", errors="replace")
             warnings = []
             for i, block in enumerate(parsed_blocks):
@@ -751,7 +734,7 @@ def file_edit(path: str, edits: Any, agent_access=None) -> str:
                 )
 
                 if not success:
-                    return f"Error in edit block {i + 1}:\n{msg}\nNo changes were saved. Please call FileRead to re-read the file and obtain the latest content before retrying."
+                    return f"Error in edit block {i + 1}:\n{msg}\nNo changes were saved. Verify the current file contents before retrying."
 
                 if "Warning" in msg:
                     warnings.append(f"Block {i + 1}: {msg}")
@@ -803,13 +786,22 @@ class ContentSearch(BaseModel):
         default=".*",
         description="Python regex pattern matched against each file's absolute normalized path. Defaults to '.*'.",
     )
+    context_size: int = Field(
+        default=1,
+        ge=0,
+        description="Number of context lines to include before and after each matched line.",
+    )
 
 
 def content_search(
         content_regex: str,
         search_dir: str = ".",
         filename_regex: str = ".*",
+        context_size: int = 1,
 ) -> str:
+    if context_size < 0:
+        return f"Error: context_size must be non-negative, got {context_size}."
+
     try:
         regex = re.compile(content_regex)
     except re.error as e:
@@ -858,21 +850,42 @@ def content_search(
                 if _is_binary_file(filepath):
                     continue
 
-                matched_lines = []
+                matched_line_numbers = []
                 try:
                     with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                        for i, line in enumerate(f, 1):
-                            if regex.search(line):
-                                matched_lines.append(f"{i}: {line.rstrip('\n')}")
-                                total_matches += 1
-                                if total_matches >= MAX_MATCHES:
-                                    break
+                        file_lines = f.readlines()
+
+                    for i, line in enumerate(file_lines, 1):
+                        if regex.search(line):
+                            matched_line_numbers.append(i)
+                            total_matches += 1
+                            if total_matches >= MAX_MATCHES:
+                                break
                 except Exception as exc:
                     log_error_traceback(f"ContentSearch file read: {filepath}", exc)
                     continue
 
-                if matched_lines:
-                    results[rel_path_str] = matched_lines
+                if matched_line_numbers:
+                    context_ranges = []
+                    for line_number in matched_line_numbers:
+                        start = max(1, line_number - context_size)
+                        end = min(len(file_lines), line_number + context_size)
+                        if context_ranges and start <= context_ranges[-1][1] + 1:
+                            context_ranges[-1] = (context_ranges[-1][0], max(context_ranges[-1][1], end))
+                        else:
+                            context_ranges.append((start, end))
+
+                    output_lines = []
+                    matched_line_set = set(matched_line_numbers)
+                    for start, end in context_ranges:
+                        if output_lines and context_size > 0:
+                            output_lines.append("--")
+                        for line_number in range(start, end + 1):
+                            marker = ":" if line_number in matched_line_set else "-"
+                            output_lines.append(
+                                f"{line_number}{marker} {file_lines[line_number - 1].rstrip('\n')}"
+                            )
+                    results[rel_path_str] = output_lines
 
                 if total_matches >= MAX_MATCHES:
                     break
@@ -1064,8 +1077,8 @@ FILE_NAMESPACE = {
     "description": (
         "Primary file operation tools. Always prefer this namespace for file reads, "
         "writes, edits, text searches and file searches instead of shell commands. "
-        "IMPORTANT: Use FileCreate only to create/write new or completely empty files. For existing-file changes, you must call "
-        "FileRead first and then use FileEdit."
+        "IMPORTANT: Use FileCreate only to create/write new or completely empty files. "
+        "Use FileEdit for existing-file changes; edit blocks are matched against the current file contents."
     ),
     "tools": TOOLS,
 }

@@ -526,23 +526,79 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
     def handle_copy(self, history: list) -> bool:
         """处理 /copy 命令 - 打开只读弹窗查看对话内容"""
         messages = []
-        for msg in history:
+        for msg in strip_native_message_payloads(history):
             role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role in ("user", "assistant"):
-                has_content = bool(content)
-                has_terminal_cmd = any(
-                    tc.get("function", {}).get("name") == "RunTerminalCommand"
-                    for tc in msg.get("tool_calls", [])
+            content = msg.get("content")
+            content_blocks = msg.get("content_blocks") or []
+            has_text = (
+                isinstance(content, str) and bool(content)
+            ) or (
+                isinstance(content, list)
+                and any(
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and block.get("text")
+                    for block in content
                 )
-                if has_content or has_terminal_cmd:
-                    messages.append(msg)
-            elif role == "tool" and msg.get("name") == "RunTerminalCommand":
+            ) or any(
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and block.get("text")
+                for block in content_blocks
+            )
+            tool_calls = msg.get("tool_calls") or [
+                block
+                for block in content_blocks
+                if isinstance(block, dict) and block.get("type") == "tool_call"
+            ]
+            terminal_calls = []
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                name = (
+                    function.get("name", "")
+                    if isinstance(function, dict)
+                    else tool_call.get("name", "")
+                )
+                if name == "RunTerminalCommand":
+                    terminal_calls.append(tool_call)
+
+            if role == "user" and has_text:
+                if isinstance(msg.get("content"), list):
+                    msg["content"] = [
+                        block
+                        for block in msg["content"]
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                msg["content_blocks"] = [
+                    block
+                    for block in content_blocks
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                messages.append(msg)
+            elif role == "assistant" and (has_text or terminal_calls):
+                msg.pop("reasoning_content", None)
+                msg.pop("reasoning", None)
+                if isinstance(msg.get("content"), list):
+                    msg["content"] = [
+                        block
+                        for block in msg["content"]
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                msg["content_blocks"] = [
+                    block
+                    for block in content_blocks
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                msg["tool_calls"] = terminal_calls
+                messages.append(msg)
+            elif role in ("tool", "function") and msg.get("name") == "RunTerminalCommand":
                 messages.append(msg)
         if not messages:
             self.console.print("[#aaaaaa]当前对话暂无可查看的内容。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
             return True
-        show_copy_content_tui(strip_native_message_payloads(messages))
+        show_copy_content_tui(messages)
         return True
 
     def handle_cmds(self) -> bool:

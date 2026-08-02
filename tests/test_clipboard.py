@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Label
+from textual.widgets.text_area import Selection
 
 from system.clipboard import copy_to_system_clipboard
 from system.tui_modals import CopyContentModal
@@ -173,9 +174,9 @@ async def test_copy_modal_uses_system_clipboard_without_osc52_fallback():
             await pilot.press("c")
             await pilot.pause()
 
-            system_copy.assert_called_once_with("──── Assistant ────\ncopy me")
+            system_copy.assert_called_once_with(modal._text)
             app.copy_to_clipboard.assert_not_called()
-            assert "已复制文本到系统剪贴板" in str(
+            assert "已复制全部内容" in str(
                 modal.query_one("#copy-status", Label).render()
             )
 
@@ -188,10 +189,90 @@ async def test_copy_modal_falls_back_to_osc52_when_system_clipboard_is_unavailab
 
     with patch("system.tui_modals.copy_to_system_clipboard", return_value=False):
         async with app.run_test() as pilot:
-            await pilot.press("c")
+            await pilot.click("#copy-all")
             await pilot.pause()
 
-            app.copy_to_clipboard.assert_called_once_with("──── Assistant ────\ncopy me")
+            app.copy_to_clipboard.assert_called_once_with(modal._text)
             assert "当前终端可能不支持系统剪贴板" in str(
                 modal.query_one("#copy-status", Label).render()
             )
+
+
+@pytest.mark.anyio
+async def test_copy_selection_button_copies_only_selected_text():
+    modal = CopyContentModal([{"role": "assistant", "content": "copy me"}])
+    app = CopyModalHost(modal)
+
+    with patch("system.tui_modals.copy_to_system_clipboard", return_value=True) as system_copy:
+        async with app.run_test(size=(120, 40)) as pilot:
+            text_area = modal.query_one("#copy-text")
+            text_area.selection = Selection((1, 0), (1, 4))
+            await pilot.click("#copy-selection")
+            await pilot.pause()
+
+            system_copy.assert_called_once_with("copy")
+            assert "已复制选中文本（4 个字符）" in str(
+                modal.query_one("#copy-status", Label).render()
+            )
+
+
+@pytest.mark.anyio
+async def test_copy_selection_button_requires_a_selection():
+    modal = CopyContentModal([{"role": "assistant", "content": "copy me"}])
+    app = CopyModalHost(modal)
+
+    with patch("system.tui_modals.copy_to_system_clipboard") as system_copy:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click("#copy-selection")
+            await pilot.pause()
+
+            system_copy.assert_not_called()
+            assert "请先在正文中选择" in str(
+                modal.query_one("#copy-status", Label).render()
+            )
+
+
+def test_copy_modal_includes_only_questions_answers_and_terminal_io():
+    modal = CopyContentModal([
+        {"role": "user", "content": [{"type": "text", "text": "question"}]},
+        {
+            "role": "assistant",
+            "reasoning_content": "field reasoning",
+            "content_blocks": [
+                {"type": "reasoning", "text": "block reasoning"},
+                {"type": "text", "text": "answer"},
+                {
+                    "type": "tool_call",
+                    "name": "FileRead",
+                    "arguments": {"path": "README.md"},
+                },
+                {
+                    "type": "tool_call",
+                    "name": "RunTerminalCommand",
+                    "arguments": {"command": "pytest -q"},
+                },
+                {"type": "native", "block": {"signature": "private-signature"}},
+            ],
+            "message_metadata": {
+                "native_blocks": [{"type": "thinking", "signature": "private-signature"}],
+            },
+        },
+        {"role": "tool", "name": "FileRead", "content": "file contents"},
+        {"role": "tool", "name": "RunTerminalCommand", "content": "2 passed"},
+        {"role": "function", "name": "LegacyTool", "content": "failed", "is_error": True},
+    ])
+
+    assert "User · 1" in modal._text
+    assert "question" in modal._text
+    assert "Assistant · 1" in modal._text
+    assert "answer" in modal._text
+    assert "Terminal Input · 1" in modal._text
+    assert "$ pytest -q" in modal._text
+    assert "Terminal Output · 1" in modal._text
+    assert "2 passed" in modal._text
+    assert "field reasoning" not in modal._text
+    assert "block reasoning" not in modal._text
+    assert "FileRead" not in modal._text
+    assert "file contents" not in modal._text
+    assert "LegacyTool" not in modal._text
+    assert "private-signature" not in modal._text

@@ -17,7 +17,7 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
 - Team 系统负责并发唤醒子智能体执行可并行任务，并支持**失败上下文自动恢复**。
 - Skills 系统负责按需加载领域技能说明。
 - Memory 模块负责长会话压缩、长期记忆管理与转录保存，并在每次主请求前自动进行**长期记忆召回（Pre-Recall）**。
-- **File Access Control** 模块提供强制读取后编辑、修改时间锁校验与细粒度文件级并发锁。
+- **File Access Control** 模块提供工作区边界保护与细粒度文件级并发锁。
 - **Prompt 集中管理** 将所有 LLM Prompt 统一维护，便于扩展与参数化。
 - **集中路径模块（`utils/paths.py`）** 统一管理工作区目录与安装目录派生路径，所有模块统一通过共享 getter 访问 `.makecode/` 子目录。
 - **跨平台打包支持** 提供 Windows X64、macOS ARM64 与 Linux X64 发布包；macOS 通过顶层 `MakeCode.command` 启动，Linux 直接运行 `MakeCode/MakeCode`。
@@ -77,8 +77,8 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 
 - `FileRead`：读取文件，可指定行号范围。
 - `FileCreate`：仅用于新建并写入文件（目标文件不存在或为空时）。**写入前自动触发 Tree-sitter 语法验证**，若检测到语法错误会拦截并显示详细报错行号。
-- `FileEdit`：用于修改已存在文件。**使用文本搜索替换机制（search_content → replace_content），而非行号范围**。需先 `FileRead` 确认内容，通过提供包含上下文的精确文本来定位修改位置。**支持三重容错：精确匹配 → Strip匹配 → Difflib模糊匹配（相似度≥90%）**。编辑后自动触发 Tree-sitter 语法验证。
-- `ContentSearch`：通过 `content_regex` 在 `search_dir` 内搜索文本文件内容，并可用 `filename_regex` 按文件绝对路径正则过滤；正则使用 Python 语法。自动排除常见构建/依赖目录（`build`、`dist`、`__pycache__`、`node_modules`、`target`、`venv`、`site-packages`、`htmlcov`）和 `.` 开头的隐藏目录，减少无关匹配。
+- `FileEdit`：用于修改已存在文件。**使用文本搜索替换机制（search_content → replace_content），而非行号范围**。无需先调用 `FileRead`；每个编辑块都会针对当前文件内容执行匹配校验。**支持三重容错：精确匹配 → Strip匹配 → Difflib模糊匹配（相似度≥90%）**。匹配失败时不会保存任何修改，编辑后自动触发 Tree-sitter 语法验证。
+- `ContentSearch`：通过 `content_regex` 在 `search_dir` 内搜索文本文件内容，并可用 `filename_regex` 按文件绝对路径正则过滤；支持 `context_size` 指定每个匹配行前后包含的上下文行数（默认为 1）；正则使用 Python 语法。自动排除常见构建/依赖目录（`build`、`dist`、`__pycache__`、`node_modules`、`target`、`venv`、`site-packages`、`htmlcov`）和 `.` 开头的隐藏目录，减少无关匹配。
 - `FileSearch`：通过 `path_regex` 按文件/目录绝对路径正则搜索，正则使用 Python 语法，支持类型过滤（`file`/`dir`/`all`）。自动排除隐藏目录和构建/依赖目录，最多返回 500 条结果。适合快速探索项目结构。
 - `RunTerminalCommand`：执行非交互式终端命令。
 
@@ -97,11 +97,8 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 
 ### 2.4 文件访问控制机制（`utils/file_access.py`）
 
-- **强制读取后编辑**：智能体在编辑文件前必须先使用 `FileRead` 读取该文件，否则拦截。
-- **修改时间锁校验**：若文件在读取后被其他程序或智能体修改，`FileEdit` 会被拦截并提示重新读取。
 - **细粒度文件级锁**：多智能体并发读写时，采用文件级 `RLock` 而非全局锁，提升并发性能。
-- **时间戳诊断**：拦截错误信息包含精确的毫秒级 UTC 时间戳（Last modification / Last read），便于排查冲突。
-- **事务性依赖回滚**：`UpdateTasksDependencies` 在拓扑校验失败时自动回滚整个更新批次，保持数据一致性。
+- **匹配校验**：`FileEdit` 通过精确、Strip 和模糊匹配校验当前文件内容；匹配失败时不会保存修改。
 
 ### 2.5 高危操作人工拦截（HITL）机制
 
@@ -511,7 +508,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 ### 2.21 工作目录切换与快捷查看（`/pwd` 与 `/cd`）（新增）
 
 - `/pwd`：在 Content 区展示当前工作目录；启动时、工作区切换后、`/new` 清空会话后也会自动调用。
-- `/cd <路径>`：切换工作目录并开启全新会话。支持绝对/相对/带引号路径；切换后会完整重置五区 UI、重建 history、重置 HITL 白名单、清空 `visited_files`、重置当前 conversation，并使用 `paths.set_workdir(...)` 同步路径状态。`/new` 与 `/cd` 共用同一套会话重置逻辑。
+- `/cd <路径>`：切换工作目录并开启全新会话。支持绝对/相对/带引号路径；切换后会完整重置五区 UI、重建 history、重置 HITL 白名单、重置当前 conversation，并使用 `paths.set_workdir(...)` 同步路径状态。`/new` 与 `/cd` 共用同一套会话重置逻辑。
 
 ### 2.22 LLM 客户端适配与请求健壮性（`utils/llm_client.py`）（新增）
 
@@ -665,7 +662,7 @@ flowchart TD
 - `prompts.py` 集中管理所有 LLM Prompt，便于维护和参数化。
 - `utils/common.py` 提供文件读写、按行编辑、文本搜索、通配符文件发现和终端命令执行能力。
 - `utils/hitl.py` 负责高风险命令的安全拦截、全局并发锁追踪，以及基于 TUI 阻止破坏性操作。
-- `utils/file_access.py` 实现文件访问控制机制：强制读取后编辑、修改时间锁校验、细粒度文件级并发锁。
+- `utils/file_access.py` 实现文件访问控制机制：工作区文件级细粒度并发锁。
 - `utils/tasks.py` 维护任务 DAG、状态流转与 runnable frontier。
 - `utils/teams.py` 负责把最新可执行任务并发委派给子智能体、回收结果，并将 history/trace 限制在当前会话目录内而不注入 provider 请求。
 - `utils/skills.py` 从安装目录、工作区 `.makecode/skills/` 和工作区旧 `skills/` 目录按优先级发现并加载技能。

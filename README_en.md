@@ -18,8 +18,7 @@ MakeCode is an Agent CLI designed for engineering workflows. It follows an **Orc
 - The Team module wakes sub-agents concurrently for parallel-safe tasks, with **automatic failure context recovery**.
 - The Skills module loads domain-specific guidance on demand.
 - The Memory module handles long-conversation compaction, long-term memory management, and transcript storage, and **pre-recalls relevant long-term memories** before every main request.
-- The **File Access Control** module enforces read-before-edit, mtime-lock validation, and fine-grained file-level
-  concurrency locks.
+- The **File Access Control** module provides workspace boundary protection and fine-grained file-level concurrency locks.
 - **Centralized Prompt Management** unifies all LLM prompts for easier maintenance and parameterization.
 - The **Centralized Path Module (`utils/paths.py`)** unifies workspace and install-directory path derivation; all consumers access `.makecode/` subpaths through shared getters.
 - **Cross-platform packaging** provides Windows X64, macOS ARM64, and Linux X64 releases; macOS uses the top-level `MakeCode.command` launcher, while Linux runs `MakeCode/MakeCode` directly.
@@ -81,8 +80,8 @@ Provides the following execution primitives:
 
 - `FileRead`: read file contents, optionally by line range
 - `FileCreate`: only for creating and writing a NEW file (when target file does not exist or is empty). **Automatically triggers Tree-sitter syntax validation before writing**, blocks and displays detailed error line numbers if syntax errors are detected.
-- `FileEdit`: modify an existing file. **Uses text search-and-replace mechanism (search_content → replace_content) instead of line number ranges**. Must call `FileRead` first, locate changes by providing exact text with surrounding context. **Supports triple fallback: exact match → strip match → difflib fuzzy match (similarity ≥90%)**. Automatically triggers Tree-sitter syntax validation after editing.
-- `ContentSearch`: search text file contents under `search_dir` with `content_regex`, optionally filtering files by absolute path with `filename_regex`; regex uses Python syntax. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
+- `FileEdit`: modify an existing file. **Uses text search-and-replace mechanism (search_content → replace_content) instead of line number ranges**. No prior `FileRead` call is required; each edit block is matched against the current file contents. **Supports triple fallback: exact match → strip match → difflib fuzzy match (similarity ≥90%)**. Failed matches do not save changes, and Tree-sitter syntax validation runs after editing.
+- `ContentSearch`: search text file contents under `search_dir` with `content_regex`, optionally filtering files by absolute path with `filename_regex`; supports `context_size` to include that many lines before and after each match (default: 1); regex uses Python syntax. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
 - `FileSearch`: search files and directories by matching `path_regex` against absolute paths; regex uses Python syntax. Supports type filtering (`file`/`dir`/`all`). Automatically excludes hidden and build/dependency directories, returns up to 500 items. Ideal for quickly exploring project structure.
 - `RunTerminalCommand`: run a non-interactive terminal command
 
@@ -105,13 +104,8 @@ Implementation details:
 
 ### 2.4 File Access Control Mechanism (`utils/file_access.py`)
 
-- **Mandatory Read-Before-Edit**: Agents must use `FileRead` before editing a file, otherwise the edit is blocked.
-- **Modification Time Lock Validation**: If a file is modified by another program or agent after being read, `FileEdit`is
-  blocked and prompts for re-reading.
-- **Fine-Grained File-Level Locks**: Multi-agent concurrent read/write uses per-file `RLock` instead of a global lock,
-  improving concurrency performance.
-- **Timestamp Diagnostics**: Block error messages include precise millisecond-level UTC timestamps (Last modification /
-  Last read) for easier conflict troubleshooting.
+- **Fine-Grained File-Level Locks**: Multi-agent concurrent read/write uses per-file `RLock` instead of a global lock, improving concurrency performance.
+- **Match Validation**: `FileEdit` validates current file contents using exact, strip, and fuzzy matching; failed matches do not save changes.
 - **Transactional Dependency Rollback**: `UpdateTasksDependencies` automatically rolls back the entire update batch on
   topology validation failure, maintaining data consistency.
 
@@ -537,7 +531,7 @@ To centrally manage workspace paths and install-directory global configuration, 
 ### 2.21 Workspace Directory Commands (`/pwd` and `/cd`) (New)
 
 - `/pwd`: display the current working directory in the Content pane; also displayed automatically on startup, after workspace switching, and after `/new`.
-- `/cd <path>`: switch the working directory and start a fresh session. Supports absolute, relative, and quoted paths. Switching triggers a full reset: clears all five panes, rebuilds history, resets the HITL directory allowlist, clears `visited_files`, and resets the active conversation. Uses `paths.set_workdir(...)` to synchronize path state. Both `/new` and `/cd` share the same session-reset logic.
+- `/cd <path>`: switch the working directory and start a fresh session. Supports absolute, relative, and quoted paths. Switching triggers a full reset: clears all five panes, rebuilds history, resets the HITL directory allowlist, and resets the active conversation. Uses `paths.set_workdir(...)` to synchronize path state. Both `/new` and `/cd` share the same session-reset logic.
 
 ### 2.22 LLM Client Adaptation and Request Resilience (`utils/llm_client.py`) (New)
 
@@ -692,8 +686,7 @@ flowchart TD
 - `utils/common.py` provides file read/write, line-based editing, text search, glob-based file discovery, and terminal command execution.
 - `utils/hitl.py` manages secure interception of high-risk commands and destructive operations through a globally
   queued TUI, complete with trace context for concurrency safety.
-- `utils/file_access.py` implements file access control: mandatory read-before-edit, mtime-lock validation, and
-  fine-grained file-level concurrency locks.
+- `utils/file_access.py` implements fine-grained per-file concurrency locks for workspace file operations.
 - `utils/tasks.py` maintains task DAG, state transitions, and runnable frontier.
 - `utils/teams.py` delegates the latest runnable tasks to sub-agents concurrently, collects results, and supports
   failure context recovery.

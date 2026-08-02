@@ -489,24 +489,67 @@ def test_tasks_command_opens_task_management_panel(monkeypatch):
     manage_tasks.assert_called_once_with(manager)
 
 
-def test_copy_command_strips_private_native_payloads_without_mutating_history(monkeypatch):
-    history = [{
-        "role": "assistant",
-        "content": "answer",
-        "message_metadata": {
-            "source_format": "anthropic",
-            "source_model": "claude-test",
-            "native_blocks": [{"type": "thinking", "signature": "private-signature"}],
+def test_copy_command_keeps_only_questions_answers_and_terminal_io(monkeypatch):
+    history = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "question"},
+        {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_content": "visible reasoning",
+            "tool_calls": [
+                {
+                    "id": "call_read",
+                    "function": {"name": "FileRead", "arguments": '{"path":"README.md"}'},
+                    "raw": {"provider": "private-read-payload"},
+                },
+                {
+                    "id": "call_terminal",
+                    "function": {
+                        "name": "RunTerminalCommand",
+                        "arguments": '{"command":"pytest -q"}',
+                    },
+                    "raw": {"provider": "private-terminal-payload"},
+                },
+            ],
+            "content_blocks": [
+                {"type": "reasoning", "text": "block reasoning"},
+                {"type": "text", "text": "answer"},
+            ],
+            "message_metadata": {
+                "source_format": "anthropic",
+                "source_model": "claude-test",
+                "native_blocks": [{"type": "thinking", "signature": "private-signature"}],
+            },
         },
-    }]
+        {"role": "tool", "tool_call_id": "call_read", "name": "FileRead", "content": "file"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_terminal",
+            "name": "RunTerminalCommand",
+            "content": "13 passed",
+        },
+    ]
     show_copy = Mock(return_value="closed")
     monkeypatch.setattr("system.commands.show_copy_content_tui", show_copy)
 
     assert make_handler().handle_copy(history) is True
 
     copied_messages = show_copy.call_args.args[0]
-    assert "native_blocks" not in copied_messages[0]["message_metadata"]
-    assert history[0]["message_metadata"]["native_blocks"][0]["signature"] == "private-signature"
+    assert [message["role"] for message in copied_messages] == ["user", "assistant", "tool"]
+    assert copied_messages[0]["content"] == "question"
+    assert copied_messages[1]["content"] == "answer"
+    assert "reasoning_content" not in copied_messages[1]
+    assert copied_messages[1]["content_blocks"] == [{"type": "text", "text": "answer"}]
+    assert [
+        tool_call["function"]["name"]
+        for tool_call in copied_messages[1]["tool_calls"]
+    ] == ["RunTerminalCommand"]
+    assert "raw" not in copied_messages[1]["tool_calls"][0]
+    assert copied_messages[2]["content"] == "13 passed"
+    assert history[2]["reasoning_content"] == "visible reasoning"
+    assert history[2]["message_metadata"]["native_blocks"][0]["signature"] == "private-signature"
+    assert history[2]["tool_calls"][0]["raw"] == {"provider": "private-read-payload"}
 
 
 @pytest.mark.anyio

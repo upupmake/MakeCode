@@ -192,7 +192,7 @@ class TuiBridge:
             app.call_from_thread(app.open_task_panel_modal, task_manager, future)
         return future.result()
 
-    def show_copy_content(self, messages: list[dict[str, str]]) -> str:
+    def show_copy_content(self, messages: list[dict[str, Any]]) -> str:
         with self._app_lock:
             app = self._app
         if app is None:
@@ -1199,7 +1199,7 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(TaskPanelModal(task_manager), _done)
 
-    def open_copy_content_modal(self, messages: list[dict[str, str]], future: Future[str]) -> None:
+    def open_copy_content_modal(self, messages: list[dict[str, Any]], future: Future[str]) -> None:
         def _done(value: str | None) -> None:
             self._modal_active = False
             if not future.done():
@@ -1828,7 +1828,7 @@ def manage_tasks_tui(task_manager: Any) -> str:
     return TUI_BRIDGE.manage_tasks(task_manager)
 
 
-def show_copy_content_tui(messages: list[dict[str, str]]) -> str:
+def show_copy_content_tui(messages: list[dict[str, Any]]) -> str:
     return TUI_BRIDGE.show_copy_content(messages)
 
 

@@ -40,11 +40,7 @@ from utils.common import (
     COMMON_TOOLS_HANDLERS,
     STARTUP_TERMINAL_SOURCE,
     STARTUP_TERMINAL_TYPE,
-    file_read,
-    file_create,
-    file_edit,
 )
-from utils.file_access import AgentFileAccess
 from utils.hitl import current_agent_role
 from utils.llm_client import (
     _create_async_chat_client,
@@ -532,8 +528,6 @@ class TeammateManager:
             + TODO_TOOLS
             + mcp_tools
         )
-        agent_access = AgentFileAccess()
-
         sub_handlers = {
             **COMMON_TOOLS_HANDLERS,
             **SKILL_TOOLS_HANDLERS,
@@ -541,15 +535,6 @@ class TeammateManager:
             "TodoUpdate": lambda **kw: (
                 local_todo.update(kw["todos"]) if "todos" in kw
                 else f"Error: TodoUpdate requires 'todos' field, got keys: {list(kw.keys())}"
-            ),
-            "FileRead": lambda path, regions, **kwargs: file_read(
-                path, regions, agent_access
-            ),
-            "FileCreate": lambda path, content, **kwargs: file_create(
-                path, content, agent_access
-            ),
-            "FileEdit": lambda path, edits, **kwargs: file_edit(
-                path, edits, agent_access
             ),
         }
         max_steps = 40
