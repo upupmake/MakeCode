@@ -59,11 +59,13 @@ async def test_top_bar_displays_and_refreshes_conversation_title():
 
 
 @pytest.mark.anyio
-async def test_clicking_conversation_title_opens_regeneration_confirmation():
-    regenerated = threading.Event()
+async def test_clicking_conversation_title_keeps_input_hidden_until_regeneration_finishes():
+    regeneration_started = asyncio.Event()
+    finish_regeneration = asyncio.Event()
 
     async def regenerate_title():
-        regenerated.set()
+        regeneration_started.set()
+        await finish_regeneration.wait()
 
     app = MakeCodeTuiApp(
         conversation_title_provider=lambda: "现有标题",
@@ -78,10 +80,25 @@ async def test_clicking_conversation_title_opens_regeneration_confirmation():
         assert isinstance(app.screen, ChoiceModal)
 
         await pilot.press("enter")
-        assert await asyncio.to_thread(regenerated.wait, 1)
+        await asyncio.wait_for(regeneration_started.wait(), timeout=1)
         await pilot.pause()
 
+        bottom_grid = app.query_one("#bottom-grid")
+        input_box = app.query_one("#input-box")
+        assert app._agent_loop_active
+        assert bottom_grid.has_class("hidden")
+        assert input_box.has_class("hidden")
+        assert app._submit_lock.locked()
+
+        finish_regeneration.set()
+        for _ in range(10):
+            await pilot.pause()
+            if not app._agent_loop_active:
+                break
+
         assert not app._agent_loop_active
+        assert not bottom_grid.has_class("hidden")
+        assert not input_box.has_class("hidden")
         assert not app._submit_lock.locked()
 
 
