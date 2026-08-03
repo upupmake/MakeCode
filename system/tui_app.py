@@ -37,6 +37,7 @@ from system.tui_modals import (
     ModelManagerModal,
     ModelPanelModal,
     RecallModelPickerModal,
+    SkillsConfigModal,
     StartupWorkdirModal,
     TaskPanelModal,
     ToolHistoryModal,
@@ -226,6 +227,18 @@ class TuiBridge:
             app.open_model_manager_modal(model_manager, future)
         else:
             app.call_from_thread(app.open_model_manager_modal, model_manager, future)
+        return future.result()
+
+    def manage_skills(self, skill_loader: Any) -> str | dict[str, Any]:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str | dict[str, Any]] = Future()
+        if self._is_app_thread():
+            app.open_skills_config_modal(skill_loader, future)
+        else:
+            app.call_from_thread(app.open_skills_config_modal, skill_loader, future)
         return future.result()
 
     def manage_layout(self) -> str | dict[str, int]:
@@ -1232,6 +1245,19 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(ModelManagerModal(model_manager), _done)
 
+    def open_skills_config_modal(
+        self,
+        skill_loader: Any,
+        future: Future[str | dict[str, Any]],
+    ) -> None:
+        def _done(value: str | dict[str, Any] | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "<cancelled>")
+
+        self._modal_active = True
+        self.push_screen(SkillsConfigModal(skill_loader), _done)
+
     def open_add_model_modal(self, future: Future[dict[str, str] | None]) -> None:
         def _done(value: dict[str, str] | None) -> None:
             self._modal_active = False
@@ -1798,6 +1824,10 @@ def choose_delegate_tasks_tui(tasks: list[dict[str, str]]) -> str:
 
 def manage_models_tui(model_manager: Any) -> str:
     return TUI_BRIDGE.manage_models(model_manager)
+
+
+def manage_skills_tui(skill_loader: Any) -> str | dict[str, Any]:
+    return TUI_BRIDGE.manage_skills(skill_loader)
 
 
 def manage_layout_tui() -> str | dict[str, int]:

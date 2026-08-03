@@ -1,3 +1,5 @@
+import json
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -46,3 +48,24 @@ def discover_skills(
                 "path": str(skill_file),
             }
     return skills
+
+
+def read_disabled_skill_names(config_file: Path | None = None) -> set[str]:
+    path = config_file or paths.workspace_disabled_skills_file()
+    if not path.exists():
+        return set()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list) or any(not isinstance(name, str) for name in data):
+        raise ValueError("disabled Skills 配置必须是字符串数组")
+    return {name.strip() for name in data if name.strip()}
+
+
+def write_disabled_skill_names(names: set[str], config_file: Path | None = None) -> None:
+    path = config_file or paths.workspace_disabled_skills_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(
+        json.dumps(sorted(names), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(path)

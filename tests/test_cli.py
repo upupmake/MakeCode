@@ -239,11 +239,16 @@ def test_skill_list_uses_existing_directory_priority(tmp_path, monkeypatch, caps
         "utils.skill_catalog.skill_directories",
         lambda *, create=True: [install_dir, workspace_dir, legacy_dir],
     )
+    monkeypatch.setattr("utils.paths._WORKDIR", tmp_path)
+    (tmp_path / ".makecode").mkdir()
+    (tmp_path / ".makecode" / "disabled_skills.json").write_text(
+        '["shared"]', encoding="utf-8"
+    )
 
     assert run_external_cli(["--skills-list"]) == 0
 
     output = capsys.readouterr().out
-    assert "shared · install description" in output
+    assert "shared · install description · 已禁用" in output
     assert "workspace description" not in output
     assert "legacy description" not in output
 

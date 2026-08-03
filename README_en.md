@@ -64,9 +64,7 @@ and extensible**.
 MakeCode employs a strict Workspace isolation mechanism. All paths and skill loading are resolved relative to the user's
 chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode source code.
 
-- **Skill Library (`skills/`) Loading**: The system strictly scans and loads custom skills (`SKILL.md`) from the
-  `WORKDIR/skills` directory. This ensures that different projects can maintain their own dedicated skill configurations
-  without interference.
+- **Skill Library Loading**: The system scans install-directory `.makecode/skills/`, `WORKDIR/.makecode/skills/`, and the legacy `WORKDIR/skills/` path in priority order. Project-level disabled state is stored in `WORKDIR/.makecode/disabled_skills.json`.
 - Workspace selection happens through an **interactive Textual TUI wizard panel** (current directory or a custom path); MakeCode no longer depends on any environment variable (the historical `MAKECODE_WORKDIR` has been removed).
 - Supports per-model message format selection:
     - `openai_chat` (OpenAI Chat Completions message format)
@@ -184,6 +182,8 @@ Skills are loaded from three directories in the following priority order (higher
 3. Legacy `workdir/skills/<name>/SKILL.md` (backward compatibility)
 
 After workspace startup, place custom skills in `workdir/.makecode/skills/` for automatic discovery. A `SKILL.md` frontmatter block must contain valid `name` and `description` fields before the skill is loaded.
+
+Project-level disabled state is stored in `workdir/.makecode/disabled_skills.json`, which contains only disabled skill names. Matching skills are omitted from orchestrator and sub-agent system prompts and cannot be loaded through `LoadSkill`. Use `/skills-list` to open the interactive panel and search by name or description or filter by enabled state. Panel changes stay in an in-memory draft; the confirmation button shows how many skills will be enabled and disabled, and the list is written once only after explicit confirmation. Canceling discards the draft.
 
 Default behavior: the skills summary injection is enabled by default. When disabled, the UI shows `skills已关闭`, and
 the skills catalog is no longer appended to orchestrator/sub-agent system prompts.
@@ -520,6 +520,7 @@ To centrally manage workspace paths and install-directory global configuration, 
 - `paths.set_workdir(path)`: switch workspace at runtime, used internally by the `/cd` command.
 - `paths.install_skills_dir()`: return the bundled-skill directory at `install_dir/.makecode/skills/`.
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`: return `workdir/.makecode/skills/` and the legacy `workdir/skills/` respectively.
+- `paths.workspace_disabled_skills_file()`: return the project-level disabled Skills list at `workdir/.makecode/disabled_skills.json`.
 - Conversation/memory/transcript/MCP/model-config getters are all unified here (`workspace_conversations_dir()`, `workspace_memory_jsonl_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
 
 #### Design Benefits
@@ -605,6 +606,7 @@ Runtime-generated directories:
 - `.makecode/transcripts/`: transcripts saved before compaction
 - `.makecode/memory/`: long-term memory data and capacity settings
 - `.makecode/skills/`: user skills for the current workspace (with legacy workspace-root `skills/` compatibility)
+- `.makecode/disabled_skills.json`: project-level list containing only disabled skill names
 
 Additionally, under the install directory (cross-project shared):
 
@@ -803,7 +805,7 @@ The following options execute and exit immediately without starting the workspac
 | `--models-list` | List configured models and the current selection without showing API keys |
 | `--mcp-list` | List MCP service state, transport, and a safe target summary without connecting |
 | `--mcp-add <name> ...` | Add MCP configuration using the same arguments as `/mcp-add`; the new service remains disabled and is not connected immediately |
-| `--skills-list` | List available Skills using the current workspace directory priority |
+| `--skills-list` | List all Skills and their project-level enabled state using the current workspace directory priority |
 | `--memory-list` | List active long-term memories in the current workspace by ascending update time |
 | `--check-update` | Check online for a newer version without downloading or installing it |
 | `--update` | Check, download, and install updates in frozen Windows/Linux builds; asks for confirmation after displaying release notes |
@@ -837,7 +839,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/mcp-help`          | Show an introduction to MCP-related commands                                                                                                     |
 | `/load`              | List 6.0 conversations; one selection restores messages, task plan, and Sub-Agent history, with confirmation before deleting an inactive conversation |
 | `/skills-switch`     | Toggle skills catalog injection status (On/Off)                                                                                                  |
-| `/skills-list`       | List available skills in the current workspace                                                                                                   |
+| `/skills-list`       | Open the project-level Skills panel with search, status filtering, and confirm-to-apply enable/disable drafts                                  |
 | `/compact [prompt]`  | Compact the current conversation context; prompt is optional                                                                                     |
 | `/tasks`             | View the full task table and delete a selected task with confirmation                                                                             |
 | `/copy`              | Open a read-only conversation panel with text selection and copy support                                                                          |
@@ -893,9 +895,9 @@ Important built-in rules include:
     - `description`
    You may also include:
     - `tags`
-4. New skills are automatically rescanned and summarized into the Skills Catalog the next time system prompts are built;
-   use `/skills-switch` to toggle that injection temporarily
-5. When the full skill content is actually needed, the agent can call `LoadSkill` directly
+4. New skills are automatically rescanned and summarized into the Skills Catalog the next time system prompts are built; use `/skills-list` for project-level enable/disable management, persisted in `.makecode/disabled_skills.json`
+5. Use `/skills-switch` to temporarily disable the entire Skills Catalog summary injection
+6. When the full content of an enabled skill is needed, the agent can call `LoadSkill` directly
 
 ### 8.2 Add a Tool
 

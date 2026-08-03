@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -142,6 +143,84 @@ class SkillLoaderTests(unittest.TestCase):
 
             self.assertNotIn("previous-only", loader.skills)
             self.assertIn("current-only", loader.skills)
+
+    def test_disabled_skills_are_persisted_and_excluded_from_prompt_and_load(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            config_file = root / "disabled_skills.json"
+            self._write_skill(skills_dir, "enabled-skill", "enabled description")
+            self._write_skill(skills_dir, "disabled-skill", "disabled description")
+            loader = SkillLoader(skills_dir, config_file)
+
+            loader.set_skill_enabled("disabled-skill", False)
+
+            self.assertEqual(
+                json.loads(config_file.read_text(encoding="utf-8")),
+                ["disabled-skill"],
+            )
+            self.assertIn("enabled-skill", loader.skills)
+            self.assertNotIn("disabled-skill", loader.skills)
+            self.assertNotIn("disabled-skill", loader.render_prompt_block())
+            self.assertIn("Unknown or disabled skill 'disabled-skill'", loader.get_content("disabled-skill"))
+
+    def test_reenabling_skill_removes_it_from_disabled_list(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            config_file = root / "disabled_skills.json"
+            self._write_skill(skills_dir, "demo", "demo description")
+            config_file.write_text('["demo"]', encoding="utf-8")
+            loader = SkillLoader(skills_dir, config_file)
+
+            entries = loader.get_skill_entries()
+            self.assertEqual(entries[0]["enabled"], False)
+
+            loader.set_skill_enabled("demo", True)
+
+            self.assertEqual(json.loads(config_file.read_text(encoding="utf-8")), [])
+            self.assertIn("demo", loader.skills)
+
+    def test_applies_multiple_skill_states_with_one_config_write(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            config_file = root / "disabled_skills.json"
+            self._write_skill(skills_dir, "alpha", "alpha description")
+            self._write_skill(skills_dir, "beta", "beta description")
+            config_file.write_text('["beta", "removed-skill"]', encoding="utf-8")
+            loader = SkillLoader(skills_dir, config_file)
+
+            with patch("utils.skills.write_disabled_skill_names") as write_disabled:
+                loader.apply_skill_enabled_states({"alpha": False, "beta": True})
+
+            write_disabled.assert_called_once_with(
+                {"alpha", "removed-skill"}, config_file
+            )
+
+    def test_switching_workspace_refreshes_disabled_skill_configuration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "install"
+            previous_workspace = root / "previous"
+            current_workspace = root / "current"
+            self._write_skill(install_root / ".makecode" / "skills", "shared", "shared")
+            (previous_workspace / ".makecode").mkdir(parents=True)
+            (previous_workspace / ".makecode" / "disabled_skills.json").write_text(
+                '["shared"]', encoding="utf-8"
+            )
+
+            with (
+                patch.object(paths, "_INSTALL_DIR", install_root),
+                patch.object(paths, "_WORKDIR", previous_workspace),
+            ):
+                loader = SkillLoader()
+                self.assertNotIn("shared", loader.skills)
+
+                paths.set_workdir(current_workspace)
+                loader.refresh_workspace()
+
+            self.assertIn("shared", loader.skills)
 
 
 if __name__ == "__main__":

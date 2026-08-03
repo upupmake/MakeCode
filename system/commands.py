@@ -21,7 +21,7 @@ from system.cli import COMMAND_DESCRIPTIONS
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
 from system.tool_history import TOOL_EXECUTION_HISTORY, ToolExecutionHistory
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -734,13 +734,19 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         )
         return new_system
 
-    def handle_skills_list(self) -> bool:
-        """处理 /skills-list 命令"""
-        skills_list_text = self.skill_loader.get_descriptions()
-        content = Markdown(f"### 当前可用技能列表\n\n{skills_list_text}")
-        if show_info_panel_tui("📚 Skills List", content) == "<cancelled>":
-            self.console.print(content)
-        return True
+    def handle_skills_list(self) -> str | None:
+        """打开项目级 Skills 配置面板；确认变更后返回新的 system prompt。"""
+        result = manage_skills_tui(self.skill_loader)
+        if isinstance(result, dict) and result.get("action") == "applied":
+            enabled = int(result.get("enabled", 0))
+            disabled = int(result.get("disabled", 0))
+            self.console.print(
+                f"\n[bold green]Skills 配置已应用：启用 {enabled} 个，禁用 {disabled} 个。[/bold green]"
+            )
+            return self.get_system_prompt_fn()
+        if result == "<cancelled>":
+            self.console.print(Markdown(f"### 当前已启用技能列表\n\n{self.skill_loader.get_descriptions()}"))
+        return None
 
     def handle_models(self) -> bool:
         """处理 /models 命令"""
@@ -1268,7 +1274,9 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return CommandResult(action=CommandAction.UPDATE_SYSTEM_PROMPT, payload=new_system)
 
         if query == "/skills-list":
-            self.handle_skills_list()
+            new_system = self.handle_skills_list()
+            if isinstance(new_system, str):
+                return CommandResult(action=CommandAction.UPDATE_SYSTEM_PROMPT, payload=new_system)
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /new - 清空历史

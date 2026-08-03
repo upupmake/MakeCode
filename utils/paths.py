@@ -78,6 +78,10 @@ def workspace_legacy_skills_dir() -> Path:
     return _WORKDIR / "skills"
 
 
+def workspace_disabled_skills_file(*, create: bool = True) -> Path:
+    return workspace_makecode_dir(create=create) / "disabled_skills.json"
+
+
 def layout_config_file() -> Path:
     return install_makecode_dir() / "layout_config.json"
 

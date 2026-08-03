@@ -62,8 +62,7 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
 MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和技能库加载均以用户当前选择的 **工作目录（WORKDIR）**
 为基准，而非 Agent 源码所在目录。
 
-- **技能库 (`skills/`) 加载**：系统会严格从 `WORKDIR/skills` 目录中扫描并加载所有的自定义技能（`SKILL.md`
-  ）。这样可以确保不同的工程项目可以使用其专属的技能配置，互不干扰。
+- **技能库加载**：系统按优先级扫描安装目录 `.makecode/skills/`、`WORKDIR/.makecode/skills/` 与兼容路径 `WORKDIR/skills/` 中的自定义技能（`SKILL.md`）；项目级禁用状态保存在 `WORKDIR/.makecode/disabled_skills.json`。
 - 启动时以 **Textual TUI 向导面板** 交互式选择工作区目录（当前目录或自定义路径），不再依赖任何环境变量（如历史上的 `MAKECODE_WORKDIR` 已移除）。
 - 支持按模型配置选择消息格式：
     - `openai_chat`（OpenAI Chat Completions 消息格式）
@@ -167,6 +166,8 @@ Team 模块支持：
 3. 工作区旧路径 `workdir/skills/<name>/SKILL.md`（向后兼容）
 
 工作区启动后，将自定义技能放入 `workdir/.makecode/skills/` 即可被自动发现。`SKILL.md` 的 frontmatter 必须包含有效的 `name` 与 `description` 才会被加载。
+
+项目级禁用配置保存在 `workdir/.makecode/disabled_skills.json`，文件中只记录禁用技能的名称。命中该列表的技能不会注入主智能体或子智能体的 system prompt，也不能通过 `LoadSkill` 加载。可使用 `/skills-list` 打开交互面板，按名称或描述搜索、按启用状态过滤；面板中的操作先写入内存草稿，确认按钮会显示本次启用和禁用数量，只有用户确认后才一次性落盘，取消则丢弃草稿。
 
 默认行为：skills 摘要注入默认开启。关闭后，系统会显示 `skills已关闭`，并停止把技能目录摘要拼接到主/子智能体的`system prompt`
 后面。
@@ -497,6 +498,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 - `paths.set_workdir(path)`：切换工作区时代替手动拼接，`/cd` 命令内部调用该函数。
 - `paths.install_skills_dir()`：返回安装目录内的内置技能目录 `install_dir/.makecode/skills/`。
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`：分别返回 `workdir/.makecode/skills/` 与兼容旧路径 `workdir/skills/`。
+- `paths.workspace_disabled_skills_file()`：返回项目级 Skills 禁用列表 `workdir/.makecode/disabled_skills.json`。
 - 面向会话/记忆/转录/MCP/模型配置的各级 getter（如 `workspace_conversations_dir()`、`workspace_memory_jsonl_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
 
 #### 设计收益
@@ -582,6 +584,7 @@ Agent/
 - `.makecode/transcripts/`：压缩前会话转录
 - `.makecode/memory/`：长期记忆数据与容量配置
 - `.makecode/skills/`：当前工作区的用户技能（兼容工作区根目录旧 `skills/`）
+- `.makecode/disabled_skills.json`：项目级 Skills 禁用名称列表，仅保存禁用项
 
 以及安装目录下的（跨项目共享）：
 
@@ -776,7 +779,7 @@ python main.py
 | `--models-list` | 列出已配置模型及当前选择，不显示 API Key |
 | `--mcp-list` | 列出 MCP 服务的启用状态、传输方式和安全目标摘要，不连接服务 |
 | `--mcp-add <name> ...` | 使用与 `/mcp-add` 相同的参数添加 MCP 配置；新服务默认禁用且不会立即连接 |
-| `--skills-list` | 按当前工作区的目录优先级列出可用 Skills |
+| `--skills-list` | 按当前工作区的目录优先级列出全部 Skills 及项目级启用状态 |
 | `--memory-list` | 按更新时间升序列出当前工作区的 active 长期记忆 |
 | `--check-update` | 联网检查是否有新版本，但不下载或安装 |
 | `--update` | Windows/Linux 冻结版检查、下载并安装更新；展示更新说明后要求确认 |
@@ -810,7 +813,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 | `/mcp-help`          | 显示 MCP 相关命令的使用介绍                                                |
 | `/load`              | 列出 6.0 会话；一次选择自动恢复消息、任务计划和 Sub-Agent 历史，可二次确认删除非活动会话       |
 | `/skills-switch`     | 切换 skills 目录摘要注入状态 (开启/关闭)                                     |
-| `/skills-list`       | 列出当前工作区可用的 skills                                              |
+| `/skills-list`       | 打开项目级 Skills 配置面板，支持搜索、状态过滤和确认后批量应用启用/禁用草稿                 |
 | `/compact [prompt]`  | 压缩当前对话上下文，prompt 可选                                            |
 | `/tasks`             | 查看完整任务表格，并支持经二次确认删除选中任务                                  |
 | `/copy`              | 打开只读对话内容面板，支持选择并复制文本                                         |
@@ -862,9 +865,9 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
     - `description`
    还可选填：
     - `tags`
-4. 新技能会在后续构建 system prompt 时自动被扫描并汇总到 Skills Catalog 中；如需临时关闭摘要注入，可使用 `/skills-switch`
-   进行切换
-5. 当任务确实需要该技能全文时，智能体可直接调用 `LoadSkill`
+4. 新技能会在后续构建 system prompt 时自动被扫描并汇总到 Skills Catalog 中；可使用 `/skills-list` 做项目级启用/禁用管理，禁用名称保存在 `.makecode/disabled_skills.json`
+5. 如需临时关闭整个 Skills Catalog 摘要注入，可使用 `/skills-switch`
+6. 当任务确实需要已启用技能的全文时，智能体可直接调用 `LoadSkill`
 
 ### 8.2 新增工具
 

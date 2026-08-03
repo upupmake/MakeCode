@@ -489,6 +489,36 @@ def test_tasks_command_opens_task_management_panel(monkeypatch):
     manage_tasks.assert_called_once_with(manager)
 
 
+def test_skills_command_returns_refreshed_system_prompt_after_changes(monkeypatch):
+    loader = Mock()
+    manage_skills = Mock(
+        return_value={"action": "applied", "enabled": 2, "disabled": 1}
+    )
+    monkeypatch.setattr("system.commands.manage_skills_tui", manage_skills)
+    handler = make_handler()
+    handler.console = Mock()
+    handler.skill_loader = loader
+    handler.get_system_prompt_fn = Mock(return_value="updated system")
+
+    assert handler.handle_skills_list() == "updated system"
+    manage_skills.assert_called_once_with(loader)
+    handler.get_system_prompt_fn.assert_called_once_with()
+    handler.console.print.assert_called_once()
+    assert "启用 2 个，禁用 1 个" in handler.console.print.call_args.args[0]
+
+
+def test_skills_command_does_not_refresh_system_prompt_without_changes(monkeypatch):
+    loader = Mock()
+    manage_skills = Mock(return_value="closed")
+    monkeypatch.setattr("system.commands.manage_skills_tui", manage_skills)
+    handler = make_handler()
+    handler.skill_loader = loader
+    handler.get_system_prompt_fn = Mock(return_value="updated system")
+
+    assert handler.handle_skills_list() is None
+    handler.get_system_prompt_fn.assert_not_called()
+
+
 def test_copy_command_keeps_only_questions_answers_and_terminal_io(monkeypatch):
     history = [
         {"role": "system", "content": "system prompt"},

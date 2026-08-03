@@ -77,7 +77,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal {
         align: center middle;
     }
 
@@ -240,6 +240,70 @@ class ChoiceModal(ClosableModalScreen[str]):
     #tool-history-status {
         height: 1;
         color: #94a3b8;
+    }
+
+    #skills-dialog {
+        width: 88%;
+        height: 86%;
+        border: round #22c55e;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #skills-title {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #skills-filter-row {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #skills-search {
+        width: 1fr;
+    }
+
+    #skills-status-filter {
+        width: 20;
+        margin-left: 1;
+    }
+
+    #skills-list {
+        height: 1fr;
+        margin-top: 1;
+        border: round #475569;
+    }
+
+    #skills-list > ListItem {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #skills-list > ListItem > Label {
+        width: 1fr;
+    }
+
+    #skills-status {
+        height: auto;
+        min-height: 1;
+        margin-top: 1;
+        color: #94a3b8;
+    }
+
+    #skills-actions {
+        height: 3;
+        margin-top: 1;
+        align: right middle;
+    }
+
+    #skills-confirm {
+        width: 34;
+        margin-right: 1;
+    }
+
+    #skills-close {
+        width: 12;
     }
 
     #info-content {
@@ -1241,6 +1305,219 @@ class ToolHistoryModal(ClosableModalScreen[str]):
 
     def action_focus_search(self) -> None:
         self.query_one("#tool-history-search", Input).focus()
+
+    def action_close(self) -> None:
+        self.dismiss("closed")
+
+
+class SkillsConfigModal(ClosableModalScreen[str | dict[str, Any]]):
+    CSS = ChoiceModal.CSS
+    BINDINGS: list[Binding] = []
+
+    _STATUS_OPTIONS = [
+        ("全部状态", "all"),
+        ("已启用", "enabled"),
+        ("已禁用", "disabled"),
+    ]
+
+    def __init__(self, skill_loader: Any) -> None:
+        super().__init__()
+        self._skill_loader = skill_loader
+        self._entries: list[dict[str, Any]] = []
+        self._filtered_entries: list[dict[str, Any]] = []
+        self._original_states: dict[str, bool] = {}
+        self._draft_states: dict[str, bool] = {}
+        self._row_reload_generation = 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="skills-dialog"):
+            yield ModalHeader(self._title_text(), title_id="skills-title")
+            with Horizontal(id="skills-filter-row"):
+                yield Input(
+                    placeholder="按技能名称或描述搜索…",
+                    id="skills-search",
+                )
+                yield Select(
+                    self._STATUS_OPTIONS,
+                    value="all",
+                    allow_blank=False,
+                    id="skills-status-filter",
+                )
+            yield ListView(id="skills-list")
+            yield Label("Enter/Space 修改草稿；/ 聚焦搜索；q 取消。", id="skills-status")
+            with Horizontal(id="skills-actions"):
+                yield Button("确认应用", id="skills-confirm", variant="success")
+                yield Button("取消", id="skills-close", variant="primary")
+
+    def on_mount(self) -> None:
+        self._entries = self._skill_loader.get_skill_entries()
+        self._original_states = {
+            entry["name"]: bool(entry["enabled"])
+            for entry in self._entries
+        }
+        self._draft_states = dict(self._original_states)
+        self._reload_rows()
+        self.query_one("#skills-search", Input).focus()
+
+    def _title_text(self) -> str:
+        enabled = sum(self._draft_states.values())
+        disabled = len(self._draft_states) - enabled
+        return f"📚 Skills 配置 · 全部 {len(self._entries)} · 已启用 {enabled} · 已禁用 {disabled}"
+
+    def _filter_values(self) -> tuple[str, str]:
+        search = self.query_one("#skills-search", Input).value.strip().casefold()
+        status_value = self.query_one("#skills-status-filter", Select).value
+        status = status_value if isinstance(status_value, str) else "all"
+        return search, status
+
+    def _current_entry(self) -> dict[str, Any] | None:
+        choice_list = self.query_one("#skills-list", ListView)
+        if choice_list.index is None or choice_list.index >= len(self._filtered_entries):
+            return None
+        return self._filtered_entries[choice_list.index]
+
+    def _draft_changes(self) -> dict[str, bool]:
+        return {
+            name: enabled
+            for name, enabled in self._draft_states.items()
+            if enabled != self._original_states[name]
+        }
+
+    def _change_counts(self) -> tuple[int, int]:
+        changes = self._draft_changes()
+        enabled = sum(changes.values())
+        return enabled, len(changes) - enabled
+
+    @staticmethod
+    def _entry_label(entry: dict[str, Any]) -> str:
+        marker = "[✓]" if entry["enabled"] else "[×]"
+        status = "已启用" if entry["enabled"] else "已禁用"
+        description = " ".join(str(entry["description"]).split())
+        return f"{marker} {entry['name']} · {status}\n    {description}"
+
+    def _refresh_summary(self) -> None:
+        self.query_one("#skills-title", Label).update(self._title_text())
+        enabled_count, disabled_count = self._change_counts()
+        change_count = enabled_count + disabled_count
+        confirm = self.query_one("#skills-confirm", Button)
+        confirm.display = change_count > 0
+        confirm.label = f"确认应用（启用 {enabled_count}，禁用 {disabled_count}）"
+        if change_count:
+            change_text = f"待确认：将启用 {enabled_count} 个，禁用 {disabled_count} 个。"
+        else:
+            change_text = "尚未修改。"
+        self.query_one("#skills-status", Label).update(
+            f"显示 {len(self._filtered_entries)}/{len(self._entries)} 个技能。{change_text}"
+            " Enter/Space 修改草稿；q 取消。"
+        )
+
+    def _reload_rows(self) -> None:
+        selected = self._current_entry()
+        selected_name = selected["name"] if selected is not None else None
+        entries = [
+            {**entry, "enabled": self._draft_states[entry["name"]]}
+            for entry in self._entries
+        ]
+        search, status = self._filter_values()
+        self._filtered_entries = [
+            entry
+            for entry in entries
+            if (
+                status == "all"
+                or (status == "enabled" and entry["enabled"])
+                or (status == "disabled" and not entry["enabled"])
+            )
+            and (
+                not search
+                or search in entry["name"].casefold()
+                or search in entry["description"].casefold()
+            )
+        ]
+        self._refresh_summary()
+        choice_list = self.query_one("#skills-list", ListView)
+        self._row_reload_generation += 1
+        reload_generation = self._row_reload_generation
+        choice_list.clear()
+        labels = [self._entry_label(entry) for entry in self._filtered_entries]
+
+        def _mount_rows() -> None:
+            if reload_generation != self._row_reload_generation:
+                return
+            if labels:
+                choice_list.extend(ListItem(Label(label, markup=False)) for label in labels)
+                names = [entry["name"] for entry in self._filtered_entries]
+                choice_list.index = names.index(selected_name) if selected_name in names else 0
+
+        self.call_after_refresh(_mount_rows)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "skills-search":
+            self._reload_rows()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "skills-status-filter":
+            self._reload_rows()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id == "skills-list":
+            self.action_toggle_skill()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "skills-confirm":
+            self.action_confirm()
+        elif event.button.id == "skills-close":
+            self.action_close()
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "q" and not isinstance(self.focused, (Input, Select)):
+            self.action_close()
+        elif event.key == "/" and not isinstance(self.focused, Input):
+            self.query_one("#skills-search", Input).focus()
+        elif event.key == "space" and isinstance(self.focused, ListView):
+            self.action_toggle_skill()
+        else:
+            return
+        event.stop()
+        event.prevent_default()
+
+    def action_toggle_skill(self) -> None:
+        entry = self._current_entry()
+        if entry is None:
+            return
+        choice_list = self.query_one("#skills-list", ListView)
+        index = choice_list.index
+        if index is None:
+            return
+        name = entry["name"]
+        enabled = not self._draft_states[name]
+        self._draft_states[name] = enabled
+        updated_entry = {**entry, "enabled": enabled}
+        _, status = self._filter_values()
+        if status == "all":
+            self._filtered_entries[index] = updated_entry
+            choice_list.children[index].query_one(Label).update(
+                self._entry_label(updated_entry)
+            )
+        else:
+            self._filtered_entries.pop(index)
+            choice_list.remove_items([index]).call_next(self)
+        self._refresh_summary()
+
+    def action_confirm(self) -> None:
+        changes = self._draft_changes()
+        if not changes:
+            return
+        enabled_count, disabled_count = self._change_counts()
+        try:
+            self._skill_loader.apply_skill_enabled_states(changes)
+        except (OSError, UnicodeError, ValueError) as exc:
+            self.query_one("#skills-status", Label).update(f"保存失败：{exc}")
+            return
+        self.dismiss({
+            "action": "applied",
+            "enabled": enabled_count,
+            "disabled": disabled_count,
+        })
 
     def action_close(self) -> None:
         self.dismiss("closed")

@@ -21,7 +21,7 @@ COMMAND_DESCRIPTIONS = {
     "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存。",
     "/load": "列出 6.0 会话并选择加载；自动恢复任务计划和 Sub-Agent 历史。",
     "/skills-switch": "切换 skills 目录摘要注入状态（开启/关闭）。",
-    "/skills-list": "列出当前工作区可用的 skills。",
+    "/skills-list": "打开当前工作区 Skills 配置面板，可搜索、按状态过滤并启用或禁用技能。",
     "/compact": "[prompt] 压缩当前对话上下文；prompt 可选，不填则使用默认压缩提示，并自动尝试提取关键记忆信息。",
     "/memory-list": "列出当前保存的长期记忆。",
     "/memory-panel": "打开长期记忆交互面板，可查看详情并二次确认删除。",
@@ -187,7 +187,12 @@ def _mcp_add(arguments: Sequence[str]) -> int:
 
 
 def _skills_list() -> int:
-    from utils.skill_catalog import discover_skills, skill_directories
+    from utils import paths
+    from utils.skill_catalog import (
+        discover_skills,
+        read_disabled_skill_names,
+        skill_directories,
+    )
 
     parse_errors = []
 
@@ -197,7 +202,10 @@ def _skills_list() -> int:
     try:
         directories = skill_directories(create=False)
         skills = discover_skills(directories, on_parse_error=record_parse_error)
-    except (OSError, UnicodeError) as exc:
+        disabled_skill_names = read_disabled_skill_names(
+            paths.workspace_disabled_skills_file(create=False)
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(f"无法读取 Skills: {exc}", file=sys.stderr)
         return 1
 
@@ -211,11 +219,12 @@ def _skills_list() -> int:
         print("当前工作区没有可用 Skills。")
         return 0
 
-    print(f"当前可用 Skills ({len(skills)}):")
+    print(f"当前 Skills ({len(skills)}):")
     for index, (name, skill) in enumerate(skills.items(), 1):
         description = _plain_text(skill["meta"]["description"])
         directory = Path(skill["path"]).parent.resolve()
-        print(f"  {index}. {_plain_text(name)} · {description}")
+        status = "已禁用" if name in disabled_skill_names else "已启用"
+        print(f"  {index}. {_plain_text(name)} · {description} · {status}")
         print(f"     {directory}")
     return 0
 

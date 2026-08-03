@@ -1,5 +1,7 @@
 import asyncio
+import json
 import threading
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -8,6 +10,7 @@ from system.console_render import _render_startup_banner
 from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import MakeCodeTuiApp, TuiBridge
 from system.tui_modals import ChoiceModal, ToolHistoryModal
+from utils.skills import SkillLoader
 
 
 @pytest.mark.anyio
@@ -389,3 +392,192 @@ def test_tui_bridge_tracks_retry_count_per_concurrent_request():
         (True, 1, 2),
         (False, 0, 0),
     ]
+
+
+@pytest.mark.anyio
+async def test_skills_panel_filters_draft_changes_and_discards_them_on_cancel(tmp_path):
+    skills_dir = tmp_path / "skills"
+    for name, description in [
+        ("alpha", "Handles source code"),
+        ("beta", "Writes release notes"),
+    ]:
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\nbody\n",
+            encoding="utf-8",
+        )
+    config_file = tmp_path / "disabled_skills.json"
+    loader = SkillLoader(skills_dir, config_file)
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        result = asyncio.get_running_loop().create_future()
+        app.open_skills_config_modal(loader, result)
+        await pilot.pause()
+        modal = app.screen
+
+        search = modal.query_one("#skills-search")
+        search.value = "release notes"
+        await pilot.pause()
+        assert [entry["name"] for entry in modal._filtered_entries] == ["beta"]
+
+        search.value = "alpha"
+        await pilot.pause()
+        assert [entry["name"] for entry in modal._filtered_entries] == ["alpha"]
+
+        search.value = ""
+        await pilot.pause()
+        skills_list = modal.query_one("#skills-list")
+        skills_list.focus()
+        original_rows = tuple(skills_list.children)
+        original_index = skills_list.index
+        original_scroll_y = skills_list.scroll_y
+        await pilot.press("enter")
+        await pilot.pause()
+        assert tuple(skills_list.children) == original_rows
+        assert skills_list.index == original_index
+        assert skills_list.scroll_y == original_scroll_y
+        assert "alpha" not in loader.disabled_skill_names
+        assert not config_file.exists()
+        assert "启用 0，禁用 1" in str(modal.query_one("#skills-confirm").label)
+
+        status_filter = modal.query_one("#skills-status-filter")
+        status_filter.value = "disabled"
+        await pilot.pause()
+        assert [entry["name"] for entry in modal._filtered_entries] == ["alpha"]
+
+        status_filter.value = "enabled"
+        await pilot.pause()
+        assert [entry["name"] for entry in modal._filtered_entries] == ["beta"]
+
+        await pilot.click("#skills-close")
+        await pilot.pause()
+        assert await result == "closed"
+        assert not config_file.exists()
+        assert "alpha" in loader.skills
+
+
+@pytest.mark.anyio
+async def test_skills_panel_concurrent_reloads_keep_last_row_toggleable(tmp_path):
+    skills_dir = tmp_path / "skills"
+    for index in range(30):
+        name = f"skill-{index:02d}"
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Description {index}\n---\nbody\n",
+            encoding="utf-8",
+        )
+    loader = SkillLoader(skills_dir, tmp_path / "disabled_skills.json")
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        result = asyncio.get_running_loop().create_future()
+        app.open_skills_config_modal(loader, result)
+        await pilot.pause()
+        modal = app.screen
+        skills_list = modal.query_one("#skills-list")
+
+        modal._reload_rows()
+        modal._reload_rows()
+        await pilot.pause()
+        skills_list.focus()
+        skills_list.index = len(skills_list.children) - 1
+        await pilot.press("enter")
+        await pilot.pause()
+        assert modal._draft_states["skill-29"] is False
+
+        await pilot.press("space")
+        await pilot.pause()
+        assert modal._draft_states["skill-29"] is True
+
+        await pilot.click(skills_list.children[-1])
+        await pilot.pause()
+        assert modal._draft_states["skill-29"] is False
+        assert len(skills_list.children) == len(modal._filtered_entries) == 30
+
+        await pilot.click("#skills-close")
+        await pilot.pause()
+        assert await result == "closed"
+
+
+@pytest.mark.anyio
+async def test_skills_panel_toggle_preserves_scrolled_row_and_list_items(tmp_path):
+    skills_dir = tmp_path / "skills"
+    for index in range(30):
+        name = f"skill-{index:02d}"
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Description {index}\n---\nbody\n",
+            encoding="utf-8",
+        )
+    loader = SkillLoader(skills_dir, tmp_path / "disabled_skills.json")
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        result = asyncio.get_running_loop().create_future()
+        app.open_skills_config_modal(loader, result)
+        await pilot.pause()
+        modal = app.screen
+        skills_list = modal.query_one("#skills-list")
+        skills_list.focus()
+        skills_list.index = 20
+        await pilot.pause()
+        original_rows = tuple(skills_list.children)
+        original_scroll_y = skills_list.scroll_y
+
+        assert original_scroll_y > 0
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert tuple(skills_list.children) == original_rows
+        assert skills_list.index == 20
+        assert skills_list.scroll_y == original_scroll_y
+        assert modal._filtered_entries[20]["enabled"] is False
+
+        await pilot.click("#skills-close")
+        await pilot.pause()
+        assert await result == "closed"
+
+
+@pytest.mark.anyio
+async def test_skills_panel_applies_draft_once_and_reports_change_counts(tmp_path):
+    skills_dir = tmp_path / "skills"
+    for name in ("alpha", "beta"):
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\nbody\n",
+            encoding="utf-8",
+        )
+    config_file = tmp_path / "disabled_skills.json"
+    config_file.write_text('["beta"]', encoding="utf-8")
+    loader = SkillLoader(skills_dir, config_file)
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        result = asyncio.get_running_loop().create_future()
+        app.open_skills_config_modal(loader, result)
+        await pilot.pause()
+        modal = app.screen
+        skills_list = modal.query_one("#skills-list")
+        skills_list.focus()
+
+        await pilot.press("enter")
+        await pilot.pause()
+        skills_list.index = 1
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert json.loads(config_file.read_text(encoding="utf-8")) == ["beta"]
+        assert "启用 1，禁用 1" in str(modal.query_one("#skills-confirm").label)
+
+        await pilot.click("#skills-confirm")
+        await pilot.pause()
+
+        assert await result == {"action": "applied", "enabled": 1, "disabled": 1}
+        assert json.loads(config_file.read_text(encoding="utf-8")) == ["alpha"]
+        assert "alpha" not in loader.skills
+        assert "beta" in loader.skills
