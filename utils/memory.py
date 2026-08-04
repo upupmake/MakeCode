@@ -81,7 +81,7 @@ class AppendLongTermMemory(BaseModel):
     )
     evidence: str = Field(
         ...,
-        description="Brief source context explaining why this memory is justified; do not include secrets or long transcript excerpts.",
+        description="Brief source context explaining why this memory is justified; do not include long transcript excerpts.",
     )
     reuse_condition: str = Field(
         ...,
@@ -128,7 +128,7 @@ class RememberLongTermMemory(BaseModel):
         description=(
             "A concrete memory-management request written by the agent. Use this only when the current conversation "
             "reveals a durable user preference, project convention, workflow rule, pitfall, environment fact, or release/build norm "
-            "that should be reused in future sessions. Do not save temporary task progress, secrets, one-off details, or facts directly readable from code."
+            "that should be reused in future sessions. Do not save temporary task progress, one-off details, or facts directly readable from code."
         ),
     )
 
