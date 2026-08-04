@@ -392,24 +392,22 @@ async def test_tool_history_modal_copies_full_detail_to_system_clipboard():
 
 
 @pytest.mark.anyio
-async def test_tool_history_modal_refreshes_non_latest_running_record_without_losing_selection():
+async def test_tool_history_modal_uses_open_time_snapshot():
     history = ToolExecutionHistory()
-    older_id = history.start("FileRead", {"path": "older.py"})
-    history.start("ContentSearch", {"content_regex": "newer"})
+    first_id = history.start("FileRead", {"path": "first.py"})
+    history.finish(first_id, "first result")
     modal = ToolHistoryModal(history)
     app = ToolHistoryModalHost(modal)
 
     async with app.run_test(size=(140, 40)) as pilot:
         await pilot.pause()
-        modal.query_one("#tool-history-list").index = 1
-        selected_execution_id = modal._current_row().execution_id
+        assert [item.tool_name for item in modal._row_values] == ["FileRead"]
 
-        history.finish(older_id, "older result")
-        modal._refresh_if_changed()
+        second_id = history.start("ContentSearch", {"content_regex": "later"})
+        history.finish(second_id, "later result")
         await pilot.pause()
 
-        assert modal._current_row().execution_id == selected_execution_id
-        assert modal._current_row().status == TOOL_STATUS_SUCCEEDED
+        assert [item.tool_name for item in modal._row_values] == ["FileRead"]
 
 
 @pytest.mark.anyio

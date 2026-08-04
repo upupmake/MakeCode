@@ -1000,7 +1000,8 @@ class ToolHistoryModal(ClosableModalScreen[str]):
 
     def __init__(self, history: ToolExecutionHistory) -> None:
         super().__init__()
-        self._history = history
+        self._history = ToolExecutionHistory()
+        self._history.replace_with(history)
         self._view = "timeline"
         self._tool_filter = ""
         self._row_values: list[ToolExecutionRecord | ToolExecutionSummary] = []
@@ -1029,7 +1030,6 @@ class ToolHistoryModal(ClosableModalScreen[str]):
     def on_mount(self) -> None:
         self._apply_responsive_layout(self.app.size.width)
         self._reload_rows(force=True)
-        self.set_interval(0.5, self._refresh_if_changed)
         self.query_one("#tool-history-search", Input).focus()
 
     def on_resize(self, event: Resize) -> None:
@@ -1070,21 +1070,11 @@ class ToolHistoryModal(ClosableModalScreen[str]):
         return text, status, source
 
     def _current_signature(self) -> tuple[Any, ...]:
-        records = self._history.snapshot()
-        record_states = tuple(
-            (record.sequence, record.status, record.finished_at)
-            for record in records
-        )
         return (
-            record_states,
             self._view,
             self._tool_filter,
             *self._filter_values(),
         )
-
-    def _refresh_if_changed(self) -> None:
-        if self._current_signature() != self._last_signature:
-            self._reload_rows()
 
     def _reload_rows(self, *, force: bool = False) -> None:
         signature = self._current_signature()
