@@ -732,6 +732,7 @@ async def test_mcp_switch_modal_ignores_stale_row_reload_callbacks():
         modal._reload_rows(0)
         modal._reload_rows(1)
         await pilot.pause()
+        await pilot.pause()
 
         service_list = modal.query_one("#mcp-list", ListView)
         assert [item.id for item in service_list.children] == ["mcp-server-0", "mcp-server-1"]
