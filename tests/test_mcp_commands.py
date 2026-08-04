@@ -642,6 +642,103 @@ async def test_submitting_flush_preserves_existing_pane_content():
         assert submitted == ["/flush"]
 
 
+@pytest.mark.anyio
+async def test_cd_path_completion_uses_longest_common_prefix_and_cycles_directories(tmp_path, monkeypatch):
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "alpine").mkdir()
+    (tmp_path / "beta").mkdir()
+    (tmp_path / "alpine-file").write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr("system.tui_app.paths.workdir", lambda: tmp_path)
+
+    app = MakeCodeTuiApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box", MakeCodeInput)
+        input_box.load_text("/cd al")
+        input_box.cursor_location = input_box.document.end
+
+        input_box.focus()
+        await pilot.press("tab")
+        await pilot.pause()
+        assert input_box.text == "/cd alp"
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert input_box.text == "/cd alpha/"
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert input_box.text == "/cd alpine/"
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert input_box.text == "/cd alpha/"
+
+
+
+
+@pytest.mark.anyio
+async def test_cd_path_completion_from_empty_argument_selects_directory_candidates(tmp_path, monkeypatch):
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "beta").mkdir()
+    monkeypatch.setattr("system.tui_app.paths.workdir", lambda: tmp_path)
+
+    app = MakeCodeTuiApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box", MakeCodeInput)
+        input_box.load_text("/cd ")
+        input_box.cursor_location = input_box.document.end
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert input_box.text == "/cd alpha/"
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert input_box.text == "/cd beta/"
+
+
+@pytest.mark.anyio
+async def test_cd_path_completion_only_completes_directories_and_preserves_absolute_paths(tmp_path, monkeypatch):
+    (tmp_path / "target-dir").mkdir()
+    (tmp_path / "target-file").write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr("system.tui_app.paths.workdir", lambda: tmp_path)
+
+    app = MakeCodeTuiApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box", MakeCodeInput)
+        input_box.load_text(f"/cd {tmp_path}/target")
+        input_box.cursor_location = input_box.document.end
+
+        app.complete_slash_command()
+
+        assert input_box.text == f"/cd {tmp_path}/target-dir/"
+
+
+@pytest.mark.anyio
+async def test_cd_path_completion_supports_tilde_and_quoted_paths(tmp_path, monkeypatch):
+    (tmp_path / "space dir").mkdir()
+    monkeypatch.setattr("system.tui_app.paths.workdir", lambda: tmp_path)
+
+    app = MakeCodeTuiApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box", MakeCodeInput)
+
+        input_box.load_text('/cd "space"')
+        input_box.cursor_location = (0, len('/cd "space'))
+        app.complete_slash_command()
+        assert input_box.text == '/cd "space dir/"'
+        assert input_box.cursor_location == (0, len('/cd "space dir/'))
+
+        input_box.load_text("/cd ~")
+        input_box.cursor_location = input_box.document.end
+        app.complete_slash_command()
+        assert input_box.text == "/cd ~/"
+
+
 def test_submit_worker_owns_single_asyncio_run_boundary():
     running_loops = []
 

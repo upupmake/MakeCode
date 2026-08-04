@@ -1,8 +1,10 @@
 import asyncio
+import os
 import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from datetime import datetime
+from pathlib import Path
 from queue import Queue
 from typing import Any
 
@@ -42,6 +44,7 @@ from system.tui_modals import (
     TaskPanelModal,
     ToolHistoryModal,
 )
+from utils import paths
 
 
 class TuiBridge:
@@ -755,6 +758,7 @@ class MakeCodeTuiApp(App[None]):
         self._slash_matches: list[tuple[str, str]] = []
         self._slash_match_index = 0
         self._slash_hint_visible = False
+        self._cd_completion_state: tuple[str, int, list[str], int] | None = None
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
         self._input_history_draft = ""
@@ -1672,6 +1676,8 @@ class MakeCodeTuiApp(App[None]):
 
     def update_slash_hint(self) -> None:
         input_box = self.query_one("#input-box", MakeCodeInput)
+        if self._cd_completion_state is not None and self._cd_completion_state[0] != input_box.text:
+            self._cd_completion_state = None
         matches = self._get_slash_matches(input_box.text)
         self._slash_matches = matches
         self._slash_match_index = 0
@@ -1739,8 +1745,126 @@ class MakeCodeTuiApp(App[None]):
         hint_box.remove_class("visible")
         self._slash_hint_visible = False
 
+    def _cd_completion_context(self, input_box: MakeCodeInput) -> tuple[str, int, str, str, bool] | None:
+        text = input_box.text
+        row, column = input_box.cursor_location
+        if row != 0 or "\n" in text or not text.startswith("/cd "):
+            return None
+        cursor_offset = column
+        if cursor_offset < 4:
+            return None
+        raw_fragment = text[4:cursor_offset]
+        if not raw_fragment:
+            return text, cursor_offset, "", "", False
+
+        quote = raw_fragment[0] if raw_fragment[0] in {'"', "'"} else ""
+        path_fragment = raw_fragment[1:] if quote else raw_fragment
+        has_closing_quote = bool(quote and path_fragment.endswith(quote))
+        if has_closing_quote:
+            path_fragment = path_fragment[:-1]
+        return text, cursor_offset, quote, path_fragment, has_closing_quote
+
+    def _cd_completion_candidates(self, path_fragment: str) -> list[str]:
+        if path_fragment == "~":
+            return ["~/"] if Path.home().is_dir() else []
+
+        separator_index = max(path_fragment.rfind("/"), path_fragment.rfind(os.sep))
+        if path_fragment.endswith(("/", os.sep)):
+            parent_text = path_fragment
+            name_prefix = ""
+        elif separator_index >= 0:
+            parent_text = path_fragment[:separator_index + 1]
+            name_prefix = path_fragment[separator_index + 1:]
+        else:
+            parent_text = ""
+            name_prefix = path_fragment
+
+        expanded_parent = os.path.expanduser(parent_text or ".")
+        parent_path = Path(expanded_parent)
+        if not parent_path.is_absolute():
+            parent_path = Path(paths.workdir()) / parent_path
+        try:
+            directories = [
+                child.name
+                for child in parent_path.resolve().iterdir()
+                if child.is_dir()
+                and child.name.startswith(name_prefix)
+                and (name_prefix.startswith(".") or not child.name.startswith("."))
+            ]
+        except OSError:
+            return []
+
+        directories.sort()
+        separator = "/" if "/" in path_fragment or os.sep == "/" else os.sep
+        return [f"{parent_text}{directory}{separator}" for directory in directories]
+
+    def _replace_cd_completion(
+        self,
+        input_box: MakeCodeInput,
+        text: str,
+        cursor_offset: int,
+        quote: str,
+        completed_path: str,
+        has_closing_quote: bool,
+    ) -> None:
+        suffix = text[cursor_offset:]
+        closing_quote_in_suffix = bool(quote and suffix.startswith(quote))
+        closing_quote = quote if quote and (has_closing_quote or not closing_quote_in_suffix) else ""
+        replacement = f"{quote}{completed_path}{closing_quote}"
+        new_text = f"{text[:4]}{replacement}{suffix}"
+        new_cursor_offset = 4 + len(replacement) - len(closing_quote)
+        input_box.load_text(new_text)
+        input_box.cursor_location = (0, new_cursor_offset)
+
+    def _complete_cd_path(self, input_box: MakeCodeInput) -> bool:
+        context = self._cd_completion_context(input_box)
+        if context is None:
+            self._cd_completion_state = None
+            return False
+
+        text, cursor_offset, quote, path_fragment, has_closing_quote = context
+        state = self._cd_completion_state
+        if state is not None and (state[0], state[1]) == (text, cursor_offset):
+            candidates = state[2]
+            candidate_index = state[3]
+            completed_path = candidates[candidate_index % len(candidates)] if candidates else path_fragment
+            next_index = (candidate_index + 1) % len(candidates) if candidates else 0
+        else:
+            candidates = self._cd_completion_candidates(path_fragment)
+            if not candidates:
+                self._cd_completion_state = None
+                self._hide_slash_hints()
+                return True
+            common_prefix = os.path.commonprefix(candidates)
+            if len(common_prefix) > len(path_fragment):
+                completed_path = common_prefix
+                next_index = 0
+            else:
+                completed_path = candidates[0]
+                next_index = 1 % len(candidates)
+
+        self._replace_cd_completion(
+            input_box,
+            text,
+            cursor_offset,
+            quote,
+            completed_path,
+            has_closing_quote,
+        )
+        self._cd_completion_state = (
+            input_box.text,
+            input_box.cursor_location[1],
+            candidates,
+            next_index,
+        )
+        self._hide_slash_hints()
+        input_box.focus()
+        return True
+
     def complete_slash_command(self) -> None:
         input_box = self.query_one("#input-box", MakeCodeInput)
+        if self._complete_cd_path(input_box):
+            return
         matches = self._slash_matches or self._get_slash_matches(input_box.text)
         if not matches:
             return
