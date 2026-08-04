@@ -2249,6 +2249,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         self._pending_delete_index: int | None = None
         self._deleted_results: list[dict[str, Any]] = []
         self._added_results: list[dict[str, Any]] = []
+        self._row_reload_generation = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="mcp-dialog"):
@@ -2329,13 +2330,21 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         self._pending_delete_index = None
         self._reset_header()
         choice_list = self.query_one("#mcp-list", ListView)
-        choice_list.clear()
+        self._row_reload_generation += 1
+        reload_generation = self._row_reload_generation
 
-        def _mount_rows() -> None:
-            choice_list.extend(
+        async def _mount_rows() -> None:
+            if reload_generation != self._row_reload_generation:
+                return
+            await choice_list.clear()
+            if reload_generation != self._row_reload_generation:
+                return
+            await choice_list.extend(
                 self._server_item(index, item)
                 for index, item in enumerate(self._server_switches)
             )
+            if reload_generation != self._row_reload_generation:
+                return
             if not self._server_switches:
                 self.query_one("#mcp-apply", Button).focus()
                 return

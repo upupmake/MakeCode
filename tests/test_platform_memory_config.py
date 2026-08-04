@@ -717,6 +717,28 @@ async def test_mcp_switch_modal_preserves_delete_confirmation_and_selection():
 
 
 @pytest.mark.anyio
+async def test_mcp_switch_modal_ignores_stale_row_reload_callbacks():
+    modal = McpSwitchModal(
+        [
+            {"name": "first", "disabled": False, "loaded": False},
+            {"name": "second", "disabled": True, "loaded": False},
+        ],
+        Mock(),
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 28)) as pilot:
+        await pilot.pause()
+        modal._reload_rows(0)
+        modal._reload_rows(1)
+        await pilot.pause()
+
+        service_list = modal.query_one("#mcp-list", ListView)
+        assert [item.id for item in service_list.children] == ["mcp-server-0", "mcp-server-1"]
+        assert service_list.index == 1
+
+
+@pytest.mark.anyio
 async def test_mcp_switch_modal_scrolls_many_wrapped_service_cards_while_actions_stay_visible():
     servers = [
         {
@@ -1262,8 +1284,9 @@ async def test_model_manager_modal_scrolls_cards_while_actions_stay_visible(tmp_
         assert modal.query_one("#model-manager-add", Button).region.height > 0
         assert modal.query_one("#model-manager-close", Button).region.height > 0
 
-        model_list.index = len(model_list.children) - 1
+        await pilot.press(*(["down"] * (len(model_list.children) - 1)))
         await pilot.pause()
+        assert model_list.index == len(model_list.children) - 1
         assert model_list.scroll_y > 0
 
 
