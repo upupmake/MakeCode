@@ -457,6 +457,16 @@ class MakeCodeInput(TextArea):
             event.stop()
             event.prevent_default()
             return
+        if event.key == "up" and app.cd_completion_visible:
+            app.move_cd_selection(-1)
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "down" and app.cd_completion_visible:
+            app.move_cd_selection(1)
+            event.stop()
+            event.prevent_default()
+            return
         if event.key == "up" and app.slash_hint_visible:
             app.move_slash_selection(-1)
             event.stop()
@@ -1393,6 +1403,16 @@ class MakeCodeTuiApp(App[None]):
             event.stop()
             event.prevent_default()
             return
+        if event.key == "up" and self.cd_completion_visible:
+            self.move_cd_selection(-1)
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "down" and self.cd_completion_visible:
+            self.move_cd_selection(1)
+            event.stop()
+            event.prevent_default()
+            return
         if event.key == "up" and self.slash_hint_visible:
             self.move_slash_selection(-1)
             event.stop()
@@ -1426,7 +1446,7 @@ class MakeCodeTuiApp(App[None]):
         event.prevent_default()
 
     def submit_current_input(self) -> None:
-        if self.slash_hint_visible:
+        if self.slash_hint_visible and not self.cd_completion_visible:
             self.accept_slash_selection()
             return
         input_box = self.query_one("#input-box", MakeCodeInput)
@@ -1441,6 +1461,7 @@ class MakeCodeTuiApp(App[None]):
             self.update_input_height()
             self._slash_matches = []
             self._slash_match_index = 0
+            self._cd_completion_state = None
             self._hide_slash_hints()
             if text != "/flush":
                 from system.console_render import render_content_user_message
@@ -1676,7 +1697,10 @@ class MakeCodeTuiApp(App[None]):
 
     def update_slash_hint(self) -> None:
         input_box = self.query_one("#input-box", MakeCodeInput)
-        if self._cd_completion_state is not None and self._cd_completion_state[0] != input_box.text:
+        if self._cd_completion_state is not None and (
+            self._cd_completion_state[0],
+            self._cd_completion_state[1],
+        ) != (input_box.text, input_box.cursor_location[1]):
             self._cd_completion_state = None
         matches = self._get_slash_matches(input_box.text)
         self._slash_matches = matches
@@ -1726,6 +1750,19 @@ class MakeCodeTuiApp(App[None]):
         self._slash_match_index = (self._slash_match_index + delta) % len(matches)
         self._show_slash_hints(matches)
 
+    @property
+    def cd_completion_visible(self) -> bool:
+        return self._cd_completion_state is not None and self._slash_hint_visible
+
+    def move_cd_selection(self, delta: int) -> None:
+        state = self._cd_completion_state
+        if state is None:
+            return
+        text, cursor_offset, candidates, selected = state
+        selected = (selected + delta) % len(candidates)
+        self._cd_completion_state = (text, cursor_offset, candidates, selected)
+        self._show_cd_candidates(candidates, selected)
+
     def accept_slash_selection(self) -> None:
         input_box = self.query_one("#input-box", MakeCodeInput)
         matches = self._slash_matches or self._get_slash_matches(input_box.text)
@@ -1744,6 +1781,22 @@ class MakeCodeTuiApp(App[None]):
         hint_box.update("")
         hint_box.remove_class("visible")
         self._slash_hint_visible = False
+
+    def _show_cd_candidates(self, candidates: list[str], selected: int) -> None:
+        hint_box = self.query_one("#slash-hints", Static)
+        window_size = 6
+        start = min(max(0, selected - window_size + 1), max(0, len(candidates) - window_size))
+        end = min(len(candidates), start + window_size)
+        content = Text()
+        for index, candidate in enumerate(candidates[start:end], start=start):
+            if index > start:
+                content.append("\n")
+            marker = "❯ " if index == selected else "  "
+            content.append(marker, style="bold" if index == selected else "")
+            content.append(candidate, style="cyan" if index == selected else "white")
+        hint_box.update(content)
+        hint_box.add_class("visible")
+        self._slash_hint_visible = True
 
     def _cd_completion_context(self, input_box: MakeCodeInput) -> tuple[str, int, str, str, bool] | None:
         text = input_box.text
@@ -1820,28 +1873,30 @@ class MakeCodeTuiApp(App[None]):
         context = self._cd_completion_context(input_box)
         if context is None:
             self._cd_completion_state = None
+            self._hide_slash_hints()
             return False
 
         text, cursor_offset, quote, path_fragment, has_closing_quote = context
         state = self._cd_completion_state
-        if state is not None and (state[0], state[1]) == (text, cursor_offset):
+        continuing = state is not None and (state[0], state[1]) == (text, cursor_offset)
+        if continuing:
             candidates = state[2]
-            candidate_index = state[3]
-            completed_path = candidates[candidate_index % len(candidates)] if candidates else path_fragment
-            next_index = (candidate_index + 1) % len(candidates) if candidates else 0
+            selected = state[3]
+            completed_path = candidates[selected]
         else:
+            self._cd_completion_state = None
             candidates = self._cd_completion_candidates(path_fragment)
             if not candidates:
-                self._cd_completion_state = None
                 self._hide_slash_hints()
                 return True
+            selected = 0
             common_prefix = os.path.commonprefix(candidates)
             if len(common_prefix) > len(path_fragment):
                 completed_path = common_prefix
-                next_index = 0
-            else:
+            elif len(candidates) == 1:
                 completed_path = candidates[0]
-                next_index = 1 % len(candidates)
+            else:
+                completed_path = path_fragment
 
         self._replace_cd_completion(
             input_box,
@@ -1855,9 +1910,11 @@ class MakeCodeTuiApp(App[None]):
             input_box.text,
             input_box.cursor_location[1],
             candidates,
-            next_index,
-        )
+            selected,
+        ) if not continuing and len(candidates) > 1 else None
         self._hide_slash_hints()
+        if self._cd_completion_state is not None:
+            self._show_cd_candidates(candidates, selected)
         input_box.focus()
         return True
 

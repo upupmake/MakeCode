@@ -643,7 +643,7 @@ async def test_submitting_flush_preserves_existing_pane_content():
 
 
 @pytest.mark.anyio
-async def test_cd_path_completion_uses_longest_common_prefix_and_cycles_directories(tmp_path, monkeypatch):
+async def test_cd_path_completion_uses_longest_common_prefix_and_allows_selecting_candidates(tmp_path, monkeypatch):
     (tmp_path / "alpha").mkdir()
     (tmp_path / "alpine").mkdir()
     (tmp_path / "beta").mkdir()
@@ -654,6 +654,7 @@ async def test_cd_path_completion_uses_longest_common_prefix_and_cycles_director
     async with app.run_test() as pilot:
         await pilot.pause()
         input_box = app.query_one("#input-box", MakeCodeInput)
+        candidate_box = app.query_one("#slash-hints")
         input_box.load_text("/cd al")
         input_box.cursor_location = input_box.document.end
 
@@ -661,24 +662,23 @@ async def test_cd_path_completion_uses_longest_common_prefix_and_cycles_director
         await pilot.press("tab")
         await pilot.pause()
         assert input_box.text == "/cd alp"
+        assert candidate_box.has_class("visible")
+        assert "alpha/" in str(candidate_box.content)
+        assert "alpine/" in str(candidate_box.content)
+        assert "alpine-file/" not in str(candidate_box.content)
 
-        await pilot.press("tab")
+        await pilot.press("up")
         await pilot.pause()
-        assert input_box.text == "/cd alpha/"
+        assert "❯ alpine/" in str(candidate_box.content)
 
         await pilot.press("tab")
         await pilot.pause()
         assert input_box.text == "/cd alpine/"
-
-        await pilot.press("tab")
-        await pilot.pause()
-        assert input_box.text == "/cd alpha/"
-
-
+        assert not candidate_box.has_class("visible")
 
 
 @pytest.mark.anyio
-async def test_cd_path_completion_from_empty_argument_selects_directory_candidates(tmp_path, monkeypatch):
+async def test_cd_path_completion_from_empty_argument_shows_directory_candidates(tmp_path, monkeypatch):
     (tmp_path / "alpha").mkdir()
     (tmp_path / "beta").mkdir()
     monkeypatch.setattr("system.tui_app.paths.workdir", lambda: tmp_path)
@@ -687,16 +687,79 @@ async def test_cd_path_completion_from_empty_argument_selects_directory_candidat
     async with app.run_test() as pilot:
         await pilot.pause()
         input_box = app.query_one("#input-box", MakeCodeInput)
+        candidate_box = app.query_one("#slash-hints")
         input_box.load_text("/cd ")
         input_box.cursor_location = input_box.document.end
 
         await pilot.press("tab")
         await pilot.pause()
-        assert input_box.text == "/cd alpha/"
+        assert input_box.text == "/cd "
+        assert candidate_box.has_class("visible")
+        assert "alpha/" in str(candidate_box.content)
+        assert "beta/" in str(candidate_box.content)
 
         await pilot.press("tab")
         await pilot.pause()
-        assert input_box.text == "/cd beta/"
+        assert input_box.text == "/cd alpha/"
+        assert not candidate_box.has_class("visible")
+
+
+@pytest.mark.anyio
+async def test_cd_path_completion_keeps_all_candidates_and_scrolls_a_six_item_window(tmp_path, monkeypatch):
+    for index in range(8):
+        (tmp_path / f"dir{index}").mkdir()
+    monkeypatch.setattr("system.tui_app.paths.workdir", lambda: tmp_path)
+
+    app = MakeCodeTuiApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box", MakeCodeInput)
+        candidate_box = app.query_one("#slash-hints")
+        input_box.load_text("/cd d")
+        input_box.cursor_location = input_box.document.end
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert input_box.text == "/cd dir"
+        assert "dir0/" in str(candidate_box.content)
+        assert "dir5/" in str(candidate_box.content)
+        assert "dir6/" not in str(candidate_box.content)
+
+        await pilot.press(*["down"] * 7)
+        await pilot.pause()
+        assert "❯ dir7/" in str(candidate_box.content)
+        assert "dir0/" not in str(candidate_box.content)
+        assert "dir2/" in str(candidate_box.content)
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert input_box.text == "/cd dir7/"
+
+
+@pytest.mark.anyio
+async def test_cd_path_candidate_selection_does_not_change_enter_submission(tmp_path, monkeypatch):
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "alpine").mkdir()
+    monkeypatch.setattr("system.tui_app.paths.workdir", lambda: tmp_path)
+    submitted = []
+    submitted_event = threading.Event()
+
+    async def submit_handler(text):
+        submitted.append(text)
+        submitted_event.set()
+
+    app = MakeCodeTuiApp(submit_handler=submit_handler)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box", MakeCodeInput)
+        input_box.load_text("/cd al")
+        input_box.cursor_location = input_box.document.end
+        input_box.focus()
+
+        await pilot.press("tab", "down", "enter")
+        await pilot.pause()
+        assert await asyncio.to_thread(submitted_event.wait, 1)
+        assert submitted == ["/cd alp"]
 
 
 @pytest.mark.anyio
