@@ -24,7 +24,7 @@ COMMAND_DESCRIPTIONS = {
     "/skills-list": "打开当前工作区 Skills 配置面板，可搜索、按状态过滤并启用或禁用技能。",
     "/compact": "[prompt] 压缩当前对话上下文；prompt 可选，不填则使用默认压缩提示，并自动尝试提取关键记忆信息。",
     "/memory-list": "列出当前保存的长期记忆。",
-    "/memory-panel": "打开长期记忆交互面板，可查看详情并二次确认删除。",
+    "/memory-panel": "打开长期记忆交互面板，可主动添加、查看详情并二次确认删除。",
     "/memory-delete": "<memory_id> [memory_id ...] 按 ID 删除一条或多条长期记忆。",
     "/memory-config": "打开记忆配置面板，修改全局上下文长度和记忆设置。",
     "/memory-update": "[prompt] 根据用户请求主动管理长期记忆；prompt 可选，不填则根据当前对话使用默认记忆管理提示。",

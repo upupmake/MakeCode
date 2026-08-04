@@ -703,8 +703,8 @@ class MakeCodeTuiApp(App[None]):
     }
 
     #input-box {
-        height: 4;
-        min-height: 4;
+        height: 5;
+        min-height: 5;
         max-height: 6;
         border: round #22c55e;
     }
@@ -800,6 +800,9 @@ class MakeCodeTuiApp(App[None]):
                 with Vertical(id="tools-pane", classes="pane"):
                     yield RichLog(id="tools-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="tools-tail", classes="pane-tail")
+                with Vertical(id="bottom-grid"):
+                    yield Static("", id="slash-hints")
+                    yield MakeCodeInput(id="input-box", placeholder='Prompt here e.g. "整理当前项目的架构"')
             with Vertical(id="right-column"):
                 with Vertical(id="task-pane", classes="pane"):
                     yield RichLog(id="task-log", classes="pane-log", markup=True, wrap=True, min_width=1)
@@ -810,9 +813,6 @@ class MakeCodeTuiApp(App[None]):
                 with Vertical(id="sub-agent-pane", classes="pane"):
                     yield RichLog(id="sub-agent-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="sub-agent-tail", classes="pane-tail")
-        with Vertical(id="bottom-grid"):
-            yield Static("", id="slash-hints")
-            yield MakeCodeInput(id="input-box", placeholder='Prompt here e.g. "整理当前项目的架构"')
         with Horizontal(id="runtime-info-row"):
             yield Static(self._runtime_info, id="runtime-info-bar")
             yield Button("HITL", id="hitl-toggle")
@@ -880,7 +880,7 @@ class MakeCodeTuiApp(App[None]):
 
     def update_input_height(self) -> None:
         input_box = self.query_one("#input-box", MakeCodeInput)
-        content_rows = min(max(input_box.wrapped_document.height, 2), 4)
+        content_rows = min(max(input_box.wrapped_document.height, 3), 4)
         target_height = content_rows + 2
         if input_box.styles.height != target_height:
             input_box.styles.height = target_height

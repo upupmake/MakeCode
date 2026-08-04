@@ -159,8 +159,6 @@ def _task_plan_preview(plan_data: dict) -> Group:
 
 def interactive_switch_mcp_servers(server_switches: list, mcp_manager: Any) -> str | dict:
     """交互式切换 MCP 服务启用/禁用状态"""
-    if not server_switches:
-        return "empty"
     return choose_mcp_switch_tui(server_switches, mcp_manager)
 
 
@@ -334,7 +332,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 删除指定 MCP 服务配置。该命令会二次确认；确认后写入配置文件，并尝试停用运行中的同名服务。
 
 #### `/mcp-switch`
-打开交互式 MCP 服务开关面板。可切换已有服务的启用/禁用状态，确认后保存到配置文件并尝试增量启停服务。
+打开交互式 MCP 服务管理面板。可手动添加本地 stdio、远程 Streamable HTTP 或 SSE 服务，也可切换已有服务的启用/禁用状态；新服务默认禁用，确认后保存开关修改并尝试增量启停服务。
 
 #### `/mcp-restart`
 重启 MCP 后台管理器，重新读取配置文件并重新连接所有启用的 MCP 服务。适合配置手动编辑后完整重载，或增量启停失败后恢复状态。
@@ -347,25 +345,17 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
     def handle_mcp_switch(self) -> bool:
         """处理 /mcp-switch 命令"""
         self.console.print(
-            "\n[bold cyan]🔧 正在打开 MCP 开关面板...[/bold cyan]\n"
-            "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，按 Space 切换状态，移动到底部后按 Enter 选择确认或取消。[/#aaaaaa]",
+            "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
+            "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，按 Enter 或 Space 切换状态；可通过底部按钮添加服务、确认应用或取消。[/#aaaaaa]",
             tui_region=TuiRegion.TOOLS,
         )
         try:
             server_switches = self.mcp_manager.list_server_switches()
-        except FileNotFoundError as exc:
-            self.console.print(f"\n[bold yellow]⚠️ {exc}[/bold yellow]", tui_region=TuiRegion.TOOLS)
-            return True
+        except FileNotFoundError:
+            server_switches = []
         except Exception as exc:
             log_error_traceback("commands handle_mcp_switch list", exc)
             self.console.print(f"\n[bold red]❌ 读取 MCP 配置失败: {exc}[/bold red]", tui_region=TuiRegion.TOOLS)
-            return True
-
-        if not server_switches:
-            self.console.print(
-                f"\n[bold yellow]⚠️ MCP 服务为空，暂无可切换的服务。\n   配置路径: {self.mcp_manager.config_path}[/bold yellow]",
-                tui_region=TuiRegion.TOOLS,
-            )
             return True
 
         try:
@@ -378,18 +368,13 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
             return True
 
-        if switch_result == "empty":
-            self.console.print(
-                "\n[bold yellow]↩️ 已取消本次 MCP 开关修改，配置文件未保存，运行中的服务状态保持不变。[/bold yellow]",
-                tui_region=TuiRegion.TOOLS,
-            )
-            return True
-
         deleted_lines = self._format_mcp_panel_delete_lines(switch_result.get("deleted_results", []))
+        added_lines = self._format_mcp_panel_add_lines(switch_result.get("added_results", []))
         if switch_result.get("action") == "cancel":
             lines = [
-                "\n[bold yellow]↩️ 已取消本次 MCP 开关修改，配置文件未保存，运行中的服务状态保持不变。[/bold yellow]"
+                "\n[bold yellow]↩️ 已取消本次 MCP 开关草稿修改，开关状态未应用。[/bold yellow]"
             ]
+            lines.extend(added_lines)
             lines.extend(deleted_lines)
             self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
             return True
@@ -408,6 +393,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         if not apply_result.get("saved"):
             lines = [f"\n[bold yellow]ℹ️ {apply_result.get('message', '没有检测到变更。')}[/bold yellow]"]
+            lines.extend(added_lines)
             lines.extend(deleted_lines)
             self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
             return True
@@ -441,9 +427,31 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             summary_lines.append(
                 f"[bold red]部分服务切换失败:[/bold red] {failure_text}"
             )
+        summary_lines.extend(added_lines)
         summary_lines.extend(deleted_lines)
         self.console.print("\n".join(summary_lines), tui_region=TuiRegion.TOOLS)
         return True
+
+    def _format_mcp_add_lines(self, server_name: str, result: dict) -> list[str]:
+        failed = result.get("failed", [])
+        lines = [
+            f"\n[bold green]✅ 已添加 MCP 服务:[/bold green] {escape(server_name)}",
+            f"[#aaaaaa]配置文件: {self.mcp_manager.get_status_info().get('config_path')}[/#aaaaaa]",
+            f"[#aaaaaa]{escape(result.get('message', ''))}[/#aaaaaa]",
+        ]
+        if failed:
+            failure_text = "; ".join(
+                f"{item['server']} ({item['action']} 失败: {item['error']})"
+                for item in failed
+            )
+            lines.append(f"[bold red]服务启用失败:[/bold red] {escape(failure_text)}")
+        return lines
+
+    def _format_mcp_panel_add_lines(self, added_results: list[dict]) -> list[str]:
+        lines = []
+        for item in added_results:
+            lines.extend(self._format_mcp_add_lines(item.get("server", ""), item.get("result", {})))
+        return lines
 
     def _format_mcp_delete_lines(self, server_name: str, result: dict) -> list[str]:
         failed = result.get("failed", [])
@@ -483,19 +491,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
             return True
 
-        failed = result.get("failed", [])
-        lines = [
-            f"\n[bold green]✅ 已添加 MCP 服务:[/bold green] {escape(server_name)}",
-            f"[#aaaaaa]配置文件: {self.mcp_manager.get_status_info().get('config_path')}[/#aaaaaa]",
-            f"[#aaaaaa]{escape(result.get('message', ''))}[/#aaaaaa]",
-        ]
-        if failed:
-            failure_text = "; ".join(
-                f"{item['server']} ({item['action']} 失败: {item['error']})"
-                for item in failed
-            )
-            lines.append(f"[bold red]服务启用失败:[/bold red] {escape(failure_text)}")
-        self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
+        self.console.print("\n".join(self._format_mcp_add_lines(server_name, result)), tui_region=TuiRegion.TOOLS)
         return True
 
     def handle_mcp_delete(self, query: str) -> bool:
@@ -768,7 +764,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             else "未选择"
         )
         self.console.print(f"\n[bold cyan]已退出模型面板，当前模型：[/bold cyan][bold green]{current_text}[/bold green]", tui_region=TuiRegion.TOOLS)
-        refresh_status()
         return True
 
     def handle_layout(self) -> bool:
@@ -1306,7 +1301,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             self.handle_memory_list()
             return CommandResult(action=CommandAction.CONTINUE)
 
-        # /memory-panel - 交互式查看和删除长期记忆
+        # /memory-panel - 交互式添加、查看和删除长期记忆
         if query == "/memory-panel":
             self.handle_memory_panel(history, current_conversation)
             return CommandResult(action=CommandAction.CONTINUE)

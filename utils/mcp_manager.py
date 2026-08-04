@@ -4,6 +4,7 @@ import re
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from fastmcp import Client
 from rich.markup import escape
@@ -56,20 +57,48 @@ class GlobalMCPManager:
             raise FileNotFoundError(f"MCP 配置文件不存在: {self.config_path}")
         return self._load_config_dict()
 
+    @staticmethod
+    def _display_target(cfg: dict) -> str:
+        command = cfg.get("command")
+        if command:
+            return str(command)
+        url = str(cfg.get("url") or "")
+        if not url:
+            return "未配置连接目标"
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            parsed = None
+        if parsed is None or not parsed.scheme or not parsed.netloc:
+            return url.rsplit("@", 1)[-1].split("?", 1)[0].split("#", 1)[0]
+        netloc = parsed.netloc.rsplit("@", 1)[-1]
+        return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
     def list_server_switches(self) -> list:
         config_dict = self.read_config()
         servers = config_dict.get("mcpServers", {})
         result = []
         with self._db_lock:
             loaded_servers = set(self.clients.keys())
+            tool_counts = {
+                name: len(self._server_status_tools.get(name, []))
+                for name in servers
+            }
         for name, cfg in servers.items():
             disabled = bool(cfg.get("disabled", False))
+            url = cfg.get("url")
+            transport = cfg.get("transport") or cfg.get("type")
+            if not transport:
+                transport = "sse" if url and "/sse" in str(url).lower() else "streamable-http" if url else "stdio"
             result.append(
                 {
                     "name": name,
                     "disabled": disabled,
                     "enabled": not disabled,
                     "loaded": name in loaded_servers,
+                    "transport": transport,
+                    "target": self._display_target(cfg),
+                    "tool_count": tool_counts[name],
                 }
             )
         return result

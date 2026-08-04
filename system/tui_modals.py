@@ -1,4 +1,5 @@
 import json
+import shlex
 from typing import Any, Callable, TypeVar
 from pathlib import Path
 
@@ -77,7 +78,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, ModelManagerModal, AddModelModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal {
         align: center middle;
     }
 
@@ -459,11 +460,119 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #memory-dialog {
         width: 88%;
-        height: auto;
-        max-height: 86%;
+        height: 86%;
+        min-height: 18;
         border: round #f59e0b;
         background: $surface;
         padding: 1 2;
+    }
+
+    #memory-title {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #memory-summary {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #memory-list {
+        height: 1fr;
+        min-height: 5;
+        margin-top: 1;
+        padding: 0 1;
+        border: round #334155;
+    }
+
+    #memory-list > ListItem {
+        height: auto;
+        min-height: 3;
+        margin-bottom: 1;
+        padding: 1 2;
+        border: round #1e293b;
+    }
+
+    #memory-list > ListItem.-highlight {
+        border: round #f59e0b;
+    }
+
+    #memory-list > ListItem > Label {
+        width: 1fr;
+        height: auto;
+    }
+
+    #memory-detail {
+        height: 10;
+        min-height: 4;
+        margin-top: 1;
+        border: round #3b82f6;
+        padding: 0 1;
+    }
+
+    #memory-help {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #memory-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    .memory-action {
+        width: 1fr;
+        margin: 0 1;
+    }
+
+    #memory-add-dialog {
+        width: 82%;
+        height: 88%;
+        min-height: 20;
+        border: round #f59e0b;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #memory-add-fields {
+        height: 1fr;
+        padding: 0 1;
+    }
+
+    .memory-add-label {
+        height: auto;
+        margin-top: 1;
+    }
+
+    .memory-add-textarea {
+        height: 5;
+        min-height: 3;
+    }
+
+    #memory-add-insight {
+        height: 7;
+    }
+
+    #memory-add-error {
+        display: none;
+        height: auto;
+        margin-top: 1;
+        color: #f87171;
+    }
+
+    #memory-add-hint {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #memory-add-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    .memory-add-action {
+        width: 1fr;
+        margin: 0 1;
     }
 
     #memory-config-dialog {
@@ -491,19 +600,6 @@ class ChoiceModal(ClosableModalScreen[str]):
     .memory-config-button {
         width: 1fr;
         margin: 0 1;
-    }
-
-    #memory-list {
-        height: 12;
-        max-height: 12;
-    }
-
-    #memory-detail {
-        height: 12;
-        min-height: 1;
-        margin-top: 1;
-        border: round #3b82f6;
-        padding: 0 1;
     }
 
     #layout-columns {
@@ -570,6 +666,70 @@ class ChoiceModal(ClosableModalScreen[str]):
         width: 14;
     }
 
+    #model-manager-dialog {
+        width: 86%;
+        height: 86%;
+        min-height: 16;
+        border: round #a78bfa;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #model-manager-title {
+        height: auto;
+        margin-bottom: 0;
+        color: #e2e8f0;
+    }
+
+    #model-manager-summary {
+        height: auto;
+        margin-top: 1;
+        color: #94a3b8;
+    }
+
+    #model-manager-list {
+        height: 1fr;
+        min-height: 5;
+        margin-top: 1;
+        padding: 0 1;
+        border: round #334155;
+    }
+
+    #model-manager-list > ListItem {
+        height: auto;
+        min-height: 3;
+        margin-bottom: 1;
+        padding: 1 2;
+        border: round #1e293b;
+        background: #111827;
+    }
+
+    #model-manager-list > ListItem.-highlight {
+        border: round #a78bfa;
+        background: #2e1065;
+    }
+
+    #model-manager-list > ListItem > Label {
+        width: 1fr;
+        height: auto;
+    }
+
+    #model-manager-help {
+        height: auto;
+        margin-top: 1;
+        color: #64748b;
+    }
+
+    #model-manager-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    .model-manager-action {
+        width: 1fr;
+        margin: 0 1;
+    }
+
     #model-form-dialog {
         width: 72;
         height: auto;
@@ -595,6 +755,127 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #model-confirm {
         width: 14;
+    }
+
+    #mcp-dialog {
+        width: 86%;
+        height: 86%;
+        min-height: 16;
+        border: round #22d3ee;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #mcp-title {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #mcp-summary {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #mcp-help {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #mcp-list {
+        height: 1fr;
+        min-height: 5;
+        margin-top: 1;
+        padding: 0 1;
+        border: round #334155;
+    }
+
+    #mcp-list > ListItem {
+        height: auto;
+        min-height: 3;
+        margin-bottom: 1;
+        padding: 1 2;
+        border: round #1e293b;
+    }
+
+    #mcp-list > ListItem.-highlight {
+        border: round #38bdf8;
+    }
+
+    #mcp-list > ListItem > Label {
+        width: 1fr;
+        height: auto;
+    }
+
+    #mcp-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    .mcp-action {
+        width: 1fr;
+        margin: 0 1;
+    }
+
+    #mcp-add-dialog {
+        width: 86%;
+        height: 90%;
+        min-height: 20;
+        border: round #22d3ee;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #mcp-add-fields {
+        height: 1fr;
+        padding: 0 1;
+    }
+
+    .mcp-add-group {
+        height: auto;
+    }
+
+    .mcp-add-label {
+        height: auto;
+        margin-top: 1;
+    }
+
+    .mcp-add-input {
+        margin-top: 0;
+    }
+
+    .mcp-add-pairs {
+        height: 4;
+        min-height: 3;
+        margin-top: 0;
+    }
+
+    #mcp-add-advanced-title {
+        height: auto;
+        margin-top: 1;
+        padding-top: 1;
+        border-top: solid #475569;
+    }
+
+    #mcp-add-error {
+        display: none;
+        height: auto;
+        margin-top: 1;
+        color: #f87171;
+    }
+
+    #mcp-add-hint {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #mcp-add-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    .mcp-add-action {
+        width: 1fr;
+        margin: 0 1;
     }
     """
 
@@ -632,7 +913,7 @@ class ChoiceModal(ClosableModalScreen[str]):
         return f"{self._title}\n{' · '.join(hints)}" if hints else self._title
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="choice-dialog"):
+        with VerticalScroll(id="choice-dialog"):
             yield ModalHeader(self._title_text(), title_id="choice-title", markup=False)
             if self._options:
                 yield ListView(*[ListItem(Label(option, markup=False)) for option in self._options], id="choice-list")
@@ -1769,12 +2050,191 @@ class CopyContentModal(ClosableModalScreen[str]):
         return "\n\n".join(parts)
 
 
+class McpAddModal(ClosableModalScreen[dict[str, Any] | None]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "cancel", "Cancel", priority=True),
+    ]
+
+    _TRANSPORTS = {"stdio", "streamable-http", "sse"}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="mcp-add-dialog"):
+            yield ModalHeader("➕ 手动添加 MCP 服务", title_id="choice-title")
+            with VerticalScroll(id="mcp-add-fields"):
+                yield Label("服务名称", classes="mcp-add-label")
+                yield Input(placeholder="例如 filesystem 或 remote-api", id="mcp-add-name", classes="mcp-add-input")
+                yield Label("传输类型", classes="mcp-add-label")
+                yield Select(
+                    [
+                        ("本地 stdio", "stdio"),
+                        ("远程 Streamable HTTP", "streamable-http"),
+                        ("远程 SSE", "sse"),
+                    ],
+                    value="stdio",
+                    allow_blank=False,
+                    id="mcp-add-transport",
+                    classes="mcp-add-input",
+                )
+                with Vertical(id="mcp-add-stdio-core", classes="mcp-add-group"):
+                    yield Label("启动命令", classes="mcp-add-label")
+                    yield Input(placeholder="例如 npx、uvx 或可执行文件路径", id="mcp-add-command", classes="mcp-add-input")
+                    yield Label("命令参数（支持引号分组）", classes="mcp-add-label")
+                    yield Input(placeholder='例如 -y "@scope/server" "/path with spaces"', id="mcp-add-args", classes="mcp-add-input")
+                with Vertical(id="mcp-add-remote-core", classes="mcp-add-group"):
+                    yield Label("服务 URL", classes="mcp-add-label")
+                    yield Input(placeholder="https://example.com/mcp", id="mcp-add-url", classes="mcp-add-input")
+                yield Label("高级参数（可选）", id="mcp-add-advanced-title")
+                with Vertical(id="mcp-add-stdio-advanced", classes="mcp-add-group"):
+                    yield Label("环境变量（每行 KEY=VALUE）", classes="mcp-add-label")
+                    yield TextArea("", id="mcp-add-env", classes="mcp-add-pairs")
+                    yield Label("工作目录", classes="mcp-add-label")
+                    yield Input(placeholder="子进程工作目录", id="mcp-add-cwd", classes="mcp-add-input")
+                    yield Label("保持子进程存活", classes="mcp-add-label")
+                    yield Select(
+                        [("使用默认值", ""), ("是", "true"), ("否", "false")],
+                        value="",
+                        allow_blank=False,
+                        id="mcp-add-keep-alive",
+                        classes="mcp-add-input",
+                    )
+                with Vertical(id="mcp-add-remote-advanced", classes="mcp-add-group"):
+                    yield Label("请求头（每行 KEY=VALUE）", classes="mcp-add-label")
+                    yield TextArea("", id="mcp-add-headers", classes="mcp-add-pairs")
+                    yield Label("鉴权配置", classes="mcp-add-label")
+                    yield Input(placeholder="例如 oauth 或 token", id="mcp-add-auth", classes="mcp-add-input")
+                yield Label("响应超时（毫秒）", classes="mcp-add-label")
+                yield Input(placeholder="例如 30000", id="mcp-add-timeout", classes="mcp-add-input")
+                with Vertical(id="mcp-add-sse-advanced", classes="mcp-add-group"):
+                    yield Label("SSE 读取超时（秒）", classes="mcp-add-label")
+                    yield Input(placeholder="例如 60", id="mcp-add-sse-read-timeout", classes="mcp-add-input")
+                yield Label("", id="mcp-add-error", markup=False)
+                yield Label("新服务保存后保持禁用；返回列表后可自行启用。", id="mcp-add-hint")
+            with Horizontal(id="mcp-add-actions"):
+                yield Button("保存服务", id="mcp-add-confirm", variant="success", classes="mcp-add-action")
+                yield Button("取消", id="mcp-add-cancel", variant="warning", classes="mcp-add-action")
+
+    def on_mount(self) -> None:
+        self._sync_transport_fields()
+        self.query_one("#mcp-add-name", Input).focus()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "mcp-add-transport":
+            self._sync_transport_fields()
+
+    def _transport(self) -> str:
+        value = self.query_one("#mcp-add-transport", Select).value
+        return str(value) if value in self._TRANSPORTS else "stdio"
+
+    def _sync_transport_fields(self) -> None:
+        transport = self._transport()
+        is_stdio = transport == "stdio"
+        self.query_one("#mcp-add-stdio-core").display = is_stdio
+        self.query_one("#mcp-add-stdio-advanced").display = is_stdio
+        self.query_one("#mcp-add-remote-core").display = not is_stdio
+        self.query_one("#mcp-add-remote-advanced").display = not is_stdio
+        self.query_one("#mcp-add-sse-advanced").display = transport == "sse"
+
+    @staticmethod
+    def _parse_pairs(text: str, field_name: str) -> dict[str, str]:
+        result = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "=" not in line:
+                raise ValueError(f"{field_name} 需要每行使用 KEY=VALUE 格式")
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                raise ValueError(f"{field_name} 的 KEY 不能为空")
+            result[key] = value.strip()
+        return result
+
+    def _show_error(self, message: str) -> None:
+        error_label = self.query_one("#mcp-add-error", Label)
+        error_label.update(f"❌ {message}")
+        error_label.display = True
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "q" and not isinstance(self.focused, (Input, Select, TextArea)):
+            self.action_cancel()
+            event.stop()
+            event.prevent_default()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "mcp-add-confirm":
+            self.action_submit()
+        elif event.button.id == "mcp-add-cancel":
+            self.action_cancel()
+
+    def action_submit(self) -> None:
+        try:
+            server_name = self.query_one("#mcp-add-name", Input).value.strip()
+            if not server_name:
+                raise ValueError("服务名称不能为空")
+            transport = self._transport()
+            cfg: dict[str, Any] = {"transport": transport}
+
+            if transport == "stdio":
+                command = self.query_one("#mcp-add-command", Input).value.strip()
+                if not command:
+                    raise ValueError("stdio 服务必须填写启动命令")
+                cfg["command"] = command
+                arguments = self.query_one("#mcp-add-args", Input).value.strip()
+                if arguments:
+                    cfg["args"] = shlex.split(arguments)
+                env = self._parse_pairs(self.query_one("#mcp-add-env", TextArea).text, "环境变量")
+                if env:
+                    cfg["env"] = env
+                cwd = self.query_one("#mcp-add-cwd", Input).value.strip()
+                if cwd:
+                    cfg["cwd"] = cwd
+                keep_alive = self.query_one("#mcp-add-keep-alive", Select).value
+                if keep_alive in {"true", "false"}:
+                    cfg["keep_alive"] = keep_alive == "true"
+            else:
+                url = self.query_one("#mcp-add-url", Input).value.strip()
+                if not url:
+                    raise ValueError("远程服务必须填写 URL")
+                cfg["url"] = url
+                headers = self._parse_pairs(self.query_one("#mcp-add-headers", TextArea).text, "请求头")
+                if headers:
+                    cfg["headers"] = headers
+                auth = self.query_one("#mcp-add-auth", Input).value.strip()
+                if auth:
+                    cfg["auth"] = auth
+
+            timeout = self.query_one("#mcp-add-timeout", Input).value.strip()
+            if timeout:
+                cfg["timeout"] = int(timeout)
+            if transport == "sse":
+                sse_timeout = self.query_one("#mcp-add-sse-read-timeout", Input).value.strip()
+                if sse_timeout:
+                    cfg["sse_read_timeout"] = float(sse_timeout)
+            cfg["disabled"] = True
+        except (ValueError, TypeError) as exc:
+            self._show_error(str(exc))
+            return
+
+        self.dismiss({"server_name": server_name, "cfg": cfg})
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class McpSwitchModal(ClosableModalScreen[str | dict]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
+        Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "confirm_or_toggle", "Toggle/Confirm", priority=True),
         Binding("space", "toggle", "Toggle", priority=True),
+        Binding("a", "add", "Add", priority=True),
         Binding("d", "delete", "Delete", priority=True),
         Binding("y", "confirm_delete", "Confirm Delete", priority=True),
         Binding("n", "cancel_delete", "Cancel Delete", priority=True),
@@ -1788,62 +2248,98 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         self._pending_delete_name: str | None = None
         self._pending_delete_index: int | None = None
         self._deleted_results: list[dict[str, Any]] = []
+        self._added_results: list[dict[str, Any]] = []
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="choice-dialog"):
-            yield ModalHeader(self._title_text(), title_id="choice-title")
-            yield ListView(*[ListItem(Label(label)) for label in self._labels()], id="choice-list")
+        with Vertical(id="mcp-dialog"):
+            yield ModalHeader(self._title_text(), title_id="mcp-title", markup=False)
+            yield Label(self._summary_text(), id="mcp-summary", markup=False)
+            with ListView(id="mcp-list"):
+                for index, item in enumerate(self._server_switches):
+                    yield self._server_item(index, item)
+            yield Label(
+                "↑↓ 选择服务 · Enter/Space 切换 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 取消",
+                id="mcp-help",
+                markup=False,
+            )
+            with Horizontal(id="mcp-actions"):
+                yield Button("确认应用", id="mcp-apply", variant="success", classes="mcp-action")
+                yield Button("添加服务", id="mcp-add", variant="primary", classes="mcp-action")
+                yield Button("取消", id="mcp-cancel", variant="warning", classes="mcp-action")
 
     def on_mount(self) -> None:
-        choice_list = self.query_one("#choice-list", ListView)
-        choice_list.index = 0
-        choice_list.focus()
+        choice_list = self.query_one("#mcp-list", ListView)
+        if self._server_switches:
+            choice_list.index = 0
+            choice_list.focus()
+        else:
+            self.query_one("#mcp-add", Button).focus()
 
     def _title_text(self) -> str:
-        return "🔀 MCP 服务开关面板\n选择服务可切换启用/禁用；d 删除选中服务；选择确认应用保存。"
+        return "🔌 MCP 服务管理"
 
-    def _reset_title(self) -> None:
-        self.query_one("#choice-title", Label).update(self._title_text())
+    def _summary_text(self) -> str:
+        enabled_count = sum(not disabled for disabled in self._draft_states.values())
+        loaded_count = sum(item.get("loaded", False) for item in self._server_switches)
+        return f"共 {len(self._server_switches)} 个服务 · 草稿启用 {enabled_count} 个 · 当前连接 {loaded_count} 个 · 可在应用前自由切换"
 
-    def _labels(self) -> list[str]:
-        choices = []
-        for item in self._server_switches:
-            choices.append(self._server_label(item))
-        choices.extend(["确认应用", "取消"])
-        return choices
+    def _reset_header(self) -> None:
+        self.query_one("#mcp-title", Label).update(self._title_text())
+        self.query_one("#mcp-summary", Label).update(self._summary_text())
 
-    def _server_label(self, item: dict[str, Any]) -> str:
+    def _server_item(self, index: int, item: dict[str, Any]) -> ListItem:
+        return ListItem(Label(self._server_label(item), markup=False), id=f"mcp-server-{index}")
+
+    def _server_label(self, item: dict[str, Any]) -> Text:
         name = item["name"]
         enabled = not self._draft_states[name]
         loaded = item.get("loaded", False)
-        switch_box = "[√]" if enabled else "[×]"
-        runtime_txt = "已加载" if loaded else "未加载"
         status_txt = "启用" if enabled else "禁用"
-        return f"{switch_box} {name}    当前草稿: {status_txt}    运行态: {runtime_txt}"
+        runtime_txt = "已加载" if loaded else "未加载"
+        transport = item.get("transport", "未知协议")
+        target = item.get("target", "未配置连接目标")
+        tool_count = item.get("tool_count", 0)
+
+        label = Text()
+        label.append("● " if enabled else "○ ", style="green" if enabled else "#64748b")
+        label.append(str(name))
+        label.append("\n   草稿：")
+        label.append(status_txt, style="green" if enabled else "#94a3b8")
+        label.append(" · 运行：")
+        runtime_style = "green" if loaded else "yellow" if enabled else "#64748b"
+        label.append(runtime_txt, style=runtime_style)
+        label.append(f" · 协议：{transport} · 工具：{tool_count}")
+        label.append(f"\n   目标：{target}")
+        return label
 
     def _selected_index(self) -> int:
-        choice_list = self.query_one("#choice-list", ListView)
+        choice_list = self.query_one("#mcp-list", ListView)
         return choice_list.index if choice_list.index is not None else 0
 
     def _refresh_server_row(self, index: int) -> None:
-        choice_list = self.query_one("#choice-list", ListView)
+        choice_list = self.query_one("#mcp-list", ListView)
         label = choice_list.children[index].query_one(Label)
         label.update(self._server_label(self._server_switches[index]))
         choice_list.index = index
         choice_list.focus()
+        self.query_one("#mcp-summary", Label).update(self._summary_text())
 
     def _reload_rows(self, selected_index: int | None = None) -> None:
         self._pending_delete_name = None
         self._pending_delete_index = None
-        self._reset_title()
-        choice_list = self.query_one("#choice-list", ListView)
+        self._reset_header()
+        choice_list = self.query_one("#mcp-list", ListView)
         choice_list.clear()
 
         def _mount_rows() -> None:
-            labels = self._labels()
-            choice_list.extend(ListItem(Label(label)) for label in labels)
-            max_index = max(len(labels) - 1, 0)
-            choice_list.index = min(selected_index or 0, max_index)
+            choice_list.extend(
+                self._server_item(index, item)
+                for index, item in enumerate(self._server_switches)
+            )
+            if not self._server_switches:
+                self.query_one("#mcp-apply", Button).focus()
+                return
+            choice_list.index = min(selected_index or 0, len(self._server_switches) - 1)
             choice_list.focus()
 
         self.call_after_refresh(_mount_rows)
@@ -1853,53 +2349,78 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
             "action": action,
             "disabled_updates": dict(self._draft_states),
             "deleted_results": list(self._deleted_results),
+            "added_results": list(self._added_results),
         }
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.action_confirm_or_toggle()
-
-    def _on_key(self, event: Key) -> None:
-        key_actions = {
-            "enter": self.action_confirm_or_toggle,
-            "space": self.action_toggle,
-            "d": self.action_delete,
-            "y": self.action_confirm_delete,
-            "n": self.action_cancel_delete,
-        }
-        action = key_actions.get(event.key)
-        if action is None:
-            return
-        action()
-        event.stop()
-        event.prevent_default()
+        self.action_toggle()
 
     def action_confirm_or_toggle(self) -> None:
         if self._pending_delete_name is not None:
             return
-        index = self._selected_index()
-        if index < len(self._server_switches):
-            self._toggle_index(index)
+        focused = self.focused
+        if isinstance(focused, ListView):
+            self.action_toggle()
+        elif isinstance(focused, Button):
+            if focused.id == "mcp-apply":
+                self.dismiss(self._dismiss_payload("confirm"))
+            elif focused.id == "mcp-cancel":
+                self.action_cancel()
+            elif focused.id == "mcp-add":
+                self.action_add()
+
+    def action_add(self) -> None:
+        if self._pending_delete_name is not None:
             return
-        if index == len(self._server_switches):
-            self.dismiss(self._dismiss_payload("confirm"))
+        self.app.push_screen(McpAddModal(), self._finish_add_server)
+
+    def _finish_add_server(self, form_result: dict[str, Any] | None) -> None:
+        if form_result is None:
             return
-        self.dismiss(self._dismiss_payload("cancel"))
+        server_name = form_result["server_name"]
+        cfg = form_result["cfg"]
+        try:
+            result = self._mcp_manager.add_server_config(server_name, cfg)
+            server_switches = self._mcp_manager.list_server_switches()
+        except Exception as exc:
+            self.query_one("#mcp-title", Label).update(
+                "❌ 添加 MCP 服务失败\n"
+                f"{server_name}: {exc}\n"
+                "请检查参数后重新添加。"
+            )
+            self.query_one("#mcp-add", Button).focus()
+            return
+
+        draft_states = dict(self._draft_states)
+        self._server_switches = server_switches
+        self._draft_states = {
+            item["name"]: draft_states.get(item["name"], bool(item["disabled"]))
+            for item in server_switches
+        }
+        self._added_results.append({"server": server_name, "result": result})
+        selected_index = next(
+            (index for index, item in enumerate(server_switches) if item["name"] == server_name),
+            0,
+        )
+        self._reload_rows(selected_index)
 
     def action_toggle(self) -> None:
-        if self._pending_delete_name is not None:
+        if self._pending_delete_name is not None or not isinstance(self.focused, ListView):
             return
         index = self._selected_index()
         if index < len(self._server_switches):
             self._toggle_index(index)
 
     def action_delete(self) -> None:
+        if not isinstance(self.focused, ListView):
+            return
         index = self._selected_index()
         if index >= len(self._server_switches):
             return
         server_name = self._server_switches[index]["name"]
         self._pending_delete_name = server_name
         self._pending_delete_index = index
-        self.query_one("#choice-title", Label).update(
+        self.query_one("#mcp-title", Label).update(
             "⚠️ 确认删除 MCP 服务配置？\n"
             f"{server_name}\n"
             "该操作会写入配置文件，并停用运行中的同名服务。按 y 确认删除，按 n 取消。"
@@ -1909,11 +2430,11 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         if self._pending_delete_name is None:
             return
         server_name = self._pending_delete_name
-        selected_index = self._pending_delete_index or self._selected_index()
+        selected_index = self._pending_delete_index if self._pending_delete_index is not None else self._selected_index()
         try:
             result = self._mcp_manager.delete_server_config(server_name)
         except Exception as exc:
-            self.query_one("#choice-title", Label).update(
+            self.query_one("#mcp-title", Label).update(
                 "❌ 删除 MCP 服务失败\n"
                 f"{server_name}: {exc}\n"
                 "按 n 返回面板。"
@@ -1925,13 +2446,22 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         self._reload_rows(selected_index)
 
     def action_cancel_delete(self) -> None:
-        selected_index = self._pending_delete_index or self._selected_index()
+        selected_index = self._pending_delete_index if self._pending_delete_index is not None else self._selected_index()
         self._pending_delete_name = None
         self._pending_delete_index = None
-        self._reset_title()
-        choice_list = self.query_one("#choice-list", ListView)
+        self._reset_header()
+        choice_list = self.query_one("#mcp-list", ListView)
         choice_list.index = selected_index
         choice_list.focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "mcp-apply":
+            if self._pending_delete_name is None:
+                self.dismiss(self._dismiss_payload("confirm"))
+        elif event.button.id == "mcp-add":
+            self.action_add()
+        elif event.button.id == "mcp-cancel":
+            self.action_cancel()
 
     def action_cancel(self) -> None:
         self.dismiss(self._dismiss_payload("cancel"))
@@ -2009,16 +2539,7 @@ class ModelPanelModal(ClosableModalScreen[str]):
 class ModelManagerModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
-        Binding("enter", "select", "Select", priority=True),
-        Binding("q", "close", "Close", priority=True),
-        Binding("f", "favorite", "Favorite", priority=True),
-        Binding("d", "delete", "Delete", priority=True),
-        Binding("left", "decrease_effort", "Lower Effort", priority=True),
-        Binding("right", "increase_effort", "Higher Effort", priority=True),
-        Binding("y", "confirm_delete", "Confirm Delete", priority=True),
-        Binding("n", "cancel_delete", "Cancel Delete", priority=True),
-    ]
+    BINDINGS: list[Binding] = []
 
     def __init__(self, model_manager: Any) -> None:
         super().__init__()
@@ -2026,70 +2547,102 @@ class ModelManagerModal(ClosableModalScreen[str]):
         self._model_keys: list[ModelKey | None] = []
         self._pending_delete_key: ModelKey | None = None
         self._pending_delete_index: int | None = None
+        self._row_reload_generation = 0
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="choice-dialog"):
-            yield ModalHeader(self._title_text(), title_id="choice-title")
-            yield ListView(id="choice-list")
+        with Vertical(id="model-manager-dialog"):
+            yield ModalHeader(self._title_text(), title_id="model-manager-title", markup=False)
+            yield Label(self._summary_text(), id="model-manager-summary", markup=False)
+            yield ListView(id="model-manager-list")
+            yield Label(
+                "↑↓ 选择模型 · Enter 切换并关闭 · ←/→ 调整 effort · f 常用 · a 添加 · d 删除 · q 关闭",
+                id="model-manager-help",
+                markup=False,
+            )
+            with Horizontal(id="model-manager-actions"):
+                yield Button("添加模型", id="model-manager-add", variant="primary", classes="model-manager-action")
+                yield Button("设为当前", id="model-manager-select", variant="success", classes="model-manager-action")
+                yield Button("关闭", id="model-manager-close", variant="warning", classes="model-manager-action")
 
     @staticmethod
     def _title_text() -> str:
         efforts = " / ".join(REASONING_EFFORTS)
-        return (
-            "⚙️ 模型管理面板\n"
-            f"思考档位：{efforts}\n"
-            "Enter 选择当前模型并关闭；←/→ 调整档位；f 切换常用；d 删除；q 关闭。"
+        return f"⚙️ 模型管理 · 思考档位：{efforts}"
+
+    def _summary_text(self) -> str:
+        current = self._model_manager.get_current_model()
+        current_text = (
+            f"{current.get_display_text()} · {current.message_format} · effort {current.reasoning_effort}"
+            if current
+            else "未选择"
         )
+        favorite_count = sum(model.is_favorite for model in self._model_manager.models)
+        return f"共 {len(self._model_manager.models)} 个模型 · 常用 {favorite_count} 个 · 当前：{current_text}"
 
     def on_mount(self) -> None:
         self._reload_rows(0)
 
     def _selected_index(self) -> int:
-        choice_list = self.query_one("#choice-list", ListView)
+        choice_list = self.query_one("#model-manager-list", ListView)
         return choice_list.index if choice_list.index is not None else 0
 
-    def _model_label(self, model: Any, current_key: ModelKey | None) -> str:
-        markers = []
-        if model.key == current_key:
-            markers.append("✓")
+    def _model_label(self, model: Any, current_key: ModelKey | None) -> Text:
+        is_current = model.key == current_key
+        label = Text()
+        label.append("● " if is_current else "○ ", style="bold green" if is_current else "#64748b")
+        label.append(model.model_id, style="bold #e2e8f0")
         if model.is_favorite:
-            markers.append("♥")
-        marker_text = " ".join(markers) if markers else " "
-        return (
-            f"[{marker_text:^3}] {model.get_display_text()}"
-            f" · effort: {model.reasoning_effort} · format: {model.message_format}"
-        )
+            label.append("  ♥ 常用", style="bold #f472b6")
+        label.append(f"\n   服务：{model.get_display_name()}", style="#94a3b8")
+        label.append(f" · 格式：{model.message_format}", style="#94a3b8")
+        label.append(" · effort：", style="#94a3b8")
+        label.append(model.reasoning_effort, style="bold #c4b5fd")
+        label.append("\n   当前运行" if is_current else "\n   可按 Enter 切换为当前模型", style="green" if is_current else "#64748b")
+        return label
 
-    def _reload_rows(self, selected_index: int | None = None) -> None:
+    def _reload_rows(
+            self,
+            selected_index: int | None = None,
+            selected_key: ModelKey | None = None,
+    ) -> None:
         self._pending_delete_key = None
         self._pending_delete_index = None
-        self._reset_title()
         loaded = self._model_manager._reload_from_disk()
-        if not loaded:
-            self.query_one("#choice-title", Label).update(
-                "⚠️ 模型配置读取失败，已禁止写入以避免覆盖原文件。\n"
-                f"{self._model_manager.get_load_error_display()}\n"
-                "请修复 model_config.json 后重新打开 /models；q 关闭。"
-            )
         current_model = self._model_manager.get_current_model()
         current_key = current_model.key if current_model else None
-        labels = ["➕ 添加模型"]
-        keys: list[ModelKey | None] = [None]
-        for model in self._model_manager.models:
-            labels.append(self._model_label(model, current_key))
-            keys.append(model.key)
-        labels.append("退出")
-        keys.append(None)
-        self._model_keys = keys
+        labels = [self._model_label(model, current_key) for model in self._model_manager.models]
+        self._model_keys = [model.key for model in self._model_manager.models]
+        if selected_key is not None:
+            selected_index = next(
+                (index for index, key in enumerate(self._model_keys) if key == selected_key),
+                0,
+            )
+        if not labels:
+            labels = [Text("暂无模型。点击“添加模型”或按 a 创建第一项配置。", style="#94a3b8")]
+            self._model_keys = [None]
 
-        choice_list = self.query_one("#choice-list", ListView)
+        self._reset_header()
+        if not loaded:
+            self.query_one("#model-manager-title", Label).update(
+                "⚠️ 模型配置读取失败，已禁止写入以避免覆盖原文件。\n"
+                f"{self._model_manager.get_load_error_display()}\n"
+                "请修复 model_config.json 后重新打开 /models。"
+            )
+        choice_list = self.query_one("#model-manager-list", ListView)
+        self._row_reload_generation += 1
+        reload_generation = self._row_reload_generation
         choice_list.clear()
 
         def _mount_rows() -> None:
-            choice_list.extend(ListItem(Label(label)) for label in labels)
+            if reload_generation != self._row_reload_generation:
+                return
+            choice_list.extend(ListItem(Label(label, markup=False)) for label in labels)
             max_index = max(len(labels) - 1, 0)
             choice_list.index = min(selected_index or 0, max_index)
-            choice_list.focus()
+            if self._model_manager.models:
+                choice_list.focus()
+            else:
+                self.query_one("#model-manager-add", Button).focus()
 
         self.call_after_refresh(_mount_rows)
 
@@ -2102,64 +2655,62 @@ class ModelManagerModal(ClosableModalScreen[str]):
             return
         current_model = self._model_manager.get_current_model()
         current_key = current_model.key if current_model else None
-        choice_list = self.query_one("#choice-list", ListView)
+        choice_list = self.query_one("#model-manager-list", ListView)
         label = choice_list.children[index].query_one(Label)
         label.update(self._model_label(model, current_key))
         choice_list.index = index
         choice_list.focus()
+        self.query_one("#model-manager-summary", Label).update(self._summary_text())
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.action_select()
+        if event.list_view.id == "model-manager-list":
+            self.action_select()
 
     def _on_key(self, event: Key) -> None:
-        if event.key == "enter":
-            self.action_select()
-            event.stop()
-            event.prevent_default()
-            return
         if event.key == "q":
             self.action_close()
             event.stop()
             event.prevent_default()
             return
-        if event.key == "f":
-            self.action_favorite()
-            event.stop()
-            event.prevent_default()
-            return
-        if event.key == "d":
-            self.action_delete()
-            event.stop()
-            event.prevent_default()
-            return
-        if event.key == "left":
-            self.action_decrease_effort()
-            event.stop()
-            event.prevent_default()
-            return
-        if event.key == "right":
-            self.action_increase_effort()
-            event.stop()
-            event.prevent_default()
-            return
-        if event.key == "y":
+        if event.key == "y" and self._pending_delete_key is not None:
             self.action_confirm_delete()
             event.stop()
             event.prevent_default()
             return
-        if event.key == "n":
+        if event.key == "n" and self._pending_delete_key is not None:
             self.action_cancel_delete()
             event.stop()
             event.prevent_default()
             return
+        if event.key == "a":
+            self.action_add()
+            event.stop()
+            event.prevent_default()
+            return
+        if not isinstance(self.focused, ListView):
+            return
+        key_actions = {
+            "enter": self.action_select,
+            "f": self.action_favorite,
+            "d": self.action_delete,
+            "left": self.action_decrease_effort,
+            "right": self.action_increase_effort,
+        }
+        action = key_actions.get(event.key)
+        if action is None:
+            return
+        action()
+        event.stop()
+        event.prevent_default()
 
     def action_select(self) -> None:
-        index = self._selected_index()
-        if index == 0:
-            self._add_model(index)
+        if self._pending_delete_key is not None:
             return
-        if index == len(self._model_keys) - 1:
-            self.dismiss("exit")
+        if not self._model_manager.models:
+            self.action_add()
+            return
+        index = self._selected_index()
+        if index >= len(self._model_keys):
             return
         model_key = self._model_keys[index]
         if model_key is None:
@@ -2169,7 +2720,12 @@ class ModelManagerModal(ClosableModalScreen[str]):
             self._reload_rows(index)
             return
         selected_model = self._model_manager.models[target_index]
+        current_model = self._model_manager.get_current_model()
+        previous_runtime_key = current_model.runtime_key if current_model else None
         if self._model_manager.select_model(model_key, selected_model.reasoning_effort):
+            current_model = self._model_manager.get_current_model()
+            if current_model and current_model.runtime_key != previous_runtime_key:
+                self.app.refresh_status()
             self.dismiss(
                 f"selected:{selected_model.get_display_text()} · effort: {selected_model.reasoning_effort}"
                 f" · format: {selected_model.message_format}"
@@ -2185,7 +2741,7 @@ class ModelManagerModal(ClosableModalScreen[str]):
         if self._pending_delete_key is not None:
             return
         index = self._selected_index()
-        if index == 0 or index == len(self._model_keys) - 1:
+        if index >= len(self._model_keys):
             return
         model_key = self._model_keys[index]
         if model_key is None:
@@ -2205,8 +2761,10 @@ class ModelManagerModal(ClosableModalScreen[str]):
                 self.app.refresh_status()
 
     def action_favorite(self) -> None:
+        if self._pending_delete_key is not None:
+            return
         index = self._selected_index()
-        if index == 0 or index == len(self._model_keys) - 1:
+        if index >= len(self._model_keys):
             return
         model_key = self._model_keys[index]
         if model_key is None:
@@ -2216,11 +2774,13 @@ class ModelManagerModal(ClosableModalScreen[str]):
             self._reload_rows(index)
             return
         if self._model_manager.toggle_favorite_by_index(target_index):
-            self._refresh_model_row_by_key(model_key)
+            self._reload_rows(selected_key=model_key)
 
     def action_delete(self) -> None:
+        if self._pending_delete_key is not None:
+            return
         index = self._selected_index()
-        if index == 0 or index == len(self._model_keys) - 1:
+        if index >= len(self._model_keys):
             return
         model_key = self._model_keys[index]
         if model_key is None:
@@ -2232,30 +2792,46 @@ class ModelManagerModal(ClosableModalScreen[str]):
         selected_model = self._model_manager.models[target_index]
         self._pending_delete_key = model_key
         self._pending_delete_index = index
-        self.query_one("#choice-title", Label).update(
+        self.query_one("#model-manager-title", Label).update(
             "⚠️ 确认删除模型？\n"
             f"{selected_model.get_display_text()}\n"
-            "按 y 确认删除，按 n 取消。"
+            "删除会立即写入模型配置。按 y 确认，按 n 取消。"
         )
 
     def action_confirm_delete(self) -> None:
         if self._pending_delete_key is None:
             return
-        selected_index = self._pending_delete_index or self._selected_index()
-        self._model_manager.delete_model_by_key(self._pending_delete_key)
+        selected_index = self._pending_delete_index if self._pending_delete_index is not None else self._selected_index()
+        deleting_current = self._model_manager.current_model_key == self._pending_delete_key
+        deleted = self._model_manager.delete_model_by_key(self._pending_delete_key)
         self._reload_rows(selected_index)
+        if deleted and deleting_current:
+            self.app.refresh_status()
 
     def action_cancel_delete(self) -> None:
-        selected_index = self._pending_delete_index or self._selected_index()
+        selected_index = self._pending_delete_index if self._pending_delete_index is not None else self._selected_index()
         self._pending_delete_key = None
         self._pending_delete_index = None
-        self._reset_title()
-        choice_list = self.query_one("#choice-list", ListView)
+        self._reset_header()
+        choice_list = self.query_one("#model-manager-list", ListView)
         choice_list.index = selected_index
         choice_list.focus()
 
-    def _reset_title(self) -> None:
-        self.query_one("#choice-title", Label).update(self._title_text())
+    def _reset_header(self) -> None:
+        self.query_one("#model-manager-title", Label).update(self._title_text())
+        self.query_one("#model-manager-summary", Label).update(self._summary_text())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "model-manager-add":
+            self.action_add()
+        elif event.button.id == "model-manager-select":
+            self.action_select()
+        elif event.button.id == "model-manager-close":
+            self.action_close()
+
+    def action_add(self) -> None:
+        if self._pending_delete_key is None:
+            self._add_model(self._selected_index())
 
     def action_close(self) -> None:
         self.dismiss("exit")
@@ -2267,18 +2843,24 @@ class ModelManagerModal(ClosableModalScreen[str]):
         if model_config is None:
             self._reload_rows(selected_index)
             return
+        current_model = self._model_manager.get_current_model()
+        previous_runtime_key = current_model.runtime_key if current_model else None
         model_ids = [
             item.strip()
             for item in model_config["model_input"].replace("，", ",").split(",")
             if item.strip()
         ]
-        self._model_manager.add_model(
+        new_models = self._model_manager.add_model(
             model_config["base_url"],
             model_config["api_key"],
             model_ids,
             message_format=model_config["message_format"],
         )
-        self._reload_rows(selected_index)
+        selected_key = new_models[0].key if new_models else None
+        self._reload_rows(selected_index, selected_key=selected_key)
+        current_model = self._model_manager.get_current_model()
+        if current_model and current_model.runtime_key != previous_runtime_key:
+            self.app.refresh_status()
 
     def _target_index(self, model_key: ModelKey) -> int | None:
         return next(
@@ -2289,15 +2871,7 @@ class ModelManagerModal(ClosableModalScreen[str]):
 
 class MemoryPanelModal(ClosableModalScreen[list[str]]):
     CSS = ChoiceModal.CSS
-
-    BINDINGS = [
-        Binding("q", "close", "Close", priority=True),
-        Binding("enter", "toggle_detail", "Details", priority=True),
-        Binding("space", "toggle_detail", "Details", priority=True),
-        Binding("d", "delete", "Delete", priority=True),
-        Binding("y", "confirm_delete", "Confirm Delete", priority=True),
-        Binding("n", "cancel_delete", "Cancel Delete", priority=True),
-    ]
+    BINDINGS: list[Binding] = []
 
     def __init__(self, memory_provider: Any) -> None:
         super().__init__()
@@ -2307,15 +2881,23 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         self._pending_delete_id: str | None = None
         self._pending_delete_index: int | None = None
         self._deleted_ids: list[str] = []
+        self._row_reload_generation = 0
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="memory-dialog"):
-            yield ModalHeader(
-                "🧠 长期记忆面板 (active: 0)\nEnter/Space 查看详情；d 删除；q 关闭。",
-                title_id="choice-title",
-            )
+        with Vertical(id="memory-dialog"):
+            yield ModalHeader(self._title_text(), title_id="memory-title", markup=False)
+            yield Label(self._summary_text(), id="memory-summary", markup=False)
             yield ListView(id="memory-list")
-            yield RichLog(id="memory-detail", markup=True, wrap=True, min_width=1)
+            yield RichLog(id="memory-detail", markup=False, wrap=True, min_width=1)
+            yield Label(
+                "↑↓ 选择记忆 · Enter/Space 查看详情 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 关闭",
+                id="memory-help",
+                markup=False,
+            )
+            with Horizontal(id="memory-actions"):
+                yield Button("添加记忆", id="memory-add", variant="primary", classes="memory-action")
+                yield Button("删除选中", id="memory-delete", variant="error", classes="memory-action")
+                yield Button("关闭", id="memory-close", variant="warning", classes="memory-action")
 
     def on_mount(self) -> None:
         self._reload_rows(0)
@@ -2324,43 +2906,70 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         choice_list = self.query_one("#memory-list", ListView)
         return choice_list.index if choice_list.index is not None else 0
 
-    def _memory_label(self, item: dict[str, Any]) -> str:
-        memory_id = item.get("id", "")
-        marker = "▼" if memory_id == self._expanded_id else " "
-        category = item.get("category", "")
-        updated_at = item.get("updated_at", "")
-        insight = str(item.get("insight", "")).replace("\n", " ")
-        if len(insight) > 72:
-            insight = f"{insight[:69]}..."
-        return f"[{marker}] {memory_id} · {category} · {updated_at}\n    {insight}"
+    def _memory_label(self, item: dict[str, Any]) -> Text:
+        memory_id = str(item.get("id", ""))
+        category = str(item.get("category", "未分类"))
+        updated_at = str(item.get("updated_at", ""))
+        insight = " ".join(str(item.get("insight", "")).splitlines())
+        if len(insight) > 160:
+            insight = f"{insight[:157]}..."
 
-    def _reload_rows(self, selected_index: int | None = None) -> None:
+        label = Text()
+        label.append("▼ " if memory_id == self._expanded_id else "● ", style="#f59e0b")
+        label.append(category)
+        label.append(f"  ·  {updated_at}")
+        label.append(f"\n   {insight or '（无内容）'}")
+        label.append(f"\n   ID: {memory_id}")
+        return label
+
+    def _reload_rows(self, selected_index: int | None = None, selected_id: str | None = None) -> None:
         self._pending_delete_id = None
         self._pending_delete_index = None
         self._memories = sorted(
             self._memory_provider.list_long_term_memories(),
             key=lambda item: item.get("updated_at") or item.get("created_at") or "",
+            reverse=True,
         )
-        self._reset_title()
+        if selected_id is not None:
+            selected_index = next(
+                (index for index, item in enumerate(self._memories) if item.get("id") == selected_id),
+                0,
+            )
+        self._reset_header()
         choice_list = self.query_one("#memory-list", ListView)
+        self._row_reload_generation += 1
+        reload_generation = self._row_reload_generation
         choice_list.clear()
 
-        labels = [self._memory_label(item) for item in self._memories] or ["暂无长期记忆"]
+        labels = [self._memory_label(item) for item in self._memories]
+        if not labels:
+            labels = [Text("暂无长期记忆。点击“添加记忆”或按 a 创建第一条记忆。")]
 
         def _mount_rows() -> None:
-            choice_list.extend(ListItem(Label(label)) for label in labels)
+            if reload_generation != self._row_reload_generation:
+                return
+            choice_list.extend(ListItem(Label(label, markup=False)) for label in labels)
             max_index = max(len(labels) - 1, 0)
             choice_list.index = min(selected_index or 0, max_index)
-            choice_list.focus()
+            if self._memories:
+                choice_list.focus()
+            else:
+                self.query_one("#memory-add", Button).focus()
             self._update_detail()
 
         self.call_after_refresh(_mount_rows)
 
-    def _title_text(self) -> str:
-        return f"🧠 长期记忆面板 (active: {len(self._memories)})\nEnter/Space 查看详情；d 删除；q 关闭。"
+    @staticmethod
+    def _title_text() -> str:
+        return "🧠 长期记忆管理"
 
-    def _reset_title(self) -> None:
-        self.query_one("#choice-title", Label).update(self._title_text())
+    def _summary_text(self) -> str:
+        categories = len({str(item.get("category", "")) for item in self._memories})
+        return f"共 {len(self._memories)} 条 active 记忆 · {categories} 个分类 · 新增和删除会立即写入当前工作区"
+
+    def _reset_header(self) -> None:
+        self.query_one("#memory-title", Label).update(self._title_text())
+        self.query_one("#memory-summary", Label).update(self._summary_text())
 
     def _current_memory(self) -> dict[str, Any] | None:
         if not self._memories:
@@ -2378,18 +2987,19 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
             detail.write("暂无详情。", expand=True, shrink=True)
             return
         if current.get("id") != self._expanded_id:
-            detail.write("选中记忆后按 Enter/Space 查看详情。", expand=True, shrink=True)
+            detail.write("按 Enter/Space 展开当前记忆的完整内容。", expand=True, shrink=True)
             return
         detail.write(
             "\n".join(
                 [
                     f"ID: {current.get('id', '')}",
                     f"Category: {current.get('category', '')}",
+                    f"Created: {current.get('created_at', '')}",
                     f"Updated: {current.get('updated_at', '')}",
                     "",
                     f"Insight:\n{current.get('insight', '')}",
                     "",
-                    f"Evidence:\n{current.get('evidence', '')}",
+                    f"Evidence:\n{current.get('evidence', '') or '（未填写）'}",
                     "",
                     f"Reuse condition:\n{current.get('reuse_condition', '')}",
                 ]
@@ -2400,19 +3010,40 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         )
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.action_toggle_detail()
+        if event.list_view.id == "memory-list":
+            self.action_toggle_detail()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        self._update_detail()
+        if event.list_view.id == "memory-list":
+            self._update_detail()
 
     def _on_key(self, event: Key) -> None:
+        if event.key == "q":
+            self.action_close()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "y" and self._pending_delete_id is not None:
+            self.action_confirm_delete()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "n" and self._pending_delete_id is not None:
+            self.action_cancel_delete()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "a":
+            self.action_add()
+            event.stop()
+            event.prevent_default()
+            return
+        if not isinstance(self.focused, ListView):
+            return
         key_actions = {
             "enter": self.action_toggle_detail,
             "space": self.action_toggle_detail,
             "d": self.action_delete,
-            "y": self.action_confirm_delete,
-            "n": self.action_cancel_delete,
-            "q": self.action_close,
         }
         action = key_actions.get(event.key)
         if action is None:
@@ -2429,47 +3060,158 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
             return
         memory_id = current.get("id")
         self._expanded_id = None if self._expanded_id == memory_id else memory_id
-        index = self._selected_index()
         choice_list = self.query_one("#memory-list", ListView)
-        label = choice_list.children[index].query_one(Label)
-        label.update(self._memory_label(current))
+        for index, item in enumerate(self._memories):
+            choice_list.children[index].query_one(Label).update(self._memory_label(item))
         self._update_detail()
-        choice_list.index = index
         choice_list.focus()
 
+    def action_add(self) -> None:
+        if self._pending_delete_id is not None:
+            return
+        self.app.push_screen(AddMemoryModal(), self._finish_add_memory)
+
+    def _finish_add_memory(self, values: dict[str, str] | None) -> None:
+        if values is None:
+            self.query_one("#memory-list", ListView).focus()
+            return
+        try:
+            record = self._memory_provider.append_long_term_memory(**values)
+        except Exception as exc:
+            self.query_one("#memory-title", Label).update(f"❌ 添加长期记忆失败：{exc}")
+            return
+        memory_id = record.get("id") if isinstance(record, dict) else None
+        self._expanded_id = memory_id
+        self._reload_rows(selected_id=memory_id)
+        self.app.refresh_status()
+
     def action_delete(self) -> None:
+        if self._pending_delete_id is not None:
+            return
         current = self._current_memory()
         if current is None:
             return
         self._pending_delete_id = current.get("id")
         self._pending_delete_index = self._selected_index()
-        self.query_one("#choice-title", Label).update(
+        self.query_one("#memory-title", Label).update(
             "⚠️ 确认删除长期记忆？\n"
             f"{self._pending_delete_id}\n"
-            "按 y 确认删除，按 n 取消。"
+            "删除会立即写入当前工作区。按 y 确认，按 n 取消。"
         )
 
     def action_confirm_delete(self) -> None:
         if self._pending_delete_id is None:
             return
-        selected_index = self._pending_delete_index or self._selected_index()
-        if self._memory_provider.delete_long_term_memory(self._pending_delete_id):
+        selected_index = self._pending_delete_index if self._pending_delete_index is not None else self._selected_index()
+        deleted = self._memory_provider.delete_long_term_memory(self._pending_delete_id)
+        if deleted:
             self._deleted_ids.append(self._pending_delete_id)
         if self._expanded_id == self._pending_delete_id:
             self._expanded_id = None
         self._reload_rows(selected_index)
+        if deleted:
+            self.app.refresh_status()
 
     def action_cancel_delete(self) -> None:
-        selected_index = self._pending_delete_index or self._selected_index()
+        selected_index = self._pending_delete_index if self._pending_delete_index is not None else self._selected_index()
         self._pending_delete_id = None
         self._pending_delete_index = None
-        self._reset_title()
+        self._reset_header()
         choice_list = self.query_one("#memory-list", ListView)
         choice_list.index = selected_index
         choice_list.focus()
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "memory-add":
+            self.action_add()
+        elif event.button.id == "memory-delete":
+            self.action_delete()
+        elif event.button.id == "memory-close":
+            self.action_close()
+
     def action_close(self) -> None:
         self.dismiss(list(self._deleted_ids))
+
+
+class AddMemoryModal(ClosableModalScreen[dict[str, str] | None]):
+    CSS = ChoiceModal.CSS
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="memory-add-dialog"):
+            yield ModalHeader("➕ 添加长期记忆", title_id="memory-add-title", markup=False)
+            with VerticalScroll(id="memory-add-fields"):
+                yield Label("分类（category）", classes="memory-add-label")
+                yield Input(
+                    placeholder="例如 preference、project-convention、workflow",
+                    id="memory-add-category",
+                )
+                yield Label("内容（insight）", classes="memory-add-label")
+                yield TextArea("", id="memory-add-insight", classes="memory-add-textarea")
+                yield Label("依据（evidence，可选）", classes="memory-add-label")
+                yield TextArea("", id="memory-add-evidence", classes="memory-add-textarea")
+                yield Label("复用条件（reuse condition）", classes="memory-add-label")
+                yield TextArea("", id="memory-add-reuse-condition", classes="memory-add-textarea")
+                yield Label("", id="memory-add-error", markup=False)
+                yield Label(
+                    "Ctrl+Enter 保存；保存后直接调用 append 入库；若超过容量上限，append 逻辑会淘汰最旧的 active 记忆。",
+                    id="memory-add-hint",
+                    markup=False,
+                )
+            with Horizontal(id="memory-add-actions"):
+                yield Button("保存记忆", id="memory-add-confirm", variant="success", classes="memory-add-action")
+                yield Button("取消", id="memory-add-cancel", variant="warning", classes="memory-add-action")
+
+    def on_mount(self) -> None:
+        self.query_one("#memory-add-category", Input).focus()
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "ctrl+enter":
+            self.action_submit()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "q" and not isinstance(self.focused, (Input, TextArea)):
+            self.action_cancel()
+            event.stop()
+            event.prevent_default()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.query_one("#memory-add-insight", TextArea).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "memory-add-confirm":
+            self.action_submit()
+        elif event.button.id == "memory-add-cancel":
+            self.action_cancel()
+
+    def action_submit(self) -> None:
+        category = self.query_one("#memory-add-category", Input).value.strip()
+        insight = self.query_one("#memory-add-insight", TextArea).text.strip()
+        evidence = self.query_one("#memory-add-evidence", TextArea).text.strip()
+        reuse_condition = self.query_one("#memory-add-reuse-condition", TextArea).text.strip()
+        if not category:
+            self._show_error("请填写分类。")
+            return
+        if not insight:
+            self._show_error("请填写记忆内容。")
+            return
+        if not reuse_condition:
+            self._show_error("请填写复用条件。")
+            return
+        self.dismiss({
+            "category": category,
+            "insight": insight,
+            "evidence": evidence,
+            "reuse_condition": reuse_condition,
+        })
+
+    def _show_error(self, message: str) -> None:
+        error = self.query_one("#memory-add-error", Label)
+        error.update(message)
+        error.display = True
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):

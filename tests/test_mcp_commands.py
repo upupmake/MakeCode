@@ -13,6 +13,20 @@ from utils.conversations import ConversationStore, SCHEMA_VERSION, SUB_AGENT_HIS
 from utils.mcp_manager import GlobalMCPManager
 
 
+TEST_LAYOUT_RATIOS = {
+    "content": 2,
+    "tools": 2,
+    "task": 2,
+    "background": 3,
+    "sub_agent": 1,
+}
+
+
+@pytest.fixture(autouse=True)
+def isolate_tui_layout_config(monkeypatch):
+    monkeypatch.setattr("system.tui_app.load_layout_ratios", lambda: dict(TEST_LAYOUT_RATIOS))
+
+
 class DummyMcpManager:
     def add_server_config(self, server_name, cfg):
         return {"saved": True, "server": server_name, "failed": [], "message": "ok"}
@@ -38,6 +52,25 @@ def make_handler(conversation_store=None):
 
 def test_mcp_help_command_registered():
     assert COMMAND_DESCRIPTIONS["/mcp-help"] == "显示 MCP 相关命令介绍。"
+
+
+def test_mcp_switch_opens_management_panel_when_server_list_is_empty(monkeypatch):
+    manager = Mock()
+    manager.list_server_switches.return_value = []
+    choose_switches = Mock(return_value={
+        "action": "cancel",
+        "disabled_updates": {},
+        "deleted_results": [],
+        "added_results": [],
+    })
+    monkeypatch.setattr("system.commands.interactive_switch_mcp_servers", choose_switches)
+    handler = make_handler()
+    handler.mcp_manager = manager
+    handler.console = Mock()
+
+    assert handler.handle_mcp_switch() is True
+
+    choose_switches.assert_called_once_with([], manager)
 
 
 @pytest.mark.anyio
@@ -764,6 +797,48 @@ def test_parse_mcp_add_requires_command_or_url():
         assert "-- 后的启动命令或 --url" in str(exc)
     else:
         raise AssertionError("Expected ValueError")
+
+
+def test_mcp_manager_lists_display_metadata_without_url_secrets(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(
+        json.dumps({
+            "mcpServers": {
+                "remote": {
+                    "url": "https://user:password@example.com/mcp?token=secret-query#fragment",
+                    "transport": "streamable-http",
+                    "disabled": False,
+                },
+                "local": {
+                    "command": "uvx",
+                    "args": ["secret-argument"],
+                    "env": {"TOKEN": "secret-env"},
+                    "disabled": True,
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+    manager.clients["remote"] = object()
+    manager._server_status_tools["remote"] = [{"name": "one"}, {"name": "two"}]
+
+    switches = {item["name"]: item for item in manager.list_server_switches()}
+
+    assert switches["remote"] == {
+        "name": "remote",
+        "disabled": False,
+        "enabled": True,
+        "loaded": True,
+        "transport": "streamable-http",
+        "target": "https://example.com/mcp",
+        "tool_count": 2,
+    }
+    assert switches["local"]["target"] == "uvx"
+    assert switches["local"]["tool_count"] == 0
+    serialized = json.dumps(switches, ensure_ascii=False)
+    for secret in ("password", "secret-query", "secret-argument", "secret-env"):
+        assert secret not in serialized
 
 
 def test_mcp_manager_rejects_duplicate_server_name(tmp_path):

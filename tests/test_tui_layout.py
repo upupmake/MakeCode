@@ -13,6 +13,20 @@ from system.tui_modals import ChoiceModal, ToolHistoryModal
 from utils.skills import SkillLoader
 
 
+TEST_LAYOUT_RATIOS = {
+    "content": 2,
+    "tools": 2,
+    "task": 2,
+    "background": 3,
+    "sub_agent": 1,
+}
+
+
+@pytest.fixture(autouse=True)
+def isolate_tui_layout_config(monkeypatch):
+    monkeypatch.setattr("system.tui_app.load_layout_ratios", lambda: dict(TEST_LAYOUT_RATIOS))
+
+
 @pytest.mark.anyio
 async def test_content_pane_minimum_width_keeps_startup_banner_on_six_lines():
     app = MakeCodeTuiApp()
@@ -220,6 +234,26 @@ async def test_compact_layout_switches_between_main_and_runtime_panes():
         assert not left_column.has_class("hidden")
         assert right_column.has_class("hidden")
         assert str(toggle.label) == "运行面板 F6"
+
+
+@pytest.mark.anyio
+async def test_input_area_is_nested_in_left_column():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        main_grid = app.query_one("#main-grid")
+        left_column = app.query_one("#left-column")
+        right_column = app.query_one("#right-column")
+        bottom_grid = app.query_one("#bottom-grid")
+        input_box = app.query_one("#input-box")
+
+        assert bottom_grid.parent is left_column
+        assert input_box.parent is bottom_grid
+        assert bottom_grid.region.x == left_column.region.x
+        assert bottom_grid.region.width == left_column.region.width
+        assert input_box.region.height == 5
+        assert right_column.region.height == main_grid.region.height
 
 
 @pytest.mark.anyio

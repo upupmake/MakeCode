@@ -11,9 +11,9 @@ from rich.text import Text
 
 from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
-from system.commands import CommandAction, CommandResult
+from system.commands import CommandAction, CommandHandler, CommandResult
 from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
-from system.tui_modals import ChoiceModal, InfoPanelModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal, ModelManagerModal, TaskPanelModal
+from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
@@ -393,7 +393,8 @@ def test_tui_modals_use_q_not_escape_for_cancel():
 # ---------- ChoiceModal 渲染与交互测试 ----------
 
 from textual.app import App, ComposeResult
-from textual.widgets import Button, DataTable, Input, Label, Select
+from textual.containers import VerticalScroll
+from textual.widgets import Button, DataTable, Input, Label, ListView, Select, TextArea
 
 
 @pytest.fixture
@@ -515,6 +516,36 @@ async def test_choice_modal_css_contains_custom_hint_style():
     assert "color: #aaaaaa" in css
 
 
+def test_memory_and_mcp_panels_use_default_text_and_card_backgrounds():
+    css = ChoiceModal.CSS
+
+    def rule(selector):
+        return css.split(f"{selector} {{", 1)[1].split("}", 1)[0]
+
+    for selector in (
+        "#memory-title",
+        "#memory-summary",
+        "#memory-help",
+        ".memory-add-label",
+        "#memory-add-hint",
+        "#mcp-title",
+        "#mcp-summary",
+        "#mcp-help",
+        ".mcp-add-label",
+        "#mcp-add-advanced-title",
+        "#mcp-add-hint",
+    ):
+        assert "color:" not in rule(selector)
+
+    for selector in (
+        "#memory-list > ListItem",
+        "#memory-list > ListItem.-highlight",
+        "#mcp-list > ListItem",
+        "#mcp-list > ListItem.-highlight",
+    ):
+        assert "background:" not in rule(selector)
+
+
 @pytest.mark.anyio
 async def test_choice_modal_long_option_text_stored():
     """长选项文本正确存储，不因 height:auto 而丢失。"""
@@ -545,6 +576,25 @@ async def test_choice_modal_long_option_text_wraps():
 
 
 @pytest.mark.anyio
+async def test_choice_modal_long_title_keeps_options_reachable_by_scrolling():
+    title = "这是一个非常长的标题，用于验证标题内容超出弹窗高度时仍然可以滚动查看选项。\n" * 20
+    modal = ChoiceModal(title, ["选项A", "选项B"], allow_custom=False)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(62, 25)) as pilot:
+        await pilot.pause()
+        dialog = modal.query_one("#choice-dialog", VerticalScroll)
+        choice_list = modal.query_one("#choice-list")
+
+        assert dialog.max_scroll_y > 0
+        dialog.scroll_end(animate=False)
+        await pilot.pause()
+        assert dialog.scroll_y == dialog.max_scroll_y
+        assert choice_list.region.y < dialog.region.bottom
+        assert choice_list.region.bottom > dialog.region.y
+
+
+@pytest.mark.anyio
 async def test_choice_modal_q_cancels_when_not_in_input():
     """按 q 键在非 Input 焦点时取消弹窗。"""
     modal = ChoiceModal("测试", ["选项A"], allow_custom=False)
@@ -560,6 +610,283 @@ async def test_choice_modal_q_cancels_when_not_in_input():
         await pilot.press("q")
         await pilot.pause()
     assert result == "<cancelled>"
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_separates_services_from_actions_and_shows_details():
+    modal = McpSwitchModal(
+        [
+            {
+                "name": "filesystem",
+                "disabled": False,
+                "loaded": True,
+                "transport": "stdio",
+                "target": "npx",
+                "tool_count": 4,
+            },
+            {
+                "name": "remote-api",
+                "disabled": True,
+                "loaded": False,
+                "transport": "streamable-http",
+                "target": "https://example.com/mcp",
+                "tool_count": 0,
+            },
+        ],
+        Mock(),
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        service_list = modal.query_one("#mcp-list", ListView)
+
+        assert len(service_list.children) == 2
+        assert "共 2 个服务 · 草稿启用 1 个" in str(modal.query_one("#mcp-summary", Label).render())
+        assert "确认应用" not in str(service_list.children[-1].query_one(Label).render())
+        assert modal.query_one("#mcp-apply", Button).region.height > 0
+        assert modal.query_one("#mcp-cancel", Button).region.height > 0
+        first_label = str(service_list.children[0].query_one(Label).render())
+        assert "filesystem" in first_label
+        assert "草稿：启用 · 运行：已加载 · 协议：stdio · 工具：4" in first_label
+        assert "目标：npx" in first_label
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_updates_summary_and_applies_with_fixed_button():
+    modal = McpSwitchModal(
+        [{"name": "api", "disabled": True, "loaded": False, "transport": "sse", "target": "https://example.com/sse", "tool_count": 0}],
+        Mock(),
+    )
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    app = ChoiceModalHost(modal, on_dismiss)
+    async with app.run_test(size=(90, 28)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "草稿启用 1 个" in str(modal.query_one("#mcp-summary", Label).render())
+        assert "草稿：启用" in str(modal.query_one("#mcp-list", ListView).children[0].query_one(Label).render())
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert modal.focused.id == "mcp-apply"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert result["action"] == "confirm"
+    assert result["disabled_updates"] == {"api": False}
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_preserves_delete_confirmation_and_selection():
+    manager = Mock()
+    manager.delete_server_config.return_value = {"saved": True}
+    modal = McpSwitchModal(
+        [
+            {"name": "first", "disabled": False, "loaded": True},
+            {"name": "second", "disabled": True, "loaded": False},
+        ],
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 28)) as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        assert "确认删除 MCP 服务配置" in str(modal.query_one("#mcp-title", Label).render())
+        manager.delete_server_config.assert_not_called()
+
+        await pilot.press("n")
+        await pilot.press("d")
+        await pilot.press("y")
+        await pilot.pause()
+        await pilot.pause()
+
+        service_list = modal.query_one("#mcp-list", ListView)
+        manager.delete_server_config.assert_called_once_with("first")
+        assert len(service_list.children) == 1
+        assert service_list.index == 0
+        assert "second" in str(service_list.children[0].query_one(Label).render())
+        assert "共 1 个服务" in str(modal.query_one("#mcp-summary", Label).render())
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_scrolls_many_wrapped_service_cards_while_actions_stay_visible():
+    servers = [
+        {
+            "name": f"服务-{index}-" + "很长的名称" * 5,
+            "disabled": bool(index % 2),
+            "loaded": index % 3 == 0,
+            "transport": "streamable-http",
+            "target": "https://example.com/" + "very-long-path/" * 5,
+            "tool_count": index,
+        }
+        for index in range(12)
+    ]
+    modal = McpSwitchModal(servers, Mock())
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(62, 25)) as pilot:
+        await pilot.pause()
+        service_list = modal.query_one("#mcp-list", ListView)
+        first_label = service_list.children[0].query_one(Label)
+
+        assert service_list.max_scroll_y > 0
+        assert first_label.size.height > 3
+        assert modal.query_one("#mcp-apply", Button).region.height > 0
+        assert modal.query_one("#mcp-cancel", Button).region.height > 0
+
+        service_list.index = len(service_list.children) - 1
+        await pilot.pause()
+        assert service_list.scroll_y > 0
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_adds_disabled_remote_service_from_manual_form():
+    manager = Mock()
+    manager.add_server_config.return_value = {"saved": True}
+    manager.list_server_switches.return_value = [{
+        "name": "remote-api",
+        "disabled": True,
+        "loaded": False,
+        "transport": "sse",
+        "target": "https://example.com/sse",
+        "tool_count": 0,
+    }]
+    modal = McpSwitchModal([], manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause()
+        await pilot.click("#mcp-add")
+        await pilot.pause()
+        add_modal = app.screen
+
+        add_modal.query_one("#mcp-add-name", Input).value = "remote-api"
+        add_modal.query_one("#mcp-add-transport", Select).value = "sse"
+        await pilot.pause()
+        assert add_modal.query_one("#mcp-add-remote-core").display
+        assert not add_modal.query_one("#mcp-add-stdio-core").display
+
+        add_modal.query_one("#mcp-add-url", Input).value = "https://example.com/sse"
+        add_modal.query_one("#mcp-add-headers", TextArea).text = "Authorization=Bearer secret\nX-Region=cn"
+        add_modal.query_one("#mcp-add-auth", Input).value = "oauth"
+        add_modal.query_one("#mcp-add-timeout", Input).value = "5000"
+        add_modal.query_one("#mcp-add-sse-read-timeout", Input).value = "30.5"
+        add_modal.action_submit()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen is modal
+        service_list = modal.query_one("#mcp-list", ListView)
+        assert len(service_list.children) == 1
+        assert "remote-api" in str(service_list.children[0].query_one(Label).render())
+        assert "草稿：禁用" in str(service_list.children[0].query_one(Label).render())
+
+    manager.add_server_config.assert_called_once_with("remote-api", {
+        "url": "https://example.com/sse",
+        "transport": "sse",
+        "headers": {"Authorization": "Bearer secret", "X-Region": "cn"},
+        "auth": "oauth",
+        "timeout": 5000,
+        "sse_read_timeout": 30.5,
+        "disabled": True,
+    })
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_adds_disabled_stdio_service_from_manual_form():
+    manager = Mock()
+    manager.add_server_config.return_value = {"saved": True}
+    manager.list_server_switches.return_value = [{
+        "name": "filesystem",
+        "disabled": True,
+        "loaded": False,
+        "transport": "stdio",
+        "target": "npx",
+        "tool_count": 0,
+    }]
+    modal = McpSwitchModal([], manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause()
+        await pilot.click("#mcp-add")
+        await pilot.pause()
+        add_modal = app.screen
+
+        name_input = add_modal.query_one("#mcp-add-name", Input)
+        name_input.value = "filesyste"
+        name_input.focus()
+        await pilot.press("q")
+        await pilot.pause()
+        assert app.screen is add_modal
+        assert name_input.value == "filesysteq"
+
+        name_input.value = "filesystem"
+        add_modal.query_one("#mcp-add-command", Input).value = "npx"
+        add_modal.query_one("#mcp-add-args", Input).value = '-y "@scope/server" "/repo with spaces"'
+        add_modal.query_one("#mcp-add-env", TextArea).text = "TOKEN=secret\nMODE=dev"
+        add_modal.query_one("#mcp-add-cwd", Input).value = "/repo with spaces"
+        add_modal.query_one("#mcp-add-keep-alive", Select).value = "true"
+        add_modal.query_one("#mcp-add-env", TextArea).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is add_modal
+        add_modal.query_one("#mcp-add-cwd", Input).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen is modal
+
+    manager.add_server_config.assert_called_once_with("filesystem", {
+        "command": "npx",
+        "args": ["-y", "@scope/server", "/repo with spaces"],
+        "transport": "stdio",
+        "env": {"TOKEN": "secret", "MODE": "dev"},
+        "cwd": "/repo with spaces",
+        "keep_alive": True,
+        "disabled": True,
+    })
+
+
+@pytest.mark.anyio
+async def test_mcp_manual_add_form_keeps_invalid_remote_config_open():
+    manager = Mock()
+    modal = McpSwitchModal([], manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause()
+        await pilot.click("#mcp-add")
+        await pilot.pause()
+        add_modal = app.screen
+
+        add_modal.query_one("#mcp-add-name", Input).value = "remote-api"
+        add_modal.query_one("#mcp-add-transport", Select).value = "streamable-http"
+        await pilot.pause()
+        add_modal.action_submit()
+        await pilot.pause()
+
+        assert app.screen is add_modal
+        assert "远程服务必须填写 URL" in str(add_modal.query_one("#mcp-add-error", Label).render())
+        manager.add_server_config.assert_not_called()
+
+        add_modal.query_one("#mcp-add-url", Input).value = "https://example.com/mcp"
+        add_modal.query_one("#mcp-add-headers", TextArea).text = "Authorization"
+        add_modal.action_submit()
+        await pilot.pause()
+
+        assert app.screen is add_modal
+        assert "KEY=VALUE" in str(add_modal.query_one("#mcp-add-error", Label).render())
+        manager.add_server_config.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -846,23 +1173,297 @@ async def test_model_manager_modal_shows_efforts_and_changes_current_model_with_
     modal = ModelManagerModal(manager)
     app = ChoiceModalHost(modal)
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause()
-        title = str(modal.query_one("#choice-title", Label).render())
+        title = str(modal.query_one("#model-manager-title", Label).render())
         assert "low / medium / high / xhigh / max" in title
+        assert "共 1 个模型" in str(modal.query_one("#model-manager-summary", Label).render())
 
-        choice_list = modal.query_one("#choice-list")
-        choice_list.index = 1
+        model_list = modal.query_one("#model-manager-list", ListView)
+        model_list.index = 0
         await pilot.press("right")
         await pilot.pause()
 
-        row = choice_list.children[1].query_one(Label)
-        assert "effort: high" in str(row.render())
-        assert "format: openai_chat" in str(row.render())
+        row = model_list.children[0].query_one(Label)
+        row_text = str(row.render())
+        assert "effort：high" in row_text
+        assert "格式：openai_chat" in row_text
+        assert "当前运行" in row_text
+        assert modal.query_one("#model-manager-add", Button).region.height > 0
+        assert modal.query_one("#model-manager-select", Button).region.height > 0
         assert app.status_refreshes == 1
 
     reloaded = ModelManager(tmp_path)
     assert reloaded.get_current_model().reasoning_effort == "high"
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_changes_other_effort_without_switching_or_refreshing_status(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["current", "other"])
+    current_key = manager.get_current_model().key
+    other_key = next(model.key for model in manager.models if model.key != current_key)
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        model_list.index = next(index for index, key in enumerate(modal._model_keys) if key == other_key)
+        await pilot.press("right")
+        await pilot.pause()
+
+        assert manager.get_current_model().key == current_key
+        assert app.status_refreshes == 0
+        assert "effort：high" in str(model_list.children[model_list.index].query_one(Label).render())
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_selects_displayed_model_and_refreshes_runtime(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["current", "other"])
+    current_key = manager.get_current_model().key
+    other_key = next(model.key for model in manager.models if model.key != current_key)
+    results = []
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal, results.append)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        model_list.index = next(index for index, key in enumerate(modal._model_keys) if key == other_key)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert manager.get_current_model().key == other_key
+    assert manager.get_current_model().reasoning_effort == "medium"
+    assert results and results[0].startswith("selected:other")
+    assert app.status_refreshes == 1
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_scrolls_cards_while_actions_stay_visible(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model(
+        "https://very-long-model-service.example.com/v1",
+        "key",
+        [f"model-{index}-" + "very-long-name-" * 4 for index in range(12)],
+    )
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(62, 25)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        first_label = model_list.children[0].query_one(Label)
+
+        assert model_list.max_scroll_y > 0
+        assert first_label.size.height > 3
+        assert modal.query_one("#model-manager-add", Button).region.height > 0
+        assert modal.query_one("#model-manager-close", Button).region.height > 0
+
+        model_list.index = len(model_list.children) - 1
+        await pilot.pause()
+        assert model_list.scroll_y > 0
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_add_shortcut_works_when_empty(tmp_path):
+    modal = ModelManagerModal(ModelManager(tmp_path))
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        assert modal.query_one("#model-manager-add", Button).has_focus
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert isinstance(app.screen, AddModelModal)
+
+
+@pytest.mark.anyio
+async def test_add_memory_modal_requires_content_and_reuse_condition():
+    results = []
+    modal = AddMemoryModal()
+    app = ChoiceModalHost(modal, results.append)
+
+    async with app.run_test(size=(90, 32)) as pilot:
+        await pilot.pause()
+        modal.query_one("#memory-add-category", Input).value = "workflow"
+        modal.action_submit()
+        await pilot.pause()
+
+        assert "请填写记忆内容" in str(modal.query_one("#memory-add-error", Label).render())
+        assert results == []
+
+        modal.query_one("#memory-add-insight", TextArea).text = "始终先运行针对性测试。"
+        modal.query_one("#memory-add-reuse-condition", TextArea).text = "当修改测试或验证流程时"
+        modal.action_submit()
+        await pilot.pause()
+
+    assert results == [{
+        "category": "workflow",
+        "insight": "始终先运行针对性测试。",
+        "evidence": "",
+        "reuse_condition": "当修改测试或验证流程时",
+    }]
+
+
+@pytest.mark.anyio
+async def test_memory_panel_add_shortcut_works_when_empty():
+    provider = Mock()
+    provider.list_long_term_memories.return_value = []
+    modal = MemoryPanelModal(provider)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        assert modal.query_one("#memory-add", Button).has_focus
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert isinstance(app.screen, AddMemoryModal)
+
+
+@pytest.mark.anyio
+async def test_memory_panel_adds_through_append_and_returns_to_new_card():
+    records = [{
+        "id": "mem_old",
+        "created_at": "2026-01-01 00:00:00",
+        "updated_at": "2026-01-01 00:00:00",
+        "category": "preference",
+        "insight": "旧记忆",
+        "evidence": "",
+        "reuse_condition": "旧条件",
+        "status": "active",
+    }]
+    provider = Mock()
+    provider.list_long_term_memories.side_effect = lambda: list(records)
+
+    def append_memory(**values):
+        record = {
+            "id": "mem_new",
+            "created_at": "2026-08-04 12:00:00",
+            "updated_at": "2026-08-04 12:00:00",
+            "status": "active",
+            **values,
+        }
+        records.append(record)
+        return record
+
+    provider.append_long_term_memory.side_effect = append_memory
+    modal = MemoryPanelModal(provider)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        assert "共 1 条 active 记忆" in str(modal.query_one("#memory-summary", Label).render())
+        assert modal.query_one("#memory-add", Button).region.height > 0
+        assert modal.query_one("#memory-close", Button).region.height > 0
+
+        await pilot.click("#memory-add")
+        await pilot.pause()
+        add_modal = app.screen
+        add_modal.query_one("#memory-add-category", Input).value = "project-convention"
+        add_modal.query_one("#memory-add-insight", TextArea).text = "记忆面板支持主动添加。"
+        add_modal.query_one("#memory-add-evidence", TextArea).text = "用户明确提出需求。"
+        add_modal.query_one("#memory-add-reuse-condition", TextArea).text = "当修改记忆面板时"
+        add_modal.action_submit()
+        await pilot.pause()
+        await pilot.pause()
+
+        provider.append_long_term_memory.assert_called_once_with(
+            category="project-convention",
+            insight="记忆面板支持主动添加。",
+            evidence="用户明确提出需求。",
+            reuse_condition="当修改记忆面板时",
+        )
+        memory_list = modal.query_one("#memory-list", ListView)
+        assert len(memory_list.children) == 2
+        assert memory_list.index == 0
+        assert "mem_new" in str(memory_list.children[0].query_one(Label).render())
+        assert modal._expanded_id == "mem_new"
+        assert "共 2 条 active 记忆" in str(modal.query_one("#memory-summary", Label).render())
+        assert app.status_refreshes == 1
+
+
+@pytest.mark.anyio
+async def test_memory_panel_requires_confirmation_before_delete():
+    records = [{
+        "id": "mem_delete",
+        "created_at": "2026-08-04 12:00:00",
+        "updated_at": "2026-08-04 12:00:00",
+        "category": "workflow",
+        "insight": "待删除记忆",
+        "evidence": "",
+        "reuse_condition": "测试删除时",
+        "status": "active",
+    }]
+    provider = Mock()
+    provider.list_long_term_memories.side_effect = lambda: list(records)
+
+    def delete_memory(memory_id):
+        records[:] = [record for record in records if record["id"] != memory_id]
+        return True
+
+    provider.delete_long_term_memory.side_effect = delete_memory
+    modal = MemoryPanelModal(provider)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        assert "确认删除长期记忆" in str(modal.query_one("#memory-title", Label).render())
+        provider.delete_long_term_memory.assert_not_called()
+
+        await pilot.press("n")
+        await pilot.press("d")
+        await pilot.press("y")
+        await pilot.pause()
+        await pilot.pause()
+
+        provider.delete_long_term_memory.assert_called_once_with("mem_delete")
+        assert "共 0 条 active 记忆" in str(modal.query_one("#memory-summary", Label).render())
+        assert modal._deleted_ids == ["mem_delete"]
+        assert app.status_refreshes == 1
+
+
+@pytest.mark.anyio
+async def test_memory_panel_scrolls_cards_while_actions_stay_visible():
+    records = [
+        {
+            "id": f"mem_{index}",
+            "created_at": f"2026-08-04 12:{index:02d}:00",
+            "updated_at": f"2026-08-04 12:{index:02d}:00",
+            "category": "workflow",
+            "insight": "很长的记忆内容" * 30,
+            "evidence": "",
+            "reuse_condition": "当相关任务出现时",
+            "status": "active",
+        }
+        for index in range(12)
+    ]
+    provider = Mock()
+    provider.list_long_term_memories.return_value = records
+    modal = MemoryPanelModal(provider)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(62, 25)) as pilot:
+        await pilot.pause()
+        memory_list = modal.query_one("#memory-list", ListView)
+        first_label = memory_list.children[0].query_one(Label)
+
+        assert memory_list.max_scroll_y > 0
+        assert first_label.size.height > 3
+        assert modal.query_one("#memory-add", Button).region.height > 0
+        assert modal.query_one("#memory-close", Button).region.height > 0
+
+        memory_list.index = len(memory_list.children) - 1
+        await pilot.pause()
+        assert memory_list.scroll_y > 0
 
 
 @pytest.mark.anyio
@@ -885,6 +1486,21 @@ async def test_add_model_modal_returns_explicit_message_format():
         "model_input": "claude-test",
         "message_format": "anthropic",
     }]
+
+
+def test_handle_models_does_not_refresh_status_after_modal_closes(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"])
+    handler = object.__new__(CommandHandler)
+    handler.console = Mock()
+
+    for result in ("exit", "selected:main"):
+        with patch("system.commands.get_model_manager", return_value=manager), \
+                patch("system.commands.manage_models_tui", return_value=result), \
+                patch("system.commands.refresh_status") as refresh:
+            assert handler.handle_models()
+            refresh.assert_not_called()
+
 
 
 def test_llm_result_preserves_serializable_message_superset():
@@ -1124,6 +1740,53 @@ async def test_auto_compact_transcript_and_summary_ignore_private_native_payload
     assert "private-signature" not in conversation_text
     assert "native_blocks" not in conversation_text
     close_client.assert_awaited_once_with(fake_client)
+
+
+@pytest.mark.anyio
+async def test_auto_compact_clears_tool_execution_history(tmp_path):
+    messages = [{"role": "system", "content": "system"}]
+    execution_id = memory.TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "old.py"})
+    memory.TOOL_EXECUTION_HISTORY.finish(execution_id, "old content")
+    fake_client = Mock()
+    fake_client.get_summary_stream_events.return_value = object()
+
+    try:
+        with patch.object(memory, "TRANSCRIPT_DIR", tmp_path), \
+                patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+                patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
+                patch.object(memory, "_compact_console"), \
+                patch.object(
+                    memory.StreamRenderer,
+                    "render_text_stream_async",
+                    new_callable=AsyncMock,
+                    return_value=("summary", [], None),
+                ), \
+                patch.object(memory, "memory_agent_loop", new_callable=AsyncMock, return_value=[]), \
+                patch.object(memory, "print_formatted_text"), \
+                patch.object(memory, "post_tui"):
+            await memory.auto_compact(messages)
+
+        assert memory.TOOL_EXECUTION_HISTORY.snapshot() == []
+    finally:
+        memory.TOOL_EXECUTION_HISTORY.clear()
+
+
+@pytest.mark.anyio
+async def test_auto_compact_preserves_tool_execution_history_when_compaction_fails(tmp_path):
+    messages = [{"role": "system", "content": "system"}]
+    execution_id = memory.TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "old.py"})
+    memory.TOOL_EXECUTION_HISTORY.finish(execution_id, "old content")
+
+    try:
+        with patch.object(memory, "TRANSCRIPT_DIR", tmp_path), \
+                patch.object(memory, "_compact_console"), \
+                patch.object(memory, "create_current_async_llm_client", return_value=None):
+            with pytest.raises(RuntimeError, match="No model configured"):
+                await memory.auto_compact(messages)
+
+        assert len(memory.TOOL_EXECUTION_HISTORY.snapshot()) == 1
+    finally:
+        memory.TOOL_EXECUTION_HISTORY.clear()
 
 
 @pytest.mark.anyio

@@ -1054,5 +1054,6 @@ async def auto_compact(
     messages.clear()
     messages.extend(new_history)
     post_tui(TuiRegion.TOOLS, reset_tool_result_count=True)
+    TOOL_EXECUTION_HISTORY.clear()
 
     return "History successfully compacted and summarized."
