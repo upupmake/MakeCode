@@ -31,7 +31,7 @@ class TuiEvent:
 LAYOUT_CONFIG_FILE = paths.layout_config_file()
 LAYOUT_DEFAULT_RATIOS: dict[str, int] = {
     "content": 2,
-    "tools": 1,
+    "tools": 0,
     "task": 2,
     "background": 3,
     "sub_agent": 1,
