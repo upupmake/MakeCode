@@ -60,6 +60,7 @@ class CommandAction(Enum):
 class CommandResult:
     action: CommandAction
     payload: Any = None
+    skip_memory_recall: bool = False
 
 
 # ============================================================================
@@ -1332,6 +1333,21 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 render_history_fn,
             )
             return CommandResult(action=CommandAction.LOAD_HISTORY, payload=(new_history, new_conversation))
+
+        # /nm <query> - 跳过本次请求的记忆预召回
+        if query == "/nm" or query.startswith("/nm "):
+            user_query = query.removeprefix("/nm").strip()
+            if not user_query:
+                self.console.print(
+                    "\n[bold yellow]用法：/nm <query>[/bold yellow]",
+                    tui_region=TuiRegion.TOOLS,
+                )
+                return CommandResult(action=CommandAction.CONTINUE)
+            return CommandResult(
+                action=CommandAction.RUN_AGENT,
+                payload=user_query,
+                skip_memory_recall=True,
+            )
 
         # 其他命令 - 让 LLM 处理
         # 对于在 COMMAND_DESCRIPTIONS 中的命令，附加描述（与原始逻辑一致）

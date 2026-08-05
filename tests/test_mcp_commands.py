@@ -54,6 +54,43 @@ def test_mcp_help_command_registered():
     assert COMMAND_DESCRIPTIONS["/mcp-help"] == "显示 MCP 相关命令介绍。"
 
 
+def test_nm_command_registered_and_returns_plain_query_without_memory_recall():
+    assert "/nm" in COMMAND_DESCRIPTIONS
+    handler = make_handler()
+
+    result = asyncio.run(handler.process_command(
+        "/nm 请直接处理这个请求",
+        history=[],
+        current_conversation=None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    ))
+
+    assert result.action == CommandAction.RUN_AGENT
+    assert result.payload == "请直接处理这个请求"
+    assert result.skip_memory_recall is True
+
+
+@pytest.mark.anyio
+async def test_nm_without_query_shows_usage_and_does_not_run_agent():
+    handler = make_handler()
+    handler.console = Mock()
+
+    result = await handler.process_command(
+        "/nm",
+        history=[],
+        current_conversation=None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    )
+
+    assert result.action == CommandAction.CONTINUE
+    handler.console.print.assert_called_once()
+    assert "用法：/nm <query>" in handler.console.print.call_args.args[0]
+
+
 def test_mcp_switch_opens_management_panel_when_server_list_is_empty(monkeypatch):
     manager = Mock()
     manager.list_server_switches.return_value = []

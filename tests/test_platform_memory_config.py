@@ -2058,6 +2058,33 @@ async def test_user_request_pre_recall_receives_previous_assistant_content():
 
 
 @pytest.mark.anyio
+async def test_nm_request_skips_pre_recall_and_submits_suffix_as_user_query():
+    command_handler = Mock()
+    command_handler.process_command = AsyncMock(return_value=CommandResult(
+        action=CommandAction.RUN_AGENT,
+        payload="直接处理这个请求",
+        skip_memory_recall=True,
+    ))
+    history = [{"role": "system", "content": "system"}]
+
+    with patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "_ensure_active_conversation"), \
+            patch.object(main_module, "recall_long_term_memories", AsyncMock()) as recall, \
+            patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
+            patch.object(main_module, "post_tui") as post_tui, \
+            patch.object(main_module, "refresh_status"):
+        await main_module._process_user_query("/nm 直接处理这个请求", history, command_handler)
+
+    recall.assert_not_awaited()
+    run_agent_loop.assert_awaited_once_with(history)
+    assert history[-1] == {"role": "user", "content": "直接处理这个请求"}
+    post_tui.assert_any_call(
+        main_module.TuiRegion.BACKGROUND,
+        "[#aaaaaa]🧠 已跳过本次请求的记忆预召回流程。[/#aaaaaa]",
+    )
+
+
+@pytest.mark.anyio
 async def test_process_user_query_runs_agent_loop_for_title_detection():
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(

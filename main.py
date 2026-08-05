@@ -716,14 +716,24 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
         try:
             set_agent_loop_active(True)
             _ensure_active_conversation()
-            previous_assistant_content = _get_previous_assistant_content(history)
-            recall_result = await recall_long_term_memories(
-                user_query,
-                previous_assistant_content=previous_assistant_content,
-                source="用户请求预召回",
-                agent_id=ORCHESTRATOR_AGENT_ID,
-            )
-            user_message = prepend_recalled_memory_to_query(user_query, recall_result.get("content", ""))
+            if command_result.skip_memory_recall:
+                post_tui(
+                    TuiRegion.BACKGROUND,
+                    "[#aaaaaa]🧠 已跳过本次请求的记忆预召回流程。[/#aaaaaa]",
+                )
+                user_message = user_query
+            else:
+                previous_assistant_content = _get_previous_assistant_content(history)
+                recall_result = await recall_long_term_memories(
+                    user_query,
+                    previous_assistant_content=previous_assistant_content,
+                    source="用户请求预召回",
+                    agent_id=ORCHESTRATOR_AGENT_ID,
+                )
+                user_message = prepend_recalled_memory_to_query(
+                    user_query,
+                    recall_result.get("content", ""),
+                )
             history.append({"role": "user", "content": user_message})
 
             await agent_loop(history)
