@@ -1767,12 +1767,25 @@ async def test_auto_compact_transcript_and_summary_ignore_private_native_payload
 
 
 @pytest.mark.anyio
-async def test_auto_compact_clears_tool_execution_history(tmp_path):
+async def test_auto_compact_clears_old_tool_history_before_memory_agent_and_preserves_new_history(tmp_path):
     messages = [{"role": "system", "content": "system"}]
     execution_id = memory.TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "old.py"})
     memory.TOOL_EXECUTION_HISTORY.finish(execution_id, "old content")
     fake_client = Mock()
     fake_client.get_summary_stream_events.return_value = object()
+
+    async def run_memory_agent(*args, **kwargs):
+        assert memory.TOOL_EXECUTION_HISTORY.snapshot() == []
+        new_execution_id = memory.TOOL_EXECUTION_HISTORY.start(
+            "AppendLongTermMemory",
+            {"insight": "new memory"},
+            source="memory",
+            actor=memory.MEMORY_AGENT_IDENTITY,
+        )
+        memory.TOOL_EXECUTION_HISTORY.finish(new_execution_id, "saved")
+        return []
+
+    memory_loop = AsyncMock(side_effect=run_memory_agent)
 
     try:
         with patch.object(memory, "TRANSCRIPT_DIR", tmp_path), \
@@ -1785,12 +1798,16 @@ async def test_auto_compact_clears_tool_execution_history(tmp_path):
                     new_callable=AsyncMock,
                     return_value=("summary", [], None),
                 ), \
-                patch.object(memory, "memory_agent_loop", new_callable=AsyncMock, return_value=[]), \
+                patch.object(memory, "memory_agent_loop", new=memory_loop), \
                 patch.object(memory, "print_formatted_text"), \
                 patch.object(memory, "post_tui"):
             await memory.auto_compact(messages)
 
-        assert memory.TOOL_EXECUTION_HISTORY.snapshot() == []
+        memory_loop.assert_awaited_once()
+        records = memory.TOOL_EXECUTION_HISTORY.snapshot()
+        assert len(records) == 1
+        assert records[0].tool_name == "AppendLongTermMemory"
+        assert records[0].source == "memory"
     finally:
         memory.TOOL_EXECUTION_HISTORY.clear()
 

@@ -1026,6 +1026,7 @@ async def auto_compact(
     _compact_console.print("[#aaaaaa]摘要生成流程已结束。[/#aaaaaa]")
     summary = "".join(chunks)
 
+    TOOL_EXECUTION_HISTORY.clear()
     await memory_agent_loop(
         conversation_text=conversation_text,
         summary=summary,
@@ -1054,6 +1055,5 @@ async def auto_compact(
     messages.clear()
     messages.extend(new_history)
     post_tui(TuiRegion.TOOLS, reset_tool_result_count=True)
-    TOOL_EXECUTION_HISTORY.clear()
 
     return "History successfully compacted and summarized."
