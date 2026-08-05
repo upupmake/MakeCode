@@ -498,6 +498,21 @@ Preserve, when present:
 7) Current TaskManager task statuses and dependencies needed to resume execution.
 Be concise, omit repetitive narration, and preserve exact identifiers, paths, commands, and error text when they are needed to continue safely.
 If a compaction reason is provided below, prioritize retaining details relevant to it when trimming the conversation.
+
+At the very end of the summary, add the optional section below only when the conversation provides clear evidence that one or more recalled memories concretely influenced the conversation span represented by the provided JSON dump. Include a memory only when a later assistant decision, tool action, implementation choice, verification command, or answer in the transcript can be specifically connected to it. A memory being recalled, potentially relevant, mentioned, or topically similar is not evidence that it was applied. If uncertain, treat it as not applied.
+- Preserve each applied memory ID exactly as recalled and briefly explain its concrete downstream effect.
+- Memory IDs with the same concrete effect may be grouped in one list item.
+- Use exactly this Markdown structure, with one list item per distinct effect:
+```markdown
+## Applied long-term memories
+- `<memory_id>`, `<memory_id>` — <brief concrete effect>
+
+后续如果当前上下文中缺少用户请求相关的记忆，可先进行一次记忆召回，但召回内容仅供参考。
+```
+- Keep the heading exactly as shown, wrap every memory ID in backticks, and place the reminder exactly once after the list.
+- This section must be the final part of the summary.
+- If no recalled memory clearly affected the represented conversation span, omit the heading, memory IDs, explanations, and reminder sentence entirely.
+
 Compaction reason: {reason}
 """
 

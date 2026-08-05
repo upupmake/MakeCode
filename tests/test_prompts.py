@@ -169,6 +169,26 @@ class PromptPolicyTests(unittest.TestCase):
             self.assertIn(expected, prompt)
         self.assertIn("Compaction reason: context limit", prompt)
 
+    def test_compaction_prompt_only_preserves_memories_that_clearly_affected_the_round(self):
+        prompt = get_summary_user_prompt("context limit")
+        reminder = "后续如果当前上下文中缺少用户请求相关的记忆，可先进行一次记忆召回，但召回内容仅供参考。"
+
+        self.assertIn("## Applied long-term memories", prompt)
+        self.assertIn("conversation span represented by the provided JSON dump", prompt)
+        self.assertIn("later assistant decision, tool action, implementation choice, verification command, or answer", prompt)
+        self.assertIn("can be specifically connected to it", prompt)
+        self.assertIn("A memory being recalled, potentially relevant, mentioned, or topically similar is not evidence", prompt)
+        self.assertIn("If uncertain, treat it as not applied", prompt)
+        self.assertIn("Preserve each applied memory ID exactly as recalled", prompt)
+        self.assertIn("Memory IDs with the same concrete effect may be grouped in one list item", prompt)
+        self.assertIn("- `<memory_id>`, `<memory_id>` — <brief concrete effect>", prompt)
+        self.assertIn("wrap every memory ID in backticks", prompt)
+        self.assertIn("place the reminder exactly once after the list", prompt)
+        self.assertIn(reminder, prompt)
+        self.assertIn("This section must be the final part of the summary", prompt)
+        self.assertIn("no recalled memory clearly affected the represented conversation span", prompt)
+        self.assertIn("omit the heading, memory IDs, explanations, and reminder sentence entirely", prompt)
+
     def test_title_prompt_has_explicit_unicode_character_limit(self):
         prompt = get_title_generation_system_prompt()
 
