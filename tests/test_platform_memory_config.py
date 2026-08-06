@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 import pytest
+from openai import APIError
 from rich.text import Text
 
 from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
@@ -1908,6 +1909,80 @@ class _ClosableAsyncStream:
 
     async def close(self):
         self.closed = True
+
+
+@pytest.mark.anyio
+async def test_async_chat_stream_retries_http2_error_before_output():
+    first_stream = _ClosableAsyncStream(
+        [],
+        error_after_chunks=APIError(
+            "Upstream HTTP/2 stream failed",
+            request=httpx.Request("GET", "https://example.com"),
+            body=None,
+        ),
+    )
+    second_stream = _ClosableAsyncStream([
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="answer",
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+    ])
+    raw_client = Mock()
+    raw_client.max_retries = 1
+    raw_client.chat.completions.create = AsyncMock(side_effect=[first_stream, second_stream])
+    client = AsyncChatAPIClient(raw_client, "test-model")
+
+    with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+        events = [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+
+    assert [event["type"] for event in events] == ["text", "done"]
+    assert events[-1]["result"].text == "answer"
+    assert raw_client.chat.completions.create.await_count == 2
+    sleep.assert_awaited_once()
+    assert first_stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_async_chat_stream_does_not_replay_after_partial_http2_error():
+    first_stream = _ClosableAsyncStream(
+        [
+            SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="partial",
+                        reasoning_content=None,
+                        reasoning=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason=None,
+                )],
+                usage=None,
+            ),
+        ],
+        error_after_chunks=APIError(
+            "Upstream HTTP/2 stream failed",
+            request=httpx.Request("GET", "https://example.com"),
+            body=None,
+        ),
+    )
+    raw_client = Mock()
+    raw_client.max_retries = 5
+    raw_client.chat.completions.create = AsyncMock(return_value=first_stream)
+    client = AsyncChatAPIClient(raw_client, "test-model")
+
+    with pytest.raises(APIError, match="Upstream HTTP/2 stream failed"):
+        [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+
+    assert raw_client.chat.completions.create.await_count == 1
+    assert first_stream.closed is True
 
 
 @pytest.mark.anyio

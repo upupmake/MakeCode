@@ -14,7 +14,7 @@ from typing import Any, Literal, TypedDict
 
 import httpx
 from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI, Timeout
+from openai import APIError, AsyncOpenAI, Timeout
 
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
 
@@ -479,6 +479,10 @@ def _to_plain_dict(value: Any) -> dict[str, Any]:
         }
 
 
+def _is_retryable_openai_stream_error(exc: Exception) -> bool:
+    return isinstance(exc, APIError) and str(exc) == "Upstream HTTP/2 stream failed"
+
+
 def _openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     result = []
     for raw_tool_call in tool_calls or []:
@@ -642,7 +646,11 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
             kwargs["tools"] = tools
 
         configured_max_retries = getattr(self.client, "max_retries", 0)
-        max_retries = max(0, configured_max_retries) if isinstance(configured_max_retries, int) else 0
+        max_retries = (
+            max(0, configured_max_retries)
+            if isinstance(configured_max_retries, int)
+            else 0
+        )
         retries_taken = 0
         output_started = False
         text_parts: list[str] = []
@@ -718,15 +726,22 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
                     if choice.finish_reason is not None:
                         stop_reason = choice.finish_reason
                 break
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, APIError) as exc:
+                if isinstance(exc, APIError) and not _is_retryable_openai_stream_error(exc):
+                    raise
                 if output_started or retries_taken >= max_retries:
                     raise
                 retries_taken += 1
+                reason = (
+                    "流式响应格式错误"
+                    if isinstance(exc, json.JSONDecodeError)
+                    else str(exc)
+                )
                 _set_client_request_retry(
                     retries_taken,
                     max_retries,
                     None,
-                    "流式响应格式错误",
+                    reason,
                 )
                 await asyncio.sleep(min(0.5 * (2 ** (retries_taken - 1)), 8.0))
             finally:
