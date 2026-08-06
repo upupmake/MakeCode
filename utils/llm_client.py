@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import hashlib
 import hmac
@@ -179,6 +180,7 @@ def _set_client_request_retry(
     retry_count: int,
     max_retries: int,
     response: httpx.Response | None,
+    reason: str | None = None,
 ) -> None:
     request_id = _CURRENT_CLIENT_REQUEST_ID.get()
     if request_id is None:
@@ -187,10 +189,12 @@ def _set_client_request_retry(
         from system.tui_app import TuiRegion, post_tui, set_client_request_retry
 
         set_client_request_retry(request_id, retry_count, max_retries)
-        reason = f"HTTP {response.status_code}" if response is not None else "连接或超时错误"
+        reason_text = reason or (
+            f"HTTP {response.status_code}" if response is not None else "连接或超时错误"
+        )
         post_tui(
             TuiRegion.BACKGROUND,
-            f"[#aaaaaa]🌐 LLM 请求失败（{reason}），正在重试 {retry_count}/{max_retries}。[/#aaaaaa]",
+            f"[#aaaaaa]🌐 LLM 请求失败（{reason_text}），正在重试 {retry_count}/{max_retries}。[/#aaaaaa]",
         )
     except Exception:
         pass
@@ -259,17 +263,16 @@ def _client_request_active():
 
 
 async def _tracked_async_stream(create_stream):
-    with _client_request_active():
-        stream = await create_stream()
-        try:
-            async for chunk in stream:
-                yield chunk
-        finally:
-            close = getattr(stream, "close", None)
-            if close is not None:
-                result = close()
-                if inspect.isawaitable(result):
-                    await result
+    stream = await create_stream()
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        close = getattr(stream, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
 
 
 def _extract_tool_info(raw_tool):
@@ -609,6 +612,15 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
         messages: list,
         tools: list = None,
     ):
+        with _client_request_active():
+            async for event in self._generate_stream(messages, tools):
+                yield event
+
+    async def _generate_stream(
+        self,
+        messages: list,
+        tools: list = None,
+    ):
         request_messages = sanitize_openai_messages(messages)
         kwargs = {
             "model": self.model,
@@ -629,9 +641,10 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
         if tools:
             kwargs["tools"] = tools
 
-        stream = _tracked_async_stream(
-            lambda: self.client.chat.completions.create(**kwargs)
-        )
+        configured_max_retries = getattr(self.client, "max_retries", 0)
+        max_retries = max(0, configured_max_retries) if isinstance(configured_max_retries, int) else 0
+        retries_taken = 0
+        output_started = False
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         merged_tool_calls: dict[int, dict[str, Any]] = {}
@@ -639,60 +652,85 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
         usage = None
         tool_calls_started = False
 
-        try:
-            async for chunk in stream:
-                chunk_usage = getattr(chunk, "usage", None)
-                if chunk_usage is not None:
-                    usage = _to_plain_dict(chunk_usage)
-                if not chunk.choices:
-                    continue
+        while True:
+            text_parts = []
+            reasoning_parts = []
+            merged_tool_calls = {}
+            stop_reason = None
+            usage = None
+            tool_calls_started = False
+            stream = _tracked_async_stream(
+                lambda: self.client.chat.completions.create(**kwargs)
+            )
+            try:
+                async for chunk in stream:
+                    chunk_usage = getattr(chunk, "usage", None)
+                    if chunk_usage is not None:
+                        usage = _to_plain_dict(chunk_usage)
+                    if not chunk.choices:
+                        continue
 
-                choice = chunk.choices[0]
-                delta = choice.delta
-                content = getattr(delta, "content", None)
-                if content:
-                    text_parts.append(content)
-                    yield {"type": "text", "content": content}
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        output_started = True
+                        text_parts.append(content)
+                        yield {"type": "text", "content": content}
 
-                reasoning = (
-                    getattr(delta, "reasoning_content", None)
-                    or getattr(delta, "reasoning", None)
+                    reasoning = (
+                        getattr(delta, "reasoning_content", None)
+                        or getattr(delta, "reasoning", None)
+                    )
+                    if reasoning:
+                        output_started = True
+                        reasoning_parts.append(reasoning)
+                        yield {"type": "reasoning", "content": reasoning}
+
+                    delta_tool_calls = getattr(delta, "tool_calls", None)
+                    if delta_tool_calls:
+                        output_started = True
+                        if not tool_calls_started:
+                            tool_calls_started = True
+                            yield {"type": "tool_calls"}
+                        for fallback_index, raw_tool_call in enumerate(delta_tool_calls):
+                            tool_call = _to_plain_dict(raw_tool_call)
+                            index = tool_call.get("index")
+                            if index is None:
+                                index = fallback_index
+                            merged = merged_tool_calls.setdefault(index, {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            })
+                            if tool_call.get("id"):
+                                merged["id"] = tool_call["id"]
+                            if tool_call.get("type"):
+                                merged["type"] = tool_call["type"]
+                            function = tool_call.get("function")
+                            if function is not None:
+                                function = _to_plain_dict(function)
+                                if function.get("name"):
+                                    merged["function"]["name"] = function["name"]
+                                if function.get("arguments"):
+                                    merged["function"]["arguments"] += function["arguments"]
+
+                    if choice.finish_reason is not None:
+                        stop_reason = choice.finish_reason
+                break
+            except json.JSONDecodeError:
+                if output_started or retries_taken >= max_retries:
+                    raise
+                retries_taken += 1
+                _set_client_request_retry(
+                    retries_taken,
+                    max_retries,
+                    None,
+                    "流式响应格式错误",
                 )
-                if reasoning:
-                    reasoning_parts.append(reasoning)
-                    yield {"type": "reasoning", "content": reasoning}
-
-                delta_tool_calls = getattr(delta, "tool_calls", None)
-                if delta_tool_calls:
-                    if not tool_calls_started:
-                        tool_calls_started = True
-                        yield {"type": "tool_calls"}
-                    for fallback_index, raw_tool_call in enumerate(delta_tool_calls):
-                        tool_call = _to_plain_dict(raw_tool_call)
-                        index = tool_call.get("index")
-                        if index is None:
-                            index = fallback_index
-                        merged = merged_tool_calls.setdefault(index, {
-                            "id": "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        })
-                        if tool_call.get("id"):
-                            merged["id"] = tool_call["id"]
-                        if tool_call.get("type"):
-                            merged["type"] = tool_call["type"]
-                        function = tool_call.get("function")
-                        if function is not None:
-                            function = _to_plain_dict(function)
-                            if function.get("name"):
-                                merged["function"]["name"] = function["name"]
-                            if function.get("arguments"):
-                                merged["function"]["arguments"] += function["arguments"]
-
-                if choice.finish_reason is not None:
-                    stop_reason = choice.finish_reason
-        finally:
-            await stream.aclose()
+                await asyncio.sleep(min(0.5 * (2 ** (retries_taken - 1)), 8.0))
+            finally:
+                await stream.aclose()
 
         assistant_tool_calls = [
             merged_tool_calls[index]

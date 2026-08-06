@@ -1890,8 +1890,9 @@ def test_openai_message_sanitizer_preserves_reasoning_content_and_strips_private
 
 
 class _ClosableAsyncStream:
-    def __init__(self, chunks):
+    def __init__(self, chunks, error_after_chunks=None):
         self._chunks = iter(chunks)
+        self._error_after_chunks = error_after_chunks
         self.closed = False
 
     def __aiter__(self):
@@ -1901,10 +1902,78 @@ class _ClosableAsyncStream:
         try:
             return next(self._chunks)
         except StopIteration:
+            if self._error_after_chunks is not None:
+                raise self._error_after_chunks
             raise StopAsyncIteration
 
     async def close(self):
         self.closed = True
+
+
+@pytest.mark.anyio
+async def test_async_chat_stream_retries_empty_sse_parse_error_before_output():
+    first_stream = _ClosableAsyncStream(
+        [],
+        error_after_chunks=json.JSONDecodeError("Expecting value", "", 0),
+    )
+    second_stream = _ClosableAsyncStream([
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="answer",
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+    ])
+    raw_client = Mock()
+    raw_client.max_retries = 1
+    raw_client.chat.completions.create = AsyncMock(side_effect=[first_stream, second_stream])
+    client = AsyncChatAPIClient(raw_client, "test-model")
+
+    with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+        events = [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+
+    assert [event["type"] for event in events] == ["text", "done"]
+    assert events[-1]["result"].text == "answer"
+    assert raw_client.chat.completions.create.await_count == 2
+    sleep.assert_awaited_once()
+    assert first_stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_async_chat_stream_does_not_replay_after_partial_output():
+    first_stream = _ClosableAsyncStream(
+        [
+            SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="partial",
+                        reasoning_content=None,
+                        reasoning=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason=None,
+                )],
+                usage=None,
+            ),
+        ],
+        error_after_chunks=json.JSONDecodeError("Expecting value", "", 0),
+    )
+    raw_client = Mock()
+    raw_client.max_retries = 5
+    raw_client.chat.completions.create = AsyncMock(return_value=first_stream)
+    client = AsyncChatAPIClient(raw_client, "test-model")
+
+    with pytest.raises(json.JSONDecodeError):
+        [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+
+    assert raw_client.chat.completions.create.await_count == 1
+    assert first_stream.closed is True
 
 
 @pytest.mark.anyio
