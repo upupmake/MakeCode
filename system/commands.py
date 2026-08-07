@@ -779,9 +779,9 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
         return True
 
-    def handle_tool_history(self) -> bool:
+    def handle_tool_history(self, history: list[dict[str, Any]]) -> bool:
         """打开当前对话的工具执行历史浏览器。"""
-        show_tool_history_tui(TOOL_EXECUTION_HISTORY)
+        show_tool_history_tui(TOOL_EXECUTION_HISTORY, history)
         return True
 
     def handle_new(self, history: list, current_conversation: Optional[Path]) -> tuple:
@@ -1217,7 +1217,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return CommandResult(action=CommandAction.CONTINUE)
 
         if query == "/tool-history":
-            self.handle_tool_history()
+            self.handle_tool_history(history)
             return CommandResult(action=CommandAction.CONTINUE)
 
         if query == "/models":

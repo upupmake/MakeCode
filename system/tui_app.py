@@ -208,16 +208,25 @@ class TuiBridge:
             app.call_from_thread(app.open_copy_content_modal, messages, future)
         return future.result()
 
-    def show_tool_history(self, history: Any) -> str:
+    def show_tool_history(
+        self,
+        history: Any,
+        messages: list[dict[str, Any]],
+    ) -> str:
         with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
         future: Future[str] = Future()
         if self._is_app_thread():
-            app.open_tool_history_modal(history, future)
+            app.open_tool_history_modal(history, messages, future)
         else:
-            app.call_from_thread(app.open_tool_history_modal, history, future)
+            app.call_from_thread(
+                app.open_tool_history_modal,
+                history,
+                messages,
+                future,
+            )
         return future.result()
 
     def manage_models(self, model_manager: Any) -> str:
@@ -743,6 +752,7 @@ class MakeCodeTuiApp(App[None]):
         header_info_provider: Callable[[], str] | None = None,
         conversation_title_provider: Callable[[], str | None] | None = None,
         conversation_title_regenerate_handler: Callable[[], Awaitable[None]] | None = None,
+        messages_provider: Callable[[], list[dict[str, Any]]] | None = None,
         startup_workdir_provider: Callable[[], Any] | None = None,
         startup_workdir_handler: Callable[[str], None] | None = None,
     ) -> None:
@@ -758,6 +768,7 @@ class MakeCodeTuiApp(App[None]):
         self._header_info_provider = header_info_provider
         self._conversation_title_provider = conversation_title_provider
         self._conversation_title_regenerate_handler = conversation_title_regenerate_handler
+        self._messages_provider = messages_provider
         self._startup_workdir_provider = startup_workdir_provider
         self._startup_workdir_handler = startup_workdir_handler
         self._mode_label = "ACT"
@@ -1227,7 +1238,12 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(CopyContentModal(messages), _done)
 
-    def open_tool_history_modal(self, history: Any, future: Future[str] | None = None) -> None:
+    def open_tool_history_modal(
+        self,
+        history: Any,
+        messages: list[dict[str, Any]],
+        future: Future[str] | None = None,
+    ) -> None:
         if self._modal_active:
             if future is not None and not future.done():
                 future.set_result("<cancelled>")
@@ -1240,7 +1256,7 @@ class MakeCodeTuiApp(App[None]):
             self.query_one("#input-box", MakeCodeInput).focus()
 
         self._modal_active = True
-        self.push_screen(ToolHistoryModal(history), _done)
+        self.push_screen(ToolHistoryModal(history, messages), _done)
 
     def open_model_manager_modal(self, model_manager: Any, future: Future[str]) -> None:
         def _done(value: str | None) -> None:
@@ -1575,7 +1591,8 @@ class MakeCodeTuiApp(App[None]):
             return
         from system.tool_history import TOOL_EXECUTION_HISTORY
 
-        self.open_tool_history_modal(TOOL_EXECUTION_HISTORY)
+        messages = self._messages_provider() if self._messages_provider is not None else []
+        self.open_tool_history_modal(TOOL_EXECUTION_HISTORY, list(messages))
 
     def action_toggle_hitl(self) -> None:
         from utils.hitl import toggle_hitl
@@ -2035,8 +2052,11 @@ def show_copy_content_tui(messages: list[dict[str, Any]]) -> str:
     return TUI_BRIDGE.show_copy_content(messages)
 
 
-def show_tool_history_tui(history: Any) -> str:
-    return TUI_BRIDGE.show_tool_history(history)
+def show_tool_history_tui(
+    history: Any,
+    messages: list[dict[str, Any]],
+) -> str:
+    return TUI_BRIDGE.show_tool_history(history, list(messages))
 
 
 def choose_add_model_tui() -> dict[str, str] | None:

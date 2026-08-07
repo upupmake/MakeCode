@@ -884,6 +884,7 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         header_info_provider=header_info_provider,
         conversation_title_provider=_get_current_conversation_title,
         conversation_title_regenerate_handler=conversation_title_regenerate_handler,
+        messages_provider=lambda: history,
         startup_workdir_provider=startup_workdir_provider if prompt_for_workdir else None,
         startup_workdir_handler=startup_workdir_handler if prompt_for_workdir else None,
     )

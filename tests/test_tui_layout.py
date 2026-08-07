@@ -179,11 +179,27 @@ async def test_title_keeps_header_status_visible_on_compact_layout():
 
 
 @pytest.mark.anyio
-async def test_f7_opens_tool_history_and_tools_title_advertises_shortcut():
+async def test_f7_opens_tool_history_with_current_messages_and_advertises_shortcut():
     TOOL_EXECUTION_HISTORY.clear()
     execution_id = TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "README.md"})
-    TOOL_EXECUTION_HISTORY.finish(execution_id, "contents")
-    app = MakeCodeTuiApp()
+    TOOL_EXECUTION_HISTORY.finish(execution_id, "live history contents")
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_read",
+                "name": "FileRead",
+                "arguments": {"path": "README.md"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_read",
+            "name": "FileRead",
+            "content": "current message contents",
+        },
+    ]
+    app = MakeCodeTuiApp(messages_provider=lambda: messages)
 
     try:
         async with app.run_test(size=(140, 40)) as pilot:
@@ -196,6 +212,8 @@ async def test_f7_opens_tool_history_and_tools_title_advertises_shortcut():
             assert isinstance(app.screen, ToolHistoryModal)
             assert len(app.screen._row_values) == 1
             assert app.screen._row_values[0].tool_name == "FileRead"
+            assert app.screen._row_values[0].result == "live history contents"
+            assert app.screen._message_history.snapshot()[0].result == "current message contents"
             app.screen.action_close()
             await pilot.pause()
             assert not isinstance(app.screen, ToolHistoryModal)

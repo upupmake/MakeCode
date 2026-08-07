@@ -589,6 +589,21 @@ def test_skills_command_does_not_refresh_system_prompt_without_changes(monkeypat
     handler.get_system_prompt_fn.assert_not_called()
 
 
+def test_tool_history_command_passes_current_messages(monkeypatch):
+    history = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "tool", "tool_call_id": "call_read", "name": "FileRead", "content": "file"},
+    ]
+    tool_history = Mock()
+    show_history = Mock(return_value="closed")
+    monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
+    monkeypatch.setattr("system.commands.show_tool_history_tui", show_history)
+
+    assert make_handler().handle_tool_history(history) is True
+
+    show_history.assert_called_once_with(tool_history, history)
+
+
 def test_copy_command_keeps_only_questions_answers_and_terminal_io(monkeypatch):
     history = [
         {"role": "system", "content": "system prompt"},

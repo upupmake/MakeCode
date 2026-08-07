@@ -1286,10 +1286,16 @@ class ToolHistoryModal(ClosableModalScreen[str]):
         TOOL_STATUS_INCOMPLETE: "?",
     }
 
-    def __init__(self, history: ToolExecutionHistory) -> None:
+    def __init__(
+        self,
+        history: ToolExecutionHistory,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__()
         self._history = ToolExecutionHistory()
         self._history.replace_with(history)
+        self._message_history = ToolExecutionHistory()
+        self._message_history.rebuild_from_messages(messages or [])
         self._view = "timeline"
         self._tool_filter = ""
         self._row_values: list[ToolExecutionRecord | ToolExecutionSummary] = []
@@ -1502,9 +1508,9 @@ class ToolHistoryModal(ClosableModalScreen[str]):
     def _tool_output_usage_content(self) -> RenderableType:
         from utils.memory import estimate_text_tokens
 
-        usage, total_tokens = self._history.output_token_usage(estimate_text_tokens)
+        usage, total_tokens = self._message_history.output_token_usage(estimate_text_tokens)
         if not usage:
-            return Text("当前没有主 Agent 工具输出。")
+            return Text("当前对话 messages 中没有主 Agent 工具输出。")
 
         table = Table(expand=True)
         table.add_column("排名", justify="right", no_wrap=True)
@@ -1522,7 +1528,8 @@ class ToolHistoryModal(ClosableModalScreen[str]):
                 f"{ratio:.2%}",
             )
         table.caption = (
-            f"仅统计主 Agent 工具输出 · 共 {sum(item.output_count for item in usage)} 次输出 "
+            f"基于当前对话 messages · 仅统计主 Agent 工具输出 · "
+            f"共 {sum(item.output_count for item in usage)} 次输出 "
             f"· 合计 {total_tokens:,} tokens"
         )
         return table

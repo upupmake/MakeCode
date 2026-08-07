@@ -350,11 +350,38 @@ async def test_tool_history_modal_searches_toggles_summary_and_shows_full_detail
 
 
 @pytest.mark.anyio
-async def test_tool_history_modal_opens_sorted_orchestrator_output_token_usage():
+async def test_tool_history_modal_opens_sorted_current_message_output_token_usage():
     history = _build_modal_history()
-    extra = history.start("ContentSearch", {"content_regex": "needle"})
-    history.finish(extra, "x" * 100)
-    modal = ToolHistoryModal(history)
+    live_only = history.start("FileEdit", {"path": "live-only.py"})
+    history.finish(live_only, "z" * 1000)
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_read",
+                "name": "FileRead",
+                "arguments": {"path": "current.py"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_read",
+            "name": "FileRead",
+            "content": "123",
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_search",
+            "name": "ContentSearch",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_search",
+            "output": "x" * 100,
+        },
+    ]
+    modal = ToolHistoryModal(history, messages)
     app = ToolHistoryModalHost(modal)
 
     with patch("utils.memory.estimate_text_tokens", side_effect=len):
@@ -372,6 +399,10 @@ async def test_tool_history_modal_opens_sorted_orchestrator_output_token_usage()
                 "ContentSearch",
                 "FileRead",
             ]
+            assert [str(cell) for cell in table.columns[2]._cells] == ["1", "1"]
+            assert [str(cell) for cell in table.columns[3]._cells] == ["100", "3"]
+            assert "FileEdit" not in [str(cell) for cell in table.columns[1]._cells]
+            assert "基于当前对话 messages" in table.caption
             assert "仅统计主 Agent 工具输出" in table.caption
 
 
