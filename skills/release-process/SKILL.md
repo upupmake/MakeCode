@@ -1,11 +1,11 @@
 ---
 name: release-process
-description: "MakeCode 软件发布流程技能。当用户需要发布新版本、修改版本号、打包构建、上传更新文件、或了解发布规范时触发。包含版本变更规则、构建步骤、发布流程和更新机制说明。适用场景：发布版本、版本号管理、构建打包、更新部署、发布问题排查。"
+description: "MakeCode 软件发布流程技能。当用户需要发布新版本、修改版本号、触发或排查 GitHub Actions 发布构建、或了解发布规范时触发。包含版本变更规则、Actions 构建与发布流程和更新机制说明。适用场景：发布版本、版本号管理、GitHub Actions 构建、更新部署、发布问题排查。"
 ---
 
 # MakeCode 发布流程
 
-本技能指导完成 MakeCode 软件的完整发布流程，包括版本管理、构建打包、发布部署和自动更新机制。
+本技能指导完成 MakeCode 软件的完整发布流程。正式发布包统一由 GitHub Actions 构建和上传，本地不执行发布打包、不上传本地产物。
 
 ---
 
@@ -46,78 +46,44 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 ---
 
-## 2. 构建打包流程
+## 2. GitHub Actions 发布构建
 
-### 2.1 版本号检查与提交
+正式发布包只允许由 `.github/workflows/build.yml` 构建。发布流程不得在本地运行 PyInstaller、不得使用本地 `dist/` 产物创建压缩包，也不得向 GitHub Release 上传本地产物。
 
-**这是整个发布流程的第一步。** 在做任何其他操作之前，先获取远程版本以判断是否需要版本变更：
+### 2.1 发布前准备
 
-1. 请求 `https://github.com/upupmake/MakeCode/releases/latest/download/version.json` 获取远程当前已发布版本（这是首要步骤，决定后续所有操作）
-2. 对比本地 `version.py` 中的 `CURRENT_VERSION`
-3. 如果版本号相同 → 询问用户新版本号并更新 `version.py`
-4. 如果版本号已递增 → 直接进入下一步
-5. 运行 `git status` 检查所有待提交的变更（包括 `version.py` 和其他代码变更）
-6. **先提交所有变更，再开始构建** — 确保构建产物基于已提交的代码
-7. 版本号确认且提交完成后再开始构建
+在创建 Release/tag 前：
 
-### 2.2 前置准备
+1. 读取 `https://github.com/upupmake/MakeCode/releases/latest/download/version.json`，确认远程当前稳定版本。
+2. 对比 `version.py` 中的 `CURRENT_VERSION`，按语义化版本规则更新版本号。
+3. 运行相关测试和发布前检查。
+4. 检查所有待发布变更，包括 `version.py`。
+5. 提交并推送发布提交，确保 tag 和 Actions 构建都基于已提交代码。
+6. 准备临时 `RELEASE_LOG.md`，再运行 `python github_release.py` 创建非 latest 的 Release/tag。
 
-确保以下工具已安装：
-- Python 3.8+
-- PyInstaller
-- 项目依赖（`pip install -r requirements.txt`）
+### 2.2 Actions 构建职责
 
-### 2.3 构建 updater
+`v*` tag 触发 GitHub Actions 后，由工作流自动完成：
 
-Windows 和 Linux 的 updater 是独立更新器程序，需要先构建：
+- Windows X64：先构建 updater，再构建 PyInstaller onedir 主程序；验证 `MakeCode.exe`、`_internal/` 和内置 updater；生成 `MakeCode-Windows-X64.zip`。
+- macOS ARM64：构建 PyInstaller onedir 主程序；将顶层 `assets/MakeCode.command` 与 `MakeCode/` 目录一起生成 `MakeCode-macOS-ARM64.zip`；不得发布或恢复 `.app`/BUNDLE 方案。
+- Linux X64：在固定的 `python:3.12-bullseye` 容器中先构建 updater，再构建 onedir 主程序；生成 `MakeCode-Linux-X64.zip`，支持基线为 GLIBC 2.31+。
 
-```bash
-pyinstaller updater.spec
-```
+三个平台的构建任务负责执行测试和静态检查，包括 TOC、目录结构、警告日志、入口文件，以及 Linux ELF/GLIBC 要求。工作流禁止启动 `dist/` 下的程序。
 
-Windows 构建产物为 `dist/updater.exe`，Linux 构建产物为 `dist/updater`。macOS 不构建 updater。
+### 2.3 Actions 发布资产
 
-### 2.4 构建主程序
+Release 汇总任务只接收各平台 Actions artifacts，并完成：
 
-```bash
-pyinstaller MakeCode.spec
-```
+1. 下载 Windows、macOS 和 Linux 发布资产。
+2. 检查三个平台 ZIP 均存在。
+3. 计算每个平台 ZIP 的大小和 SHA-256。
+4. 生成包含 `platforms` 字段的 `version.json`。
+5. 将三个 ZIP 和 `version.json` 上传到 GitHub Release。
+6. 再次确认四个资产齐全，将新 Release 设为 latest。
+7. 最后清理同一 `MAJOR.MINOR` 版本线内更早的 patch Releases 和 tags。
 
-构建采用 `onedir`，不要改回 `onefile`：
-
-- Windows：`dist/MakeCode/MakeCode.exe`，运行依赖位于 `dist/MakeCode/_internal/`
-- macOS：`dist/MakeCode/MakeCode`，运行依赖位于 `dist/MakeCode/_internal/`；发布 ZIP 顶层额外提供 `MakeCode.command`，用户双击该脚本在 Terminal 中启动
-- Linux：`dist/MakeCode/MakeCode`，运行依赖位于 `dist/MakeCode/_internal/`
-
-Windows 的 `dist/updater.exe` 会被收集为 `dist/MakeCode/_internal/updater.exe`，Linux 的 `dist/updater` 会被收集为 `dist/MakeCode/_internal/updater`，因此两个平台都必须先构建 updater。macOS 不构建 updater，也不支持应用内自动更新。
-
-### 2.5 构建顺序
-
-Windows：
-
-```
-1. pyinstaller updater.spec    → dist/updater.exe
-2. pyinstaller MakeCode.spec   → dist/MakeCode/（_internal 内含 updater.exe）
-```
-
-macOS：
-
-```
-pyinstaller MakeCode.spec      → dist/MakeCode/
-```
-
-Linux：
-
-```
-1. pyinstaller updater.spec    → dist/updater
-2. pyinstaller MakeCode.spec   → dist/MakeCode/（_internal 内含 updater）
-```
-
-GitHub Actions 将 `assets/MakeCode.command` 与 `dist/MakeCode/` 一起打入 `MakeCode-macOS-ARM64.zip`。macOS 用户解压后双击顶层 `MakeCode.command`，不发布 `.app`。
-
-GitHub Actions 将 `dist/MakeCode/` 打入 `MakeCode-Linux-X64.zip`。Linux 用户解压后直接运行 `./MakeCode/MakeCode`；若执行权限未保留，先运行 `chmod +x MakeCode/MakeCode`。
-
-当前 GitHub Actions 构建 Windows X64、macOS ARM64 和 Linux X64。Linux 在固定的 `python:3.12-bullseye` 容器中构建，发布包支持基线为 GLIBC 2.31+；构建后静态检查 TOC、目录结构、警告日志，以及 `dist/MakeCode/` 和 Linux parser archive 内全部 ELF 文件的 GLIBC 版本要求。禁止启动 `dist` 下的程序。
+本地只负责版本、代码、测试、发布日志和创建 Release/tag；发布包的编译、压缩、校验、上传和 latest 切换均由 GitHub Actions 完成。
 
 ---
 
@@ -211,9 +177,9 @@ Linux 更新包可保留 PyInstaller 相对符号链接，但链接目标必须�
 
 ## 5. 常见问题排查
 
-### Q1: 构建失败 "找不到 updater"
+### Q1: GitHub Actions 构建失败“找不到 updater”
 
-Windows/Linux 均需先运行 `pyinstaller updater.spec`，再运行 `pyinstaller MakeCode.spec`。
+检查 `.github/workflows/build.yml` 中 Windows/Linux job 是否仍保持“先构建 updater，再构建 `MakeCode.spec`”的内部顺序，并检查 updater artifact 是否被收集到 onedir 的 `_internal/`。不要改为本地构建或上传本地产物来绕过 Actions 失败。
 
 ### Q2: version.json 生成失败
 
