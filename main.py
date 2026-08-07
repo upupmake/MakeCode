@@ -79,11 +79,13 @@ from utils.memory import (
     MEMORY_SELF_MANAGEMENT_TOOLS,
     ORCHESTRATOR_AGENT_ID,
     auto_compact,
+    compact_tool_outputs,
     estimate_tokens,
     get_active_memory_count,
+    get_compaction_thresholds,
     get_context_token_limit,
     manual_memory_update,
-    micro_compact,
+    partial_compact,
     prepend_recalled_memory_to_query,
     recall_long_term_memories,
 )
@@ -317,7 +319,6 @@ async def _agent_loop_with_client(
     messages: list,
     llm_client,
 ) -> bool:
-    micro_compact(messages)
     committed_response = False
     was_cancelled = False
 
@@ -345,6 +346,37 @@ async def _agent_loop_with_client(
             )
             return False
         raise
+
+    messages[0] = {"role": "system", "content": get_dynamic_system_prompt()}
+    context_token_limit = get_context_token_limit()
+    initial_context_tokens = estimate_tokens(
+        messages,
+        tools_definition=current_super_tools,
+    )
+    tool_output_threshold, partial_threshold = get_compaction_thresholds()
+
+    if initial_context_tokens * 100 >= context_token_limit * partial_threshold:
+        compact_reason = (
+            f"Pre agent_loop partial compact triggered: estimated tokens "
+            f"{initial_context_tokens} reached {partial_threshold}% of threshold "
+            f"{context_token_limit}."
+        )
+        partial_succeeded = False
+        try:
+            partial_succeeded = await partial_compact(
+                messages,
+                context_token_limit,
+                compact_reason,
+            )
+        except Exception as exc:
+            log_error_traceback("Orchestrator partial compact error", exc)
+            console.print(
+                f"[bold red]⚠️ {escape(f'局部上下文压缩失败：{exc}')}[/bold red]"
+            )
+        if not partial_succeeded:
+            compact_tool_outputs(messages)
+    elif initial_context_tokens * 100 >= context_token_limit * tool_output_threshold:
+        compact_tool_outputs(messages)
 
     while True:
         # Update system prompt to reflect current plan mode state

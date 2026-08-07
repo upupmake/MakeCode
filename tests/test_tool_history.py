@@ -279,6 +279,31 @@ def test_tool_history_marks_compacted_checkpoint_results_and_clears_old_state():
     assert "old live result" not in records[0].result
 
 
+def test_tool_history_marks_new_character_compaction_placeholder_as_compacted():
+    history = ToolExecutionHistory()
+
+    history.rebuild_from_messages([
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_compacted",
+                "name": "ContentSearch",
+                "arguments": "{}",
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_compacted",
+            "name": "ContentSearch",
+            "content": "prefix...[该工具执行结果已被压缩]...suffix",
+        },
+    ])
+
+    records = history.snapshot()
+    assert len(records) == 1
+    assert records[0].status == TOOL_STATUS_COMPACTED
+
+
 @pytest.mark.anyio
 async def test_tool_history_modal_searches_toggles_summary_and_shows_full_detail():
     history = _build_modal_history()

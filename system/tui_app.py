@@ -778,7 +778,6 @@ class MakeCodeTuiApp(App[None]):
         self._last_responsive_width = 0
         self._layout_ratios = load_layout_ratios()
         self._tool_result_count = 0
-        self._tool_result_keep_limit = self._load_tool_result_keep_limit()
         self._pane_active_counts: dict[TuiRegion, int] = {}
         self._batch_render_depth = 0
         self._batch_scroll_regions: set[TuiRegion] = set()
@@ -963,19 +962,12 @@ class MakeCodeTuiApp(App[None]):
     def on_unmount(self) -> None:
         TUI_BRIDGE.unbind(self)
 
-    @staticmethod
-    def _load_tool_result_keep_limit() -> int:
-        from utils.memory import get_keep_recent_tool_call
-
-        return get_keep_recent_tool_call()
-
     def _update_tools_title(self) -> None:
         self.query_one("#tools-pane", Vertical).border_title = (
-            f"Tools · Results: {self._tool_result_count}/{self._tool_result_keep_limit} · F7 History"
+            f"Tools · Results: {self._tool_result_count} · F7 History"
         )
 
     def refresh_tools_title(self) -> None:
-        self._tool_result_keep_limit = self._load_tool_result_keep_limit()
         self._update_tools_title()
 
     def flush_screen(self) -> None:

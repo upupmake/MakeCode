@@ -286,38 +286,82 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     assert memory.get_memory_recall_window_size() == 3
     assert memory.get_context_length() == 200
     assert memory.get_context_token_limit() == 200 * 1024
+    assert memory.get_compaction_thresholds() == (70, 90)
     assert memory.set_context_length(300) == 300
+    assert memory.set_compaction_thresholds(65, 85) == (65, 85)
 
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert saved["memory_size"] == 9
     assert saved["memory_recall_window_size"] == 3
     assert saved["context_length"] == 300
+    assert saved["tool_output_compact_threshold"] == 65
+    assert saved["partial_compact_threshold"] == 85
 
     config_file.write_text(json.dumps({
         "memory_size": 11,
         "memory_recall_window_size": 4,
         "context_length": 256,
+        "tool_output_compact_threshold": 60,
+        "partial_compact_threshold": 80,
     }), encoding="utf-8")
 
     assert memory.get_memory_size() == 11
     assert memory.get_memory_recall_window_size() == 4
     assert memory.get_context_length() == 256
     assert memory.get_context_token_limit() == 256 * 1024
+    assert memory.get_compaction_thresholds() == (60, 80)
     assert memory.set_memory_recall_window_size(5) == 5
 
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert saved["memory_size"] == 11
     assert saved["context_length"] == 256
     assert saved["memory_recall_window_size"] == 5
+    assert saved["tool_output_compact_threshold"] == 60
+    assert saved["partial_compact_threshold"] == 80
 
 
-def test_memory_config_modal_includes_global_context_length_field():
+@pytest.mark.parametrize("first,second", [(0, 90), (70, 70), (90, 70), (70, 100), (70.0, 90)])
+def test_memory_compaction_thresholds_require_ordered_integer_percentages(tmp_path, monkeypatch, first, second):
+    config_file = tmp_path / "memory_config.json"
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", config_file)
+    config_file.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="compaction thresholds"):
+        memory.set_compaction_thresholds(first, second)
+
+    assert json.loads(config_file.read_text(encoding="utf-8")) == {"memory_size": 9}
+
+
+def test_memory_config_modal_includes_compaction_threshold_fields():
     fields = MemoryConfigModal._FIELDS
 
     assert fields["context_length"]["input_id"] == "memory-config-context-length"
     assert "memory_size" in fields
-    assert "keep_recent_tool_call" in fields
+    assert fields["tool_output_compact_threshold"]["input_id"] == "memory-config-tool-output-compact-threshold"
+    assert fields["partial_compact_threshold"]["input_id"] == "memory-config-partial-compact-threshold"
+    assert "keep_recent_tool_call" not in fields
     assert fields["memory_recall_window_size"]["input_id"] == "memory-config-memory-recall-window-size"
+
+
+def test_memory_config_modal_requires_second_compaction_threshold_to_be_greater():
+    values = {
+        "context_length": 200,
+        "memory_size": 30,
+        "tool_output_compact_threshold": 90,
+        "partial_compact_threshold": 70,
+        "memory_recall_window_size": 3,
+    }
+    modal = MemoryConfigModal(values)
+    inputs = {
+        f"#{meta['input_id']}": SimpleNamespace(value=str(values[field]))
+        for field, meta in modal._FIELDS.items()
+    }
+
+    with patch.object(modal, "query_one", side_effect=lambda selector, *args: inputs[selector]), \
+            patch.object(modal, "_show_error") as show_error:
+        assert modal._collect_values() is None
+
+    show_error.assert_called_once_with("压缩阈值必须满足 0 < 第一层阈值 < 第二层阈值 < 100。")
 
 
 def test_window_attention_is_noop_on_non_windows():
@@ -1647,8 +1691,12 @@ def test_openai_shaped_messages_can_be_rebuilt_for_anthropic_from_conversation(t
     }]
 
 
-def test_micro_compact_invalidates_native_snapshot_for_cleared_tool_result():
+def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_groups():
+    old_output = "A" * 1200 + "B" * 1200
+    latest_output = "C" * 2400
     messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old request"},
         {
             "role": "assistant",
             "content": None,
@@ -1663,30 +1711,205 @@ def test_micro_compact_invalidates_native_snapshot_for_cleared_tool_result():
                 "native_blocks": [{"type": "tool_use", "id": "call_old"}],
             },
         },
-        {"role": "tool", "tool_call_id": "call_old", "name": "Read", "content": "old result"},
+        {"role": "tool", "tool_call_id": "call_old", "name": "Read", "content": old_output},
+        {"role": "assistant", "content": "old done"},
+        {"role": "user", "content": "latest request"},
         {
             "role": "assistant",
             "content": None,
             "tool_calls": [{
-                "id": "call_new",
+                "id": "call_latest",
                 "type": "function",
-                "function": {"name": "Read", "arguments": '{"path":"new"}'},
+                "function": {"name": "Read", "arguments": '{"path":"latest"}'},
             }],
             "message_metadata": {
                 "source_format": "anthropic",
                 "source_model": "claude-test",
-                "native_blocks": [{"type": "tool_use", "id": "call_new"}],
+                "native_blocks": [{"type": "tool_use", "id": "call_latest"}],
             },
         },
-        {"role": "tool", "tool_call_id": "call_new", "name": "Read", "content": "new result"},
+        {"role": "tool", "tool_call_id": "call_latest", "name": "Read", "content": latest_output},
+        {"role": "assistant", "content": "latest done"},
+        {"role": "user", "content": "current orphan request"},
     ]
 
-    with patch.object(memory, "get_keep_recent_tool_call", return_value=1):
-        memory.micro_compact(messages)
+    assert memory.compact_tool_outputs(messages) is True
+    compacted = messages[3]["content"]
+    assert compacted == "A" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "B" * 1000
+    assert "native_blocks" not in messages[2]["message_metadata"]
+    assert messages[7]["content"] == latest_output
+    assert messages[6]["message_metadata"]["native_blocks"] == [{"type": "tool_use", "id": "call_latest"}]
+    first_result = json.loads(json.dumps(messages, ensure_ascii=False))
 
-    assert messages[1]["content"].startswith("[Previous Read result cleared")
-    assert "native_blocks" not in messages[0]["message_metadata"]
-    assert messages[2]["message_metadata"]["native_blocks"] == [{"type": "tool_use", "id": "call_new"}]
+    assert memory.compact_tool_outputs(messages) is False
+    assert messages == first_result
+
+
+def test_tool_output_compaction_uses_exact_character_boundaries():
+    exact = "甲" * 2000
+    over = "A" * 1001 + "B" * 1000
+
+    assert memory._compact_tool_output_text(exact) == exact
+    assert memory._compact_tool_output_text(over) == (
+        "A" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "B" * 1000
+    )
+
+
+def test_tool_output_compaction_supports_function_call_output_content():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {
+            "type": "function_call",
+            "call_id": "call_old",
+            "name": "Read",
+            "arguments": "{}",
+            "message_metadata": {"native_blocks": [{"type": "tool_use"}]},
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_old",
+            "content": "X" * 2001,
+        },
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+    ]
+
+    assert memory.compact_tool_outputs(messages) is True
+    assert messages[3]["content"] == (
+        "X" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "X" * 1000
+    )
+    assert "native_blocks" not in messages[2]["message_metadata"]
+
+
+def test_tool_output_compaction_does_not_commit_partial_changes_on_error():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "tool", "tool_call_id": "old", "content": "x" * 2001},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+    ]
+    original = json.loads(json.dumps(messages))
+
+    with patch.object(memory, "_compact_tool_output_text", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError, match="boom"):
+            memory.compact_tool_outputs(messages)
+
+    assert messages == original
+
+
+def test_conversation_groups_keep_leading_users_together_and_identify_orphan_user():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "assistant", "content": "a3"},
+        {"role": "user", "content": "u3"},
+        {"role": "user", "content": "u4"},
+        {"role": "assistant", "content": "a4"},
+        {"role": "assistant", "content": "a5"},
+        {"role": "assistant", "content": "a6"},
+        {"role": "user", "content": "orphan"},
+    ]
+
+    assert memory._conversation_groups(messages) == [
+        (1, 3, True),
+        (3, 6, True),
+        (6, 11, True),
+        (11, 12, False),
+    ]
+
+
+@pytest.mark.parametrize("selected_tokens,expected", [
+    (29, None),
+    (30, (1, 3)),
+    (50, (1, 3)),
+    (51, None),
+])
+def test_partial_compaction_range_must_be_between_thirty_and_fifty_percent(selected_tokens, expected):
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+        {"role": "user", "content": "orphan"},
+    ]
+
+    with patch.object(memory, "estimate_tokens", return_value=selected_tokens):
+        assert memory._select_partial_compaction_range(messages, 100) == expected
+
+
+def test_partial_compaction_range_accumulates_oldest_complete_groups_only():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old one"},
+        {"role": "assistant", "content": "answer one"},
+        {"role": "user", "content": "old two"},
+        {"role": "assistant", "content": "answer two"},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+        {"role": "user", "content": "orphan"},
+    ]
+
+    def token_count(selected_messages, tools_definition=None):
+        return 20 if len(selected_messages) == 2 else 35
+
+    with patch.object(memory, "estimate_tokens", side_effect=token_count):
+        assert memory._select_partial_compaction_range(messages, 100) == (1, 5)
+
+
+@pytest.mark.anyio
+async def test_partial_compact_replaces_only_selected_groups_after_success():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old one"},
+        {"role": "assistant", "content": "answer one"},
+        {"role": "user", "content": "old two"},
+        {"role": "assistant", "content": "answer two"},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+        {"role": "user", "content": "orphan"},
+    ]
+    selected = messages[1:5]
+
+    with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 5)), \
+            patch.object(memory, "_summarize_messages", new_callable=AsyncMock, return_value="summary") as summarize:
+        assert await memory.partial_compact(messages, 100, "reason") is True
+
+    assert summarize.await_args.args[0] == selected
+    assert summarize.await_args.kwargs["require_memory_success"] is True
+    assert messages == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "[Previous conversation compressed. Reason: reason] \n\nsummary"},
+        {"role": "assistant", "content": "Understood. I have the context from the summary. Ready to proceed."},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+        {"role": "user", "content": "orphan"},
+    ]
+
+
+@pytest.mark.anyio
+async def test_partial_compact_preserves_history_when_summary_or_memory_fails():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+    ]
+    original = json.loads(json.dumps(messages))
+
+    with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 3)), \
+            patch.object(memory, "_summarize_messages", new_callable=AsyncMock, side_effect=RuntimeError("failed")):
+        with pytest.raises(RuntimeError, match="failed"):
+            await memory.partial_compact(messages, 100, "reason")
+
+    assert messages == original
 
 
 def test_estimate_tokens_ignores_private_native_payloads():
@@ -2309,7 +2532,7 @@ async def test_agent_loop_checks_for_missing_title_once_after_all_iterations():
     def apply_pending_title():
         events.append("apply")
 
-    with patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "compact_tool_outputs"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
@@ -2607,7 +2830,7 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_conversation
     fake_client = Mock()
     tool_call = {"id": "call_1", "name": "DoWork", "arguments": "{}"}
 
-    with patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "compact_tool_outputs"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
@@ -2632,6 +2855,80 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_conversation
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("initial_tokens,partial_result,partial_calls,tool_calls", [
+    (69, None, 0, 0),
+    (70, None, 0, 1),
+    (90, True, 1, 0),
+    (90, False, 1, 1),
+])
+async def test_agent_loop_runs_at_most_one_entry_compaction_layer(
+        initial_tokens,
+        partial_result,
+        partial_calls,
+        tool_calls,
+):
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current request"},
+    ]
+    partial = AsyncMock(return_value=partial_result)
+
+    with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "get_context_token_limit", return_value=100), \
+            patch.object(main_module, "get_compaction_thresholds", return_value=(70, 90)), \
+            patch.object(main_module, "estimate_tokens", return_value=initial_tokens) as estimate_tokens, \
+            patch.object(main_module, "partial_compact", new=partial), \
+            patch.object(main_module, "compact_tool_outputs") as compact_tool_outputs, \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                new_callable=AsyncMock,
+                return_value=("", [], None, True),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages") as save_messages:
+        committed = await main_module.agent_loop(messages, llm_client=Mock())
+
+    assert committed is False
+    assert partial.await_count == partial_calls
+    assert compact_tool_outputs.call_count == tool_calls
+    assert estimate_tokens.call_count == 1
+    save_messages.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_agent_loop_falls_back_to_tool_output_compaction_when_partial_compaction_fails():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current request"},
+    ]
+
+    with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "get_context_token_limit", return_value=100), \
+            patch.object(main_module, "get_compaction_thresholds", return_value=(70, 90)), \
+            patch.object(main_module, "estimate_tokens", return_value=90), \
+            patch.object(main_module, "partial_compact", new_callable=AsyncMock, side_effect=RuntimeError("failed")), \
+            patch.object(main_module, "compact_tool_outputs") as compact_tool_outputs, \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                new_callable=AsyncMock,
+                return_value=("", [], None, True),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "log_error_traceback"), \
+            patch.object(main_module.console, "print"):
+        committed = await main_module.agent_loop(messages, llm_client=Mock())
+
+    assert committed is False
+    compact_tool_outputs.assert_called_once_with(messages)
+
+
+@pytest.mark.anyio
 async def test_agent_loop_creates_and_closes_request_local_client():
     messages = [
         {"role": "system", "content": "system"},
@@ -2644,7 +2941,7 @@ async def test_agent_loop_creates_and_closes_request_local_client():
             current_messages.append(raw_message)
 
     local_client = FakeClient()
-    with patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "compact_tool_outputs"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
@@ -2683,7 +2980,7 @@ async def test_agent_loop_reads_current_context_limit_for_render_and_compaction(
         def append_assistant_message(current_messages, raw_message):
             current_messages.append(raw_message)
 
-    with patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "compact_tool_outputs"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage") as render_token_usage, \
@@ -2700,7 +2997,7 @@ async def test_agent_loop_reads_current_context_limit_for_render_and_compaction(
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
             patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
             patch.object(main_module, "estimate_tokens", return_value=1500), \
-            patch.object(main_module, "get_context_token_limit", side_effect=[2048, 1024]) as get_limit, \
+            patch.object(main_module, "get_context_token_limit", side_effect=[2048, 2048, 1024]) as get_limit, \
             patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "refresh_status"), \
@@ -2708,7 +3005,7 @@ async def test_agent_loop_reads_current_context_limit_for_render_and_compaction(
         committed = await main_module.agent_loop(messages, llm_client=FakeClient())
 
     assert committed is True
-    assert get_limit.call_count == 2
+    assert get_limit.call_count == 3
     assert render_token_usage.call_args.kwargs["threshold"] == 2048
     assert "1500 exceeded threshold 1024" in auto_compact.await_args.kwargs["reason"]
 
@@ -2749,14 +3046,14 @@ async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check(
                 "content": output,
             }
 
-    with patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "compact_tool_outputs"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", AsyncMock(side_effect=responses)), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
             patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
-            patch.object(main_module, "estimate_tokens") as estimate_tokens, \
+            patch.object(main_module, "estimate_tokens", return_value=0) as estimate_tokens, \
             patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
             patch.object(main_module, "_render_tool_call"), \
             patch.object(main_module, "_render_tool_output"), \
@@ -2766,7 +3063,7 @@ async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check(
         committed = await main_module.agent_loop(messages, llm_client=FakeClient())
 
     assert committed is True
-    estimate_tokens.assert_not_called()
+    assert estimate_tokens.call_count == 1
     auto_compact.assert_not_awaited()
 
 
@@ -2822,7 +3119,7 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
                 "content": output,
             }
 
-    with patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "compact_tool_outputs"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
@@ -2885,7 +3182,7 @@ async def test_agent_loops_close_only_their_own_request_local_clients():
             False,
         )
 
-    with patch.object(main_module, "micro_compact"), \
+    with patch.object(main_module, "compact_tool_outputs"), \
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \

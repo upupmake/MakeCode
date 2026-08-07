@@ -350,6 +350,49 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history_record.status, TOOL_STATUS_FAILED)
         close_client.assert_awaited_once_with(fake_client)
 
+    async def test_memory_agent_strict_mode_raises_after_tool_error(self):
+        initial_messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "manage memory"},
+        ]
+        fake_client = Mock()
+        fake_client.get_memory_decision_messages.return_value = initial_messages
+        fake_client.format_tools.return_value = []
+        fake_client.generate_stream.return_value = object()
+        fake_client.format_tool_result.side_effect = lambda tool_id, tool_name, output: {
+            "role": "tool",
+            "tool_call_id": tool_id,
+            "name": tool_name,
+            "content": output,
+        }
+
+        with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+                patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
+                patch.object(
+                    memory.StreamRenderer,
+                    "render_text_stream_async",
+                    new_callable=AsyncMock,
+                    return_value=(
+                        "",
+                        [{"id": "call_1", "name": "MissingMemoryTool", "arguments": "{}"}],
+                        {"role": "assistant", "content": None, "stop_reason": "tool_use"},
+                    ),
+                ), \
+                patch.object(memory, "post_tui"), \
+                patch.object(memory, "_render_agent_response_message"), \
+                patch.object(memory, "_render_tool_output"), \
+                patch.object(memory, "TOOL_EXECUTION_HISTORY", ToolExecutionHistory()):
+            with self.assertRaisesRegex(RuntimeError, "tool errors"):
+                await memory.memory_agent_loop(
+                    conversation_text="[]",
+                    summary="summary",
+                    reason="test",
+                    current_memory_content="",
+                    tools=[],
+                    max_iterations=1,
+                    raise_on_error=True,
+                )
+
     def test_recall_window_filters_only_current_agent_candidates(self):
         memory._MEMORY_RECALL_WINDOWS = {
             "Orchestrator": [["mem_new"]],

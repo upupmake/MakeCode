@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import threading
 import time
@@ -28,7 +29,7 @@ from utils.llm_client import (
     create_memory_recall_llm_client,
     strip_native_message_payloads,
 )
-from settings import KEEP_RECENT_TOOL_CALL, MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_MAX_ITERATIONS, MEMORY_RECALL_WINDOW_SIZE
+from settings import MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_MAX_ITERATIONS, MEMORY_RECALL_WINDOW_SIZE
 from utils import paths
 
 
@@ -42,6 +43,13 @@ def print_formatted_text(value):
 DEFAULT_CONTEXT_LENGTH = 200  # 单位: k (千 tokens)
 DEFAULT_MEMORY_SIZE = 30
 DEFAULT_MEMORY_RECALL_WINDOW_SIZE = MEMORY_RECALL_WINDOW_SIZE
+DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD = 70
+DEFAULT_PARTIAL_COMPACT_THRESHOLD = 90
+TOOL_OUTPUT_COMPACT_LENGTH = 2000
+TOOL_OUTPUT_COMPACT_EDGE_LENGTH = 1000
+TOOL_OUTPUT_COMPACT_MARKER = "...[该工具执行结果已被压缩]..."
+PARTIAL_COMPACT_MIN_PERCENT = 30
+PARTIAL_COMPACT_MAX_PERCENT = 50
 _MEMORY_RECALL_WINDOWS: dict[str, list[list[str]]] = {}
 _MEMORY_RECORDS_LOCK = threading.RLock()
 
@@ -251,12 +259,6 @@ def _validate_memory_size(size) -> int:
     return size
 
 
-def _validate_keep_recent_tool_call(size) -> int:
-    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
-        raise ValueError("keep recent tool call must be a positive integer")
-    return size
-
-
 def _validate_memory_recall_window_size(size) -> int:
     if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
         raise ValueError("memory recall window size must be a positive integer")
@@ -267,6 +269,21 @@ def _validate_context_length(length) -> int:
     if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
         raise ValueError("context length must be a positive integer")
     return length
+
+
+def _validate_compaction_thresholds(tool_output_threshold, partial_threshold) -> tuple[int, int]:
+    if (
+        isinstance(tool_output_threshold, bool)
+        or not isinstance(tool_output_threshold, int)
+        or isinstance(partial_threshold, bool)
+        or not isinstance(partial_threshold, int)
+    ):
+        raise ValueError("compaction thresholds must be integers")
+    if not 0 < tool_output_threshold < partial_threshold < 100:
+        raise ValueError(
+            "compaction thresholds must satisfy 0 < tool output threshold < partial threshold < 100"
+        )
+    return tool_output_threshold, partial_threshold
 
 
 def _load_memory_config_from_disk() -> dict:
@@ -282,12 +299,16 @@ def _load_memory_config_from_disk() -> dict:
     return data
 
 
-def _write_memory_config_field(field: str, value) -> None:
+def _write_memory_config_fields(values: dict) -> None:
     data = _load_memory_config_from_disk()
-    data[field] = value
+    data.update(values)
     MEMORY_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(MEMORY_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _write_memory_config_field(field: str, value) -> None:
+    _write_memory_config_fields({field: value})
 
 
 def _get_memory_config_field(field: str, default, validator):
@@ -315,18 +336,50 @@ def set_memory_size(size: int) -> int:
     return size
 
 
-def get_keep_recent_tool_call() -> int:
-    return _get_memory_config_field(
-        "keep_recent_tool_call",
-        KEEP_RECENT_TOOL_CALL,
-        _validate_keep_recent_tool_call,
+def get_compaction_thresholds() -> tuple[int, int]:
+    data = _load_memory_config_from_disk()
+    tool_output_threshold = data.get(
+        "tool_output_compact_threshold",
+        DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD,
     )
+    partial_threshold = data.get(
+        "partial_compact_threshold",
+        DEFAULT_PARTIAL_COMPACT_THRESHOLD,
+    )
+    try:
+        thresholds = _validate_compaction_thresholds(
+            tool_output_threshold,
+            partial_threshold,
+        )
+    except ValueError:
+        return (
+            DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD,
+            DEFAULT_PARTIAL_COMPACT_THRESHOLD,
+        )
+
+    missing_values = {}
+    if "tool_output_compact_threshold" not in data:
+        missing_values["tool_output_compact_threshold"] = tool_output_threshold
+    if "partial_compact_threshold" not in data:
+        missing_values["partial_compact_threshold"] = partial_threshold
+    if missing_values:
+        _write_memory_config_fields(missing_values)
+    return thresholds
 
 
-def set_keep_recent_tool_call(size: int) -> int:
-    size = _validate_keep_recent_tool_call(size)
-    _write_memory_config_field("keep_recent_tool_call", size)
-    return size
+def set_compaction_thresholds(
+        tool_output_threshold: int,
+        partial_threshold: int,
+) -> tuple[int, int]:
+    thresholds = _validate_compaction_thresholds(
+        tool_output_threshold,
+        partial_threshold,
+    )
+    _write_memory_config_fields({
+        "tool_output_compact_threshold": thresholds[0],
+        "partial_compact_threshold": thresholds[1],
+    })
+    return thresholds
 
 
 def get_memory_recall_window_size() -> int:
@@ -706,12 +759,14 @@ async def memory_agent_loop(
         tools: list,
         mode: str = "compact",
         max_iterations: int = MEMORY_AGENT_MAX_ITERATIONS,
+        raise_on_error: bool = False,
 ) -> list[dict]:
     llm_client = create_current_async_llm_client()
     if llm_client is None:
         raise RuntimeError("No model configured. Please use /models to configure a model first.")
     post_tui(TuiRegion.BACKGROUND, active=True)
     saved_outputs = []
+    had_error = False
     try:
         post_tui(TuiRegion.BACKGROUND, "\n[bold yellow]🧠 正在管理长期记忆...[/bold yellow]")
         post_tui(TuiRegion.BACKGROUND, "[bold yellow]📓 记忆[/bold yellow]")
@@ -737,6 +792,8 @@ async def memory_agent_loop(
             except Exception as e:
                 post_tui(TuiRegion.BACKGROUND, f"[bold red]记忆管理器错误：{e}[/bold red]")
                 post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]记忆管理流程已结束。[/#aaaaaa]")
+                if raise_on_error:
+                    raise RuntimeError(f"Memory management failed: {e}") from e
                 return saved_outputs
 
             if raw_message is not None:
@@ -780,11 +837,14 @@ async def memory_agent_loop(
                     try:
                         arguments = _parse_tool_arguments(tool_args)
                         output = await asyncio.to_thread(handler, **arguments)
-                        if tool_name == "AppendLongTermMemory" and isinstance(output, dict) and "error" not in output:
+                        if isinstance(output, dict) and "error" in output:
+                            tool_error = True
+                        elif tool_name == "AppendLongTermMemory" and isinstance(output, dict):
                             tool_changed = True
-                        elif tool_name == "DeleteLongTermMemory" and isinstance(output, dict) and output.get("deleted"):
-                            tool_changed = True
-                        elif tool_name == "UpdateLongTermMemory" and isinstance(output, dict) and "error" not in output:
+                        elif tool_name == "DeleteLongTermMemory" and isinstance(output, dict):
+                            tool_changed = bool(output.get("deleted"))
+                            tool_error = not tool_changed
+                        elif tool_name == "UpdateLongTermMemory" and isinstance(output, dict):
                             tool_changed = True
                         memory_changed = memory_changed or tool_changed
                     except Exception as e:
@@ -801,6 +861,7 @@ async def memory_agent_loop(
                     status=tool_result_status(is_error=tool_error, output=output),
                     error=str(output) if tool_error else "",
                 )
+                had_error = had_error or tool_error
                 saved_outputs.append({"tool": tool_name, "output": output})
                 if tool_id:
                     tool_result = llm_client.format_tool_result(tool_id, tool_name, output)
@@ -833,6 +894,8 @@ async def memory_agent_loop(
         if not saved_outputs:
             post_tui(TuiRegion.BACKGROUND, "[yellow]长期记忆没有变更。[/yellow]")
         post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]记忆管理流程已结束。[/#aaaaaa]")
+        if raise_on_error and had_error:
+            raise RuntimeError("Memory management completed with tool errors.")
         return saved_outputs
     finally:
         post_tui(TuiRegion.BACKGROUND, active=False)
@@ -901,94 +964,154 @@ def estimate_tokens(messages: list, tools_definition: list = None):
     return base_tokens
 
 
-def micro_compact(input_list: list) -> list:
-    tool_results = []
-    for msg in input_list:
-        if msg.get("type") == "function_call_output" or msg.get("role") == "tool":
-            tool_results.append(msg)
+def _conversation_groups(messages: list[dict]) -> list[tuple[int, int, bool]]:
+    groups: list[tuple[int, int, bool]] = []
+    start: int | None = None
+    has_assistant = False
 
-    keep_recent_tool_call = get_keep_recent_tool_call()
-    if len(tool_results) <= keep_recent_tool_call:
-        return input_list
+    for index, message in enumerate(messages):
+        role = message.get("role")
+        if role == "system":
+            continue
+        if role == "user":
+            if start is None:
+                start = index
+                has_assistant = False
+            elif has_assistant:
+                groups.append((start, index, True))
+                start = index
+                has_assistant = False
+            continue
+        if start is not None and (
+            role == "assistant" or message.get("type") == "function_call"
+        ):
+            has_assistant = True
 
-    tool_call_info_map = {}
-    assistant_by_tool_call_id = {}
-    for msg in input_list:
-        if msg.get("type") == "function_call":
-            tool_call_info_map[msg.get("call_id")] = {
-                "name": msg.get("name"),
-                "arguments": msg.get("arguments"),
-            }
-        elif msg.get("role") == "assistant" and msg.get("tool_calls"):
-            for tc in msg["tool_calls"]:
-                tc_id = (
-                    tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-                )
-                tc_func = (
-                    tc.get("function", {})
-                    if isinstance(tc, dict)
-                    else getattr(tc, "function", None)
-                )
-                if tc_func:
-                    tc_name = (
-                        tc_func.get("name")
-                        if isinstance(tc_func, dict)
-                        else getattr(tc_func, "name", None)
-                    )
-                    tc_args = (
-                        tc_func.get("arguments")
-                        if isinstance(tc_func, dict)
-                        else getattr(tc_func, "arguments", None)
-                    )
-                    if tc_id:
-                        tool_call_info_map[tc_id] = {
-                            "name": tc_name,
-                            "arguments": tc_args,
-                        }
-                        assistant_by_tool_call_id[tc_id] = msg
+    if start is not None:
+        groups.append((start, len(messages), has_assistant))
+    return groups
 
-    to_clear = tool_results[:-keep_recent_tool_call]
-    for result in to_clear:
-        call_id = result.get("call_id") or result.get("tool_call_id")
-        info = tool_call_info_map.get(call_id, {})
-        tool_name = info.get("name", "unknown tool")
-        tool_arguments = info.get("arguments", {})
 
-        replacement = (
-            f"[Previous {tool_name} result cleared, arguments were: {tool_arguments}]"
-        )
-        if "output" in result:
-            result["output"] = replacement
-        elif "content" in result:
-            result["content"] = replacement
+def _protected_history_start(messages: list[dict]) -> int:
+    complete_groups = [group for group in _conversation_groups(messages) if group[2]]
+    if not complete_groups:
+        return 0
+    return complete_groups[-1][0]
 
-        assistant_message = assistant_by_tool_call_id.get(call_id)
-        if assistant_message is not None:
-            metadata = assistant_message.get("message_metadata")
+
+def _tool_call_source_messages(messages: list[dict]) -> dict[str, dict]:
+    sources = {}
+    for message in messages:
+        if message.get("type") == "function_call":
+            call_id = message.get("call_id")
+            if call_id:
+                sources[str(call_id)] = message
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            call_id = tool_call.get("id") or tool_call.get("call_id")
+            if call_id:
+                sources[str(call_id)] = message
+    return sources
+
+
+def _compact_tool_output_text(text: str) -> str:
+    if TOOL_OUTPUT_COMPACT_MARKER in text:
+        logical_text = text.replace(TOOL_OUTPUT_COMPACT_MARKER, "")
+        if len(logical_text) <= TOOL_OUTPUT_COMPACT_LENGTH:
+            return text
+    if len(text) <= TOOL_OUTPUT_COMPACT_LENGTH:
+        return text
+    return (
+        text[:TOOL_OUTPUT_COMPACT_EDGE_LENGTH]
+        + TOOL_OUTPUT_COMPACT_MARKER
+        + text[-TOOL_OUTPUT_COMPACT_EDGE_LENGTH:]
+    )
+
+
+def compact_tool_outputs(messages: list[dict]) -> bool:
+    candidate = copy.deepcopy(messages)
+    protected_start = _protected_history_start(candidate)
+    if protected_start <= 0:
+        return False
+
+    sources = _tool_call_source_messages(candidate)
+    changed = False
+    for message in candidate[:protected_start]:
+        if message.get("type") == "function_call_output":
+            output_field = "output" if "output" in message else "content"
+        elif message.get("role") == "tool":
+            output_field = "content"
+        else:
+            continue
+
+        output = message.get(output_field)
+        if not isinstance(output, str):
+            continue
+        compacted = _compact_tool_output_text(output)
+        if compacted == output:
+            continue
+
+        message[output_field] = compacted
+        call_id = message.get("call_id") or message.get("tool_call_id")
+        source_message = sources.get(str(call_id)) if call_id else None
+        if source_message is not None:
+            metadata = source_message.get("message_metadata")
             if isinstance(metadata, dict):
                 metadata.pop("native_blocks", None)
+        changed = True
 
-    return input_list
+    if changed:
+        messages[:] = candidate
+    return changed
 
 
-async def auto_compact(
-        messages: list,
-        reason: str = "User triggered compact",
-        system_prompt_fn=None,
-) -> str:
+def _select_partial_compaction_range(
+        messages: list[dict],
+        context_token_limit: int,
+) -> tuple[int, int] | None:
+    complete_groups = [group for group in _conversation_groups(messages) if group[2]]
+    candidates = complete_groups[:-1]
+    if not candidates:
+        return None
+
+    first_start = candidates[0][0]
+    for _, end, _ in candidates:
+        accumulated_tokens = estimate_tokens(messages[first_start:end])
+        if accumulated_tokens * 100 < context_token_limit * PARTIAL_COMPACT_MIN_PERCENT:
+            continue
+        if accumulated_tokens * 100 > context_token_limit * PARTIAL_COMPACT_MAX_PERCENT:
+            return None
+        return first_start, end
+    return None
+
+
+def _write_compaction_transcript(messages: list[dict]) -> list[dict]:
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-    transcript_path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
-
+    transcript_path = TRANSCRIPT_DIR / f"transcript_{time.time_ns()}.jsonl"
     transcript_messages = strip_native_message_payloads(messages)
     with open(transcript_path, "w", encoding="utf-8") as f:
-        for msg in transcript_messages:
-            f.write(json.dumps(msg, default=str, ensure_ascii=False) + "\n")
+        for message in transcript_messages:
+            f.write(json.dumps(message, default=str, ensure_ascii=False) + "\n")
     print_formatted_text(
         f"\n[yellow][对话记录已保存到：{escape(str(transcript_path))}][/yellow]"
     )
+    return transcript_messages
 
-    # Filter out original system messages to prevent system instructions clash
-    filtered_messages = [m for m in transcript_messages if m.get("role") != "system"]
+
+async def _summarize_messages(
+        messages: list[dict],
+        reason: str,
+        *,
+        clear_tool_history: bool,
+        require_memory_success: bool = False,
+) -> str:
+    transcript_messages = _write_compaction_transcript(messages)
+    filtered_messages = [
+        message for message in transcript_messages if message.get("role") != "system"
+    ]
     conversation_text = json.dumps(filtered_messages, default=str, ensure_ascii=False)
 
     _compact_console.print(
@@ -1010,36 +1133,34 @@ async def auto_compact(
             )
             if summary:
                 chunks.append(summary)
-
         except Exception as e:
-            # 打印红色的错误提示，比原生的 print 更友好
             _compact_console.print(f"\n[bold red]流式摘要错误：{e}[/bold red]")
-
-            # 流式失败时回退到普通调用
             fallback = await summary_client.get_summary(conversation_text, reason)
-            # 回退时也同样使用 Markdown 渲染
             _compact_console.print(Markdown(fallback))
             chunks = [fallback]
     finally:
         await close_async_llm_client(summary_client)
 
-    _compact_console.print("[#aaaaaa]摘要生成流程已结束。[/#aaaaaa]")
     summary = "".join(chunks)
+    if not summary.strip():
+        raise RuntimeError("Compaction summary was empty.")
+    _compact_console.print("[#aaaaaa]摘要生成流程已结束。[/#aaaaaa]")
 
-    TOOL_EXECUTION_HISTORY.clear()
+    if clear_tool_history:
+        TOOL_EXECUTION_HISTORY.clear()
     await memory_agent_loop(
         conversation_text=conversation_text,
         summary=summary,
         reason="Automatic memory extraction during context compaction. Extract durable, cross-session memories from the conversation if any valuable ones are found; skip if none.",
         current_memory_content=render_long_term_memory_markdown(),
         tools=LONG_TERM_MEMORY_TOOLS,
+        raise_on_error=require_memory_success,
     )
+    return summary
 
-    system_msgs = [m for m in messages if m.get("role") == "system"]
-    if system_prompt_fn and system_msgs:
-        system_msgs = [{"role": "system", "content": system_prompt_fn()}]
 
-    summary_msgs = [
+def _summary_messages(summary: str, reason: str) -> list[dict]:
+    return [
         {
             "role": "user",
             "content": f"[Previous conversation compressed. Reason: {reason}] \n\n{summary}",
@@ -1050,10 +1171,46 @@ async def auto_compact(
         },
     ]
 
-    # Rebuild history in-place
-    new_history = system_msgs + summary_msgs
-    messages.clear()
-    messages.extend(new_history)
-    post_tui(TuiRegion.TOOLS, reset_tool_result_count=True)
 
+async def partial_compact(
+        messages: list[dict],
+        context_token_limit: int,
+        reason: str,
+) -> bool:
+    selected_range = _select_partial_compaction_range(messages, context_token_limit)
+    if selected_range is None:
+        return False
+
+    start, end = selected_range
+    selected_messages = copy.deepcopy(messages[start:end])
+    summary = await _summarize_messages(
+        selected_messages,
+        reason,
+        clear_tool_history=False,
+        require_memory_success=True,
+    )
+    candidate = copy.deepcopy(messages)
+    candidate[start:end] = _summary_messages(summary, reason)
+    messages[:] = candidate
+    return True
+
+
+async def auto_compact(
+        messages: list,
+        reason: str = "User triggered compact",
+        system_prompt_fn=None,
+) -> str:
+    source_messages = copy.deepcopy(messages)
+    summary = await _summarize_messages(
+        source_messages,
+        reason,
+        clear_tool_history=True,
+    )
+
+    system_msgs = [message for message in source_messages if message.get("role") == "system"]
+    if system_prompt_fn and system_msgs:
+        system_msgs = [{"role": "system", "content": system_prompt_fn()}]
+
+    messages[:] = system_msgs + _summary_messages(summary, reason)
+    post_tui(TuiRegion.TOOLS, reset_tool_result_count=True)
     return "History successfully compacted and summarized."

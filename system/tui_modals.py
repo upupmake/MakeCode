@@ -3284,9 +3284,13 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
             "label": "长期记忆容量上限",
             "input_id": "memory-config-memory-size",
         },
-        "keep_recent_tool_call": {
-            "label": "近期工具调用结果保留数量",
-            "input_id": "memory-config-keep-recent-tool-call",
+        "tool_output_compact_threshold": {
+            "label": "第一层工具输出压缩阈值（%）",
+            "input_id": "memory-config-tool-output-compact-threshold",
+        },
+        "partial_compact_threshold": {
+            "label": "第二层局部压缩阈值（%）",
+            "input_id": "memory-config-partial-compact-threshold",
         },
         "memory_recall_window_size": {
             "label": "记忆召回抑制窗口大小",
@@ -3364,6 +3368,11 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
                 self._show_error(f"{meta['label']} 必须是大于 0 的整数。")
                 return None
             values[field] = value
+        tool_output_threshold = values["tool_output_compact_threshold"]
+        partial_threshold = values["partial_compact_threshold"]
+        if not 0 < tool_output_threshold < partial_threshold < 100:
+            self._show_error("压缩阈值必须满足 0 < 第一层阈值 < 第二层阈值 < 100。")
+            return None
         values["memory_recall_model_key"] = self._values.get("memory_recall_model_key")
         values["memory_recall_model_display"] = self._values.get("memory_recall_model_display", "同主模型")
         return values

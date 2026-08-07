@@ -31,15 +31,15 @@ from utils.plan_mode import toggle_plan_mode
 from utils.memory import (
     delete_long_term_memory,
     get_active_memory_count,
+    get_compaction_thresholds,
     get_context_length,
-    get_keep_recent_tool_call,
     get_memory_recall_window_size,
     get_memory_size,
     list_long_term_memories,
     manual_memory_update,
     reset_memory_recall_windows,
+    set_compaction_thresholds,
     set_context_length,
-    set_keep_recent_tool_call,
     set_memory_recall_window_size,
     set_memory_size,
 )
@@ -960,10 +960,12 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return True
 
         model_manager = get_model_manager()
+        tool_output_threshold, partial_threshold = get_compaction_thresholds()
         current_values = {
             "context_length": get_context_length(),
             "memory_size": get_memory_size(),
-            "keep_recent_tool_call": get_keep_recent_tool_call(),
+            "tool_output_compact_threshold": tool_output_threshold,
+            "partial_compact_threshold": partial_threshold,
             "memory_recall_window_size": get_memory_recall_window_size(),
             "memory_recall_model_key": model_manager.memory_recall_model_key if model_manager else None,
             "memory_recall_model_display": model_manager.get_memory_recall_model_display_text() if model_manager else "同主模型",
@@ -998,7 +1000,10 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         set_context_length(result["context_length"])
         set_memory_size(result["memory_size"])
-        set_keep_recent_tool_call(result["keep_recent_tool_call"])
+        set_compaction_thresholds(
+            result["tool_output_compact_threshold"],
+            result["partial_compact_threshold"],
+        )
         set_memory_recall_window_size(result["memory_recall_window_size"])
         if model_manager is not None:
             model_manager.set_memory_recall_model_by_key(result.get("memory_recall_model_key"))
@@ -1010,7 +1015,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             f"  context_length: {result['context_length']}k tokens\n"
             f"  memory_size: {result['memory_size']} "
             f"[#aaaaaa](当前 active：{get_active_memory_count()})[/#aaaaaa]\n"
-            f"  keep_recent_tool_call: {result['keep_recent_tool_call']}\n"
+            f"  tool_output_compact_threshold: {result['tool_output_compact_threshold']}%\n"
+            f"  partial_compact_threshold: {result['partial_compact_threshold']}%\n"
             f"  memory_recall_window_size: {result['memory_recall_window_size']}\n"
             f"  memory_recall_model: {recall_model_text}",
             tui_region=TuiRegion.TOOLS,

@@ -451,7 +451,9 @@ class ToolExecutionHistory:
     @staticmethod
     def _recovered_status(message: dict[str, Any], result: Any) -> str:
         text = "" if result is None else str(result)
-        if text.startswith("[Previous ") and " result cleared" in text:
+        if (
+            text.startswith("[Previous ") and " result cleared" in text
+        ) or "...[该工具执行结果已被压缩]..." in text:
             return TOOL_STATUS_COMPACTED
         return tool_result_status(is_error=message.get("is_error") is True, output=result)
 
