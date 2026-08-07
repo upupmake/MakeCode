@@ -882,21 +882,21 @@ except ImportError:
     _ENCODER = None
 
 
+def estimate_text_tokens(text: str) -> int:
+    if _ENCODER:
+        return len(_ENCODER.encode(text, disallowed_special=()))
+    return len(text) // 2
+
+
 def estimate_tokens(messages: list, tools_definition: list = None):
     # 计算基础文本的 token 数（messages 已包含系统提示词）
     text = json.dumps(strip_native_message_payloads(messages), ensure_ascii=False)
-    if _ENCODER:
-        base_tokens = len(_ENCODER.encode(text, disallowed_special=()))
-    else:
-        base_tokens = len(text) // 2
+    base_tokens = estimate_text_tokens(text)
 
     # 加上工具定义的 token 数
     if tools_definition:
         tools_text = json.dumps(tools_definition, ensure_ascii=False)
-        if _ENCODER:
-            base_tokens += len(_ENCODER.encode(tools_text, disallowed_special=()))
-        else:
-            base_tokens += len(tools_text) // 2
+        base_tokens += estimate_text_tokens(tools_text)
 
     return base_tokens
 

@@ -173,6 +173,13 @@ class ToolExecutionSummary:
     last_sequence: int
 
 
+@dataclass(frozen=True)
+class ToolOutputTokenUsage:
+    tool_name: str
+    output_count: int
+    tokens: int
+
+
 class ToolExecutionHistory:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -293,6 +300,36 @@ class ToolExecutionHistory:
                 )
             )
         return sorted(summaries, key=lambda item: (-item.total, -item.last_sequence, item.tool_name.casefold()))
+
+    def output_token_usage(
+        self,
+        token_counter,
+        *,
+        source: str = "orchestrator",
+    ) -> tuple[list[ToolOutputTokenUsage], int]:
+        grouped: dict[str, list[int]] = {}
+        for record in self.query(source=source, newest_first=False):
+            if record.result is None:
+                continue
+            output = (
+                record.result
+                if isinstance(record.result, str)
+                else json.dumps(record.result, ensure_ascii=False, default=str)
+            )
+            values = grouped.setdefault(record.tool_name, [0, 0])
+            values[0] += 1
+            values[1] += token_counter(output)
+
+        usage = [
+            ToolOutputTokenUsage(
+                tool_name=tool_name,
+                output_count=values[0],
+                tokens=values[1],
+            )
+            for tool_name, values in grouped.items()
+        ]
+        usage.sort(key=lambda item: (-item.tokens, item.tool_name.casefold()))
+        return usage, sum(item.tokens for item in usage)
 
     def rebuild_from_messages(self, messages: list[dict[str, Any]]) -> int:
         recovered: list[ToolExecutionRecord] = []

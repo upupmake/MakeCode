@@ -14,7 +14,7 @@ from system.tool_history import (
     format_tool_arguments,
     format_tool_value,
 )
-from system.tui_modals import ToolHistoryModal
+from system.tui_modals import InfoPanelModal, ToolHistoryModal
 
 
 class ToolHistoryModalHost(App):
@@ -79,6 +79,31 @@ def test_tool_history_records_searches_filters_and_summarizes_executions():
         ("RunTerminalCommand", 1, 0, 1),
         ("FileRead", 1, 1, 0),
     ]
+
+
+def test_tool_output_token_usage_only_aggregates_orchestrator_results_and_sorts_by_tokens():
+    history = ToolExecutionHistory()
+    read_first = history.start("FileRead", {"path": "first.py"})
+    history.finish(read_first, "12345")
+    read_second = history.start("FileRead", {"path": "second.py"})
+    history.finish(read_second, "123")
+    search = history.start("ContentSearch", {"content_regex": "needle"})
+    history.finish(search, {"matches": [1, 2]})
+    delegated = history.start(
+        "RunTerminalCommand",
+        {"command": "pytest"},
+        source="sub_agent",
+        actor="#1 - Tester",
+    )
+    history.finish(delegated, "this result must be excluded")
+
+    usage, total_tokens = history.output_token_usage(len)
+
+    assert [(item.tool_name, item.output_count, item.tokens) for item in usage] == [
+        ("ContentSearch", 1, len('{"matches": [1, 2]}')),
+        ("FileRead", 2, 8),
+    ]
+    assert total_tokens == len('{"matches": [1, 2]}') + 8
 
 
 def test_tool_history_preserves_data_and_formats_arguments_as_indented_json():
@@ -297,6 +322,32 @@ async def test_tool_history_modal_searches_toggles_summary_and_shows_full_detail
         assert modal._view == "timeline"
         assert modal._tool_filter == "FileRead"
         assert len(modal._row_values) == 1
+
+
+@pytest.mark.anyio
+async def test_tool_history_modal_opens_sorted_orchestrator_output_token_usage():
+    history = _build_modal_history()
+    extra = history.start("ContentSearch", {"content_regex": "needle"})
+    history.finish(extra, "x" * 100)
+    modal = ToolHistoryModal(history)
+    app = ToolHistoryModalHost(modal)
+
+    with patch("utils.memory.estimate_text_tokens", side_effect=len):
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await pilot.click("#tool-history-token-usage")
+            await pilot.pause()
+
+            assert isinstance(app.screen, InfoPanelModal)
+            assert "主 Agent 工具输出占比" in str(
+                app.screen.query_one("#choice-title", Label).render()
+            )
+            table = app.screen._content
+            assert [str(cell) for cell in table.columns[1]._cells] == [
+                "ContentSearch",
+                "FileRead",
+            ]
+            assert "仅统计主 Agent 工具输出" in table.caption
 
 
 @pytest.mark.anyio

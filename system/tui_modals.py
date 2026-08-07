@@ -4,6 +4,7 @@ from typing import Any, Callable, TypeVar
 from pathlib import Path
 
 from rich.console import RenderableType
+from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -186,12 +187,18 @@ class ChoiceModal(ClosableModalScreen[str]):
         margin-left: 1;
     }
 
+    #tool-history-token-usage {
+        width: 16;
+        margin-left: 1;
+    }
+
     #tool-history-filter-row.compact {
         height: auto;
         layout: vertical;
     }
 
-    #tool-history-filter-row.compact > .tool-history-filter {
+    #tool-history-filter-row.compact > .tool-history-filter,
+    #tool-history-filter-row.compact > #tool-history-token-usage {
         width: 100%;
         margin-left: 0;
     }
@@ -1297,6 +1304,7 @@ class ToolHistoryModal(ClosableModalScreen[str]):
                 yield Input(placeholder="搜索工具名、参数、结果、错误或执行者…", id="tool-history-search")
                 yield Select(self._STATUS_OPTIONS, value="", allow_blank=False, id="tool-history-status-filter", classes="tool-history-filter")
                 yield Select(self._SOURCE_OPTIONS, value="", allow_blank=False, id="tool-history-source-filter", classes="tool-history-filter")
+                yield Button("输出占比", id="tool-history-token-usage")
             with Horizontal(id="tool-history-content"):
                 yield ListView(id="tool-history-list")
                 yield TextArea(
@@ -1490,6 +1498,42 @@ class ToolHistoryModal(ClosableModalScreen[str]):
         if event.select.id in {"tool-history-status-filter", "tool-history-source-filter"}:
             self._last_signature = None
             self._reload_rows()
+
+    def _tool_output_usage_content(self) -> RenderableType:
+        from utils.memory import estimate_text_tokens
+
+        usage, total_tokens = self._history.output_token_usage(estimate_text_tokens)
+        if not usage:
+            return Text("当前没有主 Agent 工具输出。")
+
+        table = Table(expand=True)
+        table.add_column("排名", justify="right", no_wrap=True)
+        table.add_column("工具")
+        table.add_column("输出数", justify="right", no_wrap=True)
+        table.add_column("Tokens", justify="right", no_wrap=True)
+        table.add_column("占比", justify="right", no_wrap=True)
+        for rank, item in enumerate(usage, start=1):
+            ratio = item.tokens / total_tokens if total_tokens else 0
+            table.add_row(
+                str(rank),
+                item.tool_name,
+                str(item.output_count),
+                f"{item.tokens:,}",
+                f"{ratio:.2%}",
+            )
+        table.caption = (
+            f"仅统计主 Agent 工具输出 · 共 {sum(item.output_count for item in usage)} 次输出 "
+            f"· 合计 {total_tokens:,} tokens"
+        )
+        return table
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "tool-history-token-usage":
+            return
+        event.stop()
+        self.app.push_screen(
+            InfoPanelModal("主 Agent 工具输出占比", self._tool_output_usage_content())
+        )
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.list_view.id == "tool-history-list":
