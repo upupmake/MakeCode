@@ -136,11 +136,11 @@ python github_release.py
 ```
 
 该脚本会：
-1. 删除仓库中当前主版本线的现有 Releases 和对应 tags（例如发布 `5.0.0` 时只清理 `5.x.x`，保留 `4.x.x`）
-2. 创建新的 Release（tag 为 `v{版本号}`），body 包含带固定标记的发布日志
-3. 不上传本地产物；创建 tag 后由 GitHub Actions 统一生成发布资产
+1. 创建新的 Release（tag 为 `v{版本号}`），body 包含带固定标记的发布日志
+2. 新 Release 创建时显式保持为非 latest，避免构建期间 `latest/download` 指向尚无资产的版本
+3. 不删除任何已有 Release/tag，也不上传本地产物；创建 tag 后由 GitHub Actions 统一生成发布资产
 
-GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务读取 Release body 中的日志，为三个平台 ZIP 分别计算大小和 SHA-256，生成向后兼容的 `version.json`（顶层字段继续描述 Windows 资产，`platforms` 字段包含所有平台），并将四个资产统一附加到 Release：`MakeCode-Windows-X64.zip`、`MakeCode-macOS-ARM64.zip`、`MakeCode-Linux-X64.zip`、`version.json`。
+GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务读取 Release body 中的日志，为三个平台 ZIP 分别计算大小和 SHA-256，生成向后兼容的 `version.json`（顶层字段继续描述 Windows 资产，`platforms` 字段包含所有平台），并将四个资产统一附加到 Release：`MakeCode-Windows-X64.zip`、`MakeCode-macOS-ARM64.zip`、`MakeCode-Linux-X64.zip`、`version.json`。四个资产全部上传成功后，汇总任务再次通过 GitHub API 校验资产完整性，将新 Release 设为 latest，最后删除同一 `MAJOR.MINOR` 版本线内更早的 Releases 和对应 tags。
 
 **GitHub 配置**：
 - 仓库：`upupmake/MakeCode`
@@ -148,8 +148,9 @@ GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务
 - Token 需要 `repo` 权限
 
 **注意事项**：
-- 每次发布只会清除当前主版本线的历史 Release，只保留该主版本线的最新版本
-- 发布新的主版本（如 `4.0.0`）时，必须保留上一主版本线的稳定版本（如 `3.x.x` 最后一个版本）
+- 旧版本清理只能发生在新 Release 的 Windows、macOS、Linux ZIP 和 `version.json` 全部上传成功之后
+- 每次只清除当前 `MAJOR.MINOR` 版本线内更早的 patch Releases；例如发布 `6.1.8` 时清理旧 `6.1.x`，保留 `6.0.x`、`5.x.x`
+- 若构建、manifest 生成或资产上传失败，旧 Release/tag 必须保持不变
 - Token 权限不足会导致 404 错误，需确保勾选 `repo` 权限
 
 ### 3.3 发布检查清单
@@ -161,6 +162,8 @@ GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务
 - [ ] 标签触发的 Windows/macOS/Linux Actions 构建成功
 - [ ] Release 汇总任务已为三个平台 ZIP 生成带 `platforms` 字段的 `version.json`
 - [ ] Release 包含 Windows ZIP、macOS ZIP、Linux ZIP 和 `version.json`
+- [ ] 新 Release 已在四个资产齐全后设为 latest，构建期间旧 latest 保持可用
+- [ ] 资产上传成功后，同一 `MAJOR.MINOR` 版本线内更早的 Release/tag 已清理，其他版本线稳定版本仍保留
 - [ ] GitHub latest Release 的 `version.json` 可访问，顶层哈希、大小与 Windows ZIP 匹配，各 `platforms` 条目与对应 ZIP 匹配
 - [ ] **确认工作区干净**：运行 `git status` 确认无未提交的文件
 
@@ -260,5 +263,5 @@ git status  # 应输出 "nothing to commit, working tree clean"
 | `assets/MakeCode.command` | macOS 发布包顶层启动器 |
 | `updater.spec` | Windows/Linux 独立更新器打包配置 |
 | `updater.py` | Windows/Linux onedir 事务更新器源码 |
-| `github_release.py` | 从 RELEASE_LOG.md 创建 GitHub Release/tag；所有资产由 Actions 生成 |
+| `github_release.py` | 创建非 latest 的 GitHub Release/tag；供 Actions 在资产上传后设为 latest，并清理同一次版本线内更早的 Release/tag |
 | `.github_token` | GitHub Token（不提交远程） |

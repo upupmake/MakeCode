@@ -430,6 +430,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
@@ -517,3 +520,9 @@ jobs:
         with:
           files: release-assets/*
           generate_release_notes: false
+          make_latest: false
+
+      - name: Finalize release after assets are available
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python github_release.py --finalize-release "${{ github.ref_name }}"
