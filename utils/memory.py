@@ -47,7 +47,7 @@ DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD = 70
 DEFAULT_PARTIAL_COMPACT_THRESHOLD = 90
 TOOL_OUTPUT_COMPACT_LENGTH = 2000
 TOOL_OUTPUT_COMPACT_EDGE_LENGTH = 1000
-TOOL_OUTPUT_COMPACT_MARKER = "...[该工具执行结果已被压缩]..."
+TOOL_OUTPUT_COMPACT_MARKER = "\n\n...[该工具执行结果已被压缩]...\n\n"
 PARTIAL_COMPACT_MIN_PERCENT = 30
 PARTIAL_COMPACT_MAX_PERCENT = 50
 _MEMORY_RECALL_WINDOWS: dict[str, list[list[str]]] = {}
@@ -1018,8 +1018,9 @@ def _tool_call_source_messages(messages: list[dict]) -> dict[str, dict]:
 
 
 def _compact_tool_output_text(text: str) -> str:
-    if TOOL_OUTPUT_COMPACT_MARKER in text:
-        logical_text = text.replace(TOOL_OUTPUT_COMPACT_MARKER, "")
+    marker_text = TOOL_OUTPUT_COMPACT_MARKER.strip("\n")
+    if marker_text in text:
+        logical_text = text.replace(TOOL_OUTPUT_COMPACT_MARKER, "").replace(marker_text, "")
         if len(logical_text) <= TOOL_OUTPUT_COMPACT_LENGTH:
             return text
     if len(text) <= TOOL_OUTPUT_COMPACT_LENGTH:

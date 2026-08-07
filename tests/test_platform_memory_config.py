@@ -1745,10 +1745,18 @@ def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_
     assert messages == first_result
 
 
+def test_tool_output_compaction_recognizes_legacy_marker():
+    marker = memory.TOOL_OUTPUT_COMPACT_MARKER.strip("\n")
+    compacted = "A" * 1000 + marker + "B" * 1000
+
+    assert memory._compact_tool_output_text(compacted) == compacted
+
+
 def test_tool_output_compaction_uses_exact_character_boundaries():
     exact = "甲" * 2000
     over = "A" * 1001 + "B" * 1000
 
+    assert memory.TOOL_OUTPUT_COMPACT_MARKER == "\n\n...[该工具执行结果已被压缩]...\n\n"
     assert memory._compact_tool_output_text(exact) == exact
     assert memory._compact_tool_output_text(over) == (
         "A" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "B" * 1000
