@@ -356,6 +356,10 @@ async def _agent_loop_with_client(
     tool_output_threshold, partial_threshold = get_compaction_thresholds()
 
     if initial_context_tokens * 100 >= context_token_limit * partial_threshold:
+        post_tui(
+            TuiRegion.BACKGROUND,
+            "[bold yellow]⚡️ 已触发第二层局部摘要压缩。[/bold yellow]",
+        )
         compact_reason = (
             f"Pre agent_loop partial compact triggered: estimated tokens "
             f"{initial_context_tokens} reached {partial_threshold}% of threshold "
@@ -373,10 +377,43 @@ async def _agent_loop_with_client(
             console.print(
                 f"[bold red]⚠️ {escape(f'局部上下文压缩失败：{exc}')}[/bold red]"
             )
-        if not partial_succeeded:
-            compact_tool_outputs(messages)
+        if partial_succeeded:
+            post_tui(
+                TuiRegion.BACKGROUND,
+                "[bold green]✅ 第二层局部摘要压缩已完成。[/bold green]",
+            )
+        else:
+            post_tui(
+                TuiRegion.BACKGROUND,
+                "[bold yellow]↩️ 第二层局部摘要压缩未提交，回退执行第一层工具输出裁剪。[/bold yellow]",
+            )
+            tool_outputs_compacted = compact_tool_outputs(messages)
+            if tool_outputs_compacted:
+                post_tui(
+                    TuiRegion.BACKGROUND,
+                    "[bold green]✅ 第一层工具输出裁剪已完成。[/bold green]",
+                )
+            else:
+                post_tui(
+                    TuiRegion.BACKGROUND,
+                    "[#aaaaaa]第一层已检查，没有可裁剪的较早工具输出。[/#aaaaaa]",
+                )
     elif initial_context_tokens * 100 >= context_token_limit * tool_output_threshold:
-        compact_tool_outputs(messages)
+        post_tui(
+            TuiRegion.BACKGROUND,
+            "[bold yellow]⚡️ 已触发第一层工具输出裁剪。[/bold yellow]",
+        )
+        tool_outputs_compacted = compact_tool_outputs(messages)
+        if tool_outputs_compacted:
+            post_tui(
+                TuiRegion.BACKGROUND,
+                "[bold green]✅ 第一层工具输出裁剪已完成。[/bold green]",
+            )
+        else:
+            post_tui(
+                TuiRegion.BACKGROUND,
+                "[#aaaaaa]第一层已检查，没有可裁剪的较早工具输出。[/#aaaaaa]",
+            )
 
     while True:
         # Update system prompt to reflect current plan mode state

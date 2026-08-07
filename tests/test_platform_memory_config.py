@@ -2855,17 +2855,22 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_conversation
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("initial_tokens,partial_result,partial_calls,tool_calls", [
-    (69, None, 0, 0),
-    (70, None, 0, 1),
-    (90, True, 1, 0),
-    (90, False, 1, 1),
+@pytest.mark.parametrize("initial_tokens,partial_result,partial_calls,tool_calls,expected_messages", [
+    (69, None, 0, 0, []),
+    (70, None, 0, 1, ["已触发第一层工具输出裁剪", "第一层工具输出裁剪已完成"]),
+    (90, True, 1, 0, ["已触发第二层局部摘要压缩", "第二层局部摘要压缩已完成"]),
+    (90, False, 1, 1, [
+        "已触发第二层局部摘要压缩",
+        "第二层局部摘要压缩未提交，回退执行第一层工具输出裁剪",
+        "第一层工具输出裁剪已完成",
+    ]),
 ])
 async def test_agent_loop_runs_at_most_one_entry_compaction_layer(
         initial_tokens,
         partial_result,
         partial_calls,
         tool_calls,
+        expected_messages,
 ):
     messages = [
         {"role": "system", "content": "system"},
@@ -2879,7 +2884,7 @@ async def test_agent_loop_runs_at_most_one_entry_compaction_layer(
             patch.object(main_module, "get_compaction_thresholds", return_value=(70, 90)), \
             patch.object(main_module, "estimate_tokens", return_value=initial_tokens) as estimate_tokens, \
             patch.object(main_module, "partial_compact", new=partial), \
-            patch.object(main_module, "compact_tool_outputs") as compact_tool_outputs, \
+            patch.object(main_module, "compact_tool_outputs", return_value=True) as compact_tool_outputs, \
             patch.object(main_module, "_render_token_usage"), \
             patch.object(
                 main_module,
@@ -2888,7 +2893,8 @@ async def test_agent_loop_runs_at_most_one_entry_compaction_layer(
                 return_value=("", [], None, True),
             ), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module.CONVERSATION_STORE, "save_messages") as save_messages:
+            patch.object(main_module.CONVERSATION_STORE, "save_messages") as save_messages, \
+            patch.object(main_module, "post_tui") as post_tui:
         committed = await main_module.agent_loop(messages, llm_client=Mock())
 
     assert committed is False
@@ -2896,6 +2902,94 @@ async def test_agent_loop_runs_at_most_one_entry_compaction_layer(
     assert compact_tool_outputs.call_count == tool_calls
     assert estimate_tokens.call_count == 1
     save_messages.assert_not_called()
+    background_messages = [
+        str(call.args[1])
+        for call in post_tui.call_args_list
+        if call.args and call.args[0] == main_module.TuiRegion.BACKGROUND and len(call.args) > 1
+    ]
+    for expected_message in expected_messages:
+        assert any(expected_message in message for message in background_messages)
+    assert not any("第三层" in message for message in background_messages)
+
+
+@pytest.mark.anyio
+async def test_agent_loop_reports_when_first_layer_has_no_eligible_tool_outputs():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current request"},
+    ]
+
+    with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "get_context_token_limit", return_value=100), \
+            patch.object(main_module, "get_compaction_thresholds", return_value=(70, 90)), \
+            patch.object(main_module, "estimate_tokens", return_value=70), \
+            patch.object(main_module, "compact_tool_outputs", return_value=False), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                new_callable=AsyncMock,
+                return_value=("", [], None, True),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "post_tui") as post_tui:
+        committed = await main_module.agent_loop(messages, llm_client=Mock())
+
+    assert committed is False
+    background_messages = [
+        str(call.args[1])
+        for call in post_tui.call_args_list
+        if call.args and call.args[0] == main_module.TuiRegion.BACKGROUND and len(call.args) > 1
+    ]
+    assert any("已触发第一层工具输出裁剪" in message for message in background_messages)
+    assert any("没有可裁剪的较早工具输出" in message for message in background_messages)
+
+
+@pytest.mark.anyio
+async def test_agent_loop_renders_usage_after_entry_compaction_commits():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "current request"},
+    ]
+
+    async def compact(current_messages, context_token_limit, reason):
+        current_messages[1:3] = [
+            {"role": "user", "content": "summary"},
+            {"role": "assistant", "content": "summary acknowledged"},
+        ]
+        return True
+
+    rendered_snapshots = []
+
+    def capture_usage(current_messages, **kwargs):
+        rendered_snapshots.append(json.loads(json.dumps(current_messages)))
+
+    with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "get_context_token_limit", return_value=100), \
+            patch.object(main_module, "get_compaction_thresholds", return_value=(70, 90)), \
+            patch.object(main_module, "estimate_tokens", return_value=90), \
+            patch.object(main_module, "partial_compact", new=AsyncMock(side_effect=compact)), \
+            patch.object(main_module, "_render_token_usage", side_effect=capture_usage), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                new_callable=AsyncMock,
+                return_value=("", [], None, True),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "post_tui"):
+        committed = await main_module.agent_loop(messages, llm_client=Mock())
+
+    assert committed is False
+    assert rendered_snapshots == [messages]
+    assert messages[1:3] == [
+        {"role": "user", "content": "summary"},
+        {"role": "assistant", "content": "summary acknowledged"},
+    ]
 
 
 @pytest.mark.anyio
