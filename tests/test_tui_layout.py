@@ -5,10 +5,12 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from rich.text import Text
 
 from system.console_render import _render_startup_banner
 from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import MakeCodeTuiApp, TuiBridge
+from system.tui_types import TuiEvent, TuiRegion
 from system.tui_modals import ChoiceModal, ToolHistoryModal
 from utils.skills import SkillLoader
 
@@ -252,6 +254,116 @@ async def test_compact_layout_switches_between_main_and_runtime_panes():
         assert not left_column.has_class("hidden")
         assert right_column.has_class("hidden")
         assert str(toggle.label) == "运行面板 F6"
+
+
+@pytest.mark.anyio
+async def test_responsive_reflow_keeps_all_logs_without_horizontal_scroll():
+    app = MakeCodeTuiApp()
+    regions = {
+        TuiRegion.CONTENT: "#content-log",
+        TuiRegion.TOOLS: "#tools-log",
+        TuiRegion.TASK: "#task-log",
+        TuiRegion.BACKGROUND: "#background-log",
+        TuiRegion.SUB_AGENT: "#sub-agent-log",
+    }
+    payload = "自动换行内容" * 30
+
+    async with app.run_test(size=(240, 50)) as pilot:
+        await pilot.pause()
+        for region in regions:
+            app.handle_tui_event(TuiEvent(region, "", clear=True))
+        await pilot.pause()
+        for region in regions:
+            app.handle_tui_event(TuiEvent(region, payload))
+        await pilot.pause()
+
+        await pilot.resize_terminal(140, 50)
+        await pilot.pause()
+
+        for region, selector in regions.items():
+            log = app.query_one(selector)
+            assert log.max_scroll_x == 0, region
+            assert log.virtual_size.width <= log.scrollable_content_region.width, region
+            assert "".join(line.text.rstrip() for line in log.lines) == payload, region
+
+        await pilot.resize_terminal(240, 50)
+        await pilot.pause()
+
+        for region, selector in regions.items():
+            log = app.query_one(selector)
+            assert log.max_scroll_x == 0, region
+            assert "".join(line.text.rstrip() for line in log.lines) == payload, region
+
+
+@pytest.mark.anyio
+async def test_narrow_main_panes_fit_terminal_without_horizontal_scroll():
+    app = MakeCodeTuiApp()
+    payload = "窄终端中的左侧内容仍然应该完整换行显示" * 4
+
+    async with app.run_test(size=(80, 40)) as pilot:
+        await pilot.pause()
+        for region in (TuiRegion.CONTENT, TuiRegion.TOOLS):
+            app.handle_tui_event(TuiEvent(region, "", clear=True))
+            app.handle_tui_event(TuiEvent(region, payload))
+        await pilot.pause()
+
+        main_grid = app.query_one("#main-grid")
+        assert main_grid.region.width <= app.size.width
+        for selector in ("#content-log", "#tools-log"):
+            log = app.query_one(selector)
+            assert log.max_scroll_x == 0
+            assert log.virtual_size.width <= log.scrollable_content_region.width
+            assert "".join(line.text.rstrip() for line in log.lines) == payload
+
+
+@pytest.mark.anyio
+async def test_hidden_right_log_defers_output_until_it_has_a_width():
+    app = MakeCodeTuiApp()
+    payload = "右侧隐藏期间的新输出不会逐字换行"
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        await pilot.resize_terminal(100, 40)
+        await pilot.pause()
+
+        log = app.query_one("#background-log")
+        assert app.query_one("#right-column").has_class("hidden")
+        assert log.size.width == 0
+
+        app.handle_tui_event(TuiEvent(TuiRegion.BACKGROUND, payload))
+        await pilot.pause()
+        assert not log.lines
+
+        await pilot.press("f6")
+        await pilot.pause()
+
+        assert not app.query_one("#right-column").has_class("hidden")
+        assert log.max_scroll_x == 0
+        assert "".join(line.text.rstrip() for line in log.lines) == payload
+
+
+@pytest.mark.anyio
+async def test_responsive_reflow_preserves_rich_text_content():
+    app = MakeCodeTuiApp()
+    payload = Text("不会丢失的 Rich 内容", style="bold green")
+
+    async with app.run_test(size=(240, 40)) as pilot:
+        await pilot.pause()
+        app.handle_tui_event(TuiEvent(TuiRegion.BACKGROUND, payload))
+        await pilot.pause()
+        await pilot.resize_terminal(140, 40)
+        await pilot.pause()
+
+        log = app.query_one("#background-log")
+        assert log.max_scroll_x == 0
+        assert "".join(line.text.rstrip() for line in log.lines) == payload.plain
+        assert any(
+            segment.style.bold
+            and segment.style.color
+            and segment.style.color.name == "green"
+            for line in log.lines
+            for segment in line._segments
+        )
 
 
 @pytest.mark.anyio

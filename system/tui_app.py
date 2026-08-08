@@ -513,6 +513,121 @@ class ConversationTitle(Static):
         event.stop()
 
 
+class TuiRichLog(RichLog):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._render_entries: list[tuple[Any, int | None, bool, bool, bool | None, bool]] = []
+        self._rendered_entry_count = 0
+        self._last_render_width: int | None = None
+        self._reflow_scheduled = False
+        self._reflowing = False
+
+    def _content_width(self) -> int:
+        return max(self.scrollable_content_region.width, 0)
+
+    def _can_render(self) -> bool:
+        return self._size_known and self._content_width() > 0
+
+    def _schedule_reflow(self) -> None:
+        if self._reflow_scheduled:
+            return
+        self._reflow_scheduled = True
+        self.call_after_refresh(self._reflow_if_needed)
+
+    def _write_without_recording(
+        self,
+        content: Any,
+        width: int | None,
+        expand: bool,
+        shrink: bool,
+        scroll_end: bool | None,
+        animate: bool,
+    ) -> None:
+        if isinstance(content, Text):
+            content = content.copy()
+        try:
+            super().write(
+                content,
+                width=width,
+                expand=expand,
+                shrink=shrink,
+                scroll_end=scroll_end,
+                animate=animate,
+            )
+        except MarkupError:
+            super().write(
+                Text(str(content)),
+                width=width,
+                expand=expand,
+                shrink=shrink,
+                scroll_end=scroll_end,
+                animate=animate,
+            )
+
+    def write(
+        self,
+        content: Any,
+        width: int | None = None,
+        expand: bool = False,
+        shrink: bool = True,
+        scroll_end: bool | None = None,
+        animate: bool = False,
+    ) -> "TuiRichLog":
+        stored_content = content.copy() if isinstance(content, Text) else content
+        if self._can_render():
+            self._write_without_recording(stored_content, width, expand, shrink, scroll_end, animate)
+            self._render_entries.append((stored_content, width, expand, shrink, scroll_end, animate))
+            self._rendered_entry_count += 1
+            self._last_render_width = self._content_width()
+        else:
+            self._render_entries.append((stored_content, width, expand, shrink, scroll_end, animate))
+        return self
+
+    def clear(self) -> "TuiRichLog":
+        self._render_entries.clear()
+        self._rendered_entry_count = 0
+        self._last_render_width = None
+        super().clear()
+        return self
+
+    def on_resize(self, event: Resize) -> None:
+        super().on_resize(event)
+        self._schedule_reflow()
+
+    def _reflow_if_needed(self) -> None:
+        self._reflow_scheduled = False
+        if self._reflowing or not self._can_render():
+            return
+
+        width = self._content_width()
+        if self._rendered_entry_count == len(self._render_entries) and self._last_render_width == width:
+            return
+
+        was_at_bottom = self.is_vertical_scroll_end or self.scroll_y >= self.max_scroll_y - 1
+        old_scroll_y = self.scroll_y
+        self._reflowing = True
+        try:
+            super().clear()
+            for content, entry_width, expand, shrink, _scroll_end, _animate in self._render_entries:
+                self._write_without_recording(content, entry_width, expand, shrink, False, False)
+            self._rendered_entry_count = len(self._render_entries)
+            self._last_render_width = width
+        finally:
+            self._reflowing = False
+
+        if was_at_bottom:
+            self.call_after_refresh(lambda: self.scroll_end(animate=False, x_axis=False))
+        else:
+            self.call_after_refresh(
+                lambda: self.scroll_to(
+                    x=0,
+                    y=min(old_scroll_y, self.max_scroll_y),
+                    animate=False,
+                    immediate=True,
+                )
+            )
+
+
 class MakeCodeTuiApp(App[None]):
     ENABLE_COMMAND_PALETTE = False
 
@@ -661,7 +776,6 @@ class MakeCodeTuiApp(App[None]):
 
     #content-pane,
     #tools-pane {
-        min-width: 86;
         height: 1fr;
     }
 
@@ -819,23 +933,23 @@ class MakeCodeTuiApp(App[None]):
         with Horizontal(id="main-grid"):
             with Vertical(id="left-column"):
                 with Vertical(id="content-pane", classes="pane"):
-                    yield RichLog(id="content-log", classes="pane-log", markup=True, wrap=True, min_width=1)
+                    yield TuiRichLog(id="content-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="content-tail", classes="pane-tail")
                 with Vertical(id="tools-pane", classes="pane"):
-                    yield RichLog(id="tools-log", classes="pane-log", markup=True, wrap=True, min_width=1)
+                    yield TuiRichLog(id="tools-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="tools-tail", classes="pane-tail")
                 with Vertical(id="bottom-grid"):
                     yield Static("", id="slash-hints")
                     yield MakeCodeInput(id="input-box", placeholder='Prompt here e.g. "整理当前项目的架构"')
             with Vertical(id="right-column"):
                 with Vertical(id="task-pane", classes="pane"):
-                    yield RichLog(id="task-log", classes="pane-log", markup=True, wrap=True, min_width=1)
+                    yield TuiRichLog(id="task-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="task-tail", classes="pane-tail")
                 with Vertical(id="background-pane", classes="pane"):
-                    yield RichLog(id="background-log", classes="pane-log", markup=True, wrap=True, min_width=1)
+                    yield TuiRichLog(id="background-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="background-tail", classes="pane-tail")
                 with Vertical(id="sub-agent-pane", classes="pane"):
-                    yield RichLog(id="sub-agent-log", classes="pane-log", markup=True, wrap=True, min_width=1)
+                    yield TuiRichLog(id="sub-agent-log", classes="pane-log", markup=True, wrap=True, min_width=1)
                     yield Static("", id="sub-agent-tail", classes="pane-tail")
         with Horizontal(id="runtime-info-row"):
             yield Static(self._runtime_info, id="runtime-info-bar")
