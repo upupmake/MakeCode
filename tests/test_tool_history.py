@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Label, TextArea
+from textual.widgets import Label, ListView, TextArea
 
 from system.tool_history import (
     TOOL_STATUS_BLOCKED,
@@ -404,6 +404,36 @@ async def test_tool_history_modal_opens_sorted_current_message_output_token_usag
             assert "FileEdit" not in [str(cell) for cell in table.columns[1]._cells]
             assert "基于当前对话 messages" in table.caption
             assert "仅统计主 Agent 工具输出" in table.caption
+
+
+@pytest.mark.anyio
+async def test_tool_history_modal_mounts_each_current_message_record_once():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_once",
+                "name": "FileRead",
+                "arguments": {"path": "README.md"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_once",
+            "name": "FileRead",
+            "content": "result",
+        },
+    ]
+    modal = ToolHistoryModal(ToolExecutionHistory(), messages)
+    app = ToolHistoryModalHost(modal)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+
+        history_list = modal.query_one("#tool-history-list", ListView)
+        assert len(modal._history.snapshot()) == 1
+        assert len(modal._row_values) == 1
+        assert len(history_list.children) == 1
 
 
 @pytest.mark.anyio

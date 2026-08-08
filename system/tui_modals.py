@@ -1310,6 +1310,7 @@ class ToolHistoryModal(ClosableModalScreen[str]):
         self._tool_filter = ""
         self._row_values: list[ToolExecutionRecord | ToolExecutionSummary] = []
         self._last_signature: tuple[Any, ...] | None = None
+        self._reload_generation = 0
         self._compact = False
         self._detail_open = False
 
@@ -1382,6 +1383,8 @@ class ToolHistoryModal(ClosableModalScreen[str]):
         )
 
     def _reload_rows(self, *, force: bool = False) -> None:
+        self._reload_generation += 1
+        reload_generation = self._reload_generation
         signature = self._current_signature()
         if not force and signature == self._last_signature:
             return
@@ -1416,6 +1419,8 @@ class ToolHistoryModal(ClosableModalScreen[str]):
             labels = ["暂无匹配的工具执行记录"]
 
         def _mount_rows() -> None:
+            if reload_generation != self._reload_generation:
+                return
             history_list.extend(ListItem(Label(label, markup=False)) for label in labels)
             history_list.index = min(selected_index, len(labels) - 1)
             self.query_one("#tool-history-title", Label).update(self._title_text())
