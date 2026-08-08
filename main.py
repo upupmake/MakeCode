@@ -58,7 +58,6 @@ from utils.plan_mode import (
     PLAN_MODE_ALLOWED_COMMANDS,
 )
 from system.stream_render import StreamRenderer
-from system.tool_history import TOOL_EXECUTION_HISTORY, tool_result_status
 from system.ts_validator import init_ts_cache
 from system.tui_app import MakeCodeTuiApp, post_tui, TuiRegion, set_agent_loop_active, refresh_status, refresh_tools_title
 from utils.common import (
@@ -461,13 +460,6 @@ async def _agent_loop_with_client(
             tool_args = tc["arguments"]
             tool_error = False
             output = ""
-            execution_id = TOOL_EXECUTION_HISTORY.start(
-                tool_name,
-                tool_args,
-                tool_call_id=tool_id,
-                source="orchestrator",
-                actor="Orchestrator",
-            )
 
             post_tui(TuiRegion.TOOLS, active=True)
             try:
@@ -513,12 +505,6 @@ async def _agent_loop_with_client(
 
                 _render_tool_output(tool_name, output)
             finally:
-                TOOL_EXECUTION_HISTORY.finish(
-                    execution_id,
-                    output,
-                    status=tool_result_status(is_error=tool_error, output=output),
-                    error=str(output) if tool_error else "",
-                )
                 post_tui(TuiRegion.TOOLS, active=False)
 
             tool_result = llm_client.format_tool_result(

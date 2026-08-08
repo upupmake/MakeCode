@@ -359,7 +359,7 @@ def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp
     assert tasks_module.TASK_MANAGER._data == task_plan
     assert teams_module.TEAM.conversation_id == conversation.parent.name
     assert teams_module.TEAM.history == team_history
-    tool_history.replace_with.assert_called_once()
+    tool_history.clear.assert_called_once_with()
 
 
 def test_load_conversation_without_sidecars_activates_empty_histories(tmp_path, monkeypatch):

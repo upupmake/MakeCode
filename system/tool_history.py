@@ -431,6 +431,15 @@ class ToolExecutionHistory:
             self._started_monotonic.clear()
             self._next_sequence = next_sequence
 
+    def append_records(self, records: list[ToolExecutionRecord]) -> None:
+        with self._lock:
+            for record in sorted(records, key=lambda item: item.sequence):
+                self._records[record.execution_id] = replace(
+                    record,
+                    sequence=self._next_sequence,
+                )
+                self._next_sequence += 1
+
     @staticmethod
     def _tool_call_parts(tool_call: Any) -> tuple[str, str, Any]:
         if not isinstance(tool_call, dict):

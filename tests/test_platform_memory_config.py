@@ -13,7 +13,7 @@ from rich.text import Text
 from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
-from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
+from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
@@ -3206,6 +3206,7 @@ async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check(
 
 @pytest.mark.anyio
 async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_error():
+    TOOL_EXECUTION_HISTORY.clear()
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -3268,7 +3269,6 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
             patch.object(main_module, "_render_tool_output"), \
             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "post_tui"), \
-            patch.object(main_module, "TOOL_EXECUTION_HISTORY", ToolExecutionHistory()) as tool_history, \
             patch.object(main_module, "is_plan_mode", return_value=False):
         committed = await main_module.agent_loop(messages, llm_client=FakeClient())
 
@@ -3278,10 +3278,7 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
     tool_result = next(message for message in requests[2] if message.get("role") == "tool")
     assert tool_result["name"] == "MissingTool"
     assert tool_result["is_error"] is True
-    history_record = tool_history.snapshot()[0]
-    assert history_record.source == "orchestrator"
-    assert history_record.actor == "Orchestrator"
-    assert history_record.status == TOOL_STATUS_FAILED
+    assert TOOL_EXECUTION_HISTORY.snapshot() == []
     assert save_messages.call_count == 4
 
 

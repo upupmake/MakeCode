@@ -1292,10 +1292,20 @@ class ToolHistoryModal(ClosableModalScreen[str]):
         messages: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__()
-        self._history = ToolExecutionHistory()
-        self._history.replace_with(history)
         self._message_history = ToolExecutionHistory()
-        self._message_history.rebuild_from_messages(messages or [])
+        self._history = ToolExecutionHistory()
+        if messages is None:
+            self._history.replace_with(history)
+        else:
+            self._message_history.rebuild_from_messages(messages)
+            self._history.replace_with(self._message_history)
+            self._history.append_records(
+                [
+                    record
+                    for record in history.snapshot(newest_first=False)
+                    if record.source != "orchestrator"
+                ]
+            )
         self._view = "timeline"
         self._tool_filter = ""
         self._row_values: list[ToolExecutionRecord | ToolExecutionSummary] = []

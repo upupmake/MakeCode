@@ -185,6 +185,13 @@ async def test_f7_opens_tool_history_with_current_messages_and_advertises_shortc
     TOOL_EXECUTION_HISTORY.clear()
     execution_id = TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "README.md"})
     TOOL_EXECUTION_HISTORY.finish(execution_id, "live history contents")
+    auxiliary_id = TOOL_EXECUTION_HISTORY.start(
+        "AppendLongTermMemory",
+        {"insight": "memory"},
+        source="memory",
+        actor="🧠 记忆代理",
+    )
+    TOOL_EXECUTION_HISTORY.finish(auxiliary_id, "memory result")
     messages = [
         {
             "role": "assistant",
@@ -212,9 +219,14 @@ async def test_f7_opens_tool_history_with_current_messages_and_advertises_shortc
             await pilot.pause()
 
             assert isinstance(app.screen, ToolHistoryModal)
-            assert len(app.screen._row_values) == 1
-            assert app.screen._row_values[0].tool_name == "FileRead"
-            assert app.screen._row_values[0].result == "live history contents"
+            assert {item.tool_name for item in app.screen._row_values} == {
+                "FileRead",
+                "AppendLongTermMemory",
+            }
+            current_record = next(
+                item for item in app.screen._row_values if item.tool_name == "FileRead"
+            )
+            assert current_record.result == "current message contents"
             assert app.screen._message_history.snapshot()[0].result == "current message contents"
             app.screen.action_close()
             await pilot.pause()
