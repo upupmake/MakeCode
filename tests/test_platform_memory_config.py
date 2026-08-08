@@ -1692,8 +1692,8 @@ def test_openai_shaped_messages_can_be_rebuilt_for_anthropic_from_conversation(t
 
 
 def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_groups():
-    old_output = "A" * 1200 + "B" * 1200
-    latest_output = "C" * 2400
+    old_output = "甲" * 1200 + "乙" * 1200
+    latest_output = "中" * 2400
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "old request"},
@@ -1735,7 +1735,7 @@ def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_
 
     assert memory.compact_tool_outputs(messages) is True
     compacted = messages[3]["content"]
-    assert compacted == "A" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "B" * 1000
+    assert compacted == "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "乙" * 1000
     assert "native_blocks" not in messages[2]["message_metadata"]
     assert messages[7]["content"] == latest_output
     assert messages[6]["message_metadata"]["native_blocks"] == [{"type": "tool_use", "id": "call_latest"}]
@@ -1747,23 +1747,46 @@ def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_
 
 def test_tool_output_compaction_recognizes_legacy_marker():
     marker = memory.TOOL_OUTPUT_COMPACT_MARKER.strip("\n")
-    compacted = "A" * 1000 + marker + "B" * 1000
+    compacted = "甲" * 1500 + marker + "乙" * 1500
 
     assert memory._compact_tool_output_text(compacted) == compacted
 
 
-def test_tool_output_compaction_uses_exact_character_boundaries():
+def test_tool_output_compaction_uses_exact_token_boundaries():
     exact = "甲" * 2000
-    over = "A" * 1001 + "B" * 1000
+    over = "甲" * 1001 + "乙" * 1000
+    long_but_token_light = "A" * 3000
 
     assert memory.TOOL_OUTPUT_COMPACT_MARKER == "\n\n...[该工具执行结果已被压缩]...\n\n"
     assert memory._compact_tool_output_text(exact) == exact
+    assert memory._compact_tool_output_text(long_but_token_light) == long_but_token_light
     assert memory._compact_tool_output_text(over) == (
-        "A" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "B" * 1000
+        "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "乙" * 1000
     )
 
 
-def test_tool_output_compaction_supports_function_call_output_content():
+def test_tool_output_compaction_handles_english_and_unicode_token_boundaries():
+    for output in ("word " * 2000, "😀" * 2001, "中😀English " * 1000):
+        compacted = memory._compact_tool_output_text(output)
+        head, tail = compacted.split(memory.TOOL_OUTPUT_COMPACT_MARKER)
+        expected_tokens = memory._ENCODER.encode(output, disallowed_special=())
+        expected_head = memory._ENCODER.decode_bytes(expected_tokens[:1000]).decode("utf-8", errors="ignore")
+        expected_tail = memory._ENCODER.decode_bytes(expected_tokens[-1000:]).decode("utf-8", errors="ignore")
+
+        assert head == expected_head
+        assert tail == expected_tail
+        assert memory.estimate_text_tokens(head) <= 1000
+        assert memory.estimate_text_tokens(tail) <= 1000
+        assert "�" not in compacted
+
+
+def test_tool_output_compaction_fallback_is_conservative_without_tiktoken(monkeypatch):
+    monkeypatch.setattr(memory, "_ENCODER", None)
+    output = "甲" * 2001
+
+    compacted = memory._compact_tool_output_text(output)
+
+    assert compacted == "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "甲" * 1000
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "old"},
@@ -1777,7 +1800,7 @@ def test_tool_output_compaction_supports_function_call_output_content():
         {
             "type": "function_call_output",
             "call_id": "call_old",
-            "content": "X" * 2001,
+            "content": "甲" * 2001,
         },
         {"role": "user", "content": "latest"},
         {"role": "assistant", "content": "latest answer"},
@@ -1785,7 +1808,7 @@ def test_tool_output_compaction_supports_function_call_output_content():
 
     assert memory.compact_tool_outputs(messages) is True
     assert messages[3]["content"] == (
-        "X" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "X" * 1000
+        "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "甲" * 1000
     )
     assert "native_blocks" not in messages[2]["message_metadata"]
 

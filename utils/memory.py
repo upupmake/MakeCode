@@ -45,8 +45,8 @@ DEFAULT_MEMORY_SIZE = 30
 DEFAULT_MEMORY_RECALL_WINDOW_SIZE = MEMORY_RECALL_WINDOW_SIZE
 DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD = 70
 DEFAULT_PARTIAL_COMPACT_THRESHOLD = 90
-TOOL_OUTPUT_COMPACT_LENGTH = 2000
-TOOL_OUTPUT_COMPACT_EDGE_LENGTH = 1000
+TOOL_OUTPUT_COMPACT_TOKENS = 2000
+TOOL_OUTPUT_COMPACT_EDGE_TOKENS = 1000
 TOOL_OUTPUT_COMPACT_MARKER = "\n\n...[该工具执行结果已被压缩]...\n\n"
 PARTIAL_COMPACT_MIN_PERCENT = 30
 PARTIAL_COMPACT_MAX_PERCENT = 50
@@ -948,7 +948,7 @@ except ImportError:
 def estimate_text_tokens(text: str) -> int:
     if _ENCODER:
         return len(_ENCODER.encode(text, disallowed_special=()))
-    return len(text) // 2
+    return len(text)
 
 
 def estimate_tokens(messages: list, tools_definition: list = None):
@@ -1017,19 +1017,31 @@ def _tool_call_source_messages(messages: list[dict]) -> dict[str, dict]:
     return sources
 
 
+def _decode_token_slice(tokens: list[int]) -> str:
+    if not _ENCODER:
+        raise RuntimeError("Token decoder is unavailable")
+    return _ENCODER.decode_bytes(tokens).decode("utf-8", errors="ignore")
+
+
 def _compact_tool_output_text(text: str) -> str:
     marker_text = TOOL_OUTPUT_COMPACT_MARKER.strip("\n")
     if marker_text in text:
-        logical_text = text.replace(TOOL_OUTPUT_COMPACT_MARKER, "").replace(marker_text, "")
-        if len(logical_text) <= TOOL_OUTPUT_COMPACT_LENGTH:
-            return text
-    if len(text) <= TOOL_OUTPUT_COMPACT_LENGTH:
         return text
-    return (
-        text[:TOOL_OUTPUT_COMPACT_EDGE_LENGTH]
-        + TOOL_OUTPUT_COMPACT_MARKER
-        + text[-TOOL_OUTPUT_COMPACT_EDGE_LENGTH:]
-    )
+
+    if _ENCODER:
+        tokens = _ENCODER.encode(text, disallowed_special=())
+        if len(tokens) <= TOOL_OUTPUT_COMPACT_TOKENS:
+            return text
+        head = _decode_token_slice(tokens[:TOOL_OUTPUT_COMPACT_EDGE_TOKENS])
+        tail = _decode_token_slice(tokens[-TOOL_OUTPUT_COMPACT_EDGE_TOKENS:])
+    else:
+        if estimate_text_tokens(text) <= TOOL_OUTPUT_COMPACT_TOKENS:
+            return text
+        edge_characters = TOOL_OUTPUT_COMPACT_EDGE_TOKENS
+        head = text[:edge_characters]
+        tail = text[-edge_characters:]
+
+    return head + TOOL_OUTPUT_COMPACT_MARKER + tail
 
 
 def compact_tool_outputs(messages: list[dict]) -> bool:
