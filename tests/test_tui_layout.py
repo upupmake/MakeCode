@@ -399,7 +399,7 @@ async def test_input_area_is_nested_in_left_column():
 
 
 @pytest.mark.anyio
-async def test_wide_layout_keeps_both_columns_and_hides_compact_toggle():
+async def test_wide_layout_keeps_both_columns_and_allows_hiding_runtime_pane():
     app = MakeCodeTuiApp()
 
     async with app.run_test(size=(180, 40)) as pilot:
@@ -411,16 +411,24 @@ async def test_wide_layout_keeps_both_columns_and_hides_compact_toggle():
 
         assert not left_column.has_class("hidden")
         assert not right_column.has_class("hidden")
-        assert toggle.has_class("hidden")
+        assert not toggle.has_class("hidden")
+        assert str(toggle.label) == "隐藏运行面板 F6"
         assert left_column.region.width + right_column.region.width == main_grid.region.width
         assert abs(right_column.region.width / main_grid.region.width - 0.28) < 0.02
+
+        await pilot.click("#compact-pane-toggle")
+        await pilot.pause()
+
+        assert not left_column.has_class("hidden")
+        assert right_column.has_class("hidden")
+        assert not toggle.has_class("hidden")
+        assert str(toggle.label) == "运行面板 F6"
 
         await pilot.press("f6")
         await pilot.pause()
 
-        assert not left_column.has_class("hidden")
         assert not right_column.has_class("hidden")
-        assert toggle.has_class("hidden")
+        assert str(toggle.label) == "隐藏运行面板 F6"
 
 
 @pytest.mark.anyio

@@ -915,7 +915,7 @@ class MakeCodeTuiApp(App[None]):
         with Horizontal(id="top-bar"):
             yield ConversationTitle("MakeCode", id="top-title")
             yield Button("▸ 快捷面板", id="quick-panel-toggle")
-            yield Button("运行面板 F6", id="compact-pane-toggle", classes="hidden")
+            yield Button("运行面板 F6", id="compact-pane-toggle")
             yield Static("", id="top-status")
             yield Static("", id="top-clock")
         with Vertical(id="quick-panel-shell"):
@@ -1033,7 +1033,10 @@ class MakeCodeTuiApp(App[None]):
         width = width or self.size.width
         if width == self._last_responsive_width:
             return
+        previous_width = self._last_responsive_width
         self._last_responsive_width = width
+        if previous_width and previous_width < 140 <= width:
+            self._right_column_visible = True
         self._apply_responsive_layout()
 
     def _apply_responsive_layout(self) -> None:
@@ -1041,7 +1044,8 @@ class MakeCodeTuiApp(App[None]):
         right_column = self.query_one("#right-column", Vertical)
         toggle = self.query_one("#compact-pane-toggle", Button)
         compact = self._last_responsive_width < 140
-        self._right_column_visible = not compact or self._compact_show_runtime
+        if compact:
+            self._right_column_visible = self._compact_show_runtime
         self._update_quick_panel()
         self._update_conversation_title()
         toggle.set_class(compact, "compact")
@@ -1055,13 +1059,15 @@ class MakeCodeTuiApp(App[None]):
 
         self._compact_show_runtime = False
         left_column.set_class(False, "hidden")
-        right_column.set_class(False, "hidden")
-        toggle.set_class(True, "hidden")
+        right_column.set_class(not self._right_column_visible, "hidden")
+        toggle.set_class(False, "hidden")
+        toggle.label = "隐藏运行面板 F6" if self._right_column_visible else "运行面板 F6"
 
     def action_toggle_compact_panes(self) -> None:
         if self.size.width >= 140:
-            return
-        self._compact_show_runtime = not self._compact_show_runtime
+            self._right_column_visible = not self._right_column_visible
+        else:
+            self._compact_show_runtime = not self._compact_show_runtime
         self._apply_responsive_layout()
 
     def _apply_layout_ratios(self) -> None:
