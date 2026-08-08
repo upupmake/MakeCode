@@ -18,6 +18,17 @@ from system.ts_validator import validate_code
 from utils import paths
 from utils.file_access import GLOBAL_FILE_CONTROLLER
 from utils.hitl import check_permission, check_path_permission
+from utils.text_tokens import truncate_text_by_tokens
+
+
+_OUTPUT_TRUNCATION_MARKER_PATTERN = re.compile(
+    r"(?:\n\n)?(?:"
+    r"\[\.\.\.此处省略\d+(?:\s*字符|\s*tokens?)\.\.\.\]"
+    r"|\.\.\.\[该工具执行结果已被压缩\]\.\.\."
+    r")(?:\n\n)?"
+)
+_OUTPUT_TRUNCATION_MAX_TOKENS = 8000
+_OUTPUT_TRUNCATION_EDGE_TOKENS = 4000
 
 
 def _workdir() -> Path:
@@ -56,15 +67,14 @@ def _is_excluded_dir_path(rel_path: Path, is_dir: bool, exclude_dirs: set[str]) 
     return any(part.startswith(".") or part in exclude_dirs for part in dir_parts)
 
 
-def truncate_output(text: str, max_chars: int = 12000) -> str:
-    if len(text) <= max_chars:
-        return text
-
-    head_chars = max_chars // 2
-    tail_chars = max_chars - head_chars
-    omitted = len(text) - max_chars
-    marker = f"\n\n[...此处省略{omitted}字符...]\n\n"
-    return text[:head_chars] + marker + text[-tail_chars:]
+def truncate_output(text: str, max_tokens: int = _OUTPUT_TRUNCATION_MAX_TOKENS) -> str:
+    return truncate_text_by_tokens(
+        text,
+        max_tokens=max_tokens,
+        edge_tokens=_OUTPUT_TRUNCATION_EDGE_TOKENS,
+        marker="\n\n[...此处省略{omitted_tokens} tokens...]\n\n",
+        existing_marker_pattern=_OUTPUT_TRUNCATION_MARKER_PATTERN,
+    )
 
 
 def sanitize_title(title: str) -> str | None:

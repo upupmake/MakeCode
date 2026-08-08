@@ -1,11 +1,11 @@
 import asyncio
 import copy
 import json
+import re
 import threading
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
@@ -29,6 +29,8 @@ from utils.llm_client import (
     create_memory_recall_llm_client,
     strip_native_message_payloads,
 )
+from utils import text_tokens
+from utils.text_tokens import truncate_text_by_tokens
 from settings import MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_MAX_ITERATIONS, MEMORY_RECALL_WINDOW_SIZE
 from utils import paths
 
@@ -48,6 +50,15 @@ DEFAULT_PARTIAL_COMPACT_THRESHOLD = 90
 TOOL_OUTPUT_COMPACT_TOKENS = 2000
 TOOL_OUTPUT_COMPACT_EDGE_TOKENS = 1000
 TOOL_OUTPUT_COMPACT_MARKER = "\n\n...[该工具执行结果已被压缩]...\n\n"
+_TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
+    r"(?:\n\n)?(?:"
+    r"\[\.\.\.此处省略\d+(?:\s*字符|\s*tokens?)\.\.\.\]"
+    r"|\.\.\.\[该工具执行结果已被压缩\]\.\.\."
+    r")(?:\n\n)?"
+)
+_MEMORY_INSIGHT_TRUNCATION_MARKER_PATTERN = re.compile(
+    r"(?: )?\[\.\.\.内容截断\.\.\.\](?: )?"
+)
 PARTIAL_COMPACT_MIN_PERCENT = 30
 PARTIAL_COMPACT_MAX_PERCENT = 50
 _MEMORY_RECALL_WINDOWS: dict[str, list[list[str]]] = {}
@@ -478,9 +489,15 @@ def _truncate_insight(insight: str, max_head: int = 50, max_tail: int = 50) -> s
     if not insight:
         return ""
     insight = insight.strip()
-    if len(insight) <= max_head + max_tail:
-        return insight
-    return f"{insight[:max_head]} [...内容截断...] {insight[-max_tail:]}"
+    return truncate_text_by_tokens(
+        insight,
+        max_tokens=max_head + max_tail,
+        edge_tokens=max_head,
+        tail_tokens=max_tail,
+        marker=" [...内容截断...] ",
+        existing_marker_pattern=_MEMORY_INSIGHT_TRUNCATION_MARKER_PATTERN,
+        encoder=_ENCODER,
+    )
 
 
 def build_memory_recall_candidates(agent_id: str = ORCHESTRATOR_AGENT_ID) -> str:
@@ -921,34 +938,15 @@ async def manual_memory_update(prompt: str, history: list = None) -> list[dict]:
     )
 
 
-try:
-    import tiktoken
-    import os
-    import sys
-
-    # Determine base path for the bundled executable or normal execution
-    if getattr(sys, "frozen", False):
-        _base_path = Path(sys._MEIPASS)
-    else:
-        _base_path = Path(__file__).parent.parent
-
-    # Use local cache if it exists (for offline/packaged environments)
-    _local_cache = _base_path / "tiktoken_cache"
-    if _local_cache.exists():
-        os.environ["TIKTOKEN_CACHE_DIR"] = str(_local_cache)
-
-    _ENCODER = tiktoken.get_encoding("o200k_base")
-except ImportError:
+_ENCODER = text_tokens._ENCODER
+if _ENCODER is None:
     print_formatted_text(
         "\n[yellow]⚠️ tiktoken加载失败, token将使用估算模式 [/yellow]\n"
     )
-    _ENCODER = None
 
 
 def estimate_text_tokens(text: str) -> int:
-    if _ENCODER:
-        return len(_ENCODER.encode(text, disallowed_special=()))
-    return len(text)
+    return text_tokens.estimate_text_tokens(text, encoder=_ENCODER)
 
 
 def estimate_tokens(messages: list, tools_definition: list = None):
@@ -1017,31 +1015,17 @@ def _tool_call_source_messages(messages: list[dict]) -> dict[str, dict]:
     return sources
 
 
-def _decode_token_slice(tokens: list[int]) -> str:
-    if not _ENCODER:
-        raise RuntimeError("Token decoder is unavailable")
-    return _ENCODER.decode_bytes(tokens).decode("utf-8", errors="ignore")
-
-
 def _compact_tool_output_text(text: str) -> str:
-    marker_text = TOOL_OUTPUT_COMPACT_MARKER.strip("\n")
-    if marker_text in text:
+    if TOOL_OUTPUT_COMPACT_MARKER.strip("\n") in text:
         return text
-
-    if _ENCODER:
-        tokens = _ENCODER.encode(text, disallowed_special=())
-        if len(tokens) <= TOOL_OUTPUT_COMPACT_TOKENS:
-            return text
-        head = _decode_token_slice(tokens[:TOOL_OUTPUT_COMPACT_EDGE_TOKENS])
-        tail = _decode_token_slice(tokens[-TOOL_OUTPUT_COMPACT_EDGE_TOKENS:])
-    else:
-        if estimate_text_tokens(text) <= TOOL_OUTPUT_COMPACT_TOKENS:
-            return text
-        edge_characters = TOOL_OUTPUT_COMPACT_EDGE_TOKENS
-        head = text[:edge_characters]
-        tail = text[-edge_characters:]
-
-    return head + TOOL_OUTPUT_COMPACT_MARKER + tail
+    return truncate_text_by_tokens(
+        text,
+        max_tokens=TOOL_OUTPUT_COMPACT_TOKENS,
+        edge_tokens=TOOL_OUTPUT_COMPACT_EDGE_TOKENS,
+        marker=TOOL_OUTPUT_COMPACT_MARKER,
+        existing_marker_pattern=_TOOL_OUTPUT_COMPACT_MARKER_PATTERN,
+        encoder=_ENCODER,
+    )
 
 
 def compact_tool_outputs(messages: list[dict]) -> bool:

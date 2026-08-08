@@ -4,11 +4,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import tiktoken
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import utils.memory as memory
 from prompts import get_orchestrator_system_prompt, get_sub_agent_system_prompt
 from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
+from utils import text_tokens
+from utils.common import truncate_output
 from utils.teams import build_sub_agent_recall_query, prepend_recalled_memory_to_sub_agent_prompt
 
 
@@ -461,19 +465,128 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(memory._truncate_insight(None), "")
 
     def test_truncate_insight_long_text_truncated(self):
-        long_text = "A" * 50 + "B" * 50 + "C" * 50  # 150 chars
+        long_text = "甲" * 50 + "乙" * 50 + "丙" * 50  # 150 tokens
         result = memory._truncate_insight(long_text)
-        self.assertIn("A" * 50, result)
-        self.assertIn("C" * 50, result)
+        self.assertIn("甲" * 50, result)
+        self.assertIn("丙", result)
         self.assertIn("[...内容截断...]", result)
-        self.assertNotIn("B", result)
+        self.assertNotIn("乙", result)
 
     def test_truncate_insight_boundary(self):
-        exact_100 = "X" * 100
+        exact_100 = "甲" * 100
         self.assertEqual(memory._truncate_insight(exact_100), exact_100)
-        over_100 = "X" * 50 + "Y" * 51  # 101 chars
+        over_100 = "甲" * 50 + "乙" * 51  # 101 tokens
         result = memory._truncate_insight(over_100)
         self.assertIn("[...内容截断...]", result)
+
+    def test_truncate_insight_uses_tokens_and_preserves_utf8_boundaries(self):
+        text = "𐍈" * 80 + "甲" * 80 + "𐍈" * 80
+        encoder = tiktoken.get_encoding("o200k_base")
+        tokens = encoder.encode(text, disallowed_special=())
+
+        result = memory._truncate_insight(text)
+        head, tail = result.split(" [...内容截断...] ")
+
+        self.assertEqual(
+            head,
+            encoder.decode_bytes(tokens[:50]).decode("utf-8", errors="ignore"),
+        )
+        self.assertEqual(
+            tail,
+            encoder.decode_bytes(tokens[-50:]).decode("utf-8", errors="ignore"),
+        )
+        self.assertNotIn("�", result)
+        self.assertLessEqual(memory.estimate_text_tokens(head), 50)
+        self.assertLessEqual(memory.estimate_text_tokens(tail), 50)
+        self.assertEqual(memory._truncate_insight(result), result)
+
+    def test_truncate_insight_does_not_count_existing_marker_tokens(self):
+        text = "甲" * 50 + " [...内容截断...] " + "乙" * 50
+        self.assertEqual(memory._truncate_insight(text), text)
+
+        over_limit = "甲" * 70 + " [...内容截断...] " + "乙" * 70
+        retruncated = memory._truncate_insight(over_limit)
+        self.assertEqual(retruncated, "甲" * 50 + " [...内容截断...] " + "乙" * 50)
+        self.assertEqual(retruncated.count("[...内容截断...]"), 1)
+
+    def test_truncate_output_uses_exact_token_boundary(self):
+        exact = "甲" * 8000
+        over = "甲" * 4000 + "乙" * 4001
+        token_light = "A" * 20000
+
+        self.assertEqual(truncate_output(exact), exact)
+        self.assertEqual(truncate_output(token_light), token_light)
+        self.assertEqual(
+            truncate_output(over),
+            "甲" * 4000 + "\n\n[...此处省略1 tokens...]\n\n" + "乙" * 4000,
+        )
+
+    def test_truncate_output_uses_tokens_and_preserves_utf8_boundaries(self):
+        family = "👨‍👩‍👧‍👦"
+        text = family * 500 + "甲" * 9000 + family * 500
+        encoder = tiktoken.get_encoding("o200k_base")
+        tokens = encoder.encode(text, disallowed_special=())
+
+        result = truncate_output(text)
+        marker = "[...此处省略"
+        self.assertIn(marker, result)
+        head, tail = result.split("\n\n", 2)[0], result.rsplit("\n\n", 2)[-1]
+        self.assertEqual(
+            head,
+            encoder.decode_bytes(tokens[:4000]).decode("utf-8", errors="ignore"),
+        )
+        self.assertEqual(
+            tail,
+            encoder.decode_bytes(tokens[-4000:]).decode("utf-8", errors="ignore"),
+        )
+        self.assertNotIn("�", result)
+        self.assertLessEqual(memory.estimate_text_tokens(head), 4000)
+        self.assertLessEqual(memory.estimate_text_tokens(tail), 4000)
+
+    def test_truncate_output_retruncating_existing_output_is_idempotent(self):
+        text = "甲" * 4000 + "中😀English " * 2000 + "乙" * 4000
+        first = truncate_output(text)
+        self.assertEqual(truncate_output(first), first)
+
+        second = memory._compact_tool_output_text(first)
+        self.assertEqual(
+            second,
+            "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "乙" * 1000,
+        )
+        self.assertEqual(memory._compact_tool_output_text(second), second)
+        self.assertEqual(truncate_output(second), second)
+        self.assertEqual(second.count("[该工具执行结果已被压缩]"), 1)
+
+    def test_truncate_output_fallback_preserves_unicode(self):
+        text = "𐍈" * 8001
+        with patch.object(text_tokens, "_ENCODER", None):
+            result = truncate_output(text)
+
+        self.assertEqual(
+            result,
+            "𐍈" * 4000 + "\n\n[...此处省略1 tokens...]\n\n" + "𐍈" * 4000,
+        )
+        self.assertNotIn("�", result)
+
+    def test_truncate_output_excludes_existing_marker_tokens(self):
+        marker = "\n\n[...此处省略123字符...]\n\n"
+        text = "甲" * 4000 + marker + "乙" * 4000
+        self.assertEqual(truncate_output(text), text)
+
+        compact_marker = memory.TOOL_OUTPUT_COMPACT_MARKER
+        compacted_text = "甲" * 4000 + compact_marker + "乙" * 4000
+        self.assertEqual(truncate_output(compacted_text), compacted_text)
+
+    def test_truncate_output_retruncates_payload_around_existing_marker(self):
+        marker = "\n\n[...此处省略123字符...]\n\n"
+        text = "甲" * 7000 + marker + "乙" * 7000
+        result = truncate_output(text)
+        head, marker_and_tail = result.split("\n\n", 1)
+        marker_text, tail = marker_and_tail.split("\n\n", 1)
+        self.assertTrue(marker_text.startswith("[...此处省略"))
+        self.assertEqual(head, "甲" * 4000)
+        self.assertEqual(tail, "乙" * 4000)
+        self.assertEqual(result.count("[...此处省略"), 1)
 
     def test_recall_candidates_truncate_long_insight(self):
         records = [
@@ -481,15 +594,15 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                 "id": "mem_long",
                 "category": "workflow",
                 "updated_at": "2026-01-01 00:00:00",
-                "insight": "A" * 80 + "B" * 80,  # 160 chars
+                "insight": "甲" * 80 + "乙" * 80,  # 160 tokens
                 "reuse_condition": "test",
                 "status": "active",
             },
         ]
         with patch.object(memory, "list_long_term_memories", return_value=records):
             candidates = memory.build_memory_recall_candidates()
-        self.assertIn("A" * 50, candidates)
-        self.assertIn("B" * 50, candidates)
+        self.assertIn("甲" * 50, candidates)
+        self.assertIn("乙", candidates)
         self.assertIn("[...内容截断...]", candidates)
 
     async def test_recall_tool_handler_returns_selected_context_without_real_model(self):

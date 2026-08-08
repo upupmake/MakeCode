@@ -1752,6 +1752,18 @@ def test_tool_output_compaction_recognizes_legacy_marker():
     assert memory._compact_tool_output_text(compacted) == compacted
 
 
+def test_tool_output_compaction_excludes_pretruncation_marker_tokens():
+    marker = "\n\n[...此处省略6000 tokens...]\n\n"
+    pretruncated = "甲" * 4000 + marker + "乙" * 4000
+
+    compacted = memory._compact_tool_output_text(pretruncated)
+
+    assert compacted == (
+        "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "乙" * 1000
+    )
+    assert "[...此处省略" not in compacted
+
+
 def test_tool_output_compaction_uses_exact_token_boundaries():
     exact = "甲" * 2000
     over = "甲" * 1001 + "乙" * 1000
