@@ -295,7 +295,7 @@ def test_tool_history_marks_new_character_compaction_placeholder_as_compacted():
             "role": "tool",
             "tool_call_id": "call_compacted",
             "name": "ContentSearch",
-            "content": "prefix\n\n...[该工具执行结果已被压缩]...\n\nsuffix",
+            "content": "prefix\n\n...[该工具执行结果已被压缩 123 tokens]...\n\nsuffix",
         },
     ])
 

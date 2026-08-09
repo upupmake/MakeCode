@@ -518,7 +518,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(truncate_output(token_light), token_light)
         self.assertEqual(
             truncate_output(over),
-            "甲" * 4000 + "\n\n[...此处省略1 tokens...]\n\n" + "乙" * 4000,
+            "甲" * 4000 + "\n\n[...此处省略 1 tokens...]\n\n" + "乙" * 4000,
         )
 
     def test_truncate_output_uses_tokens_and_preserves_utf8_boundaries(self):
@@ -549,13 +549,17 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(truncate_output(first), first)
 
         second = memory._compact_tool_output_text(first)
+        expected_omitted_tokens = memory.estimate_text_tokens(first) - 2000
+        expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(
+            omitted_tokens=expected_omitted_tokens,
+        )
         self.assertEqual(
             second,
-            "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "乙" * 1000,
+            "甲" * 1000 + expected_marker + "乙" * 1000,
         )
         self.assertEqual(memory._compact_tool_output_text(second), second)
         self.assertEqual(truncate_output(second), second)
-        self.assertEqual(second.count("[该工具执行结果已被压缩]"), 1)
+        self.assertEqual(second.count("[该工具执行结果已被压缩 "), 1)
 
     def test_truncate_output_fallback_preserves_unicode(self):
         text = "𐍈" * 8001
@@ -564,7 +568,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             result,
-            "𐍈" * 4000 + "\n\n[...此处省略1 tokens...]\n\n" + "𐍈" * 4000,
+            "𐍈" * 4000 + "\n\n[...此处省略 1 tokens...]\n\n" + "𐍈" * 4000,
         )
         self.assertNotIn("�", result)
 
@@ -573,9 +577,11 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         text = "甲" * 4000 + marker + "乙" * 4000
         self.assertEqual(truncate_output(text), text)
 
-        compact_marker = memory.TOOL_OUTPUT_COMPACT_MARKER
+        compact_marker = "\n\n...[该工具执行结果已被压缩 123 tokens]...\n\n"
         compacted_text = "甲" * 4000 + compact_marker + "乙" * 4000
-        self.assertEqual(truncate_output(compacted_text), compacted_text)
+        truncated = truncate_output(compacted_text)
+        self.assertIn("[...此处省略 ", truncated)
+        self.assertNotIn("...[该工具执行结果已被压缩 123 tokens]...", truncated)
 
     def test_truncate_output_retruncates_payload_around_existing_marker(self):
         marker = "\n\n[...此处省略123字符...]\n\n"

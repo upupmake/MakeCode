@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import time
 import uuid
@@ -13,6 +14,9 @@ TOOL_STATUS_FAILED = "failed"
 TOOL_STATUS_BLOCKED = "blocked"
 TOOL_STATUS_COMPACTED = "compacted"
 TOOL_STATUS_INCOMPLETE = "incomplete"
+_TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
+    r"\.\.\.\[该工具执行结果已被压缩(?:\s+\d+\s+tokens?)?\]\.\.\."
+)
 
 
 def _now() -> str:
@@ -462,7 +466,7 @@ class ToolExecutionHistory:
         text = "" if result is None else str(result)
         if (
             text.startswith("[Previous ") and " result cleared" in text
-        ) or "...[该工具执行结果已被压缩]..." in text:
+        ) or _TOOL_OUTPUT_COMPACT_MARKER_PATTERN.search(text):
             return TOOL_STATUS_COMPACTED
         return tool_result_status(is_error=message.get("is_error") is True, output=result)
 

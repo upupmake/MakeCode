@@ -49,11 +49,10 @@ DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD = 70
 DEFAULT_PARTIAL_COMPACT_THRESHOLD = 90
 TOOL_OUTPUT_COMPACT_TOKENS = 2000
 TOOL_OUTPUT_COMPACT_EDGE_TOKENS = 1000
-TOOL_OUTPUT_COMPACT_MARKER = "\n\n...[该工具执行结果已被压缩]...\n\n"
+TOOL_OUTPUT_COMPACT_MARKER = "\n\n...[该工具执行结果已被压缩 {omitted_tokens} tokens]...\n\n"
 _TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
     r"(?:\n\n)?(?:"
-    r"\[\.\.\.此处省略\d+(?:\s*字符|\s*tokens?)\.\.\.\]"
-    r"|\.\.\.\[该工具执行结果已被压缩\]\.\.\."
+    r"\.\.\.\[该工具执行结果已被压缩(?:\s+\d+\s+tokens?)?\]\.\.\."
     r")(?:\n\n)?"
 )
 _MEMORY_INSIGHT_TRUNCATION_MARKER_PATTERN = re.compile(
@@ -1016,7 +1015,7 @@ def _tool_call_source_messages(messages: list[dict]) -> dict[str, dict]:
 
 
 def _compact_tool_output_text(text: str) -> str:
-    if TOOL_OUTPUT_COMPACT_MARKER.strip("\n") in text:
+    if _TOOL_OUTPUT_COMPACT_MARKER_PATTERN.search(text):
         return text
     return truncate_text_by_tokens(
         text,

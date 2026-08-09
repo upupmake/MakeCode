@@ -23,8 +23,7 @@ from utils.text_tokens import truncate_text_by_tokens
 
 _OUTPUT_TRUNCATION_MARKER_PATTERN = re.compile(
     r"(?:\n\n)?(?:"
-    r"\[\.\.\.此处省略\d+(?:\s*字符|\s*tokens?)\.\.\.\]"
-    r"|\.\.\.\[该工具执行结果已被压缩\]\.\.\."
+    r"\[\.\.\.此处省略(?:\s+)?\d+(?:\s*字符|\s*tokens?)\.\.\.\]"
     r")(?:\n\n)?"
 )
 _OUTPUT_TRUNCATION_MAX_TOKENS = 8000
@@ -72,7 +71,7 @@ def truncate_output(text: str, max_tokens: int = _OUTPUT_TRUNCATION_MAX_TOKENS) 
         text,
         max_tokens=max_tokens,
         edge_tokens=_OUTPUT_TRUNCATION_EDGE_TOKENS,
-        marker="\n\n[...此处省略{omitted_tokens} tokens...]\n\n",
+        marker="\n\n[...此处省略 {omitted_tokens} tokens...]\n\n",
         existing_marker_pattern=_OUTPUT_TRUNCATION_MARKER_PATTERN,
     )
 

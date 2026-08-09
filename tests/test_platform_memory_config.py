@@ -1909,7 +1909,8 @@ def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_
 
     assert memory.compact_tool_outputs(messages) is True
     compacted = messages[3]["content"]
-    assert compacted == "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "乙" * 1000
+    expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=400)
+    assert compacted == "甲" * 1000 + expected_marker + "乙" * 1000
     assert "native_blocks" not in messages[2]["message_metadata"]
     assert messages[7]["content"] == latest_output
     assert messages[6]["message_metadata"]["native_blocks"] == [{"type": "tool_use", "id": "call_latest"}]
@@ -1920,21 +1921,22 @@ def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_
 
 
 def test_tool_output_compaction_recognizes_legacy_marker():
-    marker = memory.TOOL_OUTPUT_COMPACT_MARKER.strip("\n")
+    marker = "\n\n...[该工具执行结果已被压缩]...\n\n"
     compacted = "甲" * 1500 + marker + "乙" * 1500
 
     assert memory._compact_tool_output_text(compacted) == compacted
 
 
-def test_tool_output_compaction_excludes_pretruncation_marker_tokens():
-    marker = "\n\n[...此处省略6000 tokens...]\n\n"
+def test_tool_output_compaction_includes_pretruncation_marker_in_payload():
+    marker = "\n\n[...此处省略 6000 tokens...]\n\n"
     pretruncated = "甲" * 4000 + marker + "乙" * 4000
 
     compacted = memory._compact_tool_output_text(pretruncated)
-
-    assert compacted == (
-        "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "乙" * 1000
+    expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(
+        omitted_tokens=memory.estimate_text_tokens(pretruncated) - 2000,
     )
+
+    assert compacted == "甲" * 1000 + expected_marker + "乙" * 1000
     assert "[...此处省略" not in compacted
 
 
@@ -1943,18 +1945,21 @@ def test_tool_output_compaction_uses_exact_token_boundaries():
     over = "甲" * 1001 + "乙" * 1000
     long_but_token_light = "A" * 3000
 
-    assert memory.TOOL_OUTPUT_COMPACT_MARKER == "\n\n...[该工具执行结果已被压缩]...\n\n"
+    assert memory.TOOL_OUTPUT_COMPACT_MARKER == "\n\n...[该工具执行结果已被压缩 {omitted_tokens} tokens]...\n\n"
     assert memory._compact_tool_output_text(exact) == exact
     assert memory._compact_tool_output_text(long_but_token_light) == long_but_token_light
     assert memory._compact_tool_output_text(over) == (
-        "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "乙" * 1000
+        "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=1) + "乙" * 1000
     )
 
 
 def test_tool_output_compaction_handles_english_and_unicode_token_boundaries():
     for output in ("word " * 2000, "😀" * 2001, "中😀English " * 1000):
         compacted = memory._compact_tool_output_text(output)
-        head, tail = compacted.split(memory.TOOL_OUTPUT_COMPACT_MARKER)
+        marker_match = memory._TOOL_OUTPUT_COMPACT_MARKER_PATTERN.search(compacted)
+        assert marker_match is not None
+        head = compacted[:marker_match.start()]
+        tail = compacted[marker_match.end():]
         expected_tokens = memory._ENCODER.encode(output, disallowed_special=())
         expected_head = memory._ENCODER.decode_bytes(expected_tokens[:1000]).decode("utf-8", errors="ignore")
         expected_tail = memory._ENCODER.decode_bytes(expected_tokens[-1000:]).decode("utf-8", errors="ignore")
@@ -1972,7 +1977,8 @@ def test_tool_output_compaction_fallback_is_conservative_without_tiktoken(monkey
 
     compacted = memory._compact_tool_output_text(output)
 
-    assert compacted == "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "甲" * 1000
+    expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=1)
+    assert compacted == "甲" * 1000 + expected_marker + "甲" * 1000
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "old"},
@@ -1994,7 +2000,9 @@ def test_tool_output_compaction_fallback_is_conservative_without_tiktoken(monkey
 
     assert memory.compact_tool_outputs(messages) is True
     assert messages[3]["content"] == (
-        "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER + "甲" * 1000
+        "甲" * 1000
+        + memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=1)
+        + "甲" * 1000
     )
     assert "native_blocks" not in messages[2]["message_metadata"]
 
