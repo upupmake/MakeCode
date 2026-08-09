@@ -22,9 +22,7 @@ from utils.text_tokens import truncate_text_by_tokens
 
 
 _OUTPUT_TRUNCATION_MARKER_PATTERN = re.compile(
-    r"(?:\n\n)?(?:"
-    r"\[\.\.\.此处省略(?:\s+)?\d+(?:\s*字符|\s*tokens?)\.\.\.\]"
-    r")(?:\n\n)?"
+    r"(?:\n\n)?\[\.\.\.此处省略 \d+ tokens\.\.\.\](?:\n\n)?"
 )
 _OUTPUT_TRUNCATION_MAX_TOKENS = 8000
 _OUTPUT_TRUNCATION_EDGE_TOKENS = 4000

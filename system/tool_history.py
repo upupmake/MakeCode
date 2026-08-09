@@ -15,7 +15,7 @@ TOOL_STATUS_BLOCKED = "blocked"
 TOOL_STATUS_COMPACTED = "compacted"
 TOOL_STATUS_INCOMPLETE = "incomplete"
 _TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
-    r"\.\.\.\[该工具执行结果已被压缩(?:\s+\d+\s+tokens?)?\]\.\.\."
+    r"\.\.\.\[该工具执行结果已被压缩 \d+ tokens\]\.\.\."
 )
 
 

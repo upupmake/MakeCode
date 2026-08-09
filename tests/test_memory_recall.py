@@ -573,7 +573,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("�", result)
 
     def test_truncate_output_excludes_existing_marker_tokens(self):
-        marker = "\n\n[...此处省略123字符...]\n\n"
+        marker = "\n\n[...此处省略 123 tokens...]\n\n"
         text = "甲" * 4000 + marker + "乙" * 4000
         self.assertEqual(truncate_output(text), text)
 
@@ -584,7 +584,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("...[该工具执行结果已被压缩 123 tokens]...", truncated)
 
     def test_truncate_output_retruncates_payload_around_existing_marker(self):
-        marker = "\n\n[...此处省略123字符...]\n\n"
+        marker = "\n\n[...此处省略 123 tokens...]\n\n"
         text = "甲" * 7000 + marker + "乙" * 7000
         result = truncate_output(text)
         head, marker_and_tail = result.split("\n\n", 1)

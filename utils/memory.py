@@ -51,9 +51,7 @@ TOOL_OUTPUT_COMPACT_TOKENS = 2000
 TOOL_OUTPUT_COMPACT_EDGE_TOKENS = 1000
 TOOL_OUTPUT_COMPACT_MARKER = "\n\n...[该工具执行结果已被压缩 {omitted_tokens} tokens]...\n\n"
 _TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
-    r"(?:\n\n)?(?:"
-    r"\.\.\.\[该工具执行结果已被压缩(?:\s+\d+\s+tokens?)?\]\.\.\."
-    r")(?:\n\n)?"
+    r"(?:\n\n)?\.\.\.\[该工具执行结果已被压缩 \d+ tokens\]\.\.\.(?:\n\n)?"
 )
 _MEMORY_INSIGHT_TRUNCATION_MARKER_PATTERN = re.compile(
     r"(?: )?\[\.\.\.内容截断\.\.\.\](?: )?"

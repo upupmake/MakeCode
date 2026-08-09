@@ -1920,13 +1920,6 @@ def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_
     assert messages == first_result
 
 
-def test_tool_output_compaction_recognizes_legacy_marker():
-    marker = "\n\n...[该工具执行结果已被压缩]...\n\n"
-    compacted = "甲" * 1500 + marker + "乙" * 1500
-
-    assert memory._compact_tool_output_text(compacted) == compacted
-
-
 def test_tool_output_compaction_includes_pretruncation_marker_in_payload():
     marker = "\n\n[...此处省略 6000 tokens...]\n\n"
     pretruncated = "甲" * 4000 + marker + "乙" * 4000
