@@ -3600,3 +3600,17 @@ def test_runtime_info_displays_current_reasoning_effort():
         runtime_info = console_render.format_runtime_info()
 
     assert "Model: main (example.com) · Effort: high" in runtime_info
+    assert "Format:" not in runtime_info
+
+
+def test_runtime_info_displays_only_last_three_model_domain_levels():
+    model = ModelConfig("https://aa.bb.cc.dd/v1", "key", "main")
+
+    with patch("system.models.get_current_model_config", return_value=model), \
+            patch("utils.hitl.get_hitl_status", return_value=True), \
+            patch("utils.plan_mode.is_plan_mode", return_value=False):
+        runtime_info = console_render.format_runtime_info()
+
+    assert "Model: main (bb.cc.dd)" in runtime_info
+    assert "aa.bb.cc.dd" not in runtime_info
+    assert model.get_display_text() == "main (aa.bb.cc.dd)"
