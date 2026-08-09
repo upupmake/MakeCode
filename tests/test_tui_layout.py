@@ -643,6 +643,55 @@ async def test_skills_panel_filters_draft_changes_and_discards_them_on_cancel(tm
 
 
 @pytest.mark.anyio
+async def test_skills_panel_filtered_removal_selects_next_then_previous_row(tmp_path):
+    skills_dir = tmp_path / "skills"
+    for name in ("alpha", "beta", "gamma"):
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\nbody\n",
+            encoding="utf-8",
+        )
+    loader = SkillLoader(skills_dir, tmp_path / "disabled_skills.json")
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        result = asyncio.get_running_loop().create_future()
+        app.open_skills_config_modal(loader, result)
+        await pilot.pause()
+        modal = app.screen
+        status_filter = modal.query_one("#skills-status-filter")
+        status_filter.value = "enabled"
+        await pilot.pause()
+        skills_list = modal.query_one("#skills-list")
+        skills_list.focus()
+        skills_list.index = 1
+        await pilot.pause()
+
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [entry["name"] for entry in modal._filtered_entries] == ["alpha", "gamma"]
+        assert skills_list.index == 1
+        assert skills_list.has_focus
+        assert skills_list.children[1].has_class("-highlight")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [entry["name"] for entry in modal._filtered_entries] == ["alpha"]
+        assert skills_list.index == 0
+        assert skills_list.has_focus
+        assert skills_list.children[0].has_class("-highlight")
+
+        await pilot.click("#skills-close")
+        await pilot.pause()
+        assert await result == "closed"
+
+
+@pytest.mark.anyio
 async def test_skills_panel_concurrent_reloads_keep_last_row_toggleable(tmp_path):
     skills_dir = tmp_path / "skills"
     for index in range(30):

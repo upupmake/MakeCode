@@ -465,6 +465,12 @@ class ChoiceModalHost(App):
         self.status_refreshes += 1
 
 
+def assert_list_selection(list_view: ListView, index: int) -> None:
+    assert list_view.index == index
+    assert list_view.has_focus
+    assert list_view.children[index].has_class("-highlight")
+
+
 @pytest.mark.anyio
 async def test_choice_modal_options_only_renders_list_no_custom():
     """ChoiceModal 有选项且 allow_custom=False 时，不渲染自定义输入和提示。"""
@@ -762,6 +768,43 @@ async def test_mcp_switch_modal_preserves_delete_confirmation_and_selection():
 
 
 @pytest.mark.anyio
+async def test_mcp_switch_modal_selects_next_then_previous_service_after_delete():
+    manager = Mock()
+    manager.delete_server_config.return_value = {"saved": True}
+    modal = McpSwitchModal(
+        [
+            {"name": "first", "disabled": False, "loaded": True},
+            {"name": "second", "disabled": True, "loaded": False},
+            {"name": "third", "disabled": True, "loaded": False},
+        ],
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 28)) as pilot:
+        await pilot.pause()
+        service_list = modal.query_one("#mcp-list", ListView)
+        service_list.index = 1
+        await pilot.pause()
+
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [item["name"] for item in modal._server_switches] == ["first", "third"]
+        assert_list_selection(service_list, 1)
+        assert "third" in str(service_list.children[1].query_one(Label).render())
+
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [item["name"] for item in modal._server_switches] == ["first"]
+        assert_list_selection(service_list, 0)
+        assert "first" in str(service_list.children[0].query_one(Label).render())
+
+
+@pytest.mark.anyio
 async def test_mcp_switch_modal_ignores_stale_row_reload_callbacks():
     modal = McpSwitchModal(
         [
@@ -982,6 +1025,41 @@ async def test_choice_modal_deletes_only_after_confirmation():
         assert deleted == ["选项A"]
         assert modal._options == ["选项B"]
         assert "d 删除选中项" in str(modal.query_one("#choice-title", Label).render())
+
+
+@pytest.mark.anyio
+async def test_choice_modal_selects_next_then_previous_option_after_delete():
+    deleted = []
+    modal = ChoiceModal(
+        "测试",
+        ["选项A", "选项B", "选项C"],
+        delete_handler=deleted.append,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        choice_list = modal.query_one("#choice-list", ListView)
+        choice_list.index = 1
+        await pilot.pause()
+
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert modal._options == ["选项A", "选项C"]
+        assert_list_selection(choice_list, 1)
+        assert str(choice_list.children[1].query_one(Label).render()) == "选项C"
+
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert modal._options == ["选项A"]
+        assert_list_selection(choice_list, 0)
+        assert str(choice_list.children[0].query_one(Label).render()) == "选项A"
+
+    assert deleted == ["选项B", "选项C"]
 
 
 @pytest.mark.anyio
@@ -1337,6 +1415,53 @@ async def test_model_manager_modal_scrolls_cards_while_actions_stay_visible(tmp_
 
 
 @pytest.mark.anyio
+async def test_model_manager_selects_next_then_previous_model_after_delete(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["first", "second", "third"])
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        model_list.index = 1
+        await pilot.pause()
+
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [model.model_id for model in manager.models] == ["first", "third"]
+        assert_list_selection(model_list, 1)
+        assert "third" in str(model_list.children[1].query_one(Label).render())
+
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [model.model_id for model in manager.models] == ["first"]
+        assert_list_selection(model_list, 0)
+        assert "first" in str(model_list.children[0].query_one(Label).render())
+
+
+@pytest.mark.anyio
+async def test_model_manager_focuses_add_after_deleting_only_model(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["only"])
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert manager.models == []
+        assert modal.query_one("#model-manager-add", Button).has_focus
+
+
+@pytest.mark.anyio
 async def test_model_manager_modal_add_shortcut_works_when_empty(tmp_path):
     modal = ModelManagerModal(ModelManager(tmp_path))
     app = ChoiceModalHost(modal)
@@ -1498,6 +1623,55 @@ async def test_memory_panel_requires_confirmation_before_delete():
         assert "共 0 条 active 记忆" in str(modal.query_one("#memory-summary", Label).render())
         assert modal._deleted_ids == ["mem_delete"]
         assert app.status_refreshes == 1
+
+
+@pytest.mark.anyio
+async def test_memory_panel_selects_next_then_previous_memory_after_delete():
+    records = [
+        {
+            "id": f"mem_{index}",
+            "created_at": f"2026-08-04 12:0{index}:00",
+            "updated_at": f"2026-08-04 12:0{index}:00",
+            "category": "workflow",
+            "insight": f"记忆 {index}",
+            "evidence": "",
+            "reuse_condition": "测试删除后选择",
+            "status": "active",
+        }
+        for index in range(3)
+    ]
+    provider = Mock()
+    provider.list_long_term_memories.side_effect = lambda: list(records)
+
+    def delete_memory(memory_id):
+        records[:] = [record for record in records if record["id"] != memory_id]
+        return True
+
+    provider.delete_long_term_memory.side_effect = delete_memory
+    modal = MemoryPanelModal(provider)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        memory_list = modal.query_one("#memory-list", ListView)
+        memory_list.index = 1
+        await pilot.pause()
+
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [item["id"] for item in modal._memories] == ["mem_2", "mem_0"]
+        assert_list_selection(memory_list, 1)
+        assert "mem_0" in str(memory_list.children[1].query_one(Label).render())
+
+        await pilot.press("d", "y")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [item["id"] for item in modal._memories] == ["mem_2"]
+        assert_list_selection(memory_list, 0)
+        assert "mem_2" in str(memory_list.children[0].query_one(Label).render())
 
 
 @pytest.mark.anyio

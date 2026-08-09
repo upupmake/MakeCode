@@ -910,6 +910,7 @@ class ChoiceModal(ClosableModalScreen[str]):
         self._delete_handler = delete_handler
         self._preview_handler = preview_handler
         self._pending_delete_index: int | None = None
+        self._reload_generation = 0
 
     def _title_text(self) -> str:
         hints = []
@@ -1042,10 +1043,20 @@ class ChoiceModal(ClosableModalScreen[str]):
             return
 
         choice_list = self.query_one("#choice-list", ListView)
-        choice_list.clear()
+        self._reload_generation += 1
+        reload_generation = self._reload_generation
 
-        def _mount_rows() -> None:
-            choice_list.extend(ListItem(Label(option, markup=False)) for option in self._options)
+        async def _mount_rows() -> None:
+            if reload_generation != self._reload_generation:
+                return
+            await choice_list.clear()
+            if reload_generation != self._reload_generation:
+                return
+            await choice_list.extend(
+                ListItem(Label(option, markup=False)) for option in self._options
+            )
+            if reload_generation != self._reload_generation:
+                return
             choice_list.index = min(index, len(self._options) - 1)
             choice_list.focus()
             self.query_one("#choice-title", Label).update(self._title_text())
@@ -2706,12 +2717,16 @@ class ModelManagerModal(ClosableModalScreen[str]):
         choice_list = self.query_one("#model-manager-list", ListView)
         self._row_reload_generation += 1
         reload_generation = self._row_reload_generation
-        choice_list.clear()
 
-        def _mount_rows() -> None:
+        async def _mount_rows() -> None:
             if reload_generation != self._row_reload_generation:
                 return
-            choice_list.extend(ListItem(Label(label, markup=False)) for label in labels)
+            await choice_list.clear()
+            if reload_generation != self._row_reload_generation:
+                return
+            await choice_list.extend(ListItem(Label(label, markup=False)) for label in labels)
+            if reload_generation != self._row_reload_generation:
+                return
             max_index = max(len(labels) - 1, 0)
             choice_list.index = min(selected_index or 0, max_index)
             if self._model_manager.models:
@@ -3014,16 +3029,20 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         choice_list = self.query_one("#memory-list", ListView)
         self._row_reload_generation += 1
         reload_generation = self._row_reload_generation
-        choice_list.clear()
 
         labels = [self._memory_label(item) for item in self._memories]
         if not labels:
             labels = [Text("暂无长期记忆。点击“添加记忆”或按 a 创建第一条记忆。")]
 
-        def _mount_rows() -> None:
+        async def _mount_rows() -> None:
             if reload_generation != self._row_reload_generation:
                 return
-            choice_list.extend(ListItem(Label(label, markup=False)) for label in labels)
+            await choice_list.clear()
+            if reload_generation != self._row_reload_generation:
+                return
+            await choice_list.extend(ListItem(Label(label, markup=False)) for label in labels)
+            if reload_generation != self._row_reload_generation:
+                return
             max_index = max(len(labels) - 1, 0)
             choice_list.index = min(selected_index or 0, max_index)
             if self._memories:
