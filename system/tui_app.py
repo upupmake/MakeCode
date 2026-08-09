@@ -1947,38 +1947,7 @@ class MakeCodeTuiApp(App[None]):
         return text, cursor_offset, quote, path_fragment, has_closing_quote
 
     def _cd_completion_candidates(self, path_fragment: str) -> list[str]:
-        if path_fragment == "~":
-            return ["~/"] if Path.home().is_dir() else []
-
-        separator_index = max(path_fragment.rfind("/"), path_fragment.rfind(os.sep))
-        if path_fragment.endswith(("/", os.sep)):
-            parent_text = path_fragment
-            name_prefix = ""
-        elif separator_index >= 0:
-            parent_text = path_fragment[:separator_index + 1]
-            name_prefix = path_fragment[separator_index + 1:]
-        else:
-            parent_text = ""
-            name_prefix = path_fragment
-
-        expanded_parent = os.path.expanduser(parent_text or ".")
-        parent_path = Path(expanded_parent)
-        if not parent_path.is_absolute():
-            parent_path = Path(paths.workdir()) / parent_path
-        try:
-            directories = [
-                child.name
-                for child in parent_path.resolve().iterdir()
-                if child.is_dir()
-                and child.name.startswith(name_prefix)
-                and (name_prefix.startswith(".") or not child.name.startswith("."))
-            ]
-        except OSError:
-            return []
-
-        directories.sort()
-        separator = "/" if "/" in path_fragment or os.sep == "/" else os.sep
-        return [f"{parent_text}{directory}{separator}" for directory in directories]
+        return paths.directory_completion_candidates(path_fragment, paths.workdir())
 
     def _replace_cd_completion(
         self,

@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -38,6 +39,40 @@ def set_workdir(path: Path) -> Path:
     _WORKDIR = Path(path).expanduser().resolve()
     workspace_makecode_dir()
     return _WORKDIR
+
+
+def directory_completion_candidates(path_fragment: str, base_dir: Path) -> list[str]:
+    if path_fragment == "~":
+        return ["~/"] if Path.home().is_dir() else []
+
+    separator_index = max(path_fragment.rfind("/"), path_fragment.rfind(os.sep))
+    if path_fragment.endswith(("/", os.sep)):
+        parent_text = path_fragment
+        name_prefix = ""
+    elif separator_index >= 0:
+        parent_text = path_fragment[:separator_index + 1]
+        name_prefix = path_fragment[separator_index + 1:]
+    else:
+        parent_text = ""
+        name_prefix = path_fragment
+
+    parent_path = Path(os.path.expanduser(parent_text or "."))
+    if not parent_path.is_absolute():
+        parent_path = Path(base_dir) / parent_path
+    try:
+        directories = [
+            child.name
+            for child in parent_path.resolve().iterdir()
+            if child.is_dir()
+            and child.name.startswith(name_prefix)
+            and (name_prefix.startswith(".") or not child.name.startswith("."))
+        ]
+    except OSError:
+        return []
+
+    directories.sort()
+    separator = "/" if "/" in path_fragment or os.sep == "/" else os.sep
+    return [f"{parent_text}{directory}{separator}" for directory in directories]
 
 
 def workspace_conversations_dir() -> Path:

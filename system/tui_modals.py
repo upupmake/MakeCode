@@ -1,4 +1,5 @@
 import json
+import os
 import shlex
 from typing import Any, Callable, TypeVar
 from pathlib import Path
@@ -11,7 +12,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key, Resize
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, TextArea, DataTable
+from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, Static, TextArea, DataTable
 
 from system.models import MESSAGE_FORMATS, ModelKey, REASONING_EFFORTS
 from system.clipboard import copy_to_system_clipboard
@@ -34,6 +35,7 @@ from system.tui_types import (
     LAYOUT_RIGHT_KEYS,
     normalize_layout_ratios,
 )
+from utils import paths
 
 
 ModalResult = TypeVar("ModalResult")
@@ -121,6 +123,21 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #startup-input {
         margin-top: 1;
+    }
+
+    #startup-candidates {
+        display: none;
+        height: auto;
+        max-height: 8;
+        margin-top: 1;
+        border: round #f59e0b;
+        background: #111827;
+        color: #e5e7eb;
+        padding: 0 1;
+    }
+
+    #startup-candidates.visible {
+        display: block;
     }
 
     #info-dialog {
@@ -1147,11 +1164,16 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
         self._selected_index = 0
         self._mode = "select"
         self._ignore_initial_custom_submit = False
+        self._completion_candidates: list[str] = []
+        self._completion_index = 0
+        self._completion_input = ""
+        self._completion_cursor = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="startup-dialog"):
             yield ModalHeader("", title_id="startup-title")
             yield Input(placeholder="输入自定义工作区路径", id="startup-input")
+            yield Static("", id="startup-candidates")
 
     def on_mount(self) -> None:
         custom_input = self.query_one("#startup-input", Input)
@@ -1165,6 +1187,21 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             self.dismiss("abort")
             return
         if self._mode != "select":
+            if event.key == "tab":
+                event.stop()
+                event.prevent_default()
+                self._complete_custom_path()
+                return
+            if event.key == "up" and self._completion_candidates:
+                event.stop()
+                event.prevent_default()
+                self._move_completion_selection(-1)
+                return
+            if event.key == "down" and self._completion_candidates:
+                event.stop()
+                event.prevent_default()
+                self._move_completion_selection(1)
+                return
             return
         if event.key == "up":
             event.stop()
@@ -1188,10 +1225,20 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             self._ignore_initial_custom_submit = True
             custom_input = self.query_one("#startup-input", Input)
             custom_input.display = True
+            self._hide_completion_candidates()
             custom_input.focus()
             self.query_one("#startup-title", Label).update(
-                "📂 输入自定义工作区路径（Enter 确认，Ctrl+C 取消）："
+                "📂 输入自定义工作区路径（Enter 确认）："
             )
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "startup-input" or self._mode != "custom":
+            return
+        if event.value != self._completion_input:
+            self._completion_candidates = []
+            self._completion_index = 0
+            self._completion_input = event.value
+            self._hide_completion_candidates()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "startup-input":
@@ -1203,12 +1250,137 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
         self._ignore_initial_custom_submit = False
         self.dismiss(f"custom:{event.value}")
 
+    def _completion_context(self, value: str) -> tuple[str, str, bool]:
+        quote = value[0] if value[:1] in {'"', "'"} else ""
+        path_fragment = value[1:] if quote else value
+        has_closing_quote = bool(quote and path_fragment.endswith(quote))
+        if has_closing_quote:
+            path_fragment = path_fragment[:-1]
+        return quote, path_fragment, has_closing_quote
+
+    def _show_completion_candidates(self) -> None:
+        candidate_box = self.query_one("#startup-candidates", Static)
+        selected = self._completion_index % len(self._completion_candidates)
+        window_size = 6
+        start = min(
+            max(0, selected - window_size + 1),
+            max(0, len(self._completion_candidates) - window_size),
+        )
+        end = min(len(self._completion_candidates), start + window_size)
+        content = Text()
+        for index, candidate in enumerate(self._completion_candidates[start:end], start=start):
+            if index > start:
+                content.append("\n")
+            content.append("❯ " if index == selected else "  ", style="bold" if index == selected else "")
+            content.append(candidate, style="cyan" if index == selected else "white")
+        candidate_box.update(content)
+        candidate_box.add_class("visible")
+
+    def _hide_completion_candidates(self) -> None:
+        candidate_box = self.query_one("#startup-candidates", Static)
+        candidate_box.update("")
+        candidate_box.remove_class("visible")
+
+    def _replace_completion(
+        self,
+        custom_input: Input,
+        value: str,
+        cursor_position: int,
+        quote: str,
+        completed_path: str,
+        has_closing_quote: bool,
+    ) -> None:
+        suffix = value[cursor_position:]
+        closing_quote_in_suffix = bool(quote and suffix.startswith(quote))
+        closing_quote = quote if quote and (has_closing_quote or not closing_quote_in_suffix) else ""
+        replacement = f"{quote}{completed_path}{closing_quote}"
+        completed_value = f"{replacement}{suffix}"
+        completed_cursor = len(replacement) - len(closing_quote)
+        self._completion_input = completed_value
+        self._completion_cursor = completed_cursor
+        custom_input.value = completed_value
+        custom_input.cursor_position = completed_cursor
+
+    def _complete_custom_path(self) -> None:
+        custom_input = self.query_one("#startup-input", Input)
+        value = custom_input.value
+        cursor_position = custom_input.cursor_position
+        raw_fragment = value[:cursor_position]
+        quote, path_fragment, has_closing_quote = self._completion_context(raw_fragment)
+        continuing = bool(self._completion_candidates) and (
+            value,
+            cursor_position,
+        ) == (
+            self._completion_input,
+            self._completion_cursor,
+        )
+        if continuing:
+            completed_path = self._completion_candidates[self._completion_index]
+            self._replace_completion(
+                custom_input,
+                value,
+                cursor_position,
+                quote,
+                completed_path,
+                has_closing_quote,
+            )
+            self._completion_candidates = []
+            self._completion_index = 0
+            self._hide_completion_candidates()
+            custom_input.focus()
+            return
+
+        candidates = paths.directory_completion_candidates(path_fragment, self.cwd)
+        if not candidates:
+            self._completion_candidates = []
+            self._completion_index = 0
+            self._completion_input = value
+            self._completion_cursor = cursor_position
+            self._hide_completion_candidates()
+            return
+
+        self._completion_index = 0
+        common_prefix = os.path.commonprefix(candidates)
+        if len(common_prefix) > len(path_fragment):
+            self._replace_completion(
+                custom_input,
+                value,
+                cursor_position,
+                quote,
+                common_prefix,
+                has_closing_quote,
+            )
+        elif len(candidates) == 1:
+            self._replace_completion(
+                custom_input,
+                value,
+                cursor_position,
+                quote,
+                candidates[0],
+                has_closing_quote,
+            )
+        else:
+            self._completion_input = value
+            self._completion_cursor = cursor_position
+
+        if len(candidates) > 1:
+            self._completion_candidates = candidates
+            self._show_completion_candidates()
+        else:
+            self._completion_candidates = []
+            self._hide_completion_candidates()
+        custom_input.focus()
+
+    def _move_completion_selection(self, delta: int) -> None:
+        self._completion_index = (self._completion_index + delta) % len(self._completion_candidates)
+        self._show_completion_candidates()
+
     def _refresh_text(self) -> None:
         options = [
             f"当前目录 ({self.cwd})",
             "输入自定义路径...",
         ]
-        lines = ["📂 选择工作区目录（使用 ↑/↓ 方向键，Enter 确认，Ctrl+C 取消）：", ""]
+        lines = ["📂 选择工作区目录（使用 ↑/↓ 方向键，Enter 确认）：", ""]
         for index, text in enumerate(options):
             marker = "❯" if index == self._selected_index else " "
             lines.append(f"  {marker} {text}")

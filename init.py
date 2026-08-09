@@ -34,7 +34,15 @@ def resolve_chosen_workdir(choice: str, cwd: Path | None = None) -> Path:
     user_input = choice.removeprefix("custom:") if choice.startswith("custom:") else ""
     if not user_input.strip():
         return cwd
-    target_path = Path(user_input.strip()).expanduser().resolve()
+    user_input = user_input.strip()
+    if (user_input.startswith('"') and user_input.endswith('"')) or (
+        user_input.startswith("'") and user_input.endswith("'")
+    ):
+        user_input = user_input[1:-1].strip()
+    target_path = Path(user_input).expanduser()
+    if not target_path.is_absolute():
+        target_path = cwd / target_path
+    target_path = target_path.resolve()
     if target_path.exists() and target_path.is_dir():
         return target_path
     return cwd

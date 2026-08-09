@@ -1,16 +1,22 @@
 import asyncio
 import json
+import os
 import threading
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from rich.console import Console
+from textual.app import App, ComposeResult
+from textual.widgets import Input, Label, Static
 
+from init import resolve_chosen_workdir
 from system.commands import COMMAND_DESCRIPTIONS, CommandAction, CommandHandler, _conversation_preview, _task_plan_preview
 from system.tui_app import MakeCodeInput, MakeCodeTuiApp
+from system.tui_modals import StartupWorkdirModal
 from system.tui_types import TuiEvent, TuiRegion
 from utils.conversations import ConversationStore, SCHEMA_VERSION, SUB_AGENT_HISTORY_FILE, TASK_PLAN_FILE
 from utils.mcp_manager import GlobalMCPManager
+from utils.paths import directory_completion_candidates
 
 
 TEST_LAYOUT_RATIOS = {
@@ -694,6 +700,129 @@ async def test_submitting_flush_preserves_existing_pane_content():
         assert submitted == ["/flush"]
 
 
+def test_directory_completion_candidates_preserve_separator_style(tmp_path):
+    (tmp_path / "parent" / "child").mkdir(parents=True)
+
+    assert directory_completion_candidates("par", tmp_path) == [f"parent{os.sep}"]
+    assert directory_completion_candidates("parent/ch", tmp_path) == ["parent/child/"]
+    if os.sep == "\\":
+        assert directory_completion_candidates(r"parent\ch", tmp_path) == [
+            "parent\\child\\"
+        ]
+
+
+class StartupWorkdirModalHost(App):
+    def __init__(self, modal: StartupWorkdirModal):
+        super().__init__()
+        self.modal = modal
+        self.result = None
+
+    def compose(self) -> ComposeResult:
+        yield Label("host")
+
+    def on_mount(self) -> None:
+        self.push_screen(self.modal, self._on_dismiss)
+
+    def _on_dismiss(self, result: str | None) -> None:
+        self.result = result
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_completion_uses_common_prefix_and_selected_candidate(tmp_path):
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "alpine").mkdir()
+    (tmp_path / "alpine-file").write_text("not a directory", encoding="utf-8")
+    modal = StartupWorkdirModal(tmp_path)
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        custom_input = modal.query_one("#startup-input", Input)
+        candidate_box = modal.query_one("#startup-candidates", Static)
+        assert custom_input.display
+        assert app.result is None
+
+        custom_input.value = "al"
+        custom_input.cursor_position = len("al")
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        assert custom_input.value == "alp"
+        assert custom_input.cursor_position == len("alp")
+        assert candidate_box.has_class("visible")
+        assert f"alpha{os.sep}" in str(candidate_box.content)
+        assert f"alpine{os.sep}" in str(candidate_box.content)
+        assert f"alpine-file{os.sep}" not in str(candidate_box.content)
+
+        await pilot.press("down", "tab")
+        await pilot.pause()
+        completed_path = f"alpine{os.sep}"
+        assert custom_input.value == completed_path
+        assert custom_input.cursor_position == len(completed_path)
+        assert not candidate_box.has_class("visible")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.result == f"custom:{completed_path}"
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_completion_supports_tilde_and_quoted_space_paths(tmp_path):
+    (tmp_path / "space dir").mkdir()
+    modal = StartupWorkdirModal(tmp_path)
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        custom_input = modal.query_one("#startup-input", Input)
+
+        custom_input.value = "~"
+        custom_input.cursor_position = len("~")
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        assert custom_input.value == "~/"
+        assert custom_input.cursor_position == len("~/")
+
+        custom_input.value = '"space'
+        custom_input.cursor_position = len('"space')
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        quoted_path = f'"space dir{os.sep}"'
+        assert custom_input.value == quoted_path
+        assert custom_input.cursor_position == len(quoted_path) - 1
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert app.result == f'custom:"space dir{os.sep}"'
+    assert resolve_chosen_workdir(app.result, tmp_path) == (tmp_path / "space dir").resolve()
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_completion_preserves_text_after_cursor(tmp_path):
+    (tmp_path / "space dir").mkdir()
+    modal = StartupWorkdirModal(tmp_path)
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        custom_input = modal.query_one("#startup-input", Input)
+        custom_input.value = "space-suffix"
+        custom_input.cursor_position = len("space")
+        await pilot.pause()
+
+        await pilot.press("tab")
+        await pilot.pause()
+
+        completed_path = f"space dir{os.sep}"
+        assert custom_input.value == f"{completed_path}-suffix"
+        assert custom_input.cursor_position == len(completed_path)
+
+
 @pytest.mark.anyio
 async def test_cd_path_completion_uses_longest_common_prefix_and_allows_selecting_candidates(tmp_path, monkeypatch):
     (tmp_path / "alpha").mkdir()
@@ -715,17 +844,17 @@ async def test_cd_path_completion_uses_longest_common_prefix_and_allows_selectin
         await pilot.pause()
         assert input_box.text == "/cd alp"
         assert candidate_box.has_class("visible")
-        assert "alpha/" in str(candidate_box.content)
-        assert "alpine/" in str(candidate_box.content)
-        assert "alpine-file/" not in str(candidate_box.content)
+        assert f"alpha{os.sep}" in str(candidate_box.content)
+        assert f"alpine{os.sep}" in str(candidate_box.content)
+        assert f"alpine-file{os.sep}" not in str(candidate_box.content)
 
         await pilot.press("up")
         await pilot.pause()
-        assert "❯ alpine/" in str(candidate_box.content)
+        assert f"❯ alpine{os.sep}" in str(candidate_box.content)
 
         await pilot.press("tab")
         await pilot.pause()
-        assert input_box.text == "/cd alpine/"
+        assert input_box.text == f"/cd alpine{os.sep}"
         assert not candidate_box.has_class("visible")
 
 
@@ -747,12 +876,12 @@ async def test_cd_path_completion_from_empty_argument_shows_directory_candidates
         await pilot.pause()
         assert input_box.text == "/cd "
         assert candidate_box.has_class("visible")
-        assert "alpha/" in str(candidate_box.content)
-        assert "beta/" in str(candidate_box.content)
+        assert f"alpha{os.sep}" in str(candidate_box.content)
+        assert f"beta{os.sep}" in str(candidate_box.content)
 
         await pilot.press("tab")
         await pilot.pause()
-        assert input_box.text == "/cd alpha/"
+        assert input_box.text == f"/cd alpha{os.sep}"
         assert not candidate_box.has_class("visible")
 
 
@@ -773,19 +902,19 @@ async def test_cd_path_completion_keeps_all_candidates_and_scrolls_a_six_item_wi
         await pilot.press("tab")
         await pilot.pause()
         assert input_box.text == "/cd dir"
-        assert "dir0/" in str(candidate_box.content)
-        assert "dir5/" in str(candidate_box.content)
-        assert "dir6/" not in str(candidate_box.content)
+        assert f"dir0{os.sep}" in str(candidate_box.content)
+        assert f"dir5{os.sep}" in str(candidate_box.content)
+        assert f"dir6{os.sep}" not in str(candidate_box.content)
 
         await pilot.press(*["down"] * 7)
         await pilot.pause()
-        assert "❯ dir7/" in str(candidate_box.content)
-        assert "dir0/" not in str(candidate_box.content)
-        assert "dir2/" in str(candidate_box.content)
+        assert f"❯ dir7{os.sep}" in str(candidate_box.content)
+        assert f"dir0{os.sep}" not in str(candidate_box.content)
+        assert f"dir2{os.sep}" in str(candidate_box.content)
 
         await pilot.press("tab")
         await pilot.pause()
-        assert input_box.text == "/cd dir7/"
+        assert input_box.text == f"/cd dir7{os.sep}"
 
 
 @pytest.mark.anyio
@@ -845,8 +974,9 @@ async def test_cd_path_completion_supports_tilde_and_quoted_paths(tmp_path, monk
         input_box.load_text('/cd "space"')
         input_box.cursor_location = (0, len('/cd "space'))
         app.complete_slash_command()
-        assert input_box.text == '/cd "space dir/"'
-        assert input_box.cursor_location == (0, len('/cd "space dir/'))
+        quoted_path = f'/cd "space dir{os.sep}"'
+        assert input_box.text == quoted_path
+        assert input_box.cursor_location == (0, len(quoted_path) - 1)
 
         input_box.load_text("/cd ~")
         input_box.cursor_location = input_box.document.end
