@@ -287,8 +287,12 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     assert memory.get_context_length() == 200
     assert memory.get_context_token_limit() == 200 * 1024
     assert memory.get_compaction_thresholds() == (70, 90)
+    assert memory.get_tool_output_compact_tokens() == 2000
+    assert memory.get_partial_compact_percentages() == (30, 50)
     assert memory.set_context_length(300) == 300
     assert memory.set_compaction_thresholds(65, 85) == (65, 85)
+    assert memory.set_tool_output_compact_tokens(2400) == 2400
+    assert memory.set_partial_compact_percentages(25, 45) == (25, 45)
 
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert saved["memory_size"] == 9
@@ -296,6 +300,9 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     assert saved["context_length"] == 300
     assert saved["tool_output_compact_threshold"] == 65
     assert saved["partial_compact_threshold"] == 85
+    assert saved["tool_output_compact_tokens"] == 2400
+    assert saved["partial_compact_min_percent"] == 25
+    assert saved["partial_compact_max_percent"] == 45
 
     config_file.write_text(json.dumps({
         "memory_size": 11,
@@ -303,6 +310,9 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
         "context_length": 256,
         "tool_output_compact_threshold": 60,
         "partial_compact_threshold": 80,
+        "tool_output_compact_tokens": 3200,
+        "partial_compact_min_percent": 20,
+        "partial_compact_max_percent": 40,
     }), encoding="utf-8")
 
     assert memory.get_memory_size() == 11
@@ -310,6 +320,8 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     assert memory.get_context_length() == 256
     assert memory.get_context_token_limit() == 256 * 1024
     assert memory.get_compaction_thresholds() == (60, 80)
+    assert memory.get_tool_output_compact_tokens() == 3200
+    assert memory.get_partial_compact_percentages() == (20, 40)
     assert memory.set_memory_recall_window_size(5) == 5
 
     saved = json.loads(config_file.read_text(encoding="utf-8"))
@@ -318,6 +330,40 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     assert saved["memory_recall_window_size"] == 5
     assert saved["tool_output_compact_threshold"] == 60
     assert saved["partial_compact_threshold"] == 80
+    assert saved["tool_output_compact_tokens"] == 3200
+    assert saved["partial_compact_min_percent"] == 20
+    assert saved["partial_compact_max_percent"] == 40
+
+
+def test_memory_config_cache_reuses_same_file_signature_and_invalidates_on_change(tmp_path, monkeypatch):
+    config_file = tmp_path / "memory_config.json"
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", config_file)
+    config_file.write_text(json.dumps({"context_length": 210}), encoding="utf-8")
+    memory._reset_memory_config_cache()
+
+    with patch("builtins.open", wraps=open) as open_mock:
+        assert memory.get_context_length() == 210
+        assert memory.get_context_length() == 210
+
+    assert open_mock.call_count == 1
+
+    config_file.write_text(json.dumps({"context_length": 220}), encoding="utf-8")
+    assert memory.get_context_length() == 220
+
+
+def test_memory_config_setter_merges_external_latest_values_with_cached_data(tmp_path, monkeypatch):
+    config_file = tmp_path / "memory_config.json"
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", config_file)
+    config_file.write_text(json.dumps({"context_length": 210, "external": "before"}), encoding="utf-8")
+    assert memory.get_context_length() == 210
+
+    config_file.write_text(json.dumps({"context_length": 220, "external": "after"}), encoding="utf-8")
+    assert memory.set_memory_size(12) == 12
+
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["context_length"] == 220
+    assert saved["external"] == "after"
+    assert saved["memory_size"] == 12
 
 
 @pytest.mark.parametrize("first,second", [(0, 90), (70, 70), (90, 70), (70, 100), (70.0, 90)])
@@ -332,6 +378,32 @@ def test_memory_compaction_thresholds_require_ordered_integer_percentages(tmp_pa
     assert json.loads(config_file.read_text(encoding="utf-8")) == {"memory_size": 9}
 
 
+@pytest.mark.parametrize("tokens", [0, -2, 1999, 2000.0, True])
+def test_tool_output_compact_tokens_require_positive_even_integer(tmp_path, monkeypatch, tokens):
+    config_file = tmp_path / "memory_config.json"
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", config_file)
+    config_file.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="positive even integer"):
+        memory.set_tool_output_compact_tokens(tokens)
+
+    assert json.loads(config_file.read_text(encoding="utf-8")) == {"memory_size": 9}
+
+
+@pytest.mark.parametrize("minimum,maximum", [(0, 50), (30, 30), (50, 30), (30, 100), (30.0, 50)])
+def test_partial_compact_percentages_require_ordered_integer_percentages(
+        tmp_path, monkeypatch, minimum, maximum,
+):
+    config_file = tmp_path / "memory_config.json"
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", config_file)
+    config_file.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="partial compaction percentages"):
+        memory.set_partial_compact_percentages(minimum, maximum)
+
+    assert json.loads(config_file.read_text(encoding="utf-8")) == {"memory_size": 9}
+
+
 def test_memory_config_modal_includes_compaction_threshold_fields():
     fields = MemoryConfigModal._FIELDS
 
@@ -339,6 +411,9 @@ def test_memory_config_modal_includes_compaction_threshold_fields():
     assert "memory_size" in fields
     assert fields["tool_output_compact_threshold"]["input_id"] == "memory-config-tool-output-compact-threshold"
     assert fields["partial_compact_threshold"]["input_id"] == "memory-config-partial-compact-threshold"
+    assert fields["tool_output_compact_tokens"]["input_id"] == "memory-config-tool-output-compact-tokens"
+    assert fields["partial_compact_min_percent"]["input_id"] == "memory-config-partial-compact-min-percent"
+    assert fields["partial_compact_max_percent"]["input_id"] == "memory-config-partial-compact-max-percent"
     assert "keep_recent_tool_call" not in fields
     assert fields["memory_recall_window_size"]["input_id"] == "memory-config-memory-recall-window-size"
 
@@ -349,6 +424,9 @@ def test_memory_config_modal_requires_second_compaction_threshold_to_be_greater(
         "memory_size": 30,
         "tool_output_compact_threshold": 90,
         "partial_compact_threshold": 70,
+        "tool_output_compact_tokens": 2000,
+        "partial_compact_min_percent": 30,
+        "partial_compact_max_percent": 50,
         "memory_recall_window_size": 3,
     }
     modal = MemoryConfigModal(values)
@@ -362,6 +440,57 @@ def test_memory_config_modal_requires_second_compaction_threshold_to_be_greater(
         assert modal._collect_values() is None
 
     show_error.assert_called_once_with("压缩阈值必须满足 0 < 第一层阈值 < 第二层阈值 < 100。")
+
+
+def _memory_config_modal_values(**overrides):
+    values = {
+        "context_length": 200,
+        "memory_size": 30,
+        "tool_output_compact_threshold": 70,
+        "partial_compact_threshold": 90,
+        "tool_output_compact_tokens": 2000,
+        "partial_compact_min_percent": 30,
+        "partial_compact_max_percent": 50,
+        "memory_recall_window_size": 3,
+    }
+    values.update(overrides)
+    return values
+
+
+def _collect_memory_config_values(values):
+    modal = MemoryConfigModal(values)
+    inputs = {
+        f"#{meta['input_id']}": SimpleNamespace(value=str(values[field]))
+        for field, meta in modal._FIELDS.items()
+    }
+    return modal, inputs
+
+
+def test_memory_config_modal_requires_even_tool_output_compact_tokens():
+    modal, inputs = _collect_memory_config_values(
+        _memory_config_modal_values(tool_output_compact_tokens=1999)
+    )
+
+    with patch.object(modal, "query_one", side_effect=lambda selector, *args: inputs[selector]), \
+            patch.object(modal, "_show_error") as show_error:
+        assert modal._collect_values() is None
+
+    show_error.assert_called_once_with("第一层压缩后保留总 tokens（偶数） 必须是正偶数。")
+
+
+def test_memory_config_modal_requires_ordered_partial_compact_range():
+    modal, inputs = _collect_memory_config_values(
+        _memory_config_modal_values(
+            partial_compact_min_percent=50,
+            partial_compact_max_percent=30,
+        )
+    )
+
+    with patch.object(modal, "query_one", side_effect=lambda selector, *args: inputs[selector]), \
+            patch.object(modal, "_show_error") as show_error:
+        assert modal._collect_values() is None
+
+    show_error.assert_called_once_with("第二层可压缩落点必须满足 0 < 下限 < 上限 < 100。")
 
 
 def test_window_attention_is_noop_on_non_windows():
@@ -463,6 +592,30 @@ class ChoiceModalHost(App):
 
     def refresh_status(self) -> None:
         self.status_refreshes += 1
+
+
+@pytest.mark.anyio
+async def test_memory_config_modal_keeps_all_fields_reachable_on_short_terminal():
+    modal = MemoryConfigModal(_memory_config_modal_values())
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        dialog = modal.query_one("#memory-config-dialog", VerticalScroll)
+
+        assert dialog.max_scroll_y > 0
+        assert modal.query_one("#memory-config-partial-compact-max-percent", Input)
+        assert modal.query_one("#memory-config-apply", Button)
+        child_ids = [child.id for child in dialog.children]
+        assert child_ids.index("memory-config-choose-recall-model") < child_ids.index(
+            "memory-config-tool-output-compact-tokens"
+        )
+        assert child_ids.index("memory-config-choose-recall-model") < child_ids.index(
+            "memory-config-partial-compact-min-percent"
+        )
+        assert child_ids.index("memory-config-choose-recall-model") < child_ids.index(
+            "memory-config-partial-compact-max-percent"
+        )
 
 
 def assert_list_selection(list_view: ListView, index: int) -> None:
@@ -1946,6 +2099,19 @@ def test_tool_output_compaction_uses_exact_token_boundaries():
     )
 
 
+def test_tool_output_compaction_uses_configured_even_retained_tokens():
+    output = "甲" * 2401
+
+    with patch.object(memory, "get_tool_output_compact_tokens", return_value=2400):
+        compacted = memory._compact_tool_output_text(output)
+
+    assert compacted == (
+        "甲" * 1200
+        + memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=1)
+        + "甲" * 1200
+    )
+
+
 def test_tool_output_compaction_handles_english_and_unicode_token_boundaries():
     for output in ("word " * 2000, "😀" * 2001, "中😀English " * 1000):
         compacted = memory._compact_tool_output_text(output)
@@ -2060,6 +2226,24 @@ def test_partial_compaction_range_must_be_between_thirty_and_fifty_percent(selec
 
     with patch.object(memory, "estimate_tokens", return_value=selected_tokens):
         assert memory._select_partial_compaction_range(messages, 100) == expected
+
+
+def test_partial_compaction_range_uses_configured_percentages():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+    ]
+
+    with patch.object(memory, "get_partial_compact_percentages", return_value=(20, 40)), \
+            patch.object(memory, "estimate_tokens", return_value=20):
+        assert memory._select_partial_compaction_range(messages, 100) == (1, 3)
+
+    with patch.object(memory, "get_partial_compact_percentages", return_value=(20, 40)), \
+            patch.object(memory, "estimate_tokens", return_value=41):
+        assert memory._select_partial_compaction_range(messages, 100) is None
 
 
 def test_partial_compaction_range_accumulates_oldest_complete_groups_only():

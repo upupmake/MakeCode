@@ -1,7 +1,9 @@
 import asyncio
 import copy
 import json
+import os
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -47,8 +49,9 @@ DEFAULT_MEMORY_SIZE = 30
 DEFAULT_MEMORY_RECALL_WINDOW_SIZE = MEMORY_RECALL_WINDOW_SIZE
 DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD = 70
 DEFAULT_PARTIAL_COMPACT_THRESHOLD = 90
-TOOL_OUTPUT_COMPACT_TOKENS = 2000
-TOOL_OUTPUT_COMPACT_EDGE_TOKENS = 1000
+DEFAULT_TOOL_OUTPUT_COMPACT_TOKENS = 2000
+DEFAULT_PARTIAL_COMPACT_MIN_PERCENT = 30
+DEFAULT_PARTIAL_COMPACT_MAX_PERCENT = 50
 TOOL_OUTPUT_COMPACT_MARKER = "\n\n...[该工具执行结果已被压缩 {omitted_tokens} tokens]...\n\n"
 _TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
     r"(?:\n\n)?\.\.\.\[该工具执行结果已被压缩 \d+ tokens\]\.\.\.(?:\n\n)?"
@@ -56,10 +59,28 @@ _TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
 _MEMORY_INSIGHT_TRUNCATION_MARKER_PATTERN = re.compile(
     r"(?: )?\[\.\.\.内容截断\.\.\.\](?: )?"
 )
-PARTIAL_COMPACT_MIN_PERCENT = 30
-PARTIAL_COMPACT_MAX_PERCENT = 50
 _MEMORY_RECALL_WINDOWS: dict[str, list[list[str]]] = {}
 _MEMORY_RECORDS_LOCK = threading.RLock()
+_MEMORY_CONFIG_CACHE_LOCK = threading.RLock()
+_MEMORY_CONFIG_CACHE_PATH: str | None = None
+_MEMORY_CONFIG_CACHE_SIGNATURE: tuple[int, int, int] | None = None
+_MEMORY_CONFIG_CACHE_DATA: dict | None = None
+
+
+def _reset_memory_config_cache() -> None:
+    global _MEMORY_CONFIG_CACHE_PATH, _MEMORY_CONFIG_CACHE_SIGNATURE, _MEMORY_CONFIG_CACHE_DATA
+    with _MEMORY_CONFIG_CACHE_LOCK:
+        _MEMORY_CONFIG_CACHE_PATH = None
+        _MEMORY_CONFIG_CACHE_SIGNATURE = None
+        _MEMORY_CONFIG_CACHE_DATA = None
+
+
+def _memory_config_file_signature() -> tuple[int, int, int] | None:
+    try:
+        stat = MEMORY_CONFIG_FILE.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size, stat.st_ino
 
 
 def refresh_workspace_paths() -> None:
@@ -70,6 +91,7 @@ def refresh_workspace_paths() -> None:
     MEMORY_DIR = paths.workspace_memory_dir()
     MEMORY_JSONL_FILE = paths.workspace_memory_jsonl_file()
     MEMORY_CONFIG_FILE = paths.workspace_memory_config_file()
+    _reset_memory_config_cache()
     reset_memory_recall_windows()
 
 
@@ -294,25 +316,80 @@ def _validate_compaction_thresholds(tool_output_threshold, partial_threshold) ->
     return tool_output_threshold, partial_threshold
 
 
+def _validate_tool_output_compact_tokens(tokens) -> int:
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0 or tokens % 2:
+        raise ValueError("tool output compact tokens must be a positive even integer")
+    return tokens
+
+
+def _validate_partial_compact_percentages(min_percent, max_percent) -> tuple[int, int]:
+    if (
+        isinstance(min_percent, bool)
+        or not isinstance(min_percent, int)
+        or isinstance(max_percent, bool)
+        or not isinstance(max_percent, int)
+    ):
+        raise ValueError("partial compaction percentages must be integers")
+    if not 0 < min_percent < max_percent < 100:
+        raise ValueError(
+            "partial compaction percentages must satisfy 0 < minimum < maximum < 100"
+        )
+    return min_percent, max_percent
+
+
 def _load_memory_config_from_disk() -> dict:
-    if not MEMORY_CONFIG_FILE.exists():
-        return {}
-    try:
-        with open(MEMORY_CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return data
+    global _MEMORY_CONFIG_CACHE_PATH, _MEMORY_CONFIG_CACHE_SIGNATURE, _MEMORY_CONFIG_CACHE_DATA
+    cache_path = str(MEMORY_CONFIG_FILE)
+    signature = _memory_config_file_signature()
+    with _MEMORY_CONFIG_CACHE_LOCK:
+        if (
+            _MEMORY_CONFIG_CACHE_PATH == cache_path
+            and _MEMORY_CONFIG_CACHE_SIGNATURE == signature
+            and _MEMORY_CONFIG_CACHE_DATA is not None
+        ):
+            return _MEMORY_CONFIG_CACHE_DATA.copy()
+
+        data = {}
+        if signature is not None:
+            try:
+                with open(MEMORY_CONFIG_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+            if isinstance(loaded, dict):
+                data = loaded
+
+        _MEMORY_CONFIG_CACHE_PATH = cache_path
+        _MEMORY_CONFIG_CACHE_SIGNATURE = signature
+        _MEMORY_CONFIG_CACHE_DATA = data
+        return data.copy()
 
 
 def _write_memory_config_fields(values: dict) -> None:
-    data = _load_memory_config_from_disk()
-    data.update(values)
-    MEMORY_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(MEMORY_CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    global _MEMORY_CONFIG_CACHE_PATH, _MEMORY_CONFIG_CACHE_SIGNATURE, _MEMORY_CONFIG_CACHE_DATA
+    with _MEMORY_CONFIG_CACHE_LOCK:
+        data = _load_memory_config_from_disk()
+        data.update(values)
+        MEMORY_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=MEMORY_CONFIG_FILE.parent,
+                delete=False,
+            ) as f:
+                temporary_path = f.name
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_path, MEMORY_CONFIG_FILE)
+        finally:
+            if temporary_path is not None and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        _MEMORY_CONFIG_CACHE_PATH = str(MEMORY_CONFIG_FILE)
+        _MEMORY_CONFIG_CACHE_SIGNATURE = _memory_config_file_signature()
+        _MEMORY_CONFIG_CACHE_DATA = data.copy()
 
 
 def _write_memory_config_field(field: str, value) -> None:
@@ -388,6 +465,51 @@ def set_compaction_thresholds(
         "partial_compact_threshold": thresholds[1],
     })
     return thresholds
+
+
+def get_tool_output_compact_tokens() -> int:
+    return _get_memory_config_field(
+        "tool_output_compact_tokens",
+        DEFAULT_TOOL_OUTPUT_COMPACT_TOKENS,
+        _validate_tool_output_compact_tokens,
+    )
+
+
+def set_tool_output_compact_tokens(tokens: int) -> int:
+    tokens = _validate_tool_output_compact_tokens(tokens)
+    _write_memory_config_field("tool_output_compact_tokens", tokens)
+    return tokens
+
+
+def get_partial_compact_percentages() -> tuple[int, int]:
+    data = _load_memory_config_from_disk()
+    min_percent = data.get("partial_compact_min_percent", DEFAULT_PARTIAL_COMPACT_MIN_PERCENT)
+    max_percent = data.get("partial_compact_max_percent", DEFAULT_PARTIAL_COMPACT_MAX_PERCENT)
+    try:
+        percentages = _validate_partial_compact_percentages(min_percent, max_percent)
+    except ValueError:
+        return DEFAULT_PARTIAL_COMPACT_MIN_PERCENT, DEFAULT_PARTIAL_COMPACT_MAX_PERCENT
+
+    missing_values = {}
+    if "partial_compact_min_percent" not in data:
+        missing_values["partial_compact_min_percent"] = min_percent
+    if "partial_compact_max_percent" not in data:
+        missing_values["partial_compact_max_percent"] = max_percent
+    if missing_values:
+        _write_memory_config_fields(missing_values)
+    return percentages
+
+
+def set_partial_compact_percentages(
+        min_percent: int,
+        max_percent: int,
+) -> tuple[int, int]:
+    percentages = _validate_partial_compact_percentages(min_percent, max_percent)
+    _write_memory_config_fields({
+        "partial_compact_min_percent": percentages[0],
+        "partial_compact_max_percent": percentages[1],
+    })
+    return percentages
 
 
 def get_memory_recall_window_size() -> int:
@@ -1015,10 +1137,11 @@ def _tool_call_source_messages(messages: list[dict]) -> dict[str, dict]:
 def _compact_tool_output_text(text: str) -> str:
     if _TOOL_OUTPUT_COMPACT_MARKER_PATTERN.search(text):
         return text
+    compact_tokens = get_tool_output_compact_tokens()
     return truncate_text_by_tokens(
         text,
-        max_tokens=TOOL_OUTPUT_COMPACT_TOKENS,
-        edge_tokens=TOOL_OUTPUT_COMPACT_EDGE_TOKENS,
+        max_tokens=compact_tokens,
+        edge_tokens=compact_tokens // 2,
         marker=TOOL_OUTPUT_COMPACT_MARKER,
         existing_marker_pattern=_TOOL_OUTPUT_COMPACT_MARKER_PATTERN,
         encoder=_ENCODER,
@@ -1072,11 +1195,12 @@ def _select_partial_compaction_range(
         return None
 
     first_start = candidates[0][0]
+    min_percent, max_percent = get_partial_compact_percentages()
     for _, end, _ in candidates:
         accumulated_tokens = estimate_tokens(messages[first_start:end])
-        if accumulated_tokens * 100 < context_token_limit * PARTIAL_COMPACT_MIN_PERCENT:
+        if accumulated_tokens * 100 < context_token_limit * min_percent:
             continue
-        if accumulated_tokens * 100 > context_token_limit * PARTIAL_COMPACT_MAX_PERCENT:
+        if accumulated_tokens * 100 > context_token_limit * max_percent:
             return None
         return first_start, end
     return None

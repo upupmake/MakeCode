@@ -34,6 +34,8 @@ from utils.memory import (
     get_compaction_thresholds,
     get_context_length,
     get_memory_recall_window_size,
+    get_partial_compact_percentages,
+    get_tool_output_compact_tokens,
     get_memory_size,
     list_long_term_memories,
     manual_memory_update,
@@ -41,6 +43,8 @@ from utils.memory import (
     set_compaction_thresholds,
     set_context_length,
     set_memory_recall_window_size,
+    set_partial_compact_percentages,
+    set_tool_output_compact_tokens,
     set_memory_size,
 )
 from system.updater import AUTO_UPDATE_SUPPORTED, check_update, download_update
@@ -961,11 +965,15 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         model_manager = get_model_manager()
         tool_output_threshold, partial_threshold = get_compaction_thresholds()
+        partial_min_percent, partial_max_percent = get_partial_compact_percentages()
         current_values = {
             "context_length": get_context_length(),
             "memory_size": get_memory_size(),
             "tool_output_compact_threshold": tool_output_threshold,
             "partial_compact_threshold": partial_threshold,
+            "tool_output_compact_tokens": get_tool_output_compact_tokens(),
+            "partial_compact_min_percent": partial_min_percent,
+            "partial_compact_max_percent": partial_max_percent,
             "memory_recall_window_size": get_memory_recall_window_size(),
             "memory_recall_model_key": model_manager.memory_recall_model_key if model_manager else None,
             "memory_recall_model_display": model_manager.get_memory_recall_model_display_text() if model_manager else "同主模型",
@@ -1004,6 +1012,11 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             result["tool_output_compact_threshold"],
             result["partial_compact_threshold"],
         )
+        set_tool_output_compact_tokens(result["tool_output_compact_tokens"])
+        set_partial_compact_percentages(
+            result["partial_compact_min_percent"],
+            result["partial_compact_max_percent"],
+        )
         set_memory_recall_window_size(result["memory_recall_window_size"])
         if model_manager is not None:
             model_manager.set_memory_recall_model_by_key(result.get("memory_recall_model_key"))
@@ -1017,6 +1030,8 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             f"[#aaaaaa](当前 active：{get_active_memory_count()})[/#aaaaaa]\n"
             f"  tool_output_compact_threshold: {result['tool_output_compact_threshold']}%\n"
             f"  partial_compact_threshold: {result['partial_compact_threshold']}%\n"
+            f"  tool_output_compact_tokens: {result['tool_output_compact_tokens']}\n"
+            f"  partial_compact_range: {result['partial_compact_min_percent']}%-{result['partial_compact_max_percent']}%\n"
             f"  memory_recall_window_size: {result['memory_recall_window_size']}\n"
             f"  memory_recall_model: {recall_model_text}",
             tui_region=TuiRegion.TOOLS,

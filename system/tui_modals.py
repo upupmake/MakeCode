@@ -601,7 +601,8 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #memory-config-dialog {
         width: 76;
-        height: auto;
+        height: 90%;
+        max-height: 90%;
         border: round #f59e0b;
         background: $surface;
         padding: 1 2;
@@ -3505,6 +3506,18 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
             "label": "第二层局部压缩阈值（%）",
             "input_id": "memory-config-partial-compact-threshold",
         },
+        "tool_output_compact_tokens": {
+            "label": "第一层压缩后保留总 tokens（偶数）",
+            "input_id": "memory-config-tool-output-compact-tokens",
+        },
+        "partial_compact_min_percent": {
+            "label": "第二层可压缩落点下限（%）",
+            "input_id": "memory-config-partial-compact-min-percent",
+        },
+        "partial_compact_max_percent": {
+            "label": "第二层可压缩落点上限（%）",
+            "input_id": "memory-config-partial-compact-max-percent",
+        },
         "memory_recall_window_size": {
             "label": "记忆召回抑制窗口大小",
             "input_id": "memory-config-memory-recall-window-size",
@@ -3516,12 +3529,19 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
         self._values = values
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="memory-config-dialog"):
+        with VerticalScroll(id="memory-config-dialog"):
             yield ModalHeader(
                 "🧠 记忆配置\n修改后按 Enter 或点击确认应用；配置值必须是大于 0 的整数。",
                 title_id="choice-title",
             )
-            for field, meta in self._FIELDS.items():
+            for field in (
+                "context_length",
+                "memory_size",
+                "tool_output_compact_threshold",
+                "partial_compact_threshold",
+                "memory_recall_window_size",
+            ):
+                meta = self._FIELDS[field]
                 yield Label(f"{meta['label']} ({field})", classes="memory-config-label")
                 yield Input(
                     value=str(self._values[field]),
@@ -3534,6 +3554,18 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
                 classes="memory-config-label",
             )
             yield Button("选择记忆召回模型", id="memory-config-choose-recall-model", classes="memory-config-button")
+            for field in (
+                "tool_output_compact_tokens",
+                "partial_compact_min_percent",
+                "partial_compact_max_percent",
+            ):
+                meta = self._FIELDS[field]
+                yield Label(f"{meta['label']} ({field})", classes="memory-config-label")
+                yield Input(
+                    value=str(self._values[field]),
+                    id=meta["input_id"],
+                    classes="memory-config-input",
+                )
             with Horizontal(id="memory-config-actions"):
                 yield Button("确认应用", id="memory-config-apply", variant="success", classes="memory-config-button")
                 yield Button("取消", id="memory-config-cancel", variant="warning", classes="memory-config-button")
@@ -3580,11 +3612,19 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
             if value <= 0:
                 self._show_error(f"{meta['label']} 必须是大于 0 的整数。")
                 return None
+            if field == "tool_output_compact_tokens" and value % 2:
+                self._show_error(f"{meta['label']} 必须是正偶数。")
+                return None
             values[field] = value
         tool_output_threshold = values["tool_output_compact_threshold"]
         partial_threshold = values["partial_compact_threshold"]
         if not 0 < tool_output_threshold < partial_threshold < 100:
             self._show_error("压缩阈值必须满足 0 < 第一层阈值 < 第二层阈值 < 100。")
+            return None
+        partial_min_percent = values["partial_compact_min_percent"]
+        partial_max_percent = values["partial_compact_max_percent"]
+        if not 0 < partial_min_percent < partial_max_percent < 100:
+            self._show_error("第二层可压缩落点必须满足 0 < 下限 < 上限 < 100。")
             return None
         values["memory_recall_model_key"] = self._values.get("memory_recall_model_key")
         values["memory_recall_model_display"] = self._values.get("memory_recall_model_display", "同主模型")
