@@ -1,12 +1,10 @@
 import asyncio
 import inspect
-import json
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any
 
 from system.cli import run_external_cli
 
@@ -20,8 +18,7 @@ if __name__ == "__main__":
 from rich.console import Console
 from rich.markup import escape
 from rich.markdown import Markdown
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from init import (
     log_error_traceback,
@@ -74,6 +71,7 @@ from system.tui_app import (
 from utils.common import (
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
+    COMMON_TOOL_MODELS,
     sanitize_title,
 )
 from utils.llm_client import (
@@ -86,7 +84,9 @@ from utils import paths
 from utils.memory import (
     MEMORY_RECALL_TOOLS,
     MEMORY_RECALL_TOOLS_HANDLERS,
+    MEMORY_RECALL_TOOL_MODELS,
     MEMORY_SELF_MANAGEMENT_TOOLS,
+    MEMORY_SELF_MANAGEMENT_TOOL_MODELS,
     ORCHESTRATOR_AGENT_ID,
     auto_compact,
     compact_tool_outputs,
@@ -100,12 +100,20 @@ from utils.memory import (
     recall_long_term_memories,
 )
 from utils.conversations import CONVERSATION_STORE
-from utils.skills import SKILL_LOADER, SKILL_TOOLS, SKILL_TOOLS_HANDLERS
+from utils.skills import SKILL_LOADER, SKILL_TOOLS, SKILL_TOOLS_HANDLERS, SKILL_TOOL_MODELS
 import utils.tasks as _tasks_module
 import utils.teams as _teams_module
-from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS
-from utils.teams import TEAM_TOOLS, TEAM_TOOLS_HANDLERS
-from tools.ask_user import ASK_USER_TOOLS, ASK_USER_TOOLS_HANDLERS
+from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS, TASK_MANAGER_TOOL_MODELS
+from utils.teams import TEAM_TOOLS, TEAM_TOOLS_HANDLERS, TEAM_TOOL_MODELS
+from tools.ask_user import ASK_USER_TOOLS, ASK_USER_TOOLS_HANDLERS, ASK_USER_TOOL_MODELS
+from utils.tool_validation import (
+    ToolArgumentsModel,
+    ToolArgumentValidationError,
+    build_tool_definitions,
+    merge_tool_model_registries,
+    parse_tool_arguments,
+    validate_builtin_tool_arguments,
+)
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 
@@ -114,7 +122,7 @@ TEMPORARY_INSTRUCTION_START = "<makecode-temporary-user-instruction>"
 TEMPORARY_INSTRUCTION_END = "</makecode-temporary-user-instruction>"
 
 
-class GenerateConversationTitle(BaseModel):
+class GenerateConversationTitle(ToolArgumentsModel):
     """Structured title returned by the title-generation request."""
 
     title: str = Field(
@@ -123,7 +131,10 @@ class GenerateConversationTitle(BaseModel):
     )
 
 
-TITLE_GENERATION_TOOLS = [pydantic_function_tool(GenerateConversationTitle)]
+TITLE_GENERATION_TOOLS, TITLE_GENERATION_TOOL_MODELS = build_tool_definitions(
+    GenerateConversationTitle,
+)
+
 
 
 _PENDING_UPDATE_EXE_PATH = None
@@ -186,6 +197,16 @@ def _get_all_tools_definition(mcp_tools: list | None = None, llm_client=None):
 
 
 
+BASE_SUPER_TOOL_MODELS = merge_tool_model_registries(
+    COMMON_TOOL_MODELS,
+    MEMORY_RECALL_TOOL_MODELS,
+    MEMORY_SELF_MANAGEMENT_TOOL_MODELS,
+    SKILL_TOOL_MODELS,
+    TASK_MANAGER_TOOL_MODELS,
+    TEAM_TOOL_MODELS,
+    ASK_USER_TOOL_MODELS,
+)
+
 BASE_SUPER_TOOLS_HANDLERS = {
     **COMMON_TOOLS_HANDLERS,
     **MEMORY_RECALL_TOOLS_HANDLERS,
@@ -194,34 +215,6 @@ BASE_SUPER_TOOLS_HANDLERS = {
     **TEAM_TOOLS_HANDLERS,
     **ASK_USER_TOOLS_HANDLERS,
 }
-
-
-def _parse_arguments(arguments: Any) -> dict:
-    if isinstance(arguments, dict):
-        return arguments
-    if arguments is None:
-        return {}
-    if isinstance(arguments, str):
-        payload = arguments.strip()
-        if not payload:
-            return {}
-        try:
-            parsed = json.loads(payload, strict=False)
-        except json.JSONDecodeError as exc:
-            log_error_traceback("main parse arguments json decode", exc)
-            return {"_error": f"Failed to parse tool arguments: {exc}. Raw: {payload[:200]}"}
-        if isinstance(parsed, dict):
-            return parsed
-        log_error_traceback(
-            "main parse arguments type mismatch",
-            ValueError(f"Expected dict, got {type(parsed).__name__}"),
-        )
-        return {"_error": f"Tool arguments parsed to {type(parsed).__name__}, expected dict. Raw: {payload[:200]}"}
-    log_error_traceback(
-        "main parse arguments unexpected type",
-        TypeError(f"Unexpected type: {type(arguments).__name__}"),
-    )
-    return {"_error": f"Unexpected arguments type: {type(arguments).__name__}"}
 
 
 async def generate_title(user_query: str, max_rounds: int = 8) -> str | None:
@@ -244,12 +237,33 @@ async def generate_title(user_query: str, max_rounds: int = 8) -> str | None:
             if result is None:
                 break
 
+            title_validation_failed = False
             for tool_call in result.tool_calls:
                 if tool_call.get("name") != "GenerateConversationTitle":
                     continue
-                arguments = _parse_arguments(tool_call.get("arguments"))
-                title = arguments.get("title")
-                return sanitize_title(title) if isinstance(title, str) else None
+                try:
+                    arguments = validate_builtin_tool_arguments(
+                        "GenerateConversationTitle",
+                        tool_call.get("arguments"),
+                        TITLE_GENERATION_TOOL_MODELS["GenerateConversationTitle"],
+                    )
+                except ToolArgumentValidationError as exc:
+                    log_error_traceback("Title tool argument validation", exc)
+                    messages.append(result.assistant_message)
+                    tool_result = title_client.format_tool_result(
+                        tool_call.get("id"),
+                        "GenerateConversationTitle",
+                        str(exc),
+                    )
+                    tool_result["is_error"] = True
+                    messages.append(tool_result)
+                    title_validation_failed = True
+                    break
+                title = arguments["title"]
+                return sanitize_title(title)
+
+            if title_validation_failed:
+                continue
 
             current_round = round_index + 1
             remaining_rounds = max_rounds - current_round
@@ -440,7 +454,10 @@ async def _agent_loop_with_client(
             "role": "user",
             "content": (
                 f"{TEMPORARY_INSTRUCTION_START}\n"
-                "Treat the enclosed text as an additional or supplemental instruction for the task currently in progress.\n\n"
+                "Treat the enclosed text as an additional or supplemental instruction for the task currently in progress.\n"
+                "After addressing it, resume the current task from where you left off. Do not stop merely because you have "
+                "responded to this instruction while the task remains incomplete, unless the enclosed text explicitly changes, "
+                "pauses, or cancels the task.\n\n"
                 f"{temporary_query}\n"
                 f"{TEMPORARY_INSTRUCTION_END}"
             ),
@@ -514,21 +531,32 @@ async def _agent_loop_with_client(
                 _render_tool_call(tool_name, tool_args)
 
                 try:
-                    arguments = _parse_arguments(tool_args)
-                    if "_error" in arguments:
-                        output = arguments["_error"]
+                    handler = current_handlers.get(tool_name)
+                    if not handler:
                         tool_error = True
-                    # Plan Mode safety net: block write/execute/delegate tools
-                    elif is_plan_mode() and tool_name in PLAN_MODE_BLOCKLIST:
+                        output = f"Unknown tool: {tool_name}"
+                    elif tool_name in BASE_SUPER_TOOL_MODELS:
+                        arguments = validate_builtin_tool_arguments(
+                            tool_name,
+                            tool_args,
+                            BASE_SUPER_TOOL_MODELS[tool_name],
+                        )
+                    elif tool_name in mcp_handlers:
+                        arguments = parse_tool_arguments(tool_name, tool_args)
+                    else:
+                        raise RuntimeError(
+                            f"Built-in tool model not registered: {tool_name}"
+                        )
+
+                    if not tool_error and is_plan_mode() and tool_name in PLAN_MODE_BLOCKLIST:
                         tool_error = True
                         output = (
                             f"⛔ Plan Mode active: '{tool_name}' is blocked. "
                             f"Complete your plan first, then exit Plan Mode to execute."
                         )
-                    elif is_plan_mode() and tool_name == "RunTerminalCommand":
+                    elif not tool_error and is_plan_mode() and tool_name == "RunTerminalCommand":
                         cmd = arguments.get("command", "")
                         if is_plan_mode_command_allowed(cmd):
-                            handler = current_handlers.get(tool_name)
                             output = await _run_tool_handler(handler, arguments)
                         else:
                             tool_error = True
@@ -536,14 +564,12 @@ async def _agent_loop_with_client(
                                 f"⛔ Plan Mode: this command is not allowed. "
                                 f"Only {', '.join(PLAN_MODE_ALLOWED_COMMANDS)} commands are permitted in Plan Mode."
                             )
-                    else:
-                        handler = current_handlers.get(tool_name)
-                        if handler:
-                            output = await _run_tool_handler(handler, arguments)
-                            tool_error = isinstance(output, str) and output.startswith("Error:")
-                        else:
-                            tool_error = True
-                            output = f"Unknown tool: {tool_name}"
+                    elif not tool_error:
+                        output = await _run_tool_handler(handler, arguments)
+                        tool_error = isinstance(output, str) and output.startswith("Error:")
+                except ToolArgumentValidationError as exc:
+                    tool_error = True
+                    output = str(exc)
                 except Exception as e:
                     tool_error = True
                     log_error_traceback(

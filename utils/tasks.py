@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from rich.text import Text
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field, field_validator
 
 from init import log_error_traceback
 from utils.conversations import SCHEMA_VERSION, TASK_PLAN_FILE
 from utils.hitl import check_permission
+from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
 
 
 VALID_STATUS = {
@@ -19,7 +19,7 @@ VALID_STATUS = {
 }
 
 
-class TaskToCreate(BaseModel):
+class TaskToCreate(ToolArgumentsModel):
     subject: str = Field(
         ..., min_length=1, description="Task title, concise and action-oriented."
     )
@@ -73,7 +73,7 @@ class TaskToCreate(BaseModel):
         return v
 
 
-class CreateTasks(BaseModel):
+class CreateTasks(ToolArgumentsModel):
     """
     Create one or more new tasks in the topology plan.
 
@@ -92,14 +92,14 @@ class CreateTasks(BaseModel):
     )
 
 
-class TaskStatusUpdate(BaseModel):
+class TaskStatusUpdate(ToolArgumentsModel):
     task_id: str = Field(..., min_length=1, description="Target task ID.")
     status: Literal["pending", "completed"] = Field(
         ..., description="New status for the task."
     )
 
 
-class UpdateTasksStatus(BaseModel):
+class UpdateTasksStatus(ToolArgumentsModel):
     """
     Update one or more task statuses atomically.
     Constraints:
@@ -113,7 +113,7 @@ class UpdateTasksStatus(BaseModel):
     )
 
 
-class TaskDependenciesUpdate(BaseModel):
+class TaskDependenciesUpdate(ToolArgumentsModel):
     task_id: str = Field(..., min_length=1, description="Target task ID.")
     depend_on: list[str] = Field(
         default_factory=list, description="New full dependency list."
@@ -159,7 +159,7 @@ class TaskDependenciesUpdate(BaseModel):
         return v
 
 
-class UpdateTasksDependencies(BaseModel):
+class UpdateTasksDependencies(ToolArgumentsModel):
     """
     Rewrite one or more task dependency lists atomically.
     Constraints:
@@ -175,13 +175,13 @@ class UpdateTasksDependencies(BaseModel):
     )
 
 
-class TaskContentUpdate(BaseModel):
+class TaskContentUpdate(ToolArgumentsModel):
     task_id: str = Field(..., min_length=1, description="Target task ID.")
     subject: str = Field(..., min_length=1, description="New task title, concise and action-oriented.")
     description: str = Field(default="", description="New detailed description for the task.")
 
 
-class UpdateTasksContent(BaseModel):
+class UpdateTasksContent(ToolArgumentsModel):
     """
     Update one or more task subjects and descriptions atomically.
     Constraints:
@@ -195,7 +195,7 @@ class UpdateTasksContent(BaseModel):
     )
 
 
-class DeleteAllTasks(BaseModel):
+class DeleteAllTasks(ToolArgumentsModel):
     """
     DANGER: Delete ALL tasks in the current topology plan.
     Use this ONLY when you need to completely restart the planning phase from scratch.
@@ -207,7 +207,7 @@ class DeleteAllTasks(BaseModel):
     )
 
 
-class GetRunnableTasks(BaseModel):
+class GetRunnableTasks(ToolArgumentsModel):
     """
     Get current runnable frontier tasks.
     Runnable means:
@@ -219,7 +219,7 @@ class GetRunnableTasks(BaseModel):
     """
 
 
-class GetTaskTable(BaseModel):
+class GetTaskTable(ToolArgumentsModel):
     """
     Get LLM-friendly detailed task table.
     Returns a compact structured payload with summary + rows,
@@ -696,15 +696,16 @@ def refresh_workspace_paths() -> None:
     render_task_pane()
 
 
-TOOLS = [
-    pydantic_function_tool(CreateTasks),
-    pydantic_function_tool(UpdateTasksContent),
-    pydantic_function_tool(UpdateTasksStatus),
-    pydantic_function_tool(UpdateTasksDependencies),
-    pydantic_function_tool(DeleteAllTasks),
-    pydantic_function_tool(GetRunnableTasks),
-    pydantic_function_tool(GetTaskTable),
-]
+TOOLS, TASK_MANAGER_TOOL_MODELS = build_tool_definitions(
+    CreateTasks,
+    UpdateTasksContent,
+    UpdateTasksStatus,
+    UpdateTasksDependencies,
+    DeleteAllTasks,
+    GetRunnableTasks,
+    GetTaskTable,
+)
+
 
 TASK_MANAGER_NAMESPACE = {
     "type": "namespace",

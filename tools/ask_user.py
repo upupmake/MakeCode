@@ -4,15 +4,16 @@
 import json
 from typing import Any
 
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field, field_validator
+
+from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
 
 from system.console_render import console_lock
 from system.tui_app import choose_tui
 from system.window_attention import request_window_attention
 
 
-class Option(BaseModel):
+class Option(ToolArgumentsModel):
     """A single option presented to the user."""
     content: str = Field(..., description="The text content of this option.")
     is_recommended: bool = Field(
@@ -21,7 +22,7 @@ class Option(BaseModel):
     )
 
 
-class AskUser(BaseModel):
+class AskUser(ToolArgumentsModel):
     """
     Proactively ask the user a question and wait for their response.
 
@@ -92,9 +93,7 @@ def ask_user(question: str, options: list, **kwargs) -> str:
     return json.dumps({"choice": choice, "custom": True}, ensure_ascii=False)
 
 
-ASK_USER_TOOLS = [
-    pydantic_function_tool(AskUser)
-]
+ASK_USER_TOOLS, ASK_USER_TOOL_MODELS = build_tool_definitions(AskUser)
 
 ASK_USER_TOOLS_HANDLERS = {
     "AskUser": ask_user,

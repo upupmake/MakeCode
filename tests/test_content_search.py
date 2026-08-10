@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from utils import common
+from utils.tool_validation import ToolArgumentValidationError, validate_builtin_tool_arguments
 
 
 def _search_in_workspace(monkeypatch, tmp_path: Path, content_regex: str, context_size: int | None = None) -> str:
@@ -67,3 +68,21 @@ def test_content_search_schema_defaults_context_size_to_one():
     assert common.ContentSearch(content_regex="needle").context_size == 1
     with pytest.raises(ValueError):
         common.ContentSearch(content_regex="needle", context_size=-1)
+
+
+def test_content_search_rejects_unknown_arguments():
+    with pytest.raises(ToolArgumentValidationError) as exc_info:
+        validate_builtin_tool_arguments(
+            "ContentSearch",
+            {
+                "content_regex": "needle",
+                "filename": "_regex>.*\\.py$",
+            },
+            common.ContentSearch,
+        )
+
+    error = str(exc_info.value)
+    assert "filename" in error
+    assert "extra_forbidden" in error
+    assert "filename_regex" in error
+    assert "_regex>" not in error

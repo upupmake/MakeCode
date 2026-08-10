@@ -10,8 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field, model_validator, field_validator
+from pydantic import Field, model_validator, field_validator
 
 from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
 from system.ts_validator import validate_code
@@ -19,6 +18,7 @@ from utils import paths
 from utils.file_access import GLOBAL_FILE_CONTROLLER
 from utils.hitl import check_permission, check_path_permission
 from utils.text_tokens import truncate_text_by_tokens
+from utils.tool_validation import ToolArgumentsModel, build_tool_definitions, merge_tool_model_registries
 
 
 _OUTPUT_TRUNCATION_MARKER_PATTERN = re.compile(
@@ -117,7 +117,7 @@ def _resolve_startup_terminal_type() -> str:
 _STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 
 
-class RunTerminalCommand(BaseModel):
+class RunTerminalCommand(ToolArgumentsModel):
     """
     Execute a terminal command in non-interactive mode.
 
@@ -325,7 +325,7 @@ def run_terminal_command(command: str) -> str:
             stop_terminal_command()
 
 
-class ReadBlock(BaseModel):
+class ReadBlock(ToolArgumentsModel):
     """A block specifying a line range to read from a file."""
     start: int = Field(
         ...,
@@ -352,7 +352,7 @@ class ReadBlock(BaseModel):
         return data
 
 
-class FileRead(BaseModel):
+class FileRead(ToolArgumentsModel):
     """
     Read contents of a file. Reads only the specified line ranges.
 
@@ -495,7 +495,7 @@ def file_read(
         return f"Error: {e}"
 
 
-class FileCreate(BaseModel):
+class FileCreate(ToolArgumentsModel):
     """
     Create and write a NEW file, or overwrite a completely empty file.
 
@@ -556,7 +556,7 @@ def file_create(path: str, content: str) -> str:
         return f"Error: {e}"
 
 
-class EditBlock(BaseModel):
+class EditBlock(ToolArgumentsModel):
     """
     Represents a single search-and-replace operation.
     It locates the exact text matching `search_content` and replaces it with `replace_content`.
@@ -597,7 +597,7 @@ class EditBlock(BaseModel):
         return data
 
 
-class FileEdit(BaseModel):
+class FileEdit(ToolArgumentsModel):
     """
     Replace specific text blocks in a file with new content.
 
@@ -767,7 +767,7 @@ def file_edit(path: str, edits: Any) -> str:
         return f"Error: {e}"
 
 
-class ContentSearch(BaseModel):
+class ContentSearch(ToolArgumentsModel):
     """
     Search for a regex pattern in text files within a specific directory.
 
@@ -924,7 +924,7 @@ def content_search(
     return truncate_output("\n".join(output_blocks).strip())
 
 
-class FileSearch(BaseModel):
+class FileSearch(ToolArgumentsModel):
     """
     Search for files and/or directories matching a regex pattern against absolute normalized paths.
 
@@ -1051,7 +1051,7 @@ def file_search(
         return f"Error during file search: {e}"
 
 
-class GetSystemTime(BaseModel):
+class GetSystemTime(ToolArgumentsModel):
     """
     Get the exact current system time.
 
@@ -1070,13 +1070,21 @@ def get_system_time(**kwargs) -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-TOOLS = [
-    pydantic_function_tool(FileRead),
-    pydantic_function_tool(FileCreate),
-    pydantic_function_tool(FileEdit),
-    pydantic_function_tool(ContentSearch),
-    pydantic_function_tool(FileSearch),
-]
+FILE_TOOLS, FILE_TOOL_MODELS = build_tool_definitions(
+    FileRead,
+    FileCreate,
+    FileEdit,
+    ContentSearch,
+    FileSearch,
+)
+TERMINAL_TOOLS, TERMINAL_TOOL_MODELS = build_tool_definitions(RunTerminalCommand)
+SYSTEM_TIME_TOOLS, SYSTEM_TIME_TOOL_MODELS = build_tool_definitions(GetSystemTime)
+COMMON_TOOL_MODELS = merge_tool_model_registries(
+    FILE_TOOL_MODELS,
+    TERMINAL_TOOL_MODELS,
+    SYSTEM_TIME_TOOL_MODELS,
+)
+
 
 FILE_NAMESPACE = {
     "type": "namespace",
@@ -1087,22 +1095,20 @@ FILE_NAMESPACE = {
         "IMPORTANT: Use FileCreate only to create/write new or completely empty files. "
         "Use FileEdit for existing-file changes; edit blocks are matched against the current file contents."
     ),
-    "tools": TOOLS,
+    "tools": FILE_TOOLS,
 }
 
 TERMINAL_NAMESPACE = {
     "type": "namespace",
     "name": "Terminal",
     "description": "Tools for executing terminal commands.",
-    "tools": [
-        pydantic_function_tool(RunTerminalCommand),
-    ],
+    "tools": TERMINAL_TOOLS,
 }
 
 COMMON_TOOLS = [
     FILE_NAMESPACE,
     TERMINAL_NAMESPACE,
-    pydantic_function_tool(GetSystemTime),
+    SYSTEM_TIME_TOOLS[0],
 ]
 
 COMMON_TOOLS_HANDLERS = {

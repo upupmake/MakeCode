@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -13,6 +13,7 @@ from textual.widgets import Button, Label
 from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
 from system.tui_modals import DelegateTasksModal
 from utils.teams import DelegateTasks, TeammateManager
+from utils.tool_validation import ToolArgumentsModel
 
 
 class DelegateConfirmationTests(unittest.IsolatedAsyncioTestCase):
@@ -228,6 +229,9 @@ async def test_sub_agent_loop_awaits_async_tool_handlers(tmp_path):
     trace_log = tmp_path / "trace.jsonl"
     async_handler = AsyncMock(return_value={"value": 4})
 
+    class AsyncTool(ToolArgumentsModel):
+        value: int
+
     class FakeClient:
         def __init__(self):
             self.calls = 0
@@ -272,6 +276,7 @@ async def test_sub_agent_loop_awaits_async_tool_handlers(tmp_path):
     client = FakeClient()
     with patch("utils.teams.get_sub_agent_console", return_value=False), \
             patch("utils.teams.COMMON_TOOLS_HANDLERS", {"AsyncTool": async_handler}), \
+            patch("utils.teams.SUB_AGENT_TOOL_MODELS", {"AsyncTool": AsyncTool}), \
             patch("utils.teams.GLOBAL_MCP_MANAGER.get_registry_snapshot", return_value=([], {})):
         result = await manager._sub_agent_loop(
             "1",
@@ -284,6 +289,83 @@ async def test_sub_agent_loop_awaits_async_tool_handlers(tmp_path):
     async_handler.assert_awaited_once_with(value=2)
     assert result["report"].endswith("COMPLETION_STATUS: completed")
     assert client.requests[1][-1]["content"] == {"value": 4}
+
+
+@pytest.mark.anyio
+async def test_sub_agent_returns_builtin_validation_error_without_calling_handler(tmp_path):
+    manager = TeammateManager(tmp_path / "team")
+    trace_log = tmp_path / "trace.jsonl"
+    invalid_call = {
+        "id": "call_invalid",
+        "name": "ContentSearch",
+        "arguments": json.dumps({
+            "content_regex": "TODO",
+            "search_dir": ".",
+            "filename": "*.py",
+            "context_size": 1,
+        }),
+    }
+    handler = Mock()
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+            self.requests = []
+
+        def format_tools(self, tools):
+            return []
+
+        async def generate_stream(self, messages, tools):
+            self.calls += 1
+            self.requests.append(list(messages))
+            if self.calls == 1:
+                result = SimpleNamespace(
+                    text="",
+                    tool_calls=[invalid_call],
+                    stop_reason="tool_use",
+                    assistant_message={"role": "assistant", "content": None},
+                )
+            elif self.calls == 2:
+                result = SimpleNamespace(
+                    text="done",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    assistant_message={"role": "assistant", "content": "done"},
+                )
+            else:
+                result = SimpleNamespace(
+                    text="report\n\nCOMPLETION_STATUS: completed",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    assistant_message={"role": "assistant", "content": "report"},
+                )
+            yield {"type": "done", "result": result}
+
+        def append_assistant_message(self, messages, raw_message):
+            messages.append(raw_message)
+
+        def format_tool_result(self, tool_id, tool_name, output):
+            return {"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": output}
+
+    client = FakeClient()
+    with patch("utils.teams.get_sub_agent_console", return_value=False), \
+            patch("utils.teams.COMMON_TOOLS_HANDLERS", {"ContentSearch": handler}), \
+            patch("utils.teams.GLOBAL_MCP_MANAGER.get_registry_snapshot", return_value=([], {})):
+        result = await manager._sub_agent_loop(
+            "1",
+            "Test Engineer",
+            "Use ContentSearch.",
+            trace_log,
+            client,
+        )
+
+    assert result["report"].endswith("COMPLETION_STATUS: completed")
+    handler.assert_not_called()
+    tool_result = client.requests[1][-1]
+    assert tool_result["is_error"] is True
+    assert "filename" in tool_result["content"]
+    assert "filename_regex" in tool_result["content"]
+    assert "_regex>" not in tool_result["content"]
 
 
 @pytest.mark.anyio

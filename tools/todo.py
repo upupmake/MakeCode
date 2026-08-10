@@ -1,11 +1,13 @@
 import json
 from typing import Literal, Any
 
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field, model_validator, field_validator
+from pydantic import Field, model_validator, field_validator
 
 
-class TaskItem(BaseModel):
+from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
+
+
+class TaskItem(ToolArgumentsModel):
     """A single task item with description and status."""
     id: str = Field(..., description="Unique identifier for the task.")
     description: str = Field(default="", description="Brief description of the task.")
@@ -38,7 +40,7 @@ class TaskItem(BaseModel):
         return data
 
 
-class TodoUpdate(BaseModel):
+class TodoUpdate(ToolArgumentsModel):
     """
     Update the todo list to track progress on multi-step tasks.
 
@@ -119,6 +121,4 @@ class TodoManager:
         return '\n'.join(lines)
 
 
-TODO_TOOLS = [
-    pydantic_function_tool(TodoUpdate)
-]
+TODO_TOOLS, TODO_TOOL_MODELS = build_tool_definitions(TodoUpdate)

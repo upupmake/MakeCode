@@ -9,8 +9,7 @@ import time
 import uuid
 from datetime import datetime
 
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field
+from pydantic import Field
 from rich.markup import escape
 from rich.markdown import Markdown
 from rich.table import Table
@@ -33,6 +32,12 @@ from utils.llm_client import (
 )
 from utils import text_tokens
 from utils.text_tokens import truncate_text_by_tokens
+from utils.tool_validation import (
+    ToolArgumentsModel,
+    build_tool_definitions,
+    validate_builtin_tool_arguments,
+    ToolArgumentValidationError,
+)
 from settings import MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_MAX_ITERATIONS, MEMORY_RECALL_WINDOW_SIZE
 from utils import paths
 
@@ -103,7 +108,7 @@ def reset_memory_recall_windows() -> None:
 refresh_workspace_paths()
 
 
-class AppendLongTermMemory(BaseModel):
+class AppendLongTermMemory(ToolArgumentsModel):
     """Append one new durable memory for a distinct future trigger not covered by active memories; do not use for examples of existing rules."""
 
     category: str = Field(
@@ -127,13 +132,13 @@ class AppendLongTermMemory(BaseModel):
     )
 
 
-class DeleteLongTermMemory(BaseModel):
+class DeleteLongTermMemory(ToolArgumentsModel):
     """Delete an active durable memory by ID only when it should no longer be recalled because it is obsolete, wrong, duplicated, or superseded."""
 
     memory_id: str = Field(..., description="The active memory ID to delete after deciding it should no longer be recalled.")
 
 
-class UpdateLongTermMemory(BaseModel):
+class UpdateLongTermMemory(ToolArgumentsModel):
     """Update an active durable memory by ID when preserving the same memory is better than appending a near-duplicate."""
 
     memory_id: str = Field(..., description="The active memory ID to update when the same trigger or behavior should be corrected, narrowed, expanded, or clarified.")
@@ -143,7 +148,7 @@ class UpdateLongTermMemory(BaseModel):
     reuse_condition: str = Field(..., description="Updated concrete future trigger for applying this memory.")
 
 
-class SelectRelevantMemories(BaseModel):
+class SelectRelevantMemories(ToolArgumentsModel):
     """Select relevant long-term memory IDs for a query."""
 
     memory_ids: list[str] = Field(
@@ -152,13 +157,13 @@ class SelectRelevantMemories(BaseModel):
     )
 
 
-class RecallLongTermMemory(BaseModel):
+class RecallLongTermMemory(ToolArgumentsModel):
     """Recall long-term memories relevant to a query."""
 
     query: str = Field(..., description="The current task, user request, or sub-question to recall relevant long-term memories for.")
 
 
-class RememberLongTermMemory(BaseModel):
+class RememberLongTermMemory(ToolArgumentsModel):
     """Ask the memory manager to update long-term memory from the current conversation."""
 
     prompt: str = Field(
@@ -171,23 +176,21 @@ class RememberLongTermMemory(BaseModel):
     )
 
 
-LONG_TERM_MEMORY_TOOLS = [
-    pydantic_function_tool(AppendLongTermMemory),
-    pydantic_function_tool(DeleteLongTermMemory),
-    pydantic_function_tool(UpdateLongTermMemory),
-]
+LONG_TERM_MEMORY_TOOLS, LONG_TERM_MEMORY_TOOL_MODELS = build_tool_definitions(
+    AppendLongTermMemory,
+    DeleteLongTermMemory,
+    UpdateLongTermMemory,
+)
+MEMORY_RECALL_SELECTION_TOOLS, MEMORY_RECALL_SELECTION_TOOL_MODELS = build_tool_definitions(
+    SelectRelevantMemories,
+)
+MEMORY_RECALL_TOOLS, MEMORY_RECALL_TOOL_MODELS = build_tool_definitions(
+    RecallLongTermMemory,
+)
+MEMORY_SELF_MANAGEMENT_TOOLS, MEMORY_SELF_MANAGEMENT_TOOL_MODELS = build_tool_definitions(
+    RememberLongTermMemory,
+)
 
-MEMORY_RECALL_SELECTION_TOOLS = [
-    pydantic_function_tool(SelectRelevantMemories),
-]
-
-MEMORY_RECALL_TOOLS = [
-    pydantic_function_tool(RecallLongTermMemory),
-]
-
-MEMORY_SELF_MANAGEMENT_TOOLS = [
-    pydantic_function_tool(RememberLongTermMemory),
-]
 
 
 def _new_memory_record(category: str, insight: str, evidence: str, reuse_condition: str) -> dict:
@@ -787,6 +790,7 @@ async def select_relevant_memory_ids(
         raise RuntimeError("No model configured. Please use /models to configure a model first.")
     try:
         tools = recall_client.format_tools(MEMORY_RECALL_SELECTION_TOOLS)
+        last_validation_error = None
         for round_index in range(max_iterations):
             post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 记忆召回选择中：{agent_id} 第 {round_index + 1}/{max_iterations} 轮[/#aaaaaa]")
             result = None
@@ -798,13 +802,33 @@ async def select_relevant_memory_ids(
             if result.assistant_message is not None:
                 messages.append(result.assistant_message)
 
+            selection_validation_failed = False
             for tool_call in result.tool_calls:
                 if tool_call.get("name") != "SelectRelevantMemories":
                     continue
-                arguments = _parse_tool_arguments(tool_call.get("arguments"))
-                selected_ids = normalize_memory_ids(arguments.get("memory_ids", []))
+                try:
+                    arguments = validate_builtin_tool_arguments(
+                        "SelectRelevantMemories",
+                        tool_call.get("arguments"),
+                        MEMORY_RECALL_SELECTION_TOOL_MODELS["SelectRelevantMemories"],
+                    )
+                except ToolArgumentValidationError as exc:
+                    last_validation_error = exc
+                    tool_result = recall_client.format_tool_result(
+                        tool_call.get("id"),
+                        "SelectRelevantMemories",
+                        str(exc),
+                    )
+                    tool_result["is_error"] = True
+                    messages.append(tool_result)
+                    selection_validation_failed = True
+                    break
+                selected_ids = normalize_memory_ids(arguments["memory_ids"])
                 _append_memory_recall_window(agent_id, selected_ids)
                 return selected_ids
+
+            if selection_validation_failed:
+                continue
 
             if getattr(result, "stop_reason", None) == "pause_turn":
                 continue
@@ -820,6 +844,8 @@ async def select_relevant_memory_ids(
                         "Use memory_ids=[] if no candidate memory is relevant."
                     ),
                 })
+        if last_validation_error is not None:
+            raise last_validation_error
         return []
     finally:
         await close_async_llm_client(recall_client)
@@ -877,14 +903,6 @@ MEMORY_RECALL_TOOLS_HANDLERS = {
         agent_id=ORCHESTRATOR_AGENT_ID,
     ),
 }
-
-
-def _parse_tool_arguments(arguments) -> dict:
-    if isinstance(arguments, dict):
-        return arguments
-    if not arguments:
-        return {}
-    return json.loads(arguments, strict=False)
 
 
 async def memory_agent_loop(
@@ -971,7 +989,11 @@ async def memory_agent_loop(
                     post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 准备执行记忆写入工具：{escape(tool_name)}[/#aaaaaa]")
                     _render_tool_call(tool_name, tool_args, identity=MEMORY_AGENT_IDENTITY)
                     try:
-                        arguments = _parse_tool_arguments(tool_args)
+                        arguments = validate_builtin_tool_arguments(
+                            tool_name,
+                            tool_args,
+                            LONG_TERM_MEMORY_TOOL_MODELS[tool_name],
+                        )
                         output = await asyncio.to_thread(handler, **arguments)
                         if isinstance(output, dict) and "error" in output:
                             tool_error = True
@@ -983,6 +1005,9 @@ async def memory_agent_loop(
                         elif tool_name == "UpdateLongTermMemory" and isinstance(output, dict):
                             tool_changed = True
                         memory_changed = memory_changed or tool_changed
+                    except ToolArgumentValidationError as exc:
+                        tool_error = True
+                        output = str(exc)
                     except Exception as e:
                         tool_error = True
                         output = f"执行 {tool_name} 出错：{e}。"

@@ -8,8 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field, ValidationError, model_validator, field_validator
+from pydantic import Field, ValidationError, model_validator, field_validator
 from rich.markup import escape
 
 from init import log_error_traceback
@@ -34,10 +33,11 @@ from system.window_attention import request_window_attention
 def print_formatted_text(value):
     post_tui(TuiRegion.SUB_AGENT, str(value))
 
-from tools.todo import TodoManager, TODO_TOOLS
+from tools.todo import TodoManager, TODO_TOOLS, TODO_TOOL_MODELS
 from utils.common import (
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
+    COMMON_TOOL_MODELS,
     STARTUP_TERMINAL_SOURCE,
     STARTUP_TERMINAL_TYPE,
 )
@@ -52,11 +52,26 @@ from utils import paths
 from utils.skills import (
     SKILL_TOOLS,
     SKILL_TOOLS_HANDLERS,
+    SKILL_TOOL_MODELS,
 )
 from utils.memory import recall_long_term_memories
 from utils.conversations import SCHEMA_VERSION, SUB_AGENT_HISTORY_FILE, SUB_AGENT_RUNS_DIR
 from utils import tasks as tasks_module
+from utils.tool_validation import (
+    ToolArgumentsModel,
+    build_tool_definitions,
+    merge_tool_model_registries,
+    parse_tool_arguments,
+    validate_builtin_tool_arguments,
+    ToolArgumentValidationError,
+)
 
+
+SUB_AGENT_TOOL_MODELS = merge_tool_model_registries(
+    COMMON_TOOL_MODELS,
+    SKILL_TOOL_MODELS,
+    TODO_TOOL_MODELS,
+)
 
 
 def _workdir() -> Path:
@@ -87,7 +102,7 @@ def prepend_recalled_memory_to_sub_agent_prompt(prompt: str, memory_context: str
     )
 
 
-class TaskSpec(BaseModel):
+class TaskSpec(ToolArgumentsModel):
     task_id: str = Field(
         ...,
         min_length=1,
@@ -123,7 +138,7 @@ class TaskSpec(BaseModel):
         return data
 
 
-class DelegateTasks(BaseModel):
+class DelegateTasks(ToolArgumentsModel):
     """
     Delegate multiple runnable TaskManager tasks to specialized sub-agents concurrently.
     HARD RULES:
@@ -670,21 +685,29 @@ class TeammateManager:
                         _safe_render, _render_tool_call, **kw_args
                     )
 
-                # 预处理参数：统一转换为字典，默认使用 tool_args
                 args = tool_args
                 tool_error = False
                 try:
                     handler = sub_handlers.get(tool_name)
-                    if handler:
-                        if isinstance(tool_args, str):
-                            args = json.loads(tool_args, strict=False) if tool_args.strip() else {}
+                    if not handler:
+                        tool_error = True
+                        output = f"Unknown tool: {tool_name}"
+                    elif tool_name in SUB_AGENT_TOOL_MODELS:
+                        args = validate_builtin_tool_arguments(
+                            tool_name,
+                            tool_args,
+                            SUB_AGENT_TOOL_MODELS[tool_name],
+                        )
+                        if inspect.iscoroutinefunction(handler):
+                            output = await handler(**args)
                         else:
-                            args = tool_args or {}
-
-                        if not isinstance(args, dict):
-                            tool_error = True
-                            output = f"Error: {tool_name} arguments must be a dict, got {type(args).__name__}"
-                        elif inspect.iscoroutinefunction(handler):
+                            output = await asyncio.to_thread(handler, **args)
+                            if inspect.isawaitable(output):
+                                output = await output
+                        tool_error = isinstance(output, str) and output.startswith("Error:")
+                    elif tool_name in mcp_handlers:
+                        args = parse_tool_arguments(tool_name, tool_args)
+                        if inspect.iscoroutinefunction(handler):
                             output = await handler(**args)
                         else:
                             output = await asyncio.to_thread(handler, **args)
@@ -692,8 +715,12 @@ class TeammateManager:
                                 output = await output
                         tool_error = isinstance(output, str) and output.startswith("Error:")
                     else:
-                        tool_error = True
-                        output = f"Unknown tool: {tool_name}"
+                        raise RuntimeError(
+                            f"Built-in tool model not registered: {tool_name}"
+                        )
+                except ToolArgumentValidationError as exc:
+                    tool_error = True
+                    output = str(exc)
                 except Exception as e:
                     tool_error = True
                     log_error_traceback(
@@ -771,7 +798,8 @@ def refresh_workspace_paths() -> None:
     TEAM = TeammateManager()
 
 
-TEAM_NAMESPACE_TOOLS = [pydantic_function_tool(DelegateTasks)]
+TEAM_NAMESPACE_TOOLS, TEAM_TOOL_MODELS = build_tool_definitions(DelegateTasks)
+
 
 TEAM_NAMESPACE = {
     "type": "namespace",
@@ -794,7 +822,8 @@ TEAM_NAMESPACE = {
     "tools": TEAM_NAMESPACE_TOOLS,
 }
 
-TEAM_TOOLS = [pydantic_function_tool(DelegateTasks)]
+TEAM_TOOLS = TEAM_NAMESPACE_TOOLS
+
 
 async def _delegate_tasks_handler(tasks, **kwargs):
     return await TEAM.delegate_concurrently(tasks)

@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 
-from openai import pydantic_function_tool
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
 from rich.markup import escape
 
 from init import log_error_traceback
@@ -37,7 +38,7 @@ def get_skill_system_note(skill_dir: str, meta_json: str) -> str:
     )
 
 
-class LoadSkill(BaseModel):
+class LoadSkill(ToolArgumentsModel):
     """
     Load a specialized skill module by name to get its full instructions and context.
 
@@ -224,9 +225,7 @@ class SkillLoader:
 
 SKILL_LOADER = SkillLoader()
 
-TOOLS = [
-    pydantic_function_tool(LoadSkill),
-]
+TOOLS, SKILL_TOOL_MODELS = build_tool_definitions(LoadSkill)
 
 SKILL_NAMESPACE = {
     "type": "namespace",

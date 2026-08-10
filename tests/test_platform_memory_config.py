@@ -2967,7 +2967,9 @@ async def test_agent_loop_injects_temporary_query_into_next_model_request():
     assert temporary_message["message_metadata"] == {"temporary_query": True}
     assert main_module.TEMPORARY_INSTRUCTION_START in temporary_message["content"]
     assert "/reset project" in temporary_message["content"]
-    assert "task currently in progress.\n\n/reset project" in temporary_message["content"]
+    assert "task currently in progress.\nAfter addressing it, resume the current task from where you left off." in temporary_message["content"]
+    assert "Do not stop merely because you have responded to this instruction while the task remains incomplete" in temporary_message["content"]
+    assert "unless the enclosed text explicitly changes, pauses, or cancels the task.\n\n/reset project" in temporary_message["content"]
     assert "Do not execute it as a MakeCode slash command" not in temporary_message["content"]
     assert main_module.TEMPORARY_INSTRUCTION_END in temporary_message["content"]
     content_payloads = [
@@ -3342,6 +3344,63 @@ async def test_generate_title_retries_with_bounded_rounds_until_tool_call():
     assert title_client.calls == 2
     assert title_client.requests[1][-2]["content"] == "plain text is not a title"
     assert "current_round=1 / max_round=8" in title_client.requests[1][-1]["content"]
+
+
+@pytest.mark.anyio
+async def test_generate_title_returns_validation_error_to_model_and_retries():
+    class FakeTitleClient:
+        def __init__(self):
+            self.calls = 0
+            self.requests = []
+
+        def format_tools(self, tools):
+            return tools
+
+        def format_tool_result(self, tool_id, tool_name, output):
+            return {
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "name": tool_name,
+                "content": output,
+            }
+
+        async def generate_stream(self, messages, tools):
+            self.calls += 1
+            self.requests.append(list(messages))
+            if self.calls == 1:
+                tool_calls = [{
+                    "id": "call_invalid",
+                    "name": "GenerateConversationTitle",
+                    "arguments": '{"title":"wrong","unexpected":true}',
+                }]
+            else:
+                tool_calls = [{
+                    "id": "call_valid",
+                    "name": "GenerateConversationTitle",
+                    "arguments": '{"title":"title"}',
+                }]
+            yield {
+                "type": "done",
+                "result": SimpleNamespace(
+                    text="",
+                    tool_calls=tool_calls,
+                    stop_reason="tool_use",
+                    assistant_message={"role": "assistant", "content": None, "tool_calls": tool_calls},
+                ),
+            }
+
+    title_client = FakeTitleClient()
+    with patch.object(main_module, "create_current_async_llm_client", return_value=title_client), \
+            patch.object(main_module, "close_async_llm_client", new_callable=AsyncMock):
+        title = await main_module.generate_title("hello", max_rounds=2)
+
+    assert title == "title"
+    assert title_client.calls == 2
+    tool_result = title_client.requests[1][-1]
+    assert tool_result["role"] == "tool"
+    assert tool_result["is_error"] is True
+    assert "unexpected" in tool_result["content"]
+    assert "extra_forbidden" in tool_result["content"]
 
 
 @pytest.mark.anyio
@@ -3730,6 +3789,158 @@ async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check(
     assert committed is True
     assert estimate_tokens.call_count == 1
     auto_compact.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_agent_loop_keeps_mcp_arguments_outside_builtin_pydantic_registry():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "use mcp"},
+    ]
+    tool_call = {
+        "id": "call_mcp",
+        "name": "mcp_tool",
+        "arguments": json.dumps({"server_specific": "accepted"}),
+    }
+    responses = [
+        (
+            "",
+            [tool_call],
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_call],
+                "stop_reason": "tool_use",
+            },
+            False,
+        ),
+        (
+            "done",
+            [],
+            {"role": "assistant", "content": "done", "stop_reason": "end_turn"},
+            False,
+        ),
+    ]
+
+    class FakeClient:
+        @staticmethod
+        def append_assistant_message(current_messages, raw_message):
+            current_messages.append(raw_message)
+
+        @staticmethod
+        def format_tool_result(tool_id, tool_name, output):
+            return {
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "name": tool_name,
+                "content": output,
+            }
+
+    async def stream_with_render(current_messages, current_tools, client):
+        return responses.pop(0)
+
+    handler = Mock(return_value="mcp result")
+    with patch.object(main_module, "compact_tool_outputs"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {"mcp_tool": handler})), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "_render_tool_call"), \
+            patch.object(main_module, "_render_tool_output"), \
+            patch.object(main_module, "_apply_pending_title"), \
+            patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
+            patch.object(main_module, "post_tui"), \
+            patch.object(main_module, "is_plan_mode", return_value=False):
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert committed is True
+    handler.assert_called_once_with(server_specific="accepted")
+    tool_result = next(item for item in messages if item.get("role") == "tool")
+    assert tool_result["content"] == "mcp result"
+    assert "is_error" not in tool_result
+
+
+@pytest.mark.anyio
+async def test_agent_loop_returns_builtin_validation_error_without_calling_handler():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "search"},
+    ]
+    invalid_call = {
+        "id": "call_invalid",
+        "name": "ContentSearch",
+        "arguments": json.dumps({
+            "content_regex": "TODO",
+            "search_dir": ".",
+            "filename": "*.py",
+            "context_size": 1,
+        }),
+    }
+    responses = [
+        (
+            "",
+            [invalid_call],
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [invalid_call],
+                "stop_reason": "tool_use",
+            },
+            False,
+        ),
+        (
+            "done",
+            [],
+            {"role": "assistant", "content": "done", "stop_reason": "end_turn"},
+            False,
+        ),
+    ]
+
+    class FakeClient:
+        @staticmethod
+        def append_assistant_message(current_messages, raw_message):
+            current_messages.append(raw_message)
+
+        @staticmethod
+        def format_tool_result(tool_id, tool_name, output):
+            return {
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "name": tool_name,
+                "content": output,
+            }
+
+    async def stream_with_render(current_messages, current_tools, client):
+        return responses.pop(0)
+
+    handler = Mock()
+    with patch.object(main_module, "compact_tool_outputs"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "_render_tool_call"), \
+            patch.object(main_module, "_render_tool_output"), \
+            patch.object(main_module, "_apply_pending_title"), \
+            patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
+            patch.object(main_module, "post_tui"), \
+            patch.object(main_module, "is_plan_mode", return_value=False), \
+            patch.object(main_module, "BASE_SUPER_TOOLS_HANDLERS", {"ContentSearch": handler}):
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert committed is True
+    handler.assert_not_called()
+    tool_result = next(item for item in messages if item.get("role") == "tool")
+    assert tool_result["is_error"] is True
+    assert "filename" in tool_result["content"]
+    assert "filename_regex" in tool_result["content"]
+    assert "_regex>" not in tool_result["content"]
 
 
 @pytest.mark.anyio
