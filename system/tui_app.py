@@ -1790,7 +1790,7 @@ class MakeCodeTuiApp(App[None]):
             pass
 
     def _update_input_title(self) -> None:
-        self.query_one("#input-box", MakeCodeInput).border_title = f"MakeCode · {self._mode_label} · Enter 发送/选择 · Ctrl+C 取消回复 · Ctrl+N 换行 · Ctrl+P 切换 · Ctrl + G 临时插入 · ↑↓ 选择命令"
+        self.query_one("#input-box", MakeCodeInput).border_title = f"MakeCode · {self._mode_label} · Enter 发送/选择 · Ctrl+C 取消回复 · Ctrl+N 换行 · Ctrl+P 切换 · Ctrl+G 运行时介入 · ↑↓ 选择命令"
 
     def action_cancel_response(self) -> None:
         if isinstance(self.screen, TemporaryQueryModal):

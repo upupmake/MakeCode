@@ -212,51 +212,83 @@ class CommandHandler:
         summary_table = Table(
             title="[bold cyan]🔌 MCP 状态总览[/bold cyan]",
             box=box.ROUNDED,
+            border_style="#52525b",
             expand=True,
+            show_header=False,
+            padding=(0, 1),
         )
-        summary_table.add_column("项目", style="bold green", justify="left")
-        summary_table.add_column("内容", style="white")
+        summary_table.add_column("状态项", style="bold #d4d4d8", justify="left", no_wrap=True)
+        summary_table.add_column("详情", overflow="fold", ratio=3)
+
+        config_display = Text()
+        if config_servers:
+            config_display.append(f"{len(config_servers)} 个", style="bold cyan")
+            config_display.append("  ")
+            config_display.append(" · ".join(config_servers), style="white")
+        else:
+            config_display.append("0 个  未配置", style="#a1a1aa")
+
+        enabled_display = Text()
+        if enabled_config_servers:
+            enabled_display.append(f"● {len(enabled_config_servers)} 个", style="bold green")
+            enabled_display.append("  ")
+            enabled_display.append(" · ".join(enabled_config_servers), style="white")
+        else:
+            enabled_display.append("○ 0 个", style="#a1a1aa")
+
+        disabled_display = Text()
+        if disabled_servers:
+            disabled_display.append(f"○ {len(disabled_servers)} 个", style="bold yellow")
+            disabled_display.append("  ")
+            disabled_display.append(" · ".join(disabled_servers), style="white")
+        else:
+            disabled_display.append("○ 0 个", style="#a1a1aa")
+
+        loaded_display = Text()
+        if loaded_servers:
+            loaded_display.append(f"● {len(loaded_servers)} 个", style="bold green")
+            loaded_display.append("  ")
+            for index, name in enumerate(loaded_servers):
+                if index:
+                    loaded_display.append(" · ", style="#71717a")
+                loaded_display.append(name, style="bold magenta")
+                loaded_display.append(
+                    f" ({tool_count_by_server.get(name, 0)} 工具)",
+                    style="#a1a1aa",
+                )
+        else:
+            loaded_display.append("○ 0 个  当前未加载", style="#a1a1aa")
+
         summary_table.add_row(
-            "配置文件", status.get("config_path", "Not configured")
+            "配置文件",
+            Text(str(status.get("config_path", "Not configured")), style="#a1a1aa"),
         )
         summary_table.add_row(
             "后台状态",
-            "运行中" if status.get("is_running") else "未运行",
+            Text("● 运行中", style="bold green")
+            if status.get("is_running")
+            else Text("○ 未运行", style="bold yellow"),
         )
-        summary_table.add_row(
-            "配置中的服务",
-            ", ".join(config_servers) if config_servers else "(无)",
-        )
-        summary_table.add_row(
-            "配置中已启用",
-            ", ".join(enabled_config_servers)
-            if enabled_config_servers
-            else "(无)",
-        )
-        summary_table.add_row(
-            "配置中已禁用",
-            ", ".join(disabled_servers) if disabled_servers else "(无)",
-        )
-        if loaded_servers:
-            loaded_display = ", ".join(
-                f"{name} ({tool_count_by_server.get(name, 0)})"
-                for name in loaded_servers
-            )
-        else:
-            loaded_display = "(无)"
-        summary_table.add_row("当前已加载服务", loaded_display)
+        summary_table.add_row("服务配置", config_display)
+        summary_table.add_row("已启用", enabled_display)
+        summary_table.add_row("已禁用", disabled_display)
+        summary_table.add_row("已加载", loaded_display)
+
         table = Table(
-            title=f"[bold cyan]🛠️ 已加载的 MCP 工具明细 (共 {status['tool_count']} 个)[/bold cyan]",
+            title=(
+                "[bold cyan]🛠️ MCP 工具明细[/bold cyan] "
+                f"[#a1a1aa]· {status['tool_count']} 个[/#a1a1aa]"
+            ),
             box=box.ROUNDED,
+            border_style="#52525b",
+            header_style="bold #d4d4d8",
             expand=True,
+            show_lines=True,
+            padding=(0, 1),
         )
-        table.add_column(
-            "服务节点", style="bold magenta", justify="left", no_wrap=True
-        )
-        table.add_column(
-            "工具名称", style="bold green", justify="left", overflow="fold"
-        )
-        table.add_column("描述", style="white", overflow="fold")
+        table.add_column("服务节点", style="bold magenta", overflow="fold", ratio=2)
+        table.add_column("工具名称", style="bold green", overflow="fold", ratio=3)
+        table.add_column("描述", style="white", overflow="fold", ratio=5)
 
         for tool in status["tools"]:
             table.add_row(
@@ -264,21 +296,21 @@ class CommandHandler:
                 tool["name"],
                 tool["description"],
             )
+        if not status["tools"]:
+            table.add_row(
+                Text("—", style="#71717a"),
+                Text("暂无可用工具", style="yellow"),
+                Text("当前没有已加载的 MCP 工具。", style="#a1a1aa"),
+            )
 
-        notices = []
+        panel_items = [summary_table, Text(""), table]
         if not status.get("is_running"):
-            notices.append(
-                f"[bold yellow]⚠️ MCP 后台管理器未运行。\n配置路径: {status.get('config_path', '未配置')}[/bold yellow]"
+            notice = Text("○ MCP 后台管理器未运行", style="bold yellow")
+            notice.append(
+                f"\n  配置文件: {status.get('config_path', '未配置')}",
+                style="#a1a1aa",
             )
-
-        if status.get("tool_count", 0) == 0:
-            notices.append(
-                f"[bold yellow]⚠️ MCP 服务为空，暂无可用工具。\n配置路径: {status.get('config_path', '未配置')}[/bold yellow]"
-            )
-
-        panel_items = [summary_table, table]
-        if notices:
-            panel_items.append(Text.from_markup("\n\n".join(notices)))
+            panel_items.extend([Text(""), notice])
         content = Group(*panel_items)
         if show_info_panel_tui("🔌 MCP 状态与工具", content) == "<cancelled>":
             self.console.print(content, tui_region=TuiRegion.TOOLS)

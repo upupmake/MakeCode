@@ -116,6 +116,95 @@ def test_mcp_switch_opens_management_panel_when_server_list_is_empty(monkeypatch
     choose_switches.assert_called_once_with([], manager)
 
 
+def test_mcp_view_renders_read_only_status_dashboard(monkeypatch):
+    manager = Mock()
+    manager.get_status_info.return_value = {
+        "config_path": "/project/.makecode/mcp_config.json",
+        "is_running": True,
+        "tool_count": 2,
+        "config_servers": ["filesystem", "remote-api", "disabled-api"],
+        "enabled_config_servers": ["filesystem", "remote-api"],
+        "disabled_servers": ["disabled-api"],
+        "loaded_servers": ["filesystem", "remote-api"],
+        "tools": [
+            {
+                "provider": "filesystem",
+                "name": "read_file",
+                "description": "读取文件内容",
+            },
+            {
+                "provider": "remote-api",
+                "name": "search_docs",
+                "description": "搜索远程文档",
+            },
+        ],
+    }
+    shown = {}
+
+    def show_panel(title, content):
+        console = Console(record=True, width=100)
+        console.print(content)
+        shown["title"] = title
+        shown["content"] = content
+        shown["text"] = console.export_text()
+        return "closed"
+
+    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+    handler = make_handler()
+    handler.mcp_manager = manager
+
+    assert handler.handle_mcp_view() is True
+
+    assert shown["title"] == "🔌 MCP 状态与工具"
+    assert "MCP 状态总览" in shown["text"]
+    assert "● 运行中" in shown["text"]
+    assert "服务配置" in shown["text"]
+    assert "3 个  filesystem · remote-api · disabled-api" in shown["text"]
+    assert "● 2 个  filesystem · remote-api" in shown["text"]
+    assert "○ 1 个  disabled-api" in shown["text"]
+    assert "filesystem (1 工具) · remote-api (1 工具)" in shown["text"]
+    assert "MCP 工具明细 · 2 个" in shown["text"]
+    assert shown["content"].renderables[2].show_lines is True
+    assert "read_file" in shown["text"]
+    assert "search_docs" in shown["text"]
+
+
+def test_mcp_view_renders_empty_state_without_controls(monkeypatch):
+    manager = Mock()
+    manager.get_status_info.return_value = {
+        "config_path": "/project/.makecode/mcp_config.json",
+        "is_running": False,
+        "tool_count": 0,
+        "config_servers": [],
+        "enabled_config_servers": [],
+        "disabled_servers": [],
+        "loaded_servers": [],
+        "tools": [],
+    }
+    shown = {}
+
+    def show_panel(title, content):
+        console = Console(record=True, width=100)
+        console.print(content)
+        shown["text"] = console.export_text()
+        return "closed"
+
+    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+    handler = make_handler()
+    handler.mcp_manager = manager
+
+    assert handler.handle_mcp_view() is True
+
+    assert "○ 未运行" in shown["text"]
+    assert "0 个  未配置" in shown["text"]
+    assert "○ 0 个  当前未加载" in shown["text"]
+    assert "暂无可用工具" in shown["text"]
+    assert "MCP 后台管理器未运行" in shown["text"]
+    assert "手动添加" not in shown["text"]
+    assert "确认应用" not in shown["text"]
+    assert "确认删除" not in shown["text"]
+
+
 @pytest.mark.anyio
 async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypatch):
     handler = make_handler()
