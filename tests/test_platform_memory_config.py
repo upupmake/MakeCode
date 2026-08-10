@@ -2230,7 +2230,8 @@ def test_partial_compaction_range_must_be_between_thirty_and_fifty_percent(selec
         {"role": "user", "content": "orphan"},
     ]
 
-    with patch.object(memory, "estimate_tokens", return_value=selected_tokens):
+    with patch.object(memory, "get_partial_compact_percentages", return_value=(30, 50)), \
+            patch.object(memory, "estimate_tokens", return_value=selected_tokens):
         assert memory._select_partial_compaction_range(messages, 100) == expected
 
 
@@ -2267,7 +2268,8 @@ def test_partial_compaction_range_accumulates_oldest_complete_groups_only():
     def token_count(selected_messages, tools_definition=None):
         return 20 if len(selected_messages) == 2 else 35
 
-    with patch.object(memory, "estimate_tokens", side_effect=token_count):
+    with patch.object(memory, "get_partial_compact_percentages", return_value=(30, 50)), \
+            patch.object(memory, "estimate_tokens", side_effect=token_count):
         assert memory._select_partial_compaction_range(messages, 100) == (1, 5)
 
 
@@ -2946,6 +2948,7 @@ async def test_agent_loop_injects_temporary_query_into_next_model_request():
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "post_tui") as post_tui, \
             patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
             patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
@@ -2967,6 +2970,14 @@ async def test_agent_loop_injects_temporary_query_into_next_model_request():
     assert "task currently in progress.\n\n/reset project" in temporary_message["content"]
     assert "Do not execute it as a MakeCode slash command" not in temporary_message["content"]
     assert main_module.TEMPORARY_INSTRUCTION_END in temporary_message["content"]
+    content_payloads = [
+        call.args[1]
+        for call in post_tui.call_args_list
+        if call.args and call.args[0] == main_module.TuiRegion.CONTENT
+    ]
+    assert content_payloads[0] == "[#3f3f46]─[/#3f3f46]"
+    assert content_payloads[1].renderable.plain == temporary_message["content"]
+    assert content_payloads[1].title == "[bold #22c55e]You[/bold #22c55e]"
 
 
 @pytest.mark.anyio
@@ -3024,6 +3035,7 @@ async def test_agent_loop_removes_injected_temporary_query_when_cancelled():
             patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
             patch.object(main_module, "get_current_tools_definition", return_value=[]), \
             patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "post_tui"), \
             patch.object(
                 main_module,
                 "_stream_with_render",

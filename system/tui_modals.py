@@ -1129,49 +1129,44 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
-        Binding("ctrl+enter", "submit", "Submit", priority=True),
+        Binding("enter", "submit", "Submit", priority=True),
+        Binding("ctrl+n", "insert_newline", "New line", priority=True),
         Binding("escape", "cancel", "Cancel", priority=True),
     ]
 
-    def __init__(self, value: str | None = None, *, read_only: bool = False) -> None:
+    def __init__(self, value: str | None = None) -> None:
         super().__init__()
         self._value = value or ""
-        self._read_only = read_only
 
     def compose(self) -> ComposeResult:
         with Vertical(id="temporary-query-dialog"):
             yield ModalHeader("追加临时指令", title_id="temporary-query-title", markup=False)
             yield Label(
-                "这条内容只会注入当前 Agent 循环的后续模型请求，不执行斜杠命令，也不触发记忆召回。"
-                if not self._read_only
-                else "这条临时指令仍在等待 Agent 循环取走，当前不可编辑。",
+                "编辑内容只有再次提交后才会替换待处理指令；Agent 取走前，未提交草稿不会生效。"
+                if self._value
+                else "这条内容只会注入当前 Agent 循环的后续模型请求，不执行斜杠命令，也不触发记忆召回。",
                 id="temporary-query-description",
                 markup=False,
             )
             yield TextArea(
                 self._value,
                 id="temporary-query-input",
-                read_only=self._read_only,
                 show_line_numbers=False,
                 soft_wrap=True,
             )
             yield Label(
-                "Ctrl+Enter 提交；Esc 取消。提交后，在 Agent 取走前不能再次编辑。"
-                if not self._read_only
-                else "等待当前 Agent 循环取走后，才能提交下一条临时指令。",
+                "Enter 提交；Ctrl+N 换行；Esc 取消。",
                 id="temporary-query-hint",
                 markup=False,
             )
             with Horizontal(id="temporary-query-actions"):
-                if not self._read_only:
-                    yield Button("提交", id="temporary-query-submit", variant="success", classes="temporary-query-action")
+                yield Button("提交", id="temporary-query-submit", variant="success", classes="temporary-query-action")
                 yield Button("关闭", id="temporary-query-cancel", variant="warning", classes="temporary-query-action")
 
     def on_mount(self) -> None:
-        if not self._read_only:
-            self.query_one("#temporary-query-input", TextArea).focus()
-        else:
-            self.query_one("#temporary-query-cancel", Button).focus()
+        query_input = self.query_one("#temporary-query-input", TextArea)
+        query_input.focus()
+        query_input.cursor_location = query_input.document.end
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "temporary-query-submit":
@@ -1180,11 +1175,12 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
             self.action_cancel()
 
     def action_submit(self) -> None:
-        if self._read_only:
-            return
         value = self.query_one("#temporary-query-input", TextArea).text.strip()
         if value:
             self.dismiss(value)
+
+    def action_insert_newline(self) -> None:
+        self.query_one("#temporary-query-input", TextArea).insert("\n")
 
     def action_cancel(self) -> None:
         self.dismiss(None)

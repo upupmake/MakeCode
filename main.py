@@ -47,6 +47,7 @@ from system.console_render import (
     _render_env_customization_hint,
     render_current_workdir,
     render_current_task_plan,
+    render_content_user_message,
     format_runtime_info,
     console,
 )
@@ -446,6 +447,8 @@ async def _agent_loop_with_client(
             "message_metadata": {"temporary_query": True},
         }
         messages.append(message)
+        post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
+        post_tui(TuiRegion.CONTENT, render_content_user_message(message["content"]))
         return message
 
     set_temporary_query_enabled(True)

@@ -140,7 +140,7 @@ async def test_clicking_conversation_title_does_not_open_modal_while_agent_is_ac
 
 
 @pytest.mark.anyio
-async def test_temporary_query_shortcut_accepts_one_query_and_reopens_read_only():
+async def test_temporary_query_shortcut_accepts_and_replaces_pending_query():
     app = MakeCodeTuiApp()
 
     async with app.run_test(size=(180, 40)) as pilot:
@@ -152,26 +152,89 @@ async def test_temporary_query_shortcut_accepts_one_query_and_reopens_read_only(
         await pilot.press("ctrl+g")
         await pilot.pause()
         await pilot.press("h", "e", "l", "l", "o")
-        await pilot.press("ctrl+enter")
+        await pilot.press("ctrl+n")
+        await pilot.press("w", "o", "r", "l", "d")
+        await pilot.press("enter")
         await pilot.pause()
 
-        assert app._temporary_query == "hello"
+        assert app._temporary_query == "hello\nworld"
         assert not app._modal_active
 
         await pilot.press("ctrl+g")
         await pilot.pause()
-        assert app.screen.__class__.__name__ == "TemporaryQueryModal"
-        assert app.screen.query_one("#temporary-query-input").read_only
-        assert app.screen.query_one("#temporary-query-input").text == "hello"
+        query_input = app.screen.query_one("#temporary-query-input")
+        assert not query_input.read_only
+        assert query_input.text == "hello\nworld"
 
-        await pilot.press("ctrl+enter")
+        await pilot.press("space", "u", "p", "d", "a", "t", "e", "d")
+        await pilot.press("enter")
         await pilot.pause()
-        assert app._temporary_query == "hello"
 
-        assert app.consume_temporary_query() == "hello"
+        assert app._temporary_query == "hello\nworld updated"
+        assert not app._modal_active
+        assert app.consume_temporary_query() == "hello\nworld updated"
         await pilot.pause()
         assert app._temporary_query is None
         app.set_temporary_query_enabled(False)
+
+
+@pytest.mark.anyio
+async def test_consuming_pending_query_discards_open_edit_draft_and_reopens_blank():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.press("o", "r", "i", "g", "i", "n", "a", "l", "enter")
+        await pilot.pause()
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.press("space", "d", "r", "a", "f", "t")
+        assert app.screen.query_one("#temporary-query-input").text == "original draft"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app._temporary_query == "original"
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.press("space", "d", "r", "a", "f", "t")
+        assert app.screen.query_one("#temporary-query-input").text == "original draft"
+        assert app.consume_temporary_query() == "original"
+        await pilot.pause()
+
+        assert app._temporary_query is None
+        assert not app._modal_active
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        assert app.screen.query_one("#temporary-query-input").text == ""
+        await pilot.press("escape")
+        app.set_temporary_query_enabled(False)
+
+
+@pytest.mark.anyio
+async def test_temporary_query_escape_closes_without_cancelling_outer_response(monkeypatch):
+    cancel_response = Mock(return_value=True)
+    monkeypatch.setattr("system.stream_cancel.cancel_current_response", cancel_response)
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert not app._modal_active
+        assert app._temporary_query is None
+        cancel_response.assert_not_called()
 
 
 @pytest.mark.anyio
