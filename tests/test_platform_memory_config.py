@@ -2893,6 +2893,157 @@ async def test_process_user_query_runs_agent_loop_for_title_detection():
 
 
 @pytest.mark.anyio
+async def test_agent_loop_resets_temporary_query_before_model_setup():
+    with patch.object(main_module, "set_temporary_query_enabled") as set_enabled, \
+            patch.object(main_module, "create_current_async_llm_client", return_value=None), \
+            patch.object(main_module.console, "print"):
+        committed = await main_module.agent_loop([
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "hello"},
+        ])
+
+    assert committed is False
+    set_enabled.assert_called_once_with(False)
+
+
+@pytest.mark.anyio
+async def test_agent_loop_injects_temporary_query_into_next_model_request():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    requests = []
+    responses = [
+        (
+            "working",
+            [],
+            {"role": "assistant", "content": "working", "stop_reason": "pause_turn"},
+            False,
+        ),
+        (
+            "done",
+            [],
+            {"role": "assistant", "content": "done", "stop_reason": "end_turn"},
+            False,
+        ),
+    ]
+
+    class FakeClient:
+        def append_assistant_message(self, history, raw_message):
+            history.append(raw_message)
+
+    async def stream_with_render(history, tools, client):
+        requests.append(list(history))
+        return responses[len(requests) - 1]
+
+    with patch.object(main_module, "compact_tool_outputs"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "consume_temporary_query", side_effect=[None, "/reset project"]), \
+            patch.object(main_module, "clear_temporary_query"), \
+            patch.object(main_module, "set_temporary_query_enabled"), \
+            patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
+            patch.object(main_module, "_apply_pending_title"):
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert committed is True
+    assert len(requests) == 2
+    temporary_message = requests[1][-1]
+    assert temporary_message["role"] == "user"
+    assert temporary_message["message_metadata"] == {"temporary_query": True}
+    assert main_module.TEMPORARY_INSTRUCTION_START in temporary_message["content"]
+    assert "/reset project" in temporary_message["content"]
+    assert "task currently in progress.\n\n/reset project" in temporary_message["content"]
+    assert "Do not execute it as a MakeCode slash command" not in temporary_message["content"]
+    assert main_module.TEMPORARY_INSTRUCTION_END in temporary_message["content"]
+
+
+@pytest.mark.anyio
+async def test_agent_loop_discards_pending_temporary_query_when_final_round_ends():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+
+    class FakeClient:
+        def append_assistant_message(self, history, raw_message):
+            history.append(raw_message)
+
+    with patch.object(main_module, "compact_tool_outputs"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                AsyncMock(return_value=(
+                    "done",
+                    [],
+                    {"role": "assistant", "content": "done", "stop_reason": "end_turn"},
+                    False,
+                )),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "consume_temporary_query", return_value=None) as consume, \
+            patch.object(main_module, "clear_temporary_query") as clear, \
+            patch.object(main_module, "set_temporary_query_enabled"), \
+            patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
+            patch.object(main_module, "_apply_pending_title"):
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert committed is True
+    consume.assert_called_once_with()
+    assert clear.call_count >= 1
+
+
+@pytest.mark.anyio
+async def test_agent_loop_removes_injected_temporary_query_when_cancelled():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+
+    class FakeClient:
+        def append_assistant_message(self, history, raw_message):
+            history.append(raw_message)
+
+    with patch.object(main_module, "compact_tool_outputs"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                AsyncMock(return_value=("partial", [], None, True)),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages") as save_messages, \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "consume_temporary_query", return_value="temporary"), \
+            patch.object(main_module, "clear_temporary_query") as clear, \
+            patch.object(main_module, "set_temporary_query_enabled"), \
+            patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock) as generate_title, \
+            patch.object(main_module, "_apply_pending_title"):
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert committed is False
+    assert messages == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    save_messages.assert_not_called()
+    generate_title.assert_not_awaited()
+    assert clear.call_count >= 1
+
+
+@pytest.mark.anyio
 async def test_agent_loop_checks_for_missing_title_once_after_all_iterations():
     messages = [
         {"role": "system", "content": "system"},

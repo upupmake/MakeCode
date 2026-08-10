@@ -81,7 +81,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
         align: center middle;
     }
 
@@ -106,6 +106,36 @@ class ChoiceModal(ClosableModalScreen[str]):
         padding: 0;
         margin: 0;
         border: none;
+    }
+
+    #temporary-query-dialog {
+        width: 88%;
+        height: auto;
+        max-height: 70%;
+        border: round #a78bfa;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #temporary-query-input {
+        height: 10;
+        margin-top: 1;
+        border: round #475569;
+    }
+
+    #temporary-query-hint {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #temporary-query-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    .temporary-query-action {
+        width: 16;
+        margin-right: 1;
     }
 
     #startup-dialog {
@@ -1093,6 +1123,71 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     def action_cancel(self) -> None:
         self.dismiss("<cancelled>")
+
+
+class TemporaryQueryModal(ClosableModalScreen[str | None]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("ctrl+enter", "submit", "Submit", priority=True),
+        Binding("escape", "cancel", "Cancel", priority=True),
+    ]
+
+    def __init__(self, value: str | None = None, *, read_only: bool = False) -> None:
+        super().__init__()
+        self._value = value or ""
+        self._read_only = read_only
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="temporary-query-dialog"):
+            yield ModalHeader("追加临时指令", title_id="temporary-query-title", markup=False)
+            yield Label(
+                "这条内容只会注入当前 Agent 循环的后续模型请求，不执行斜杠命令，也不触发记忆召回。"
+                if not self._read_only
+                else "这条临时指令仍在等待 Agent 循环取走，当前不可编辑。",
+                id="temporary-query-description",
+                markup=False,
+            )
+            yield TextArea(
+                self._value,
+                id="temporary-query-input",
+                read_only=self._read_only,
+                show_line_numbers=False,
+                soft_wrap=True,
+            )
+            yield Label(
+                "Ctrl+Enter 提交；Esc 取消。提交后，在 Agent 取走前不能再次编辑。"
+                if not self._read_only
+                else "等待当前 Agent 循环取走后，才能提交下一条临时指令。",
+                id="temporary-query-hint",
+                markup=False,
+            )
+            with Horizontal(id="temporary-query-actions"):
+                if not self._read_only:
+                    yield Button("提交", id="temporary-query-submit", variant="success", classes="temporary-query-action")
+                yield Button("关闭", id="temporary-query-cancel", variant="warning", classes="temporary-query-action")
+
+    def on_mount(self) -> None:
+        if not self._read_only:
+            self.query_one("#temporary-query-input", TextArea).focus()
+        else:
+            self.query_one("#temporary-query-cancel", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "temporary-query-submit":
+            self.action_submit()
+        elif event.button.id == "temporary-query-cancel":
+            self.action_cancel()
+
+    def action_submit(self) -> None:
+        if self._read_only:
+            return
+        value = self.query_one("#temporary-query-input", TextArea).text.strip()
+        if value:
+            self.dismiss(value)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class DelegateTasksModal(ClosableModalScreen[str]):

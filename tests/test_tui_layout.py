@@ -140,6 +140,68 @@ async def test_clicking_conversation_title_does_not_open_modal_while_agent_is_ac
 
 
 @pytest.mark.anyio
+async def test_temporary_query_shortcut_accepts_one_query_and_reopens_read_only():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        assert "Ctrl + G 临时插入" in str(app.query_one("#input-box").border_title)
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.press("h", "e", "l", "l", "o")
+        await pilot.press("ctrl+enter")
+        await pilot.pause()
+
+        assert app._temporary_query == "hello"
+        assert not app._modal_active
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        assert app.screen.__class__.__name__ == "TemporaryQueryModal"
+        assert app.screen.query_one("#temporary-query-input").read_only
+        assert app.screen.query_one("#temporary-query-input").text == "hello"
+
+        await pilot.press("ctrl+enter")
+        await pilot.pause()
+        assert app._temporary_query == "hello"
+
+        assert app.consume_temporary_query() == "hello"
+        await pilot.pause()
+        assert app._temporary_query is None
+        app.set_temporary_query_enabled(False)
+
+
+@pytest.mark.anyio
+async def test_temporary_query_shortcut_is_inactive_outside_agent_loop():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        assert app.screen.__class__.__name__ != "TemporaryQueryModal"
+        assert not app._modal_active
+
+
+@pytest.mark.anyio
+async def test_temporary_query_is_cleared_when_agent_loop_becomes_inactive():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+        app._temporary_query = "pending"
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+        assert app._temporary_query is None
+        assert not app._temporary_query_enabled
+
+
+@pytest.mark.anyio
 async def test_quick_panel_toggle_follows_actual_title_width():
     current_title = {"value": None}
     app = MakeCodeTuiApp(

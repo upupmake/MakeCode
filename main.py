@@ -59,7 +59,17 @@ from utils.plan_mode import (
 )
 from system.stream_render import StreamRenderer
 from system.ts_validator import init_ts_cache
-from system.tui_app import MakeCodeTuiApp, post_tui, TuiRegion, set_agent_loop_active, refresh_status, refresh_tools_title
+from system.tui_app import (
+    MakeCodeTuiApp,
+    post_tui,
+    TuiRegion,
+    set_agent_loop_active,
+    set_temporary_query_enabled,
+    refresh_status,
+    refresh_tools_title,
+    consume_temporary_query,
+    clear_temporary_query,
+)
 from utils.common import (
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
@@ -97,6 +107,10 @@ from utils.teams import TEAM_TOOLS, TEAM_TOOLS_HANDLERS
 from tools.ask_user import ASK_USER_TOOLS, ASK_USER_TOOLS_HANDLERS
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
+
+
+TEMPORARY_INSTRUCTION_START = "<makecode-temporary-user-instruction>"
+TEMPORARY_INSTRUCTION_END = "</makecode-temporary-user-instruction>"
 
 
 class GenerateConversationTitle(BaseModel):
@@ -299,6 +313,7 @@ async def agent_loop(
     llm_client=None,
 ) -> bool:
     """Agent 主循环：每次业务请求独占一个 LLM client。"""
+    set_temporary_query_enabled(False)
     owns_client = llm_client is None
     if owns_client:
         llm_client = create_current_async_llm_client()
@@ -310,6 +325,8 @@ async def agent_loop(
     try:
         return await _agent_loop_with_client(messages, llm_client)
     finally:
+        set_temporary_query_enabled(False)
+        clear_temporary_query()
         if owns_client:
             await close_async_llm_client(llm_client)
 
@@ -414,7 +431,26 @@ async def _agent_loop_with_client(
                 "[#aaaaaa]第一层已检查，没有可裁剪的较早工具输出。[/#aaaaaa]",
             )
 
+    def _append_temporary_query() -> dict | None:
+        temporary_query = consume_temporary_query()
+        if temporary_query is None:
+            return None
+        message = {
+            "role": "user",
+            "content": (
+                f"{TEMPORARY_INSTRUCTION_START}\n"
+                "Treat the enclosed text as an additional or supplemental instruction for the task currently in progress.\n\n"
+                f"{temporary_query}\n"
+                f"{TEMPORARY_INSTRUCTION_END}"
+            ),
+            "message_metadata": {"temporary_query": True},
+        }
+        messages.append(message)
+        return message
+
+    set_temporary_query_enabled(True)
     while True:
+        temporary_query_message = _append_temporary_query()
         # Update system prompt to reflect current plan mode state
         messages[0] = {"role": "system", "content": get_dynamic_system_prompt()}
         context_token_limit = get_context_token_limit()
@@ -437,15 +473,24 @@ async def _agent_loop_with_client(
                 console.print(
                     "[bold yellow]⚠️ 未配置模型。请先使用 /models 命令配置模型。[/bold yellow]"
                 )
+                if temporary_query_message is not None and messages and messages[-1] is temporary_query_message:
+                    messages.pop()
+                clear_temporary_query()
                 break
             log_error_traceback("Orchestrator generation error", e)
             error_msg = f"智能体执行出错: {e}."
             console.print(f"[bold red]⚠️ {escape(error_msg)}[/bold red]")
+            if temporary_query_message is not None and messages and messages[-1] is temporary_query_message:
+                messages.pop()
+            clear_temporary_query()
             break
 
         # 用户取消：丢弃部分模型回复，不执行工具调用，回到输入等待
         if cancelled:
             was_cancelled = True
+            if temporary_query_message is not None and messages and messages[-1] is temporary_query_message:
+                messages.pop()
+            clear_temporary_query()
             break
 
         llm_client.append_assistant_message(messages, raw_message)
@@ -520,9 +565,13 @@ async def _agent_loop_with_client(
             CONVERSATION_STORE.save_messages(messages)
 
         if not has_tool_call and stop_reason != "pause_turn":
+            clear_temporary_query()
             break
 
+    set_temporary_query_enabled(False)
+    clear_temporary_query()
     if not committed_response:
+        clear_temporary_query()
         return False
     if was_cancelled:
         return True

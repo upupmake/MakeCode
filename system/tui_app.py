@@ -42,6 +42,7 @@ from system.tui_modals import (
     SkillsConfigModal,
     StartupWorkdirModal,
     TaskPanelModal,
+    TemporaryQueryModal,
     ToolHistoryModal,
 )
 from utils import paths
@@ -299,6 +300,39 @@ class TuiBridge:
             app.open_recall_model_picker_modal(options, future)
         else:
             app.call_from_thread(app.open_recall_model_picker_modal, options, future)
+        return future.result()
+
+    def clear_temporary_query(self) -> None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            app.clear_temporary_query()
+        else:
+            app.call_from_thread(app.clear_temporary_query)
+
+    def set_temporary_query_enabled(self, enabled: bool) -> None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            app.set_temporary_query_enabled(enabled)
+        else:
+            future: Future[None] = Future()
+            app.call_from_thread(app.set_temporary_query_enabled, enabled, future)
+            future.result()
+
+    def consume_temporary_query(self) -> str | None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return None
+        if self._is_app_thread():
+            return app.consume_temporary_query()
+        future: Future[str | None] = Future()
+        app.call_from_thread(app.consume_temporary_query, future)
         return future.result()
 
     def _dispatch_event_locked(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
@@ -857,6 +891,7 @@ class MakeCodeTuiApp(App[None]):
         Binding("ctrl+n", "insert_newline", "New line", priority=True),
         Binding("f6", "toggle_compact_panes", "切换面板", priority=True, show=False),
         Binding("f7", "open_tool_history", "工具历史", priority=True, show=False),
+        Binding("ctrl+g", "open_temporary_query", "追加临时指令", priority=True, show=False),
     ]
 
     def __init__(
@@ -887,6 +922,8 @@ class MakeCodeTuiApp(App[None]):
         self._startup_workdir_handler = startup_workdir_handler
         self._mode_label = "ACT"
         self._agent_loop_active = False
+        self._temporary_query_enabled = False
+        self._temporary_query: str | None = None
         self._client_request_active = False
         self._client_retry_count = 0
         self._client_max_retries = 0
@@ -1246,6 +1283,60 @@ class MakeCodeTuiApp(App[None]):
         self.push_screen(
             ChoiceModal(title, options, allow_custom, delete_handler, preview_handler), _done
         )
+
+    def open_temporary_query_modal(self) -> None:
+        if (
+            not self._agent_loop_active
+            or not self._temporary_query_enabled
+            or self._modal_active
+        ):
+            return
+        pending_query = self._temporary_query
+        if pending_query is not None:
+            modal = TemporaryQueryModal(pending_query, read_only=True)
+        else:
+            modal = TemporaryQueryModal()
+
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if (
+                value is not None
+                and self._agent_loop_active
+                and self._temporary_query_enabled
+                and self._temporary_query is None
+            ):
+                self._temporary_query = value
+
+        self._modal_active = True
+        self.push_screen(modal, _done)
+
+    def consume_temporary_query(self, future: Future[str | None] | None = None) -> str | None:
+        query = self._temporary_query if self._temporary_query_enabled else None
+        self._temporary_query = None
+        if query is not None and isinstance(self.screen, TemporaryQueryModal):
+            self.screen.dismiss(None)
+        if future is not None and not future.done():
+            future.set_result(query)
+        return query
+
+    def clear_temporary_query(self) -> None:
+        self._temporary_query = None
+
+    def set_temporary_query_enabled(
+        self,
+        enabled: bool,
+        future: Future[None] | None = None,
+    ) -> None:
+        self._temporary_query_enabled = enabled
+        if not enabled:
+            self._temporary_query = None
+            if isinstance(self.screen, TemporaryQueryModal):
+                self.screen.dismiss(None)
+        if future is not None and not future.done():
+            future.set_result(None)
+
+    def action_open_temporary_query(self) -> None:
+        self.open_temporary_query_modal()
 
     def open_conversation_title_regeneration_modal(self) -> None:
         if (
@@ -1632,6 +1723,8 @@ class MakeCodeTuiApp(App[None]):
     def set_agent_loop_active(self, active: bool) -> None:
         was_active = self._agent_loop_active
         self._agent_loop_active = active
+        if was_active and not active:
+            self.set_temporary_query_enabled(False)
         self._update_header_status()
         self._update_input_visibility()
         if was_active and not active:
@@ -1698,7 +1791,7 @@ class MakeCodeTuiApp(App[None]):
             pass
 
     def _update_input_title(self) -> None:
-        self.query_one("#input-box", MakeCodeInput).border_title = f"MakeCode · {self._mode_label} · Enter 发送/选择 · Ctrl+C 取消回复 · Ctrl+N 换行 · Ctrl+P 切换 · ↑↓ 选择命令"
+        self.query_one("#input-box", MakeCodeInput).border_title = f"MakeCode · {self._mode_label} · Enter 发送/选择 · Ctrl+C 取消回复 · Ctrl+N 换行 · Ctrl+P 切换 · Ctrl + G 临时插入 · ↑↓ 选择命令"
 
     def action_cancel_response(self) -> None:
         from system.stream_cancel import cancel_current_response
@@ -2054,6 +2147,18 @@ def post_tui(
 
 def set_agent_loop_active(active: bool) -> None:
     TUI_BRIDGE.set_agent_loop_active(active)
+
+
+def set_temporary_query_enabled(enabled: bool) -> None:
+    TUI_BRIDGE.set_temporary_query_enabled(enabled)
+
+
+def consume_temporary_query() -> str | None:
+    return TUI_BRIDGE.consume_temporary_query()
+
+
+def clear_temporary_query() -> None:
+    TUI_BRIDGE.clear_temporary_query()
 
 
 def set_client_request_active(active: bool, request_id: int | None = None) -> None:
