@@ -77,8 +77,8 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 - `FileRead`：读取文件，可指定行号范围。
 - `FileCreate`：仅用于新建并写入文件（目标文件不存在或为空时）。**写入前自动触发 Tree-sitter 语法验证**，若检测到语法错误会拦截并显示详细报错行号。
 - `FileEdit`：用于修改已存在文件。**使用文本搜索替换机制（search_content → replace_content），而非行号范围**。无需先调用 `FileRead`；每个编辑块都会针对当前文件内容执行匹配校验。**支持三重容错：精确匹配 → Strip匹配 → Difflib模糊匹配（相似度≥90%）**。匹配失败时不会保存任何修改，编辑后自动触发 Tree-sitter 语法验证。
-- `ContentSearch`：通过 `content_regex` 在 `search_dir` 内搜索文本文件内容，并可用 `filename_regex` 按文件绝对路径正则过滤；支持 `context_size` 指定每个匹配行前后包含的上下文行数（默认为 1）；正则使用 Python 语法。自动排除常见构建/依赖目录（`build`、`dist`、`__pycache__`、`node_modules`、`target`、`venv`、`site-packages`、`htmlcov`）和 `.` 开头的隐藏目录，减少无关匹配。
-- `FileSearch`：通过 `path_regex` 按文件/目录绝对路径正则搜索，正则使用 Python 语法，支持类型过滤（`file`/`dir`/`all`）。自动排除隐藏目录和构建/依赖目录，最多返回 500 条结果。适合快速探索项目结构。
+- `ContentSearch`：通过 `content_regex` 在 `root_dir` 下递归搜索文本文件内容，并可用 `path_regex` 按文件绝对路径正则过滤；支持 `context_size` 指定每个匹配行前后包含的上下文行数（默认为 1）；正则使用 Python 语法。自动排除常见构建/依赖目录（`build`、`dist`、`__pycache__`、`node_modules`、`target`、`venv`、`site-packages`、`htmlcov`）和 `.` 开头的隐藏目录，减少无关匹配。
+- `FileSearch`：在 `root_dir` 下递归搜索文件和目录，通过 `path_regex` 按绝对路径正则匹配，支持类型过滤（`file`/`dir`/`all`）。自动排除隐藏目录和构建/依赖目录，最多返回 500 条结果。适合快速探索项目结构。
 - `RunTerminalCommand`：执行非交互式终端命令。
 
 #### 📋 Tree-sitter 语法验证（`system/ts_validator.py`）

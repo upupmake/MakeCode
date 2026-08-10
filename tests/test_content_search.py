@@ -56,6 +56,17 @@ def test_content_search_zero_context_returns_only_matching_lines(monkeypatch, tm
     assert "5- after" not in result
 
 
+def test_content_search_filters_by_path_regex(monkeypatch, tmp_path):
+    monkeypatch.setattr(common.paths, "_WORKDIR", tmp_path)
+    (tmp_path / "match.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "skip.txt").write_text("needle\n", encoding="utf-8")
+
+    result = common.content_search("needle", root_dir=".", path_regex=r"\.py$")
+
+    assert "File: match.py" in result
+    assert "skip.txt" not in result
+
+
 def test_content_search_rejects_negative_context_size(tmp_path, monkeypatch):
     monkeypatch.setattr(common.paths, "_WORKDIR", tmp_path)
 
@@ -65,7 +76,18 @@ def test_content_search_rejects_negative_context_size(tmp_path, monkeypatch):
 
 
 def test_content_search_schema_defaults_context_size_to_one():
-    assert common.ContentSearch(content_regex="needle").context_size == 1
+    model = common.ContentSearch(content_regex="needle")
+    tool = next(tool for tool in common.FILE_TOOLS if tool["function"]["name"] == "ContentSearch")
+
+    assert model.context_size == 1
+    assert model.path_regex == ".*"
+    assert set(common.ContentSearch.model_fields) == {
+        "content_regex",
+        "root_dir",
+        "path_regex",
+        "context_size",
+    }
+    assert set(tool["function"]["parameters"]["properties"]) == set(common.ContentSearch.model_fields)
     with pytest.raises(ValueError):
         common.ContentSearch(content_regex="needle", context_size=-1)
 
@@ -84,5 +106,29 @@ def test_content_search_rejects_unknown_arguments():
     error = str(exc_info.value)
     assert "filename" in error
     assert "extra_forbidden" in error
-    assert "filename_regex" in error
+    assert "path_regex" in error
     assert r"Input value: '_regex>.*\\.py$'" in error
+
+
+def test_file_search_filters_by_path_regex(monkeypatch, tmp_path):
+    monkeypatch.setattr(common.paths, "_WORKDIR", tmp_path)
+    (tmp_path / "match.py").write_text("", encoding="utf-8")
+    (tmp_path / "skip.txt").write_text("", encoding="utf-8")
+
+    result = common.file_search(path_regex=r"\.py$", root_dir=".", type="file")
+
+    assert "match.py" in result
+    assert "skip.txt" not in result
+
+
+def test_file_search_schema_uses_path_regex():
+    model = common.FileSearch()
+    tool = next(tool for tool in common.FILE_TOOLS if tool["function"]["name"] == "FileSearch")
+
+    assert model.path_regex == ".*"
+    assert set(common.FileSearch.model_fields) == {
+        "path_regex",
+        "root_dir",
+        "type",
+    }
+    assert set(tool["function"]["parameters"]["properties"]) == set(common.FileSearch.model_fields)

@@ -3874,7 +3874,7 @@ async def test_agent_loop_returns_builtin_validation_error_without_calling_handl
         "name": "ContentSearch",
         "arguments": json.dumps({
             "content_regex": "TODO",
-            "search_dir": ".",
+            "root_dir": ".",
             "filename": "*.py",
             "context_size": 1,
         }),
@@ -3939,7 +3939,7 @@ async def test_agent_loop_returns_builtin_validation_error_without_calling_handl
     tool_result = next(item for item in messages if item.get("role") == "tool")
     assert tool_result["is_error"] is True
     assert "filename" in tool_result["content"]
-    assert "filename_regex" in tool_result["content"]
+    assert "path_regex" in tool_result["content"]
     assert "Input value: '*.py'" in tool_result["content"]
 
 

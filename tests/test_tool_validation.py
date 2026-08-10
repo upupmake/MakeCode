@@ -91,7 +91,7 @@ def test_validate_builtin_tool_arguments_rejects_unknown_top_level_field():
     message = str(exc_info.value)
     assert "filename" in message
     assert "extra_forbidden" in message
-    assert "filename_regex" in message
+    assert "path_regex" in message
     assert r"Input value: '_regex>.*\\.py$'" in message
 
 

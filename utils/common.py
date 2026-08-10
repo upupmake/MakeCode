@@ -773,23 +773,23 @@ class ContentSearch(ToolArgumentsModel):
 
     AUTO-EXCLUDED:
     - Binary files (detected by null bytes)
-    - Hidden directories (starting with '.'), unless the hidden directory itself is specified as search_dir
+    - Hidden directories (starting with '.'), unless the hidden directory itself is specified as root_dir
     - Build/dependency dirs: build, dist, __pycache__, node_modules, target, venv, site-packages, htmlcov
 
     LIMITS:
     - Maximum 500 matches returned (truncated if exceeded)
-    - For large codebases, use specific search_dir to narrow scope
+    - For large codebases, use specific root_dir to narrow scope
     """
 
     content_regex: str = Field(
         ...,
         description="Python regex pattern to search for in the file contents.",
     )
-    search_dir: str = Field(
+    root_dir: str = Field(
         default=".",
-        description="Directory to search in, relative to workspace by default. Paths outside workspace require user permission. Pinpoint specific source folders (e.g., 'src', 'app') to avoid scanning dependency directories.",
+        description="Root directory to recursively search, relative to workspace by default. Paths outside workspace require user permission. Pinpoint specific source folders (e.g., 'src', 'app') to avoid scanning dependency directories.",
     )
-    filename_regex: str = Field(
+    path_regex: str = Field(
         default=".*",
         description="Python regex pattern matched against each file's absolute normalized path. Defaults to '.*'.",
     )
@@ -802,8 +802,8 @@ class ContentSearch(ToolArgumentsModel):
 
 def content_search(
         content_regex: str,
-        search_dir: str = ".",
-        filename_regex: str = ".*",
+        root_dir: str = ".",
+        path_regex: str = ".*",
         context_size: int = 1,
 ) -> str:
     if context_size < 0:
@@ -816,22 +816,22 @@ def content_search(
         return f"Error: Invalid content_regex '{content_regex}': {e}"
 
     try:
-        path_regex = re.compile(filename_regex)
+        file_path_pattern = re.compile(path_regex)
     except re.error as e:
-        log_error_traceback("ContentSearch filename regex compile", e)
-        return f"Error: Invalid filename_regex '{filename_regex}': {e}"
+        log_error_traceback("ContentSearch path regex compile", e)
+        return f"Error: Invalid path_regex '{path_regex}': {e}"
 
     results = {}
     total_matches = 0
     MAX_MATCHES = 500
 
     try:
-        base_dir = safe_path(search_dir, "ContentSearch")
+        base_dir = safe_path(root_dir, "ContentSearch")
         if not base_dir.is_dir():
-            return f"Error: Search directory '{search_dir}' not found or is not a directory."
+            return f"Error: Root directory '{root_dir}' not found or is not a directory."
     except Exception as e:
-        log_error_traceback("ContentSearch resolve search dir", e)
-        return f"Error resolving search directory: {e}"
+        log_error_traceback("ContentSearch resolve root dir", e)
+        return f"Error resolving root directory: {e}"
 
     EXCLUDE_DIRS = {
         "build", "dist", "__pycache__", "node_modules", "target",
@@ -849,7 +849,7 @@ def content_search(
                 except ValueError:
                     continue
 
-                if not path_regex.search(_normalized_search_path(filepath)):
+                if not file_path_pattern.search(_normalized_search_path(filepath)):
                     continue
 
                 rel_path_str = rel_path.as_posix()
@@ -905,7 +905,7 @@ def content_search(
         return f"Error during content search: {e}"
 
     if not results:
-        return f"No matches found for content_regex '{content_regex}' in search_dir '{search_dir}' matching filename_regex '{filename_regex}'."
+        return f"No matches found for content_regex '{content_regex}' in root_dir '{root_dir}' matching path_regex '{path_regex}'."
 
     output_blocks = []
     if base_dir != _workdir():
@@ -929,22 +929,22 @@ class FileSearch(ToolArgumentsModel):
     Search for files and/or directories matching a regex pattern against absolute normalized paths.
 
     AUTO-EXCLUDED:
-    - Hidden directories (starting with '.'), unless the hidden directory itself is specified as search_dir
+    - Hidden directories (starting with '.'), unless the hidden directory itself is specified as root_dir
     - Build/dependency dirs: build, dist, __pycache__, node_modules, target, venv, site-packages, htmlcov
 
     LIMITS:
     - Maximum 500 items returned (truncated if exceeded)
-    - For large codebases, use specific search_dir to narrow scope
+    - For large codebases, use specific root_dir to narrow scope
     """
 
     path_regex: str = Field(
         default=".*",
         description="Python regex pattern matched against each item's absolute normalized path. Defaults to '.*'.",
     )
-    search_dir: str = Field(
+    root_dir: str = Field(
         default=".",
         description=(
-            "Directory to search in, relative to workspace by default. Paths outside workspace require user permission. "
+            "Root directory to recursively search, relative to workspace by default. Paths outside workspace require user permission. "
             "Pinpoint specific source folders (e.g., 'src', 'app') to avoid scanning dependency directories."
         ),
     )
@@ -959,7 +959,7 @@ class FileSearch(ToolArgumentsModel):
 
 def file_search(
         path_regex: str = ".*",
-        search_dir: str = ".",
+        root_dir: str = ".",
         type: str = "all",
 ) -> str:
     EXCLUDE_DIRS = {
@@ -982,12 +982,12 @@ def file_search(
     type_label = {"file": "file(s)", "dir": "director(ies)", "all": "item(s)"}[type]
 
     try:
-        base_dir = safe_path(search_dir, "FileSearch")
+        base_dir = safe_path(root_dir, "FileSearch")
         if not base_dir.is_dir():
-            return f"Error: Search directory '{search_dir}' not found or is not a directory."
+            return f"Error: Root directory '{root_dir}' not found or is not a directory."
     except Exception as e:
-        log_error_traceback("FileSearch resolve search dir", e)
-        return f"Error resolving search directory: {e}"
+        log_error_traceback("FileSearch resolve root dir", e)
+        return f"Error resolving root directory: {e}"
 
     try:
         matched_files = set()
@@ -1028,7 +1028,7 @@ def file_search(
 
         total_count = len(matched_files) + len(matched_dirs)
         if total_count == 0:
-            return f"No {type_label} found matching path_regex '{path_regex}' in search_dir '{search_dir}'."
+            return f"No {type_label} found matching path_regex '{path_regex}' in root_dir '{root_dir}'."
 
         # Format output: directories always with [DIR] prefix and trailing /
         sorted_files = sorted(matched_files)
@@ -1036,9 +1036,9 @@ def file_search(
         lines = [f"[DIR] {d}/" for d in sorted_dirs] + list(sorted_files)
 
         if base_dir == _workdir():
-            output = f"Found {total_count} {type_label} matching path_regex '{path_regex}' in search_dir '{search_dir}':\n\n"
+            output = f"Found {total_count} {type_label} matching path_regex '{path_regex}' in root_dir '{root_dir}':\n\n"
         else:
-            output = f"Found {total_count} {type_label} matching path_regex '{path_regex}' in search_dir '{search_dir}' (paths relative to {base_dir.as_posix()}):\n\n"
+            output = f"Found {total_count} {type_label} matching path_regex '{path_regex}' in root_dir '{root_dir}' (paths relative to {base_dir.as_posix()}):\n\n"
         output += "\n".join(lines)
 
         if total_count >= MAX_ITEMS:
