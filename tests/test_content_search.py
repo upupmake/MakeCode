@@ -85,4 +85,4 @@ def test_content_search_rejects_unknown_arguments():
     assert "filename" in error
     assert "extra_forbidden" in error
     assert "filename_regex" in error
-    assert "_regex>" not in error
+    assert r"Input value: '_regex>.*\\.py$'" in error

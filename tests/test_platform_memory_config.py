@@ -3940,7 +3940,7 @@ async def test_agent_loop_returns_builtin_validation_error_without_calling_handl
     assert tool_result["is_error"] is True
     assert "filename" in tool_result["content"]
     assert "filename_regex" in tool_result["content"]
-    assert "_regex>" not in tool_result["content"]
+    assert "Input value: '*.py'" in tool_result["content"]
 
 
 @pytest.mark.anyio

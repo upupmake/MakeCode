@@ -41,7 +41,11 @@ def _format_validation_error(
         location = _format_location(tuple(error.get("loc", ())))
         message = str(error.get("msg", "Invalid value"))
         error_type = error.get("type", "validation_error")
-        lines.append(f"- {location}: {message} [{error_type}]")
+        input_value = "<missing>" if error_type == "missing" else repr(error.get("input"))
+        lines.append(
+            f"- {location}: {message} [{error_type}]\n"
+            f"  Input value: {input_value}"
+        )
 
     expected_fields = tuple(model.model_fields)
     if expected_fields:
@@ -70,18 +74,21 @@ def parse_tool_arguments(tool_name: str, raw_arguments: Any) -> dict[str, Any]:
             raise ToolArgumentValidationError(
                 tool_name,
                 f"Error: Invalid arguments for {tool_name}.\n"
-                f"- $: Arguments must be a JSON object, got {type(parsed).__name__} [object_required]",
+                f"- $: Arguments must be a JSON object, got {type(parsed).__name__} [object_required]\n"
+                f"  Input value: {parsed!r}",
             )
         raise ToolArgumentValidationError(
             tool_name,
             f"Error: Invalid arguments for {tool_name}.\n"
-            f"- $: Invalid JSON: {json_error_message} [json_invalid]",
+            f"- $: Invalid JSON: {json_error_message} [json_invalid]\n"
+            f"  Input value: {raw_arguments!r}",
         )
 
     raise ToolArgumentValidationError(
         tool_name,
         f"Error: Invalid arguments for {tool_name}.\n"
-        f"- $: Arguments must be a JSON object, got {type(raw_arguments).__name__} [object_required]",
+        f"- $: Arguments must be a JSON object, got {type(raw_arguments).__name__} [object_required]\n"
+        f"  Input value: {raw_arguments!r}",
     )
 
 

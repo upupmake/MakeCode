@@ -27,25 +27,26 @@ def test_parse_tool_arguments_accepts_dict_and_json_object():
     assert parse_tool_arguments("ContentSearch", "") == {}
 
 
-def test_parse_tool_arguments_rejects_invalid_json_without_raw_payload():
-    secret = "top-secret-command"
+def test_parse_tool_arguments_rejects_invalid_json_with_raw_payload():
+    raw_payload = '{"command":"top-secret-command'
 
     with pytest.raises(ToolArgumentValidationError) as exc_info:
-        parse_tool_arguments("RunTerminalCommand", f'{{"command":"{secret}')
+        parse_tool_arguments("RunTerminalCommand", raw_payload)
 
-    assert "json_invalid" in str(exc_info.value)
-    assert secret not in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "json_invalid" in message
+    assert f"Input value: {raw_payload!r}" in message
 
 
-def test_validation_errors_do_not_retain_raw_payload_in_exception_chain():
-    secret = "top-secret-command"
+def test_validation_errors_include_values_without_retaining_exception_context():
+    value = "top-secret-command"
 
     failures = []
     for operation in (
-        lambda: parse_tool_arguments("RunTerminalCommand", f'{{"command":"{secret}'),
+        lambda: parse_tool_arguments("RunTerminalCommand", f'{{"command":"{value}'),
         lambda: validate_builtin_tool_arguments(
             "RunTerminalCommand",
-            {"command": secret, "unexpected": secret},
+            {"command": value, "unexpected": value},
             RunTerminalCommand,
         ),
     ):
@@ -57,14 +58,18 @@ def test_validation_errors_do_not_retain_raw_payload_in_exception_chain():
     assert len(failures) == 2
     for failure in failures:
         rendered_traceback = "".join(traceback.format_exception(failure))
-        assert secret not in rendered_traceback
+        assert value in rendered_traceback
         assert failure.__cause__ is None
         assert failure.__context__ is None
 
 
 def test_parse_tool_arguments_rejects_non_object():
-    with pytest.raises(ToolArgumentValidationError, match="object_required"):
-        parse_tool_arguments("FileRead", "[]")
+    with pytest.raises(ToolArgumentValidationError) as exc_info:
+        parse_tool_arguments("FileRead", '["unexpected"]')
+
+    message = str(exc_info.value)
+    assert "object_required" in message
+    assert "Input value: ['unexpected']" in message
 
 
 def test_parse_tool_arguments_rejects_unescaped_control_characters():
@@ -87,11 +92,11 @@ def test_validate_builtin_tool_arguments_rejects_unknown_top_level_field():
     assert "filename" in message
     assert "extra_forbidden" in message
     assert "filename_regex" in message
-    assert "_regex>" not in message
+    assert r"Input value: '_regex>.*\\.py$'" in message
 
 
 def test_validate_builtin_tool_arguments_rejects_unknown_nested_field():
-    with pytest.raises(ToolArgumentValidationError, match=r"edits\[0\]\.unknown"):
+    with pytest.raises(ToolArgumentValidationError) as exc_info:
         validate_builtin_tool_arguments(
             "FileEdit",
             {
@@ -104,6 +109,39 @@ def test_validate_builtin_tool_arguments_rejects_unknown_nested_field():
             },
             FileEdit,
         )
+
+    message = str(exc_info.value)
+    assert "edits[0].unknown" in message
+    assert "Input value: 'secret'" in message
+
+
+def test_validation_errors_include_type_constraint_and_missing_values():
+    class ValueInputs(ToolArgumentsModel):
+        count: int = Field(ge=1)
+        label: str
+
+    with pytest.raises(ToolArgumentValidationError) as exc_info:
+        validate_builtin_tool_arguments(
+            "ValueInputs",
+            {"count": 0, "label": 9},
+            ValueInputs,
+        )
+
+    message = str(exc_info.value)
+    assert "count" in message
+    assert "greater_than_equal" in message
+    assert "Input value: 0" in message
+    assert "label" in message
+    assert "string_type" in message
+    assert "Input value: 9" in message
+
+    with pytest.raises(ToolArgumentValidationError) as exc_info:
+        validate_builtin_tool_arguments("ValueInputs", {"count": 1}, ValueInputs)
+
+    message = str(exc_info.value)
+    assert "label" in message
+    assert "missing" in message
+    assert "Input value: <missing>" in message
 
 
 def test_validate_builtin_tool_arguments_returns_normalized_model_dump():
