@@ -347,7 +347,10 @@ def test_memory_config_cache_reuses_same_file_signature_and_invalidates_on_chang
 
     assert open_mock.call_count == 1
 
-    config_file.write_text(json.dumps({"context_length": 220}), encoding="utf-8")
+    config_file.write_text(
+        json.dumps({"context_length": 220, "external": "changed"}),
+        encoding="utf-8",
+    )
     assert memory.get_context_length() == 220
 
 
@@ -357,12 +360,15 @@ def test_memory_config_setter_merges_external_latest_values_with_cached_data(tmp
     config_file.write_text(json.dumps({"context_length": 210, "external": "before"}), encoding="utf-8")
     assert memory.get_context_length() == 210
 
-    config_file.write_text(json.dumps({"context_length": 220, "external": "after"}), encoding="utf-8")
+    config_file.write_text(
+        json.dumps({"context_length": 220, "external": "after-change"}),
+        encoding="utf-8",
+    )
     assert memory.set_memory_size(12) == 12
 
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert saved["context_length"] == 220
-    assert saved["external"] == "after"
+    assert saved["external"] == "after-change"
     assert saved["memory_size"] == 12
 
 
