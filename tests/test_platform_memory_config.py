@@ -1012,8 +1012,9 @@ async def test_mcp_switch_modal_scrolls_many_wrapped_service_cards_while_actions
         assert modal.query_one("#mcp-apply", Button).region.height > 0
         assert modal.query_one("#mcp-cancel", Button).region.height > 0
 
-        service_list.index = len(service_list.children) - 1
+        await pilot.press(*(["down"] * (len(service_list.children) - 1)))
         await pilot.pause()
+        assert service_list.index == len(service_list.children) - 1
         assert service_list.scroll_y > 0
 
 
@@ -1863,8 +1864,9 @@ async def test_memory_panel_scrolls_cards_while_actions_stay_visible():
         assert modal.query_one("#memory-add", Button).region.height > 0
         assert modal.query_one("#memory-close", Button).region.height > 0
 
-        memory_list.index = len(memory_list.children) - 1
+        await pilot.press(*(["down"] * (len(memory_list.children) - 1)))
         await pilot.pause()
+        assert memory_list.index == len(memory_list.children) - 1
         assert memory_list.scroll_y > 0
 
 
