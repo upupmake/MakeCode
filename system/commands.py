@@ -1293,6 +1293,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         # /hitl - 切换 HITL 拦截状态
         if query == "/hitl":
             new_state = hitl_mod.toggle_hitl()
+            refresh_status()
             status = "开启" if new_state else "关闭"
             status_color = "green" if new_state else "yellow"
             self.console.print(f"\n[bold]🛡️ Human-in-the-Loop 状态: [{status_color}]{status}[/{status_color}][/bold]")

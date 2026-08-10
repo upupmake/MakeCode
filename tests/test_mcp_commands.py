@@ -344,6 +344,28 @@ async def test_flush_command_registered_and_does_not_run_agent(monkeypatch):
     assert flushed == [True]
 
 
+@pytest.mark.anyio
+async def test_hitl_command_refreshes_tui_status(monkeypatch):
+    handler = make_handler()
+    toggle_hitl = Mock(return_value=False)
+    refresh = Mock()
+    monkeypatch.setattr("system.commands.hitl_mod.toggle_hitl", toggle_hitl)
+    monkeypatch.setattr("system.commands.refresh_status", refresh)
+
+    result = await handler.process_command(
+        "/hitl",
+        history=[],
+        current_conversation=None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    )
+
+    assert result.action == CommandAction.CONTINUE
+    toggle_hitl.assert_called_once_with()
+    refresh.assert_called_once_with()
+
+
 def test_flush_screen_clears_terminal_and_requests_full_repaint():
     app = MakeCodeTuiApp.__new__(MakeCodeTuiApp)
     app._driver = Mock()
