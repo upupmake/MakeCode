@@ -173,7 +173,9 @@ def _terminal_output_text(value: Any, style: str = "") -> Text:
 
 def _extract_message_text(msg: dict) -> str:
     """从消息字典中提取文本内容"""
-    content = msg.get("content")
+    metadata = msg.get("message_metadata")
+    display_content = metadata.get("display_content") if isinstance(metadata, dict) else None
+    content = display_content if isinstance(display_content, str) else msg.get("content")
     if isinstance(content, str):
         return content
     if not isinstance(content, list):

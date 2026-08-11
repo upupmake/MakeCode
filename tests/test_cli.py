@@ -109,6 +109,27 @@ def test_commands_reuses_slash_command_catalog(capsys):
     assert all(command in output for command in COMMAND_DESCRIPTIONS)
 
 
+def test_commands_does_not_include_runtime_skill_slash_commands(tmp_path, monkeypatch, capsys):
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "enabled-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: enabled-skill\ndescription: enabled skill description\n---\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "utils.skill_catalog.skill_directories",
+        lambda *, create=True: [skills_dir],
+    )
+    monkeypatch.setattr("utils.paths._WORKDIR", tmp_path)
+
+    assert run_external_cli(["--commands"]) == 0
+
+    output = capsys.readouterr().out
+    assert "/enabled-skill" not in output
+    assert all(command in output for command in COMMAND_DESCRIPTIONS)
+
+
 def test_update_exits_before_interactive_startup_in_source_environment():
     result = _run_main("--update", "--yes")
 

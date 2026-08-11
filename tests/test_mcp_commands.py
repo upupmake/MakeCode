@@ -11,6 +11,7 @@ from textual.widgets import Input, Label, Static
 
 from init import resolve_chosen_workdir
 from system.commands import COMMAND_DESCRIPTIONS, CommandAction, CommandHandler, _conversation_preview, _task_plan_preview
+from system.console_render import _extract_message_text
 from system.tui_app import MakeCodeInput, MakeCodeTuiApp
 from system.tui_modals import StartupWorkdirModal
 from system.tui_types import TuiEvent, TuiRegion
@@ -58,6 +59,52 @@ def make_handler(conversation_store=None):
 
 def test_mcp_help_command_registered():
     assert COMMAND_DESCRIPTIONS["/mcp-help"] == "显示 MCP 相关命令介绍。"
+
+
+@pytest.mark.anyio
+async def test_enabled_skill_slash_command_expands_content_and_builtin_commands_keep_priority():
+    skill_loader = Mock()
+    skill_loader.get_slash_commands.return_value = {
+        "/demo-skill": "demo description",
+    }
+    skill_loader.expand_slash_command.side_effect = lambda query, reserved: (
+        "<skill name=\"demo-skill\">\nloaded demo\n</skill>\n\n"
+        f"User: {query}"
+        if query.startswith("/demo-skill")
+        else None
+    )
+    handler = make_handler()
+    handler.skill_loader = skill_loader
+
+    result = await handler.process_command(
+        "/demo-skill 处理这个请求",
+        history=[],
+        current_conversation=None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    )
+
+    assert handler.get_slash_completion_commands()["/demo-skill"] == "Skill: demo description"
+    assert result.action == CommandAction.RUN_AGENT
+    assert result.payload == (
+        "<skill name=\"demo-skill\">\nloaded demo\n</skill>\n\n"
+        "User: /demo-skill 处理这个请求"
+    )
+    assert result.original_query == "/demo-skill 处理这个请求"
+
+    handler.handle_cmds = Mock()
+    builtin = await handler.process_command(
+        "/help",
+        history=[],
+        current_conversation=None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    )
+    assert builtin.action == CommandAction.CONTINUE
+    handler.handle_cmds.assert_called_once()
+    assert skill_loader.expand_slash_command.call_count == 1
 
 
 def test_nm_command_registered_and_returns_plain_query_without_memory_recall():
@@ -303,6 +350,75 @@ def test_conversation_preview_only_contains_user_messages():
     assert "second question" in preview.plain
     assert "system prompt" not in preview.plain
     assert "first answer" not in preview.plain
+
+
+def test_skill_command_history_preview_replay_and_copy_show_only_original_query(monkeypatch):
+    message = {
+        "role": "user",
+        "content": (
+            '<skill name="demo-skill">\nloaded demo\n</skill>\n\n'
+            "User: /demo-skill 处理这个请求"
+        ),
+        "message_metadata": {
+            "display_content": "/demo-skill 处理这个请求",
+            "skill_command": True,
+        },
+    }
+
+    assert _extract_message_text(message) == "/demo-skill 处理这个请求"
+    preview = _conversation_preview([message])
+    assert "/demo-skill 处理这个请求" in preview.plain
+    assert "loaded demo" not in preview.plain
+
+    show_copy = Mock(return_value="closed")
+    monkeypatch.setattr("system.commands.show_copy_content_tui", show_copy)
+    assert make_handler().handle_copy([message]) is True
+    copied_message = show_copy.call_args.args[0][0]
+    assert copied_message["content"] == "/demo-skill 处理这个请求"
+    assert "loaded demo" not in copied_message["content"]
+
+
+def test_copy_command_removes_recalled_memory_and_keeps_current_user_request(monkeypatch):
+    message = {
+        "role": "user",
+        "content": (
+            "# Potentially Relevant Memories\n\n"
+            "The following long-term memories were recalled.\n\n"
+            "## mem_1\n- Insight: private recalled context\n\n"
+            "# Current User Request\n\n"
+            "实际用户问题"
+        ),
+    }
+    show_copy = Mock(return_value="closed")
+    monkeypatch.setattr("system.commands.show_copy_content_tui", show_copy)
+
+    assert make_handler().handle_copy([message]) is True
+
+    copied_message = show_copy.call_args.args[0][0]
+    assert copied_message["content"] == "实际用户问题"
+    assert "Potentially Relevant Memories" not in copied_message["content"]
+    assert "private recalled context" not in copied_message["content"]
+
+
+def test_commands_panel_does_not_include_runtime_skill_commands(monkeypatch):
+    handler = make_handler()
+    handler.skill_loader = Mock()
+    handler.skill_loader.get_slash_commands.return_value = {
+        "/demo-skill": "demo description",
+    }
+    shown = {}
+
+    def show_panel(title, content):
+        console = Console(record=True, width=120)
+        console.print(content)
+        shown["text"] = console.export_text()
+        return "closed"
+
+    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+
+    assert handler.handle_cmds() is True
+    assert "/demo-skill" not in shown["text"]
+    assert all(command in shown["text"] for command in COMMAND_DESCRIPTIONS)
 
 
 def test_task_plan_preview_contains_summary_and_tasks():
@@ -782,6 +898,22 @@ def test_copy_command_keeps_only_questions_answers_and_terminal_io(monkeypatch):
     assert history[2]["reasoning_content"] == "visible reasoning"
     assert history[2]["message_metadata"]["native_blocks"][0]["signature"] == "private-signature"
     assert history[2]["tool_calls"][0]["raw"] == {"provider": "private-read-payload"}
+
+
+@pytest.mark.anyio
+async def test_skill_slash_commands_are_available_to_tui_completion():
+    app = MakeCodeTuiApp(
+        slash_commands_provider=lambda: {
+            "/help": "help",
+            "/demo-skill": "Skill: demo description",
+        }
+    )
+
+    assert app._get_slash_matches("/demo") == [
+        ("/demo-skill", "Skill: demo description")
+    ]
+    assert app._get_slash_matches("/demo-skill") == []
+    assert app._get_slash_matches("/disabled-skill") == []
 
 
 @pytest.mark.anyio

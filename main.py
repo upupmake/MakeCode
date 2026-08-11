@@ -717,6 +717,9 @@ def _collect_user_message_content(history: list) -> str:
         if message.get("role") != "user":
             continue
         content = message.get("content")
+        metadata = message.get("message_metadata")
+        display_content = metadata.get("display_content") if isinstance(metadata, dict) else None
+        content = display_content if isinstance(display_content, str) else content
         if isinstance(content, str):
             text = content.strip()
         elif isinstance(content, list):
@@ -846,6 +849,7 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
         return None
     if command_result.action == CommandAction.RUN_AGENT:
         user_query = command_result.payload
+        original_query = command_result.original_query
         try:
             set_agent_loop_active(True)
             _ensure_active_conversation()
@@ -856,9 +860,10 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                 )
                 user_message = user_query
             else:
+                recall_query = original_query or user_query
                 previous_assistant_content = _get_previous_assistant_content(history)
                 recall_result = await recall_long_term_memories(
-                    user_query,
+                    recall_query,
                     previous_assistant_content=previous_assistant_content,
                     source="用户请求预召回",
                     agent_id=ORCHESTRATOR_AGENT_ID,
@@ -867,7 +872,13 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                     user_query,
                     recall_result.get("content", ""),
                 )
-            history.append({"role": "user", "content": user_message})
+            user_message_record = {"role": "user", "content": user_message}
+            if original_query is not None:
+                user_message_record["message_metadata"] = {
+                    "display_content": original_query,
+                    "skill_command": True,
+                }
+            history.append(user_message_record)
 
             await agent_loop(history)
         except RuntimeError as exc:
@@ -949,6 +960,7 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         conversation_title_provider=_get_current_conversation_title,
         conversation_title_regenerate_handler=conversation_title_regenerate_handler,
         messages_provider=lambda: history,
+        slash_commands_provider=command_handler.get_slash_completion_commands,
         startup_workdir_provider=startup_workdir_provider if prompt_for_workdir else None,
         startup_workdir_handler=startup_workdir_handler if prompt_for_workdir else None,
     )

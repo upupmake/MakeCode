@@ -167,6 +167,38 @@ class SkillLoader:
             lines.append(line)
         return "\n".join(lines)
 
+    def get_slash_commands(self, reserved_commands: set[str] | None = None) -> dict[str, str]:
+        """Return enabled Skills that can be addressed as slash commands."""
+        reserved = reserved_commands or set()
+        return {
+            f"/{name}": str(skill["meta"]["description"]).strip().replace("\n", " ").replace("\r", "")
+            for name, skill in self.skills.items()
+            if name
+            and all(char.isprintable() and char != "/" and not char.isspace() for char in name)
+            and f"/{name}" not in reserved
+        }
+
+    def expand_slash_command(
+        self,
+        query: str,
+        reserved_commands: set[str] | None = None,
+    ) -> str | None:
+        """Expand an enabled Skill slash command while preserving the user's query."""
+        skill_commands = self.get_slash_commands(reserved_commands)
+        command = next(
+            (
+                candidate
+                for candidate in sorted(skill_commands, key=len, reverse=True)
+                if query == candidate
+                or (query.startswith(candidate) and query[len(candidate)].isspace())
+            ),
+            None,
+        )
+        if command is None:
+            return None
+        skill_name = command.removeprefix("/")
+        return f"{self.get_content(skill_name)}\n\nUser: {query}"
+
     def render_prompt_block(self) -> str:
         """Render a system-prompt block describing currently available skills."""
         if not self.is_enabled:

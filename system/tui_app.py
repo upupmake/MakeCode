@@ -902,6 +902,7 @@ class MakeCodeTuiApp(App[None]):
         conversation_title_provider: Callable[[], str | None] | None = None,
         conversation_title_regenerate_handler: Callable[[], Awaitable[None]] | None = None,
         messages_provider: Callable[[], list[dict[str, Any]]] | None = None,
+        slash_commands_provider: Callable[[], dict[str, str]] | None = None,
         startup_workdir_provider: Callable[[], Any] | None = None,
         startup_workdir_handler: Callable[[str], None] | None = None,
     ) -> None:
@@ -918,6 +919,7 @@ class MakeCodeTuiApp(App[None]):
         self._conversation_title_provider = conversation_title_provider
         self._conversation_title_regenerate_handler = conversation_title_regenerate_handler
         self._messages_provider = messages_provider
+        self._slash_commands_provider = slash_commands_provider
         self._startup_workdir_provider = startup_workdir_provider
         self._startup_workdir_handler = startup_workdir_handler
         self._mode_label = "ACT"
@@ -1910,13 +1912,18 @@ class MakeCodeTuiApp(App[None]):
             return []
         from system.commands import COMMAND_DESCRIPTIONS
 
+        commands = (
+            self._slash_commands_provider()
+            if self._slash_commands_provider is not None
+            else COMMAND_DESCRIPTIONS
+        )
         # 输入已是完整命令时不再弹出候选，避免抢占上下键的历史导航
-        if stripped in COMMAND_DESCRIPTIONS:
+        if stripped in commands:
             return []
 
         return [
             (command, description)
-            for command, description in COMMAND_DESCRIPTIONS.items()
+            for command, description in commands.items()
             if command.startswith(stripped)
         ]
 

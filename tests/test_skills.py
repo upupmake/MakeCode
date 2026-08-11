@@ -164,6 +164,49 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertNotIn("disabled-skill", loader.render_prompt_block())
             self.assertIn("Unknown or disabled skill 'disabled-skill'", loader.get_content("disabled-skill"))
 
+    def test_slash_commands_include_only_enabled_non_reserved_skills(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            config_file = root / "disabled_skills.json"
+            self._write_skill(skills_dir, "enabled-skill", "enabled description")
+            self._write_skill(skills_dir, "disabled-skill", "disabled description")
+            self._write_skill(skills_dir, "help", "reserved description")
+            config_file.write_text('["disabled-skill"]', encoding="utf-8")
+            loader = SkillLoader(skills_dir, config_file)
+
+            commands = loader.get_slash_commands({"/help"})
+
+            self.assertEqual(commands, {"/enabled-skill": "enabled description"})
+
+            loader.set_skill_enabled("enabled-skill", False)
+            self.assertEqual(loader.get_slash_commands({"/help"}), {})
+
+            loader.set_skill_enabled("enabled-skill", True)
+            self.assertEqual(
+                loader.get_slash_commands({"/help"}),
+                {"/enabled-skill": "enabled description"},
+            )
+
+    def test_slash_command_expands_skill_content_and_preserves_user_query(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            self._write_skill(skills_dir, "demo-skill", "demo description")
+            loader = SkillLoader(skills_dir, root / "disabled_skills.json")
+
+            expanded = loader.expand_slash_command("/demo-skill 处理这个请求")
+
+            self.assertIsNotNone(expanded)
+            self.assertTrue(expanded.startswith("<skill name=\"demo-skill\">"))
+            self.assertIn("demo description", expanded)
+            self.assertTrue(expanded.endswith("</skill>\n\nUser: /demo-skill 处理这个请求"))
+            self.assertEqual(
+                loader.expand_slash_command("/demo-skill\n处理这个请求"),
+                expanded.replace("/demo-skill 处理", "/demo-skill\n处理"),
+            )
+            self.assertIsNone(loader.expand_slash_command("/demo-skill-other 处理这个请求"))
+
     def test_reenabling_skill_removes_it_from_disabled_list(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

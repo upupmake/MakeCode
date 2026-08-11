@@ -2881,6 +2881,44 @@ async def test_nm_request_skips_pre_recall_and_submits_suffix_as_user_query():
 
 
 @pytest.mark.anyio
+async def test_skill_command_recalls_with_original_query_and_sends_injected_content():
+    command_handler = Mock()
+    command_handler.process_command = AsyncMock(return_value=CommandResult(
+        action=CommandAction.RUN_AGENT,
+        payload=(
+            "<skill name=\"demo-skill\">\nloaded demo\n</skill>\n\n"
+            "User: /demo-skill 处理这个请求"
+        ),
+        original_query="/demo-skill 处理这个请求",
+    ))
+    history = [{"role": "system", "content": "system"}]
+
+    with patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "_ensure_active_conversation"), \
+            patch.object(main_module, "recall_long_term_memories", AsyncMock(return_value={"content": "memory"})) as recall, \
+            patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
+            patch.object(main_module, "refresh_status"):
+        await main_module._process_user_query(
+            "/demo-skill 处理这个请求",
+            history,
+            command_handler,
+        )
+
+    recall.assert_awaited_once()
+    assert recall.call_args.args[0] == "/demo-skill 处理这个请求"
+    run_agent_loop.assert_awaited_once_with(history)
+    message = history[-1]
+    assert message["message_metadata"] == {
+        "display_content": "/demo-skill 处理这个请求",
+        "skill_command": True,
+    }
+    assert message["content"].startswith("# Potentially Relevant Memories")
+    assert "<skill name=\"demo-skill\">\nloaded demo\n</skill>" in message["content"]
+    assert message["content"].endswith("User: /demo-skill 处理这个请求")
+    assert main_module._collect_user_message_content(history) == "/demo-skill 处理这个请求"
+
+
+@pytest.mark.anyio
 async def test_process_user_query_runs_agent_loop_for_title_detection():
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(

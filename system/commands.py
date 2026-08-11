@@ -65,6 +65,7 @@ class CommandResult:
     action: CommandAction
     payload: Any = None
     skip_memory_recall: bool = False
+    original_query: str | None = None
 
 
 # ============================================================================
@@ -130,6 +131,9 @@ def _conversation_preview(messages: list) -> Text:
             preview.append("\n\n")
         preview.append(f"[{index}] User\n", style="bold cyan")
         content = message.get("content", "")
+        metadata = message.get("message_metadata")
+        display_content = metadata.get("display_content") if isinstance(metadata, dict) else None
+        content = display_content if isinstance(display_content, str) else content
         preview.append(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False))
     return preview
 
@@ -156,6 +160,20 @@ def _task_plan_preview(plan_data: dict) -> Group:
     if not tasks:
         table.add_row("-", "当前任务计划为空", "-", "-")
     return Group(summary, table)
+
+
+def _copy_user_content(message: dict) -> Any:
+    metadata = message.get("message_metadata")
+    display_content = metadata.get("display_content") if isinstance(metadata, dict) else None
+    if isinstance(display_content, str):
+        return display_content
+
+    content = message.get("content")
+    memory_prefix = "# Potentially Relevant Memories\n\n"
+    request_marker = "# Current User Request\n\n"
+    if isinstance(content, str) and content.startswith(memory_prefix) and request_marker in content:
+        return content.split(request_marker, 1)[1]
+    return content
 
 
 # ============================================================================
@@ -563,6 +581,11 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             role = msg.get("role", "")
             content = msg.get("content")
             content_blocks = msg.get("content_blocks") or []
+            if role == "user" and isinstance(content, str):
+                content = _copy_user_content(msg)
+                msg["content"] = content
+                msg.pop("content_blocks", None)
+                content_blocks = []
             has_text = (
                 isinstance(content, str) and bool(content)
             ) or (
@@ -633,6 +656,13 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return True
         show_copy_content_tui(messages)
         return True
+
+    def get_slash_completion_commands(self) -> dict[str, str]:
+        commands = dict(COMMAND_DESCRIPTIONS)
+        if self.skill_loader is not None:
+            skill_commands = self.skill_loader.get_slash_commands(set(commands))
+            commands.update({command: f"Skill: {description}" for command, description in skill_commands.items()})
+        return commands
 
     def handle_cmds(self) -> bool:
         """处理 /cmds 命令"""
@@ -1400,6 +1430,19 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 payload=user_query,
                 skip_memory_recall=True,
             )
+
+        # 启用的 Skill 可直接通过 /<skill-name> 调用；内置命令始终优先。
+        if self.skill_loader is not None:
+            expanded_skill_query = self.skill_loader.expand_slash_command(
+                query,
+                set(COMMAND_DESCRIPTIONS),
+            )
+            if expanded_skill_query is not None:
+                return CommandResult(
+                    action=CommandAction.RUN_AGENT,
+                    payload=expanded_skill_query,
+                    original_query=query,
+                )
 
         # 其他命令 - 让 LLM 处理
         # 对于在 COMMAND_DESCRIPTIONS 中的命令，附加描述（与原始逻辑一致）
