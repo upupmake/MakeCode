@@ -878,10 +878,11 @@ async def test_skills_panel_toggle_preserves_scrolled_row_and_list_items(tmp_pat
         result = asyncio.get_running_loop().create_future()
         app.open_skills_config_modal(loader, result)
         await pilot.pause()
+        await pilot.pause()
         modal = app.screen
         skills_list = modal.query_one("#skills-list")
         skills_list.focus()
-        skills_list.index = 20
+        await pilot.press(*(["down"] * 20))
         await pilot.pause()
         original_rows = tuple(skills_list.children)
         original_scroll_y = skills_list.scroll_y
