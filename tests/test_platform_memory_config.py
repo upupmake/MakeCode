@@ -2234,7 +2234,30 @@ def test_partial_compaction_range_must_be_between_thirty_and_fifty_percent(selec
 
     with patch.object(memory, "get_partial_compact_percentages", return_value=(30, 50)), \
             patch.object(memory, "estimate_tokens", return_value=selected_tokens):
-        assert memory._select_partial_compaction_range(messages, 100) == expected
+        assert memory._select_partial_compaction_range(messages, 100, 100) == expected
+
+
+def test_partial_compaction_range_over_context_limit_uses_current_context_minimum_without_maximum():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+        {"role": "user", "content": "orphan"},
+    ]
+
+    with patch.object(memory, "get_partial_compact_percentages", return_value=(30, 50)), \
+            patch.object(memory, "estimate_tokens", return_value=59):
+        assert memory._select_partial_compaction_range(messages, 100, 200) is None
+
+    with patch.object(memory, "get_partial_compact_percentages", return_value=(30, 50)), \
+            patch.object(memory, "estimate_tokens", return_value=60):
+        assert memory._select_partial_compaction_range(messages, 100, 200) == (1, 3)
+
+    with patch.object(memory, "get_partial_compact_percentages", return_value=(30, 50)), \
+            patch.object(memory, "estimate_tokens", return_value=61):
+        assert memory._select_partial_compaction_range(messages, 100, 101) == (1, 3)
 
 
 def test_partial_compaction_range_uses_configured_percentages():
@@ -2248,11 +2271,11 @@ def test_partial_compaction_range_uses_configured_percentages():
 
     with patch.object(memory, "get_partial_compact_percentages", return_value=(20, 40)), \
             patch.object(memory, "estimate_tokens", return_value=20):
-        assert memory._select_partial_compaction_range(messages, 100) == (1, 3)
+        assert memory._select_partial_compaction_range(messages, 100, 100) == (1, 3)
 
     with patch.object(memory, "get_partial_compact_percentages", return_value=(20, 40)), \
             patch.object(memory, "estimate_tokens", return_value=41):
-        assert memory._select_partial_compaction_range(messages, 100) is None
+        assert memory._select_partial_compaction_range(messages, 100, 100) is None
 
 
 def test_partial_compaction_range_accumulates_oldest_complete_groups_only():
@@ -2272,7 +2295,7 @@ def test_partial_compaction_range_accumulates_oldest_complete_groups_only():
 
     with patch.object(memory, "get_partial_compact_percentages", return_value=(30, 50)), \
             patch.object(memory, "estimate_tokens", side_effect=token_count):
-        assert memory._select_partial_compaction_range(messages, 100) == (1, 5)
+        assert memory._select_partial_compaction_range(messages, 100, 100) == (1, 5)
 
 
 @pytest.mark.anyio
@@ -2291,7 +2314,7 @@ async def test_partial_compact_replaces_only_selected_groups_after_success():
 
     with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 5)), \
             patch.object(memory, "_summarize_messages", new_callable=AsyncMock, return_value="summary") as summarize:
-        assert await memory.partial_compact(messages, 100, "reason") is True
+        assert await memory.partial_compact(messages, 100, 100, "reason") is True
 
     assert summarize.await_args.args[0] == selected
     assert summarize.await_args.kwargs["require_memory_success"] is True
@@ -2319,7 +2342,7 @@ async def test_partial_compact_preserves_history_when_summary_or_memory_fails():
     with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 3)), \
             patch.object(memory, "_summarize_messages", new_callable=AsyncMock, side_effect=RuntimeError("failed")):
         with pytest.raises(RuntimeError, match="failed"):
-            await memory.partial_compact(messages, 100, "reason")
+            await memory.partial_compact(messages, 100, 100, "reason")
 
     assert messages == original
 
@@ -3529,6 +3552,7 @@ async def test_agent_loop_cancel_discards_response_without_tools_or_conversation
     (69, None, 0, 0, []),
     (70, None, 0, 1, ["已触发第一层工具输出裁剪", "第一层工具输出裁剪已完成"]),
     (90, True, 1, 0, ["已触发第二层局部摘要压缩", "第二层局部摘要压缩已完成"]),
+    (101, True, 1, 0, ["已触发第二层局部摘要压缩", "第二层局部摘要压缩已完成"]),
     (90, False, 1, 1, [
         "已触发第二层局部摘要压缩",
         "第二层局部摘要压缩未提交，回退执行第一层工具输出裁剪",
@@ -3569,6 +3593,8 @@ async def test_agent_loop_runs_at_most_one_entry_compaction_layer(
 
     assert committed is False
     assert partial.await_count == partial_calls
+    if partial_calls:
+        assert partial.await_args.args[2] == initial_tokens
     assert compact_tool_outputs.call_count == tool_calls
     assert estimate_tokens.call_count == 1
     save_messages.assert_not_called()
@@ -3625,7 +3651,7 @@ async def test_agent_loop_renders_usage_after_entry_compaction_commits():
         {"role": "user", "content": "current request"},
     ]
 
-    async def compact(current_messages, context_token_limit, reason):
+    async def compact(current_messages, context_token_limit, current_context_tokens, reason):
         current_messages[1:3] = [
             {"role": "user", "content": "summary"},
             {"role": "assistant", "content": "summary acknowledged"},
@@ -3733,7 +3759,7 @@ async def test_agent_loop_creates_and_closes_request_local_client():
 
 
 @pytest.mark.anyio
-async def test_agent_loop_reads_current_context_limit_for_render_and_compaction():
+async def test_agent_loop_reads_current_context_limit_for_entry_and_render_without_auto_compact():
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -3760,22 +3786,22 @@ async def test_agent_loop_reads_current_context_limit_for_render_and_compaction(
             ), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
             patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
-            patch.object(main_module, "estimate_tokens", return_value=1500), \
-            patch.object(main_module, "get_context_token_limit", side_effect=[2048, 2048, 1024]) as get_limit, \
+            patch.object(main_module, "estimate_tokens", return_value=1500) as estimate_tokens, \
+            patch.object(main_module, "get_context_token_limit", return_value=2048) as get_limit, \
             patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
             patch.object(main_module, "_apply_pending_title"), \
-            patch.object(main_module, "refresh_status"), \
-            patch.object(main_module.console, "print"):
+            patch.object(main_module, "refresh_status"):
         committed = await main_module.agent_loop(messages, llm_client=FakeClient())
 
     assert committed is True
-    assert get_limit.call_count == 3
+    assert get_limit.call_count == 2
+    assert estimate_tokens.call_count == 1
     assert render_token_usage.call_args.kwargs["threshold"] == 2048
-    assert "1500 exceeded threshold 1024" in auto_compact.await_args.kwargs["reason"]
+    auto_compact.assert_not_awaited()
 
 
 @pytest.mark.anyio
-async def test_agent_loop_cancel_after_committed_round_skips_auto_compact_check():
+async def test_agent_loop_cancel_after_committed_round_does_not_recheck_compaction():
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},

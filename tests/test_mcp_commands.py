@@ -62,6 +62,37 @@ def test_mcp_help_command_registered():
 
 
 @pytest.mark.anyio
+async def test_handle_compact_keeps_manual_global_compaction_available():
+    saved_path = object()
+    store = Mock(active_path=None)
+    store.save_messages.return_value = saved_path
+    handler = make_handler(store)
+    handler.console = Mock()
+    handler.auto_compact = AsyncMock()
+    history = [{"role": "system", "content": "system"}]
+
+    with patch("system.commands.set_agent_loop_active") as set_active, \
+            patch("system.commands.reset_memory_recall_windows") as reset_windows, \
+            patch("system.commands.refresh_status") as refresh_status:
+        result = await handler.handle_compact(
+            "/compact keep decisions",
+            history,
+            current_conversation=None,
+        )
+
+    assert result == (True, saved_path)
+    handler.auto_compact.assert_awaited_once_with(
+        history,
+        reason="keep decisions",
+        system_prompt_fn=handler.get_system_prompt_fn,
+    )
+    store.save_messages.assert_called_once_with(history)
+    reset_windows.assert_called_once_with()
+    refresh_status.assert_called_once_with()
+    assert [mock_call.args[0] for mock_call in set_active.call_args_list] == [True, False]
+
+
+@pytest.mark.anyio
 async def test_enabled_skill_slash_command_expands_content_and_builtin_commands_keep_priority():
     skill_loader = Mock()
     skill_loader.get_slash_commands.return_value = {

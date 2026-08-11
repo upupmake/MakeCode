@@ -1213,6 +1213,7 @@ def compact_tool_outputs(messages: list[dict]) -> bool:
 def _select_partial_compaction_range(
         messages: list[dict],
         context_token_limit: int,
+        current_context_tokens: int,
 ) -> tuple[int, int] | None:
     complete_groups = [group for group in _conversation_groups(messages) if group[2]]
     candidates = complete_groups[:-1]
@@ -1221,11 +1222,13 @@ def _select_partial_compaction_range(
 
     first_start = candidates[0][0]
     min_percent, max_percent = get_partial_compact_percentages()
+    over_context_limit = current_context_tokens > context_token_limit
+    compaction_base_tokens = current_context_tokens if over_context_limit else context_token_limit
     for _, end, _ in candidates:
         accumulated_tokens = estimate_tokens(messages[first_start:end])
-        if accumulated_tokens * 100 < context_token_limit * min_percent:
+        if accumulated_tokens * 100 < compaction_base_tokens * min_percent:
             continue
-        if accumulated_tokens * 100 > context_token_limit * max_percent:
+        if not over_context_limit and accumulated_tokens * 100 > context_token_limit * max_percent:
             return None
         return first_start, end
     return None
@@ -1318,9 +1321,14 @@ def _summary_messages(summary: str, reason: str) -> list[dict]:
 async def partial_compact(
         messages: list[dict],
         context_token_limit: int,
+        current_context_tokens: int,
         reason: str,
 ) -> bool:
-    selected_range = _select_partial_compaction_range(messages, context_token_limit)
+    selected_range = _select_partial_compaction_range(
+        messages,
+        context_token_limit,
+        current_context_tokens,
+    )
     if selected_range is None:
         return False
 

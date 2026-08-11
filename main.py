@@ -401,6 +401,7 @@ async def _agent_loop_with_client(
             partial_succeeded = await partial_compact(
                 messages,
                 context_token_limit,
+                initial_context_tokens,
                 compact_reason,
             )
         except Exception as exc:
@@ -610,30 +611,6 @@ async def _agent_loop_with_client(
     if title_generated:
         refresh_status()
 
-    current_context_tokens = estimate_tokens(
-        messages, tools_definition=current_super_tools
-    )
-    context_token_limit = get_context_token_limit()
-    if current_context_tokens > context_token_limit:
-        compact_reason = (
-            f"Post agent_loop auto compact triggered: estimated tokens "
-            f"{current_context_tokens} exceeded threshold {context_token_limit}."
-        )
-        try:
-            await auto_compact(
-                messages,
-                reason=compact_reason,
-                system_prompt_fn=get_dynamic_system_prompt,
-            )
-            CONVERSATION_STORE.save_messages(messages)
-            console.print(
-                "\n[bold green]✨ 当前对话上下文已成功压缩并保存！[/bold green]"
-            )
-            refresh_status()
-        except Exception as e:
-            log_error_traceback("Orchestrator auto-compact error", e)
-            error_msg = f"Error executing auto_compact: {e}."
-            console.print(f"[bold red]⚠️ {escape(error_msg)}[/bold red]")
     return True
 
 
