@@ -4295,8 +4295,13 @@ async def test_async_llm_client_has_bounded_timeout_and_retries():
     client = llm_client_module._create_async_chat_client(model)
     try:
         assert str(client.client.base_url) == "https://example.com/v1/"
-        assert client.client.timeout.connect == 10
-        assert client.client.timeout.read == 120
+        request = client.client._client.build_request("GET", "https://example.com/v1/test")
+        assert request.extensions["timeout"] == {
+            "connect": 10.0,
+            "read": 120.0,
+            "write": 120.0,
+            "pool": 120.0,
+        }
         assert client.client.max_retries == 5
         assert client.client._should_retry(httpx.Response(404)) is True
     finally:

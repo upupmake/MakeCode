@@ -15,6 +15,7 @@ from utils.llm_client import (
     _TrackedAsyncAnthropic,
     _client_request_active,
     _create_async_chat_client,
+    _LLM_TIMEOUT,
     build_anthropic_request_messages,
     build_openai_prompt_cache_key,
     format_anthropic_tools,
@@ -534,6 +535,10 @@ def test_cross_model_rebuild_uses_normalized_content_blocks_when_legacy_fields_a
         }],
     }]
 
+def test_llm_timeout_is_provider_neutral():
+    assert isinstance(_LLM_TIMEOUT, tuple)
+    assert _LLM_TIMEOUT == (10.0, 120.0, 120.0, 120.0)
+
 
 @pytest.mark.anyio
 async def test_async_client_factory_selects_official_anthropic_sdk_from_message_format():
@@ -552,6 +557,17 @@ async def test_async_client_factory_selects_official_anthropic_sdk_from_message_
         assert client.reasoning_effort == "max"
         assert client.client.__class__.__mro__[1].__name__ == "AsyncAnthropic"
         assert str(client.client.base_url) == "https://api.anthropic.com"
+        request = client.client._client.build_request(
+            "GET",
+            "https://api.anthropic.com/test",
+            timeout=client.client.timeout,
+        )
+        assert request.extensions["timeout"] == {
+            "connect": 10.0,
+            "read": 120.0,
+            "write": 120.0,
+            "pool": 120.0,
+        }
     finally:
         await client.client.close()
 

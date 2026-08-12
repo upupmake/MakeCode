@@ -14,12 +14,12 @@ from typing import Any, Literal, TypedDict
 
 import httpx
 from anthropic import AsyncAnthropic
-from openai import APIError, AsyncOpenAI, Timeout
+from openai import APIError, AsyncOpenAI
 
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
 
 
-_LLM_TIMEOUT = Timeout(120, connect=10)
+_LLM_TIMEOUT = (10.0, 120.0, 120.0, 120.0)
 _LLM_MAX_RETRIES = 5
 _CLIENT_REQUEST_IDS = itertools.count(1)
 _CURRENT_CLIENT_REQUEST_ID: ContextVar[int | None] = ContextVar(
