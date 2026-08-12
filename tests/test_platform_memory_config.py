@@ -2609,6 +2609,87 @@ async def test_async_chat_stream_retries_http2_error_before_output():
 
 
 @pytest.mark.anyio
+async def test_async_chat_stream_cancellation_stops_before_retry():
+    from system import stream_cancel
+
+    first_stream = _ClosableAsyncStream(
+        [],
+        error_after_chunks=APIError(
+            "Upstream HTTP/2 stream failed",
+            request=httpx.Request("GET", "https://example.com"),
+            body=None,
+        ),
+    )
+    second_stream = _ClosableAsyncStream([
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="should not be requested",
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+    ])
+    raw_client = Mock()
+    raw_client.max_retries = 1
+    raw_client.chat.completions.create = AsyncMock(side_effect=[first_stream, second_stream])
+    client = AsyncChatAPIClient(raw_client, "test-model")
+
+    async def cancel_during_backoff(_delay):
+        stream_cancel.cancel_current_response()
+
+    stream_cancel.start_cancel_listener()
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=cancel_during_backoff), \
+                patch("system.stream_cancel.post_tui"):
+            events = [
+                event
+                async for event in client.generate_stream([{"role": "user", "content": "hello"}])
+            ]
+    finally:
+        stream_cancel.stop_cancel_listener()
+
+    assert events == []
+    assert raw_client.chat.completions.create.await_count == 1
+    assert first_stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_tracked_sdk_retry_sleep_stops_when_response_is_cancelled():
+    from system import stream_cancel
+
+    client = llm_client_module._TrackedAsyncOpenAI(
+        base_url="https://example.com",
+        api_key="key",
+    )
+
+    async def cancel_during_sdk_backoff(_self, **_kwargs):
+        stream_cancel.cancel_current_response()
+
+    stream_cancel.start_cancel_listener()
+    try:
+        with patch.object(
+            llm_client_module.AsyncOpenAI,
+            "_sleep_for_retry",
+            new=cancel_during_sdk_backoff,
+        ), patch("system.stream_cancel.post_tui"):
+            with pytest.raises(llm_client_module._LLMRequestCancelled):
+                await client._sleep_for_retry(
+                    retries_taken=0,
+                    max_retries=1,
+                    options=Mock(),
+                    response=None,
+                )
+    finally:
+        stream_cancel.stop_cancel_listener()
+        await client.close()
+
+
+@pytest.mark.anyio
 async def test_async_chat_stream_does_not_replay_after_partial_http2_error():
     first_stream = _ClosableAsyncStream(
         [

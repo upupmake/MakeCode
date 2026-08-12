@@ -200,6 +200,21 @@ def _set_client_request_retry(
         pass
 
 
+class _LLMRequestCancelled(Exception):
+    pass
+
+
+def _is_response_cancelled() -> bool:
+    from system.stream_cancel import is_cancelled
+
+    return is_cancelled()
+
+
+def _raise_if_response_cancelled() -> None:
+    if _is_response_cancelled():
+        raise _LLMRequestCancelled()
+
+
 class _TrackedAsyncOpenAI(AsyncOpenAI):
     def _should_retry(self, response: httpx.Response) -> bool:
         # 中转场景下 404 多为上游瞬时路由失败（部分渠道缺模型），计入重试
@@ -208,6 +223,7 @@ class _TrackedAsyncOpenAI(AsyncOpenAI):
         return super()._should_retry(response)
 
     async def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
+        _raise_if_response_cancelled()
         _set_client_request_retry(retries_taken + 1, max_retries, response)
         await super()._sleep_for_retry(
             retries_taken=retries_taken,
@@ -215,6 +231,7 @@ class _TrackedAsyncOpenAI(AsyncOpenAI):
             options=options,
             response=response,
         )
+        _raise_if_response_cancelled()
 
 
 class _TrackedAsyncAnthropic(AsyncAnthropic):
@@ -225,6 +242,7 @@ class _TrackedAsyncAnthropic(AsyncAnthropic):
         return super()._should_retry(response)
 
     async def _sleep_for_retry(self, *, retries_taken, max_retries, options, response) -> None:
+        _raise_if_response_cancelled()
         _set_client_request_retry(retries_taken + 1, max_retries, response)
         await super()._sleep_for_retry(
             retries_taken=retries_taken,
@@ -232,6 +250,7 @@ class _TrackedAsyncAnthropic(AsyncAnthropic):
             options=options,
             response=response,
         )
+        _raise_if_response_cancelled()
 
 
 @contextmanager
@@ -661,6 +680,8 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
         tool_calls_started = False
 
         while True:
+            if _is_response_cancelled():
+                return
             text_parts = []
             reasoning_parts = []
             merged_tool_calls = {}
@@ -726,6 +747,8 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
                     if choice.finish_reason is not None:
                         stop_reason = choice.finish_reason
                 break
+            except _LLMRequestCancelled:
+                return
             except (json.JSONDecodeError, APIError) as exc:
                 if isinstance(exc, APIError) and not _is_retryable_openai_stream_error(exc):
                     raise
@@ -744,6 +767,8 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
                     reason,
                 )
                 await asyncio.sleep(min(0.5 * (2 ** (retries_taken - 1)), 8.0))
+                if _is_response_cancelled():
+                    return
             finally:
                 await stream.aclose()
 
@@ -986,22 +1011,27 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
             kwargs["tools"] = tools
 
         with _client_request_active():
-            async with self.client.messages.stream(**kwargs) as stream:
-                tool_calls_started = False
-                async for event in stream:
-                    event_type = getattr(event, "type", None)
-                    if event_type == "content_block_start":
-                        block_type = getattr(event.content_block, "type", None)
-                        if block_type == "tool_use" and not tool_calls_started:
-                            tool_calls_started = True
-                            yield {"type": "tool_calls"}
-                    elif event_type == "content_block_delta":
-                        delta_type = getattr(event.delta, "type", None)
-                        if delta_type == "text_delta" and event.delta.text:
-                            yield {"type": "text", "content": event.delta.text}
-                        elif delta_type == "thinking_delta" and event.delta.thinking:
-                            yield {"type": "reasoning", "content": event.delta.thinking}
-                final_message = await stream.get_final_message()
+            try:
+                async with self.client.messages.stream(**kwargs) as stream:
+                    tool_calls_started = False
+                    async for event in stream:
+                        if _is_response_cancelled():
+                            return
+                        event_type = getattr(event, "type", None)
+                        if event_type == "content_block_start":
+                            block_type = getattr(event.content_block, "type", None)
+                            if block_type == "tool_use" and not tool_calls_started:
+                                tool_calls_started = True
+                                yield {"type": "tool_calls"}
+                        elif event_type == "content_block_delta":
+                            delta_type = getattr(event.delta, "type", None)
+                            if delta_type == "text_delta" and event.delta.text:
+                                yield {"type": "text", "content": event.delta.text}
+                            elif delta_type == "thinking_delta" and event.delta.thinking:
+                                yield {"type": "reasoning", "content": event.delta.thinking}
+                    final_message = await stream.get_final_message()
+            except _LLMRequestCancelled:
+                return
 
         native_blocks = [_to_plain_dict(block) for block in final_message.content]
         text = "".join(
