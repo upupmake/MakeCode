@@ -2772,6 +2772,19 @@ class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
         self.dismiss(None)
 
 
+class McpServiceListView(ListView):
+    # Textual 默认每次点击都发送 Selected；移动高亮时只选中，不激活。
+    def _on_list_item__child_clicked(self, event: ListItem._ChildClicked) -> None:
+        event.stop()
+        event.prevent_default()
+        self.focus()
+        clicked_index = self._nodes.index(event.item)
+        already_selected = self.index == clicked_index
+        self.index = clicked_index
+        if already_selected:
+            self.post_message(self.Selected(self, event.item, clicked_index))
+
+
 class McpSwitchModal(ClosableModalScreen[str | dict]):
     CSS = ChoiceModal.CSS
 
@@ -2802,7 +2815,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         with Vertical(id="mcp-dialog"):
             yield ModalHeader(self._title_text(), title_id="mcp-title", markup=False)
             yield Label(self._summary_text(), id="mcp-summary", markup=False)
-            with ListView(id="mcp-list"):
+            with McpServiceListView(id="mcp-list"):
                 for index, item in enumerate(self._server_switches):
                     yield self._server_item(index, item)
             yield Label(

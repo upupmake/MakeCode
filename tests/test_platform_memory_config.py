@@ -1014,6 +1014,51 @@ async def test_mcp_switch_modal_separates_services_from_actions_and_shows_detail
 
 
 @pytest.mark.anyio
+async def test_mcp_switch_modal_click_selects_before_toggling_service():
+    modal = McpSwitchModal(
+        [
+            {
+                "name": "filesystem",
+                "disabled": False,
+                "loaded": True,
+                "transport": "stdio",
+                "target": "npx",
+                "tool_count": 4,
+            },
+            {
+                "name": "remote-api",
+                "disabled": True,
+                "loaded": False,
+                "transport": "streamable-http",
+                "target": "https://example.com/mcp",
+                "tool_count": 0,
+            },
+        ],
+        Mock(),
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        service_list = modal.query_one("#mcp-list", ListView)
+        assert_list_selection(service_list, 0)
+
+        await pilot.click("#mcp-server-1")
+        await pilot.pause()
+
+        assert_list_selection(service_list, 1)
+        assert "草稿启用 1 个" in str(modal.query_one("#mcp-summary", Label).render())
+        assert "草稿：禁用" in str(service_list.children[1].query_one(Label).render())
+
+        await pilot.click("#mcp-server-1")
+        await pilot.pause()
+
+        assert_list_selection(service_list, 1)
+        assert "草稿启用 2 个" in str(modal.query_one("#mcp-summary", Label).render())
+        assert "草稿：启用" in str(service_list.children[1].query_one(Label).render())
+
+
+@pytest.mark.anyio
 async def test_mcp_switch_modal_updates_summary_and_applies_with_fixed_button():
     modal = McpSwitchModal(
         [{"name": "api", "disabled": True, "loaded": False, "transport": "sse", "target": "https://example.com/sse", "tool_count": 0}],
