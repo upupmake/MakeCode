@@ -81,7 +81,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
         align: center middle;
     }
 
@@ -867,6 +867,61 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     .mcp-action {
+        width: 1fr;
+        margin: 0 1;
+    }
+
+    #mcp-tools-dialog {
+        width: 86%;
+        height: 82%;
+        min-height: 16;
+        border: round #22c55e;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #mcp-tools-title,
+    #mcp-tools-summary,
+    #mcp-tools-help {
+        height: auto;
+    }
+
+    #mcp-tools-summary,
+    #mcp-tools-help {
+        margin-top: 1;
+    }
+
+    #mcp-tools-list {
+        height: 1fr;
+        min-height: 5;
+        margin-top: 1;
+        padding: 0 1;
+        border: round #334155;
+    }
+
+    #mcp-tools-list > ListItem {
+        height: auto;
+        min-height: 3;
+        margin-bottom: 1;
+        padding: 1 2;
+        border: round #1e293b;
+    }
+
+    #mcp-tools-list > ListItem.-highlight {
+        border: round #38bdf8;
+    }
+
+    #mcp-tools-list > ListItem > Label {
+        width: 1fr;
+        height: auto;
+    }
+
+    #mcp-tools-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    .mcp-tools-action {
         width: 1fr;
         margin: 0 1;
     }
@@ -2568,6 +2623,155 @@ class McpAddModal(ClosableModalScreen[dict[str, Any] | None]):
         self.dismiss(None)
 
 
+class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "cancel", "Close", priority=True),
+        Binding("enter", "confirm_or_toggle", "Toggle/Confirm", priority=True),
+        Binding("space", "toggle", "Toggle", priority=True),
+    ]
+
+    def __init__(self, tool_switches: dict[str, Any], mcp_manager: Any) -> None:
+        super().__init__()
+        self._server_name = tool_switches["server"]
+        self._loaded = bool(tool_switches.get("loaded", False))
+        self._server_disabled = bool(tool_switches.get("server_disabled", False))
+        self._can_manage = self._loaded and not self._server_disabled
+        self._tools = list(tool_switches.get("tools", []))
+        self._mcp_manager = mcp_manager
+        self._draft_states = {
+            item["original_name"]: bool(item["disabled"])
+            for item in self._tools
+        }
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="mcp-tools-dialog"):
+            yield ModalHeader(
+                f"🛠️ MCP 工具管理 · {self._server_name}",
+                title_id="mcp-tools-title",
+                markup=False,
+            )
+            yield Label(self._summary_text(), id="mcp-tools-summary", markup=False)
+            with ListView(id="mcp-tools-list"):
+                for index, item in enumerate(self._tools):
+                    yield self._tool_item(index, item)
+            yield Label(
+                "↑↓ 选择工具 · Enter/Space 切换 · Tab 切换到操作按钮 · q 返回服务列表",
+                id="mcp-tools-help",
+                markup=False,
+            )
+            with Horizontal(id="mcp-tools-actions"):
+                yield Button(
+                    "确认应用",
+                    id="mcp-tools-apply",
+                    variant="success",
+                    classes="mcp-tools-action",
+                    disabled=not self._can_manage or not self._tools,
+                )
+                yield Button(
+                    "返回服务列表",
+                    id="mcp-tools-close",
+                    variant="warning",
+                    classes="mcp-tools-action",
+                )
+
+    def on_mount(self) -> None:
+        tool_list = self.query_one("#mcp-tools-list", ListView)
+        if self._can_manage and self._tools:
+            tool_list.index = 0
+            tool_list.focus()
+        else:
+            self.query_one("#mcp-tools-close", Button).focus()
+
+    def _summary_text(self) -> str:
+        if self._server_disabled:
+            return "服务当前未连接（配置已禁用） · 请先启用并连接服务后管理工具"
+        if not self._loaded:
+            return "服务当前未连接 · 请先启用并连接服务后管理工具"
+        if not self._tools:
+            return "服务已连接，但当前未提供任何工具"
+        enabled_count = sum(not disabled for disabled in self._draft_states.values())
+        return f"共 {len(self._tools)} 个工具 · 草稿启用 {enabled_count} 个 · 可在确认前自由切换"
+
+    def _tool_item(self, index: int, item: dict[str, Any]) -> ListItem:
+        return ListItem(Label(self._tool_label(item), markup=False), id=f"mcp-tool-{index}")
+
+    def _tool_label(self, item: dict[str, Any]) -> Text:
+        original_name = item["original_name"]
+        enabled = not self._draft_states[original_name]
+        label = Text()
+        label.append("● " if enabled else "○ ", style="green" if enabled else "#64748b")
+        label.append(item["name"], style="bold green" if enabled else "#94a3b8")
+        label.append(f"\n   MCP 原始名称：{original_name}", style="#a1a1aa")
+        label.append(f"\n   {item['description']}", style="white")
+        return label
+
+    def _selected_index(self) -> int:
+        tool_list = self.query_one("#mcp-tools-list", ListView)
+        return tool_list.index if tool_list.index is not None else 0
+
+    def _refresh_tool_row(self, index: int) -> None:
+        tool_list = self.query_one("#mcp-tools-list", ListView)
+        tool_list.children[index].query_one(Label).update(self._tool_label(self._tools[index]))
+        tool_list.index = index
+        tool_list.focus()
+        self.query_one("#mcp-tools-summary", Label).update(self._summary_text())
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        self.action_toggle()
+
+    def action_toggle(self) -> None:
+        if not self._can_manage or not isinstance(self.focused, ListView):
+            return
+        index = self._selected_index()
+        if index >= len(self._tools):
+            return
+        original_name = self._tools[index]["original_name"]
+        self._draft_states[original_name] = not self._draft_states[original_name]
+        self._refresh_tool_row(index)
+
+    def action_confirm_or_toggle(self) -> None:
+        focused = self.focused
+        if isinstance(focused, ListView):
+            self.action_toggle()
+        elif isinstance(focused, Button):
+            if focused.id == "mcp-tools-apply":
+                self.action_apply()
+            elif focused.id == "mcp-tools-close":
+                self.action_cancel()
+
+    def action_apply(self) -> None:
+        if not self._can_manage or not self._tools:
+            return
+        disabled_tools = [
+            item["original_name"]
+            for item in self._tools
+            if self._draft_states[item["original_name"]]
+        ]
+        try:
+            result = self._mcp_manager.apply_tool_switches(
+                self._server_name,
+                disabled_tools,
+            )
+        except Exception as exc:
+            self.query_one("#mcp-tools-title", Label).update(
+                "❌ 应用 MCP 工具开关失败\n"
+                f"{self._server_name}: {exc}"
+            )
+            return
+        self.dismiss({"server": self._server_name, "result": result})
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "mcp-tools-apply":
+            self.action_apply()
+        elif event.button.id == "mcp-tools-close":
+            self.action_cancel()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class McpSwitchModal(ClosableModalScreen[str | dict]):
     CSS = ChoiceModal.CSS
 
@@ -2575,6 +2779,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "confirm_or_toggle", "Toggle/Confirm", priority=True),
         Binding("space", "toggle", "Toggle", priority=True),
+        Binding("t", "manage_tools", "Manage Tools", priority=True),
         Binding("a", "add", "Add", priority=True),
         Binding("d", "delete", "Delete", priority=True),
         Binding("y", "confirm_delete", "Confirm Delete", priority=True),
@@ -2590,6 +2795,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         self._pending_delete_index: int | None = None
         self._deleted_results: list[dict[str, Any]] = []
         self._added_results: list[dict[str, Any]] = []
+        self._tool_results: list[dict[str, Any]] = []
         self._row_reload_generation = 0
 
     def compose(self) -> ComposeResult:
@@ -2600,12 +2806,13 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
                 for index, item in enumerate(self._server_switches):
                     yield self._server_item(index, item)
             yield Label(
-                "↑↓ 选择服务 · Enter/Space 切换 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 取消",
+                "↑↓ 选择服务 · Enter/Space 切换 · t 管理工具 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 取消",
                 id="mcp-help",
                 markup=False,
             )
             with Horizontal(id="mcp-actions"):
                 yield Button("确认应用", id="mcp-apply", variant="success", classes="mcp-action")
+                yield Button("管理工具", id="mcp-tools", variant="primary", classes="mcp-action")
                 yield Button("添加服务", id="mcp-add", variant="primary", classes="mcp-action")
                 yield Button("取消", id="mcp-cancel", variant="warning", classes="mcp-action")
 
@@ -2700,6 +2907,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
             "disabled_updates": dict(self._draft_states),
             "deleted_results": list(self._deleted_results),
             "added_results": list(self._added_results),
+            "tool_results": list(self._tool_results),
         }
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
@@ -2716,8 +2924,50 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
                 self.dismiss(self._dismiss_payload("confirm"))
             elif focused.id == "mcp-cancel":
                 self.action_cancel()
+            elif focused.id == "mcp-tools":
+                self.action_manage_tools()
             elif focused.id == "mcp-add":
                 self.action_add()
+
+    def action_manage_tools(self) -> None:
+        if self._pending_delete_name is not None or not self._server_switches:
+            return
+        selected_index = self._selected_index()
+        if selected_index >= len(self._server_switches):
+            return
+        server_name = self._server_switches[selected_index]["name"]
+        try:
+            tool_switches = self._mcp_manager.list_tool_switches(server_name)
+        except Exception as exc:
+            self.query_one("#mcp-title", Label).update(
+                "❌ 读取 MCP 工具列表失败\n"
+                f"{server_name}: {exc}"
+            )
+            return
+        self.app.push_screen(
+            McpToolsModal(tool_switches, self._mcp_manager),
+            lambda result: self._finish_manage_tools(selected_index, result),
+        )
+
+    def _finish_manage_tools(
+        self,
+        selected_index: int,
+        tool_result: dict[str, Any] | None,
+    ) -> None:
+        if tool_result is not None:
+            self._tool_results.append(tool_result)
+            result = tool_result.get("result", {})
+            saved = bool(result.get("saved"))
+            icon = "✅" if saved else "ℹ️"
+            status_text = "已保存" if saved else "未变更"
+            self.query_one("#mcp-title", Label).update(
+                f"{icon} MCP 工具开关{status_text}\n"
+                f"{tool_result.get('server', '')} · {result.get('message', '')}"
+            )
+        choice_list = self.query_one("#mcp-list", ListView)
+        if self._server_switches:
+            choice_list.index = min(selected_index, len(self._server_switches) - 1)
+            choice_list.focus()
 
     def action_add(self) -> None:
         if self._pending_delete_name is not None:
@@ -2810,6 +3060,8 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
                 self.dismiss(self._dismiss_payload("confirm"))
         elif event.button.id == "mcp-add":
             self.action_add()
+        elif event.button.id == "mcp-tools":
+            self.action_manage_tools()
         elif event.button.id == "mcp-cancel":
             self.action_cancel()
 

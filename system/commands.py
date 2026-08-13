@@ -221,9 +221,11 @@ class CommandHandler:
         disabled_servers = status.get("disabled_servers", [])
         loaded_servers = status.get("loaded_servers", [])
 
-        # 统计每个已加载服务的工具数量
+        # 统计每个已加载服务的启用工具数量
         tool_count_by_server = {}
         for tool in status.get("tools", []):
+            if tool.get("disabled", False):
+                continue
             provider = tool.get("provider", "Unknown")
             tool_count_by_server[provider] = tool_count_by_server.get(provider, 0) + 1
 
@@ -295,7 +297,7 @@ class CommandHandler:
         table = Table(
             title=(
                 "[bold cyan]🛠️ MCP 工具明细[/bold cyan] "
-                f"[#a1a1aa]· {status['tool_count']} 个[/#a1a1aa]"
+                f"[#a1a1aa]· {status.get('total_tool_count', status['tool_count'])} 个[/#a1a1aa]"
             ),
             box=box.ROUNDED,
             border_style="#52525b",
@@ -309,9 +311,13 @@ class CommandHandler:
         table.add_column("描述", style="white", overflow="fold", ratio=5)
 
         for tool in status["tools"]:
+            disabled = bool(tool.get("disabled", False))
+            tool_name = Text()
+            tool_name.append("○ " if disabled else "● ", style="#71717a" if disabled else "green")
+            tool_name.append(tool["name"], style="#a1a1aa" if disabled else "bold green")
             table.add_row(
                 tool.get("provider", "Unknown"),
-                tool["name"],
+                tool_name,
                 tool["description"],
             )
         if not status["tools"]:
@@ -387,7 +393,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 删除指定 MCP 服务配置。该命令会二次确认；确认后写入配置文件，并尝试停用运行中的同名服务。
 
 #### `/mcp-switch`
-打开交互式 MCP 服务管理面板。可手动添加本地 stdio、远程 Streamable HTTP 或 SSE 服务，也可切换已有服务的启用/禁用状态；新服务默认禁用，确认后保存开关修改并尝试增量启停服务。
+打开交互式 MCP 服务管理面板。可手动添加本地 stdio、远程 Streamable HTTP 或 SSE 服务，也可切换已有服务的启用/禁用状态；选中已连接服务后可进入工具管理，逐个启用或禁用其工具。新服务默认禁用，确认后保存开关修改并尝试增量启停服务。
 
 #### `/mcp-restart`
 重启 MCP 后台管理器，重新读取配置文件并重新连接所有启用的 MCP 服务。适合配置手动编辑后完整重载，或增量启停失败后恢复状态。
@@ -401,7 +407,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         """处理 /mcp-switch 命令"""
         self.console.print(
             "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
-            "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，按 Enter 或 Space 切换状态；可通过底部按钮添加服务、确认应用或取消。[/#aaaaaa]",
+            "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，Enter/Space 切换状态，按 t 管理所选服务的工具；也可通过底部按钮添加服务、管理工具、确认应用或取消。[/#aaaaaa]",
             tui_region=TuiRegion.TOOLS,
         )
         try:
@@ -425,10 +431,12 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         deleted_lines = self._format_mcp_panel_delete_lines(switch_result.get("deleted_results", []))
         added_lines = self._format_mcp_panel_add_lines(switch_result.get("added_results", []))
+        tool_lines = self._format_mcp_panel_tool_lines(switch_result.get("tool_results", []))
         if switch_result.get("action") == "cancel":
             lines = [
                 "\n[bold yellow]↩️ 已取消本次 MCP 开关草稿修改，开关状态未应用。[/bold yellow]"
             ]
+            lines.extend(tool_lines)
             lines.extend(added_lines)
             lines.extend(deleted_lines)
             self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
@@ -440,14 +448,16 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
         except Exception as exc:
             log_error_traceback("commands handle_mcp_switch apply", exc)
-            self.console.print(
-                f"\n[bold red]❌ 应用 MCP 开关变更失败: {exc}[/bold red]",
-                tui_region=TuiRegion.TOOLS,
-            )
+            lines = [f"\n[bold red]❌ 应用 MCP 开关变更失败: {exc}[/bold red]"]
+            lines.extend(tool_lines)
+            lines.extend(added_lines)
+            lines.extend(deleted_lines)
+            self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
             return True
 
         if not apply_result.get("saved"):
             lines = [f"\n[bold yellow]ℹ️ {apply_result.get('message', '没有检测到变更。')}[/bold yellow]"]
+            lines.extend(tool_lines)
             lines.extend(added_lines)
             lines.extend(deleted_lines)
             self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
@@ -482,10 +492,28 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             summary_lines.append(
                 f"[bold red]部分服务切换失败:[/bold red] {failure_text}"
             )
+        summary_lines.extend(tool_lines)
         summary_lines.extend(added_lines)
         summary_lines.extend(deleted_lines)
         self.console.print("\n".join(summary_lines), tui_region=TuiRegion.TOOLS)
         return True
+
+    def _format_mcp_panel_tool_lines(self, tool_results: list[dict]) -> list[str]:
+        lines = []
+        for item in tool_results:
+            server_name = escape(str(item.get("server", "")))
+            result = item.get("result", {})
+            disabled_tools = [escape(str(name)) for name in result.get("disabled_tools", [])]
+            if result.get("saved"):
+                line = f"\n[bold green]✅ 已保存 MCP 工具开关:[/bold green] {server_name}"
+            else:
+                line = f"\n[bold yellow]ℹ️ MCP 工具开关未变更:[/bold yellow] {server_name}"
+            if disabled_tools:
+                line += f"\n[#aaaaaa]已禁用工具: {', '.join(disabled_tools)}[/#aaaaaa]"
+            else:
+                line += "\n[#aaaaaa]该服务的工具均已启用。[/#aaaaaa]"
+            lines.append(line)
+        return lines
 
     def _format_mcp_add_lines(self, server_name: str, result: dict) -> list[str]:
         failed = result.get("failed", [])

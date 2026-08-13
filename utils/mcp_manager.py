@@ -103,6 +103,41 @@ class GlobalMCPManager:
             )
         return result
 
+    def list_tool_switches(self, server_name: str) -> dict:
+        config_dict = self.read_config()
+        servers = config_dict.get("mcpServers", {})
+        if server_name not in servers:
+            raise ValueError(f"MCP 服务不存在: {server_name}")
+
+        cfg = servers[server_name]
+        disabled_tools = set(cfg.get("disabledTools") or [])
+        with self._db_lock:
+            loaded = server_name in self.clients
+            status_tools = list(self._server_status_tools.get(server_name, []))
+
+        tools = []
+        for item in status_tools:
+            original_name = item.get("original_name")
+            if not original_name:
+                continue
+            disabled = original_name in disabled_tools
+            tools.append(
+                {
+                    "name": item["name"],
+                    "original_name": original_name,
+                    "description": item["description"],
+                    "disabled": disabled,
+                    "enabled": not disabled,
+                }
+            )
+
+        return {
+            "server": server_name,
+            "loaded": loaded,
+            "server_disabled": bool(cfg.get("disabled", False)),
+            "tools": tools,
+        }
+
     def start_background(self):
         if self._is_running:
             return
@@ -187,16 +222,23 @@ class GlobalMCPManager:
     def _rebuild_global_registry_locked(self):
         all_tools = []
         all_handlers = {}
-        all_status_tools = []
 
-        for server_name in self.server_configs.keys():
-            all_tools.extend(self._server_tools.get(server_name, []))
+        for server_name, cfg in self.server_configs.items():
+            disabled_tools = set(cfg.get("disabledTools") or [])
+            server_tool_items = self._server_tools.get(server_name, [])
             server_status_items = self._server_status_tools.get(server_name, [])
-            all_status_tools.extend(server_status_items)
+            if cfg.get("disabled", False):
+                continue
+            enabled_items = [
+                (tool, status)
+                for tool, status in zip(server_tool_items, server_status_items)
+                if status.get("original_name") not in disabled_tools
+            ]
+            all_tools.extend(tool for tool, _ in enabled_items)
             client = self.clients.get(server_name)
             if not client:
                 continue
-            for item in server_status_items:
+            for _, item in enabled_items:
                 tool_name = item.get("name")
                 original_name = item.get("original_name")
                 if not tool_name or not original_name:
@@ -209,14 +251,21 @@ class GlobalMCPManager:
 
         self._mcp_tools = all_tools
         self._mcp_handlers = all_handlers
-        self._status_tools = [
-            {
-                "name": item["name"],
-                "description": item["description"],
-                "provider": item["provider"],
-            }
-            for item in all_status_tools
-        ]
+        self._status_tools = []
+        for server_name, cfg in self.server_configs.items():
+            disabled_tools = set(cfg.get("disabledTools") or [])
+            server_disabled = bool(cfg.get("disabled", False))
+            for item in self._server_status_tools.get(server_name, []):
+                disabled = server_disabled or item.get("original_name") in disabled_tools
+                self._status_tools.append(
+                    {
+                        "name": item["name"],
+                        "description": item["description"],
+                        "provider": item["provider"],
+                        "disabled": disabled,
+                        "enabled": not disabled,
+                    }
+                )
 
     def _make_handler(self, client, original_name: str, tool_name: str):
         def handler(**kwargs):
@@ -258,7 +307,10 @@ class GlobalMCPManager:
         return transport == "stdio"
 
     def _build_client(self, server_name: str, cfg: dict) -> Client:
-        transport = {"mcpServers": {server_name: cfg}}
+        client_cfg = dict(cfg)
+        client_cfg.pop("disabled", None)
+        client_cfg.pop("disabledTools", None)
+        transport = {"mcpServers": {server_name: client_cfg}}
         if not self._should_use_safe_stdio_log(cfg):
             return Client(transport)
 
@@ -622,6 +674,8 @@ class GlobalMCPManager:
 
         self._save_config_dict(config_dict)
         self.server_configs = servers
+        with self._db_lock:
+            self._rebuild_global_registry_locked()
 
         if not self._is_running:
             self.start_background()
@@ -705,6 +759,52 @@ class GlobalMCPManager:
             "message": message,
         }
 
+    def apply_tool_switches(self, server_name: str, disabled_tools: list[str]) -> dict:
+        config_dict = self.read_config()
+        servers = config_dict.get("mcpServers", {})
+        if server_name not in servers:
+            raise ValueError(f"MCP 服务不存在: {server_name}")
+
+        current_disabled_tools = list(servers[server_name].get("disabledTools") or [])
+        with self._db_lock:
+            available_tools = {
+                item.get("original_name")
+                for item in self._server_status_tools.get(server_name, [])
+                if item.get("original_name")
+            }
+        updated_disabled_tools = [
+            name
+            for name in current_disabled_tools
+            if name not in available_tools or name in disabled_tools
+        ]
+        updated_disabled_tools.extend(
+            name for name in disabled_tools if name not in updated_disabled_tools
+        )
+        if current_disabled_tools == updated_disabled_tools:
+            return {
+                "saved": False,
+                "server": server_name,
+                "disabled_tools": updated_disabled_tools,
+                "message": "没有检测到任何 MCP 工具开关变更。",
+            }
+
+        if updated_disabled_tools:
+            servers[server_name]["disabledTools"] = updated_disabled_tools
+        else:
+            servers[server_name].pop("disabledTools", None)
+        self._save_config_dict(config_dict)
+        self.server_configs = servers
+        with self._db_lock:
+            self._rebuild_global_registry_locked()
+        refresh_status()
+
+        return {
+            "saved": True,
+            "server": server_name,
+            "disabled_tools": updated_disabled_tools,
+            "message": "MCP 工具开关已保存，并已更新当前工具注册表。",
+        }
+
     def get_status_info(self) -> dict:
         config_servers = []
         disabled_servers = []
@@ -732,7 +832,8 @@ class GlobalMCPManager:
                 "config_path": str(self.config_path)
                 if self.config_path
                 else "Not configured",
-                "tool_count": len(self._status_tools),
+                "tool_count": sum(not item.get("disabled", False) for item in self._status_tools),
+                "total_tool_count": len(self._status_tools),
                 "servers": list(self.server_configs.keys()),
                 "config_servers": config_servers,
                 "enabled_config_servers": enabled_config_servers,

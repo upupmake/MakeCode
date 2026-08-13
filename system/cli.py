@@ -18,7 +18,7 @@ COMMAND_DESCRIPTIONS = {
     "/mcp-add": "<name> 添加 MCP 服务配置；stdio 示例：/mcp-add fs -- npx -y @server/pkg；HTTP 示例：/mcp-add api --url https://example.com/mcp --header X-Api-Key=xxx。服务名已存在时请先 /mcp-delete <name>。",
     "/mcp-delete": "<name> 删除 MCP 服务配置；会二次确认并停用运行中的服务。",
     "/mcp-restart": "重新启动 MCP 管理器并加载配置。",
-    "/mcp-switch": "交互式切换 MCP 服务启用/禁用状态，并支持确认或取消保存。",
+    "/mcp-switch": "管理 MCP 服务启停、添加/删除配置，并按服务启用或禁用工具。",
     "/load": "列出 6.0 会话并选择加载；自动恢复任务计划和 Sub-Agent 历史。",
     "/skills-switch": "切换 skills 目录摘要注入状态（开启/关闭）。",
     "/skills-list": "打开当前工作区 Skills 配置面板，可搜索、按状态过滤并启用或禁用技能。",

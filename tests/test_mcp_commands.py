@@ -194,6 +194,70 @@ def test_mcp_switch_opens_management_panel_when_server_list_is_empty(monkeypatch
     choose_switches.assert_called_once_with([], manager)
 
 
+def test_mcp_switch_reports_saved_tool_changes_when_server_draft_is_cancelled(monkeypatch):
+    manager = Mock()
+    manager.list_server_switches.return_value = [{"name": "filesystem"}]
+    manager.get_status_info.return_value = {"config_path": "test"}
+    choose_switches = Mock(return_value={
+        "action": "cancel",
+        "disabled_updates": {},
+        "deleted_results": [],
+        "added_results": [],
+        "tool_results": [{
+            "server": "filesystem",
+            "result": {
+                "saved": True,
+                "disabled_tools": ["read.file"],
+                "message": "saved",
+            },
+        }],
+    })
+    monkeypatch.setattr("system.commands.interactive_switch_mcp_servers", choose_switches)
+    handler = make_handler()
+    handler.mcp_manager = manager
+    handler.console = Mock()
+
+    assert handler.handle_mcp_switch() is True
+
+    output = handler.console.print.call_args.args[0]
+    assert "已取消本次 MCP 开关草稿修改" in output
+    assert "已保存 MCP 工具开关" in output
+    assert "filesystem" in output
+    assert "read.file" in output
+    manager.apply_switches.assert_not_called()
+
+
+def test_mcp_switch_reports_saved_tool_changes_when_service_apply_fails(monkeypatch):
+    manager = Mock()
+    manager.list_server_switches.return_value = [{"name": "filesystem"}]
+    manager.apply_switches.side_effect = RuntimeError("service apply failed")
+    choose_switches = Mock(return_value={
+        "action": "confirm",
+        "disabled_updates": {"filesystem": False},
+        "deleted_results": [],
+        "added_results": [],
+        "tool_results": [{
+            "server": "filesystem",
+            "result": {
+                "saved": True,
+                "disabled_tools": ["read.file"],
+                "message": "saved",
+            },
+        }],
+    })
+    monkeypatch.setattr("system.commands.interactive_switch_mcp_servers", choose_switches)
+    handler = make_handler()
+    handler.mcp_manager = manager
+    handler.console = Mock()
+
+    assert handler.handle_mcp_switch() is True
+
+    output = handler.console.print.call_args.args[0]
+    assert "应用 MCP 开关变更失败" in output
+    assert "已保存 MCP 工具开关" in output
+    assert "read.file" in output
+
+
 def test_mcp_view_renders_read_only_status_dashboard(monkeypatch):
     manager = Mock()
     manager.get_status_info.return_value = {
@@ -245,6 +309,52 @@ def test_mcp_view_renders_read_only_status_dashboard(monkeypatch):
     assert shown["content"].renderables[2].show_lines is True
     assert "read_file" in shown["text"]
     assert "search_docs" in shown["text"]
+
+
+def test_mcp_view_marks_disabled_tools_without_adding_controls(monkeypatch):
+    manager = Mock()
+    manager.get_status_info.return_value = {
+        "config_path": "/project/.makecode/mcp_config.json",
+        "is_running": True,
+        "tool_count": 1,
+        "total_tool_count": 2,
+        "config_servers": ["filesystem"],
+        "enabled_config_servers": ["filesystem"],
+        "disabled_servers": [],
+        "loaded_servers": ["filesystem"],
+        "tools": [
+            {
+                "provider": "filesystem",
+                "name": "filesystem_read_file",
+                "description": "Read a file",
+                "disabled": False,
+            },
+            {
+                "provider": "filesystem",
+                "name": "filesystem_delete_file",
+                "description": "Delete a file",
+                "disabled": True,
+            },
+        ],
+    }
+    shown = {}
+
+    def show_panel(title, content):
+        console = Console(record=True, width=100)
+        console.print(content)
+        shown["text"] = console.export_text()
+        return "closed"
+
+    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+    handler = make_handler()
+    handler.mcp_manager = manager
+
+    assert handler.handle_mcp_view() is True
+
+    assert "MCP 工具明细 · 2 个" in shown["text"]
+    assert "● filesystem_read_file" in shown["text"]
+    assert "○ filesystem_delete_file" in shown["text"]
+    assert "确认应用" not in shown["text"]
 
 
 def test_mcp_view_renders_empty_state_without_controls(monkeypatch):
@@ -353,6 +463,17 @@ async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypa
     assert actions["/help"] == actions["/cmds"] == CommandAction.CONTINUE
 
 
+def test_mcp_quick_button_opens_management_panel():
+    app = MakeCodeTuiApp.__new__(MakeCodeTuiApp)
+    app._run_quick_command = Mock()
+    event = Mock()
+    event.button.id = "quick-mcp"
+
+    app.on_button_pressed(event)
+
+    app._run_quick_command.assert_called_once_with("/mcp-switch")
+
+
 def test_mcp_registry_snapshot_copies_tools_and_handlers_under_one_lock():
     manager = GlobalMCPManager()
     handler = Mock()
@@ -367,6 +488,270 @@ def test_mcp_registry_snapshot_copies_tools_and_handlers_under_one_lock():
         [{"name": "server_read"}],
         {"server_read": handler},
     )
+
+
+def test_mcp_manager_lists_tool_switches_by_original_name(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "filesystem": {
+                "command": "npx",
+                "disabled": False,
+                "disabledTools": ["read.file"],
+            }
+        }
+    }), encoding="utf-8")
+    manager.clients["filesystem"] = object()
+    manager._server_status_tools["filesystem"] = [
+        {
+            "name": "filesystem_read_file",
+            "original_name": "read.file",
+            "description": "Read a file",
+            "provider": "filesystem",
+        },
+        {
+            "name": "filesystem_write_file",
+            "original_name": "write.file",
+            "description": "Write a file",
+            "provider": "filesystem",
+        },
+    ]
+
+    switches = manager.list_tool_switches("filesystem")
+
+    assert switches == {
+        "server": "filesystem",
+        "loaded": True,
+        "server_disabled": False,
+        "tools": [
+            {
+                "name": "filesystem_read_file",
+                "original_name": "read.file",
+                "description": "Read a file",
+                "disabled": True,
+                "enabled": False,
+            },
+            {
+                "name": "filesystem_write_file",
+                "original_name": "write.file",
+                "description": "Write a file",
+                "disabled": False,
+                "enabled": True,
+            },
+        ],
+    }
+
+
+def test_mcp_manager_applies_tool_switches_without_reconnecting(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "filesystem": {"command": "npx", "disabled": False}
+        }
+    }), encoding="utf-8")
+    manager.server_configs = manager.read_config()["mcpServers"]
+    client = object()
+    read_handler = Mock()
+    write_handler = Mock()
+    manager.clients["filesystem"] = client
+    manager._server_tools["filesystem"] = [
+        {"name": "filesystem_read_file", "description": "Read a file"},
+        {"name": "filesystem_write_file", "description": "Write a file"},
+    ]
+    manager._server_status_tools["filesystem"] = [
+        {
+            "name": "filesystem_read_file",
+            "original_name": "read.file",
+            "description": "Read a file",
+            "provider": "filesystem",
+        },
+        {
+            "name": "filesystem_write_file",
+            "original_name": "write.file",
+            "description": "Write a file",
+            "provider": "filesystem",
+        },
+    ]
+    manager._make_handler = Mock(side_effect=lambda **kwargs: {
+        "filesystem_read_file": read_handler,
+        "filesystem_write_file": write_handler,
+    }[kwargs["tool_name"]])
+    with manager._db_lock:
+        manager._rebuild_global_registry_locked()
+
+    result = manager.apply_tool_switches("filesystem", ["read.file"])
+
+    assert result["saved"] is True
+    assert result["disabled_tools"] == ["read.file"]
+    assert manager.read_config()["mcpServers"]["filesystem"]["disabledTools"] == ["read.file"]
+    assert manager.clients["filesystem"] is client
+    assert manager.get_registry_snapshot() == (
+        [{"name": "filesystem_write_file", "description": "Write a file"}],
+        {"filesystem_write_file": write_handler},
+    )
+    assert manager.get_status_info()["tool_count"] == 1
+    assert manager.get_status_info()["total_tool_count"] == 2
+    assert manager.get_status_info()["tools"] == [
+        {
+            "name": "filesystem_read_file",
+            "description": "Read a file",
+            "provider": "filesystem",
+            "disabled": True,
+            "enabled": False,
+        },
+        {
+            "name": "filesystem_write_file",
+            "description": "Write a file",
+            "provider": "filesystem",
+            "disabled": False,
+            "enabled": True,
+        },
+    ]
+
+    restored = manager.apply_tool_switches("filesystem", [])
+
+    assert restored["saved"] is True
+    assert manager.get_registry_snapshot()[0] == [
+        {"name": "filesystem_read_file", "description": "Read a file"},
+        {"name": "filesystem_write_file", "description": "Write a file"},
+    ]
+    assert manager.clients["filesystem"] is client
+
+
+def test_mcp_manager_preserves_unavailable_disabled_tools_on_apply(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "filesystem": {
+                "command": "npx",
+                "disabled": False,
+                "disabledTools": ["temporarily.missing"],
+            }
+        }
+    }), encoding="utf-8")
+    manager.server_configs = manager.read_config()["mcpServers"]
+    manager.clients["filesystem"] = object()
+    manager._server_tools["filesystem"] = [
+        {"name": "filesystem_read_file", "description": "Read a file"},
+    ]
+    manager._server_status_tools["filesystem"] = [{
+        "name": "filesystem_read_file",
+        "original_name": "read.file",
+        "description": "Read a file",
+        "provider": "filesystem",
+    }]
+
+    result = manager.apply_tool_switches("filesystem", ["read.file"])
+
+    assert result["disabled_tools"] == ["temporarily.missing", "read.file"]
+    assert manager.read_config()["mcpServers"]["filesystem"]["disabledTools"] == [
+        "temporarily.missing",
+        "read.file",
+    ]
+
+
+def test_mcp_manager_filters_colliding_schema_by_original_name(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "server": {
+                "command": "npx",
+                "disabled": False,
+                "disabledTools": ["read.file"],
+            }
+        }
+    }), encoding="utf-8")
+    manager.server_configs = manager.read_config()["mcpServers"]
+    manager.clients["server"] = object()
+    manager._server_tools["server"] = [
+        {"name": "server_read_file", "description": "Disabled schema"},
+        {"name": "server_read_file", "description": "Enabled schema"},
+    ]
+    manager._server_status_tools["server"] = [
+        {
+            "name": "server_read_file",
+            "original_name": "read.file",
+            "description": "Disabled schema",
+            "provider": "server",
+        },
+        {
+            "name": "server_read_file",
+            "original_name": "read/file",
+            "description": "Enabled schema",
+            "provider": "server",
+        },
+    ]
+
+    manager._make_handler = Mock(
+        side_effect=lambda **kwargs: kwargs["original_name"]
+    )
+
+    with manager._db_lock:
+        manager._rebuild_global_registry_locked()
+
+    assert manager.get_registry_snapshot() == (
+        [{"name": "server_read_file", "description": "Enabled schema"}],
+        {"server_read_file": "read/file"},
+    )
+
+
+def test_mcp_manager_removes_tools_when_server_disconnect_cannot_run(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "filesystem": {"command": "npx", "disabled": False}
+        }
+    }), encoding="utf-8")
+    manager.server_configs = manager.read_config()["mcpServers"]
+    client = object()
+    manager.clients["filesystem"] = client
+    manager._server_tools["filesystem"] = [
+        {"name": "filesystem_read_file", "description": "Read a file"},
+    ]
+    manager._server_status_tools["filesystem"] = [{
+        "name": "filesystem_read_file",
+        "original_name": "read.file",
+        "description": "Read a file",
+        "provider": "filesystem",
+    }]
+    with manager._db_lock:
+        manager._rebuild_global_registry_locked()
+    manager._is_running = True
+    manager.loop = None
+
+    result = manager.apply_switches({"filesystem": True})
+
+    assert result["failed"] == [{
+        "server": "filesystem",
+        "action": "disable",
+        "error": "MCP event loop 未运行",
+    }]
+    assert manager.clients["filesystem"] is client
+    assert manager.get_registry_snapshot() == ([], {})
+    assert manager.get_status_info()["tool_count"] == 0
+
+
+def test_mcp_manager_does_not_forward_switch_metadata_to_fastmcp():
+    manager = GlobalMCPManager()
+
+    with patch("utils.mcp_manager.Client") as client:
+        manager._build_client("filesystem", {
+            "command": "npx",
+            "args": ["server"],
+            "disabled": False,
+            "disabledTools": ["read.file"],
+        })
+
+    client.assert_called_once_with({
+        "mcpServers": {
+            "filesystem": {"command": "npx", "args": ["server"]}
+        }
+    })
 
 
 def test_conversation_preview_only_contains_user_messages():

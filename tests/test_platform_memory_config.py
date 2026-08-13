@@ -14,7 +14,7 @@ from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, TaskPanelModal
+from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
@@ -820,6 +820,157 @@ async def test_choice_modal_q_cancels_when_not_in_input():
         await pilot.press("q")
         await pilot.pause()
     assert result == "<cancelled>"
+
+
+@pytest.mark.anyio
+async def test_mcp_tools_modal_applies_original_name_switches_immediately():
+    manager = Mock()
+    manager.apply_tool_switches.return_value = {
+        "saved": True,
+        "server": "filesystem",
+        "disabled_tools": ["read.file", "delete.file"],
+        "message": "saved",
+    }
+    modal = McpToolsModal(
+        {
+            "server": "filesystem",
+            "loaded": True,
+            "server_disabled": False,
+            "tools": [
+                {
+                    "name": "filesystem_read_file",
+                    "original_name": "read.file",
+                    "description": "Read a file",
+                    "disabled": False,
+                    "enabled": True,
+                },
+                {
+                    "name": "filesystem_delete_file",
+                    "original_name": "delete.file",
+                    "description": "Delete a file",
+                    "disabled": True,
+                    "enabled": False,
+                },
+            ],
+        },
+        manager,
+    )
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    app = ChoiceModalHost(modal, on_dismiss)
+    async with app.run_test(size=(90, 28)) as pilot:
+        await pilot.pause()
+        tool_list = modal.query_one("#mcp-tools-list", ListView)
+        assert_list_selection(tool_list, 0)
+        assert "共 2 个工具 · 草稿启用 1 个" in str(
+            modal.query_one("#mcp-tools-summary", Label).render()
+        )
+        assert "read.file" in str(tool_list.children[0].query_one(Label).render())
+        assert "filesystem_read_file" in str(tool_list.children[0].query_one(Label).render())
+
+        await pilot.press("space")
+        await pilot.pause()
+        assert "草稿启用 0 个" in str(modal.query_one("#mcp-tools-summary", Label).render())
+        await pilot.click("#mcp-tools-apply")
+        await pilot.pause()
+
+    manager.apply_tool_switches.assert_called_once_with(
+        "filesystem", ["read.file", "delete.file"]
+    )
+    assert result["server"] == "filesystem"
+    assert result["result"]["saved"] is True
+
+
+@pytest.mark.anyio
+async def test_mcp_tools_modal_explains_unavailable_service_and_cannot_apply():
+    manager = Mock()
+    modal = McpToolsModal(
+        {
+            "server": "offline-api",
+            "loaded": False,
+            "server_disabled": True,
+            "tools": [],
+        },
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        summary = str(modal.query_one("#mcp-tools-summary", Label).render())
+        assert "服务当前未连接" in summary
+        assert "请先启用并连接服务" in summary
+        assert modal.query_one("#mcp-tools-apply", Button).disabled
+        assert modal.focused.id == "mcp-tools-close"
+        await pilot.press("space")
+        await pilot.pause()
+
+    manager.apply_tool_switches.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_opens_tool_management_and_restores_service_selection():
+    manager = Mock()
+    manager.list_tool_switches.return_value = {
+        "server": "filesystem",
+        "loaded": True,
+        "server_disabled": False,
+        "tools": [{
+            "name": "filesystem_read_file",
+            "original_name": "read.file",
+            "description": "Read a file",
+            "disabled": False,
+            "enabled": True,
+        }],
+    }
+    manager.apply_tool_switches.return_value = {
+        "saved": True,
+        "server": "filesystem",
+        "disabled_tools": ["read.file"],
+        "message": "saved",
+    }
+    modal = McpSwitchModal(
+        [{
+            "name": "filesystem",
+            "disabled": False,
+            "loaded": True,
+            "transport": "stdio",
+            "target": "npx",
+            "tool_count": 1,
+        }],
+        manager,
+    )
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    app = ChoiceModalHost(modal, on_dismiss)
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+        assert isinstance(app.screen, McpToolsModal)
+        manager.list_tool_switches.assert_called_once_with("filesystem")
+
+        await pilot.press("space")
+        await pilot.click("#mcp-tools-apply")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert_list_selection(modal.query_one("#mcp-list", ListView), 0)
+        assert "工具开关已保存" in str(modal.query_one("#mcp-title", Label).render())
+        await pilot.press("q")
+        await pilot.pause()
+
+    assert result["action"] == "cancel"
+    assert result["tool_results"][0]["server"] == "filesystem"
 
 
 @pytest.mark.anyio

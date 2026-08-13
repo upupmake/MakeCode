@@ -303,7 +303,7 @@ MakeCode 支持通过 **Model Context Protocol (MCP)** 集成外部工具和服�
 - `/mcp-add` 默认将新服务写为 `disabled=True`，避免未验证的服务被意外启动；后续可通过 `/mcp-switch` 启用。
 - `/mcp-delete <name>`：二次确认后删除指定 MCP 服务配置，并安全停用运行中的实例。
 - `/mcp-help`：在 Tools 区展示 MCP 相关命令介绍与使用示例。
-- `/mcp-switch` 面板增加删除快捷键：选中服务后按 `d` 进入删除确认，`y` 立即删除（与 `/mcp-delete` 行为一致），`n` 取消并保留面板状态与选中项。
+- `/mcp-switch` 面板支持服务与工具两级管理：选中服务后可按 `t` 或点击“管理工具”逐个启用/禁用已连接服务的工具；服务列表仍可按 `d` 进入删除确认，`y` 立即删除（与 `/mcp-delete` 行为一致），`n` 取消并保留面板状态与选中项。
 
 #### 相关组件
 
@@ -807,7 +807,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 | `/models`            | 管理模型配置（添加、编辑、删除、切换、收藏）                                       |
 | `/mcp-view`          | 查看 MCP 状态总览，以及当前已加载的 MCP 工具列表                                  |
 | `/mcp-restart`       | 重新启动 MCP 后台管理器并重新加载配置                                          |
-| `/mcp-switch`        | 交互式切换 MCP 服务启用/禁用状态，确认后保存到 `.makecode/mcp_config.json` 并尝试增量启停 |
+| `/mcp-switch`        | 管理 MCP 服务启停、配置增删，并按服务启用或禁用工具；配置保存到 `.makecode/mcp_config.json` |
 | `/mcp-add`           | 使用 `<name> [options] -- <cmd> [args...]` 语法添加 MCP 服务；远程服务使用 `--url`；默认 disabled |
 | `/mcp-delete`        | 删除指定 MCP 服务配置，并安全停用运行中的实例（需二次确认）                  |
 | `/mcp-help`          | 显示 MCP 相关命令的使用介绍                                                |
@@ -837,8 +837,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 > 💡 **提示：MCP 相关命令说明**
 > - `/mcp-view`：先展示 MCP 状态总览，包括“配置中的服务 / 配置中已启用 / 配置中已禁用 / 当前已加载服务”，再展示当前已加载工具明细。
 > - `/mcp-restart`：强制重启 MCP 后台管理器，重新读取 `.makecode/mcp_config.json` 并初始化服务。
-> - `/mcp-switch`：打开交互式开关面板，使用 `↑/↓` 选择服务，`Space`
-    切换草稿状态，底部可选择“确认保存并应用变更”或“取消，不保存本次修改”。确认后会先写回配置文件，再按变更尝试对单个服务做增量启用/停用；取消则不会保存也不会改动当前运行状态。
+> - `/mcp-switch`：打开交互式管理面板，使用 `↑/↓` 选择服务，`Space` 切换服务草稿状态，按 `t` 或点击“管理工具”可管理已连接服务提供的单个工具。工具开关在工具面板确认时立即保存；服务开关仍在外层面板确认后写回配置文件并尝试增量启停。
 ---
 
 ## 7. 使用约束

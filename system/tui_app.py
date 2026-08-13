@@ -1860,7 +1860,7 @@ class MakeCodeTuiApp(App[None]):
             "quick-tool-history": "/tool-history",
             "quick-memory": "/memory-panel",
             "quick-skills": "/skills-list",
-            "quick-mcp": "/mcp-view",
+            "quick-mcp": "/mcp-switch",
             "quick-commands": "/cmds",
             "quick-models": "/models",
             "quick-memory-config": "/memory-config",
