@@ -21,7 +21,7 @@ from system.cli import COMMAND_DESCRIPTIONS
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -334,6 +334,7 @@ class CommandHandler:
                 Text("当前没有已加载的 MCP 工具。", style="#a1a1aa"),
             )
 
+        summary_items = [summary_table]
         panel_items = [summary_table, Text(""), table]
         if not status.get("is_running"):
             notice = Text("○ MCP 后台管理器未运行", style="bold yellow")
@@ -341,9 +342,11 @@ class CommandHandler:
                 f"\n  配置文件: {status.get('config_path', '未配置')}",
                 style="#a1a1aa",
             )
+            summary_items.extend([Text(""), notice])
             panel_items.extend([Text(""), notice])
+        summary_content = Group(*summary_items)
         content = Group(*panel_items)
-        if show_info_panel_tui("🔌 MCP 状态与工具", content) == "<cancelled>":
+        if show_mcp_view_tui(summary_content, status.get("tools", [])) == "<cancelled>":
             self.console.print(content, tui_region=TuiRegion.TOOLS)
         return True
 

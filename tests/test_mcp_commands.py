@@ -283,21 +283,20 @@ def test_mcp_view_renders_read_only_status_dashboard(monkeypatch):
     }
     shown = {}
 
-    def show_panel(title, content):
+    def show_panel(summary, tools):
         console = Console(record=True, width=100)
-        console.print(content)
-        shown["title"] = title
-        shown["content"] = content
+        console.print(summary)
+        shown["summary"] = summary
+        shown["tools"] = tools
         shown["text"] = console.export_text()
         return "closed"
 
-    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+    monkeypatch.setattr("system.commands.show_mcp_view_tui", show_panel)
     handler = make_handler()
     handler.mcp_manager = manager
 
     assert handler.handle_mcp_view() is True
 
-    assert shown["title"] == "🔌 MCP 状态与工具"
     assert "MCP 状态总览" in shown["text"]
     assert "● 运行中" in shown["text"]
     assert "服务配置" in shown["text"]
@@ -306,10 +305,8 @@ def test_mcp_view_renders_read_only_status_dashboard(monkeypatch):
     assert "○ 1 个  disabled-api" in shown["text"]
     assert "filesystem (工具：启用 1 个 · 停用 0 个)" in shown["text"]
     assert "remote-api (工具：启用 1 个" in shown["text"]
-    assert "MCP 工具明细 · 2 个" in shown["text"]
-    assert shown["content"].renderables[2].show_lines is True
-    assert "read_file" in shown["text"]
-    assert "search_docs" in shown["text"]
+    assert len(shown["tools"]) == 2
+    assert {tool["name"] for tool in shown["tools"]} == {"read_file", "search_docs"}
 
 
 def test_mcp_view_summarizes_enabled_and_disabled_tools_per_loaded_server(monkeypatch):
@@ -346,13 +343,14 @@ def test_mcp_view_summarizes_enabled_and_disabled_tools_per_loaded_server(monkey
     }
     shown = {}
 
-    def show_panel(title, content):
+    def show_panel(summary, tools):
         console = Console(record=True, width=120)
-        console.print(content)
+        console.print(summary)
+        shown["tools"] = tools
         shown["text"] = console.export_text()
         return "closed"
 
-    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+    monkeypatch.setattr("system.commands.show_mcp_view_tui", show_panel)
     handler = make_handler()
     handler.mcp_manager = manager
 
@@ -360,6 +358,7 @@ def test_mcp_view_summarizes_enabled_and_disabled_tools_per_loaded_server(monkey
 
     assert "filesystem (工具：启用 1 个 · 停用 1 个)" in shown["text"]
     assert "remote-api (工具：启用 1 个 · 停用 0 个)" in shown["text"]
+    assert len(shown["tools"]) == 3
 
 
 def test_mcp_view_marks_disabled_tools_without_adding_controls(monkeypatch):
@@ -390,21 +389,22 @@ def test_mcp_view_marks_disabled_tools_without_adding_controls(monkeypatch):
     }
     shown = {}
 
-    def show_panel(title, content):
+    def show_panel(summary, tools):
         console = Console(record=True, width=100)
-        console.print(content)
+        console.print(summary)
+        shown["tools"] = tools
         shown["text"] = console.export_text()
         return "closed"
 
-    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+    monkeypatch.setattr("system.commands.show_mcp_view_tui", show_panel)
     handler = make_handler()
     handler.mcp_manager = manager
 
     assert handler.handle_mcp_view() is True
 
-    assert "MCP 工具明细 · 2 个" in shown["text"]
-    assert "● filesystem_read_file" in shown["text"]
-    assert "○ filesystem_delete_file" in shown["text"]
+    assert len(shown["tools"]) == 2
+    assert shown["tools"][0]["disabled"] is False
+    assert shown["tools"][1]["disabled"] is True
     assert "确认应用" not in shown["text"]
 
 
@@ -422,13 +422,14 @@ def test_mcp_view_renders_empty_state_without_controls(monkeypatch):
     }
     shown = {}
 
-    def show_panel(title, content):
+    def show_panel(summary, tools):
         console = Console(record=True, width=100)
-        console.print(content)
+        console.print(summary)
+        shown["tools"] = tools
         shown["text"] = console.export_text()
         return "closed"
 
-    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+    monkeypatch.setattr("system.commands.show_mcp_view_tui", show_panel)
     handler = make_handler()
     handler.mcp_manager = manager
 
@@ -437,7 +438,7 @@ def test_mcp_view_renders_empty_state_without_controls(monkeypatch):
     assert "○ 未运行" in shown["text"]
     assert "0 个  未配置" in shown["text"]
     assert "○ 0 个  当前未加载" in shown["text"]
-    assert "暂无可用工具" in shown["text"]
+    assert shown["tools"] == []
     assert "MCP 后台管理器未运行" in shown["text"]
     assert "手动添加" not in shown["text"]
     assert "确认应用" not in shown["text"]

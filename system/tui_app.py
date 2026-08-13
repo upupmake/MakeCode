@@ -34,6 +34,7 @@ from system.tui_modals import (
     InfoPanelModal,
     LayoutModal,
     McpSwitchModal,
+    McpViewModal,
     MemoryConfigModal,
     MemoryPanelModal,
     ModelManagerModal,
@@ -183,6 +184,18 @@ class TuiBridge:
             app.open_info_panel_modal(title, content, future)
         else:
             app.call_from_thread(app.open_info_panel_modal, title, content, future)
+        return future.result()
+
+    def show_mcp_view(self, summary: RenderableType, tools: list[dict[str, Any]]) -> str:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_mcp_view_modal(summary, tools, future)
+        else:
+            app.call_from_thread(app.open_mcp_view_modal, summary, tools, future)
         return future.result()
 
     def manage_tasks(self, task_manager: Any) -> str:
@@ -1429,6 +1442,20 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(InfoPanelModal(title, content), _done)
 
+    def open_mcp_view_modal(
+        self,
+        summary: RenderableType,
+        tools: list[dict[str, Any]],
+        future: Future[str],
+    ) -> None:
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "<cancelled>")
+
+        self._modal_active = True
+        self.push_screen(McpViewModal(summary, tools), _done)
+
     def open_task_panel_modal(self, task_manager: Any, future: Future[str]) -> None:
         def _done(value: str | None) -> None:
             self._modal_active = False
@@ -2246,6 +2273,10 @@ def choose_mcp_switch_tui(server_switches: list[dict[str, Any]], mcp_manager: An
 
 def show_info_panel_tui(title: str, content: RenderableType) -> str:
     return TUI_BRIDGE.show_info_panel(title, content)
+
+
+def show_mcp_view_tui(summary: RenderableType, tools: list[dict[str, Any]]) -> str:
+    return TUI_BRIDGE.show_mcp_view(summary, tools)
 
 
 def manage_tasks_tui(task_manager: Any) -> str:

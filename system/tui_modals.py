@@ -5,13 +5,18 @@ from typing import Any, Callable, TypeVar
 from pathlib import Path
 
 from rich.console import RenderableType
+from rich.segment import Segment
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.events import Key, Resize
+from textual.coordinate import Coordinate
+from textual.events import Click, Key, Resize
+from textual.geometry import Region
 from textual.screen import ModalScreen
+from textual.strip import Strip
 from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, Static, TextArea, DataTable
 
 from system.models import MESSAGE_FORMATS, ModelKey, REASONING_EFFORTS
@@ -81,7 +86,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
         align: center middle;
     }
 
@@ -891,29 +896,27 @@ class ChoiceModal(ClosableModalScreen[str]):
         margin-top: 1;
     }
 
-    #mcp-tools-list {
+    #mcp-tools-filter-row {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #mcp-tools-filter-label {
+        width: auto;
+        height: 3;
+        content-align: left middle;
+        margin-right: 1;
+    }
+
+    #mcp-tools-status-filter {
+        width: 24;
+    }
+
+    #mcp-tools-table {
         height: 1fr;
         min-height: 5;
         margin-top: 1;
-        padding: 0 1;
-        border: round #334155;
-    }
-
-    #mcp-tools-list > ListItem {
-        height: auto;
-        min-height: 3;
-        margin-bottom: 1;
-        padding: 1 2;
-        border: round #1e293b;
-    }
-
-    #mcp-tools-list > ListItem.-highlight {
-        border: round #38bdf8;
-    }
-
-    #mcp-tools-list > ListItem > Label {
-        width: 1fr;
-        height: auto;
+        border: round #475569;
     }
 
     #mcp-tools-actions {
@@ -922,6 +925,66 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     .mcp-tools-action {
+        width: 1fr;
+        margin: 0 1;
+    }
+
+    #mcp-view-dialog {
+        width: 90%;
+        height: 88%;
+        min-height: 18;
+        border: round #22c55e;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #mcp-view-title,
+    #mcp-view-filter-summary,
+    #mcp-view-help {
+        height: auto;
+    }
+
+    #mcp-view-summary {
+        height: 10;
+        min-height: 5;
+        margin-top: 1;
+        border: round #334155;
+    }
+
+    #mcp-view-filter-row {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #mcp-view-filter-label {
+        width: auto;
+        height: 3;
+        content-align: left middle;
+        margin-right: 1;
+    }
+
+    #mcp-view-status-filter {
+        width: 24;
+    }
+
+    #mcp-view-filter-summary,
+    #mcp-view-help {
+        margin-top: 1;
+    }
+
+    #mcp-view-tools-table {
+        height: 1fr;
+        min-height: 5;
+        margin-top: 1;
+        border: round #475569;
+    }
+
+    #mcp-view-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #mcp-view-close {
         width: 1fr;
         margin: 0 1;
     }
@@ -1990,6 +2053,105 @@ class SelectBeforeActivateListView(ListView):
             self.post_message(self.Selected(self, event.item, clicked_index))
 
 
+class SelectBeforeActivateDataTable(DataTable):
+    # 鼠标首次点击其他行只移动光标，再次点击当前行才发送 RowSelected。
+    async def _on_click(self, event: Click) -> None:
+        row_index = event.style.meta.get("row")
+        column_index = event.style.meta.get("column")
+        if (
+            not isinstance(row_index, int)
+            or not isinstance(column_index, int)
+            or row_index < 0
+            or column_index < 0
+        ):
+            await super()._on_click(event)
+            return
+
+        event.stop()
+        event.prevent_default()
+        self.focus()
+        already_selected = self.cursor_row == row_index
+        self.move_cursor(row=row_index, column=column_index)
+        if already_selected and row_index < self.row_count:
+            row_key = self.ordered_rows[row_index].key
+            self.post_message(self.RowSelected(self, row_index, row_key))
+
+
+class McpDataTable(SelectBeforeActivateDataTable):
+    # DataTable doesn't provide row rules, so keep one virtual separator line between rows.
+    _ROW_SEPARATOR_STYLE = Style(color="#475569")
+
+    @property
+    def _y_offsets(self) -> list[tuple[Any, int]]:
+        if self._update_count in self._offset_cache:
+            return self._offset_cache[self._update_count]
+
+        offsets: list[tuple[Any, int]] = []
+        rows = self.ordered_rows
+        for row_index, row in enumerate(rows):
+            offsets.extend((row.key, line) for line in range(row.height))
+            if row_index < len(rows) - 1:
+                offsets.append((row.key, row.height))
+        self._offset_cache[self._update_count] = offsets
+        return offsets
+
+    def _get_offsets(self, y: int) -> tuple[Any, int]:
+        header_height = self.header_height
+        if self.show_header:
+            if y < header_height:
+                return self._header_row_key, y
+            y -= header_height
+        if y < 0 or y >= len(self._y_offsets):
+            raise LookupError(f"Y coord {y!r} is outside the DataTable")
+        return self._y_offsets[y]
+
+    def _row_y(self, row_index: int) -> int:
+        y = sum(row.height for row in self.ordered_rows[:row_index]) + row_index
+        if self.show_header:
+            y += self.header_height
+        return y
+
+    def _get_row_region(self, row_index: int) -> Region:
+        if not self.is_valid_row_index(row_index):
+            return Region(0, 0, 0, 0)
+        row_key = self._row_locations.get_key(row_index)
+        row = self.rows[row_key]
+        row_width = sum(column.get_render_width(self) for column in self.columns.values())
+        return Region(0, self._row_y(row_index), max(self.size.width, row_width), row.height)
+
+    def _get_cell_region(self, coordinate: Coordinate) -> Region:
+        if not self.is_valid_coordinate(coordinate):
+            return Region(0, 0, 0, 0)
+        row_index, column_index = coordinate
+        row_key = self._row_locations.get_key(row_index)
+        x = (
+            sum(column.get_render_width(self) for column in self.ordered_columns[:column_index])
+            + self._row_label_column_width
+        )
+        column_key = self._column_locations.get_key(column_index)
+        return Region(
+            x,
+            self._row_y(row_index),
+            self.columns[column_key].get_render_width(self),
+            self.rows[row_key].height,
+        )
+
+    def _render_line(self, y: int, x1: int, x2: int, base_style: Style) -> Strip:
+        try:
+            row_key, line = self._get_offsets(y)
+        except LookupError:
+            return Strip.blank(self.size.width, base_style)
+        row = self.rows.get(row_key)
+        if row is not None and line == row.height:
+            width = max(self.size.width, self.virtual_size.width, x2)
+            separator = Strip(
+                [Segment("─" * width, self._ROW_SEPARATOR_STYLE)],
+                cell_length=width,
+            )
+            return separator.crop(x1, x2).adjust_cell_length(self.size.width, base_style)
+        return super()._render_line(y, x1, x2, base_style)
+
+
 class SkillsConfigModal(ClosableModalScreen[str | dict[str, Any]]):
     CSS = ChoiceModal.CSS
     BINDINGS: list[Binding] = []
@@ -2645,6 +2807,12 @@ class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
         Binding("space", "toggle", "Toggle", priority=True),
     ]
 
+    _STATUS_OPTIONS = [
+        ("全部状态", "all"),
+        ("已启用", "enabled"),
+        ("已禁用", "disabled"),
+    ]
+
     def __init__(self, tool_switches: dict[str, Any], mcp_manager: Any) -> None:
         super().__init__()
         self._server_name = tool_switches["server"]
@@ -2653,6 +2821,8 @@ class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
         self._can_manage = self._loaded and not self._server_disabled
         self._tools = list(tool_switches.get("tools", []))
         self._mcp_manager = mcp_manager
+        self._status_filter = "all"
+        self._visible_tool_indices: list[int] = []
         self._draft_states = {
             item["original_name"]: bool(item["disabled"])
             for item in self._tools
@@ -2666,9 +2836,19 @@ class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
                 markup=False,
             )
             yield Label(self._summary_text(), id="mcp-tools-summary", markup=False)
-            with ListView(id="mcp-tools-list"):
-                for index, item in enumerate(self._tools):
-                    yield self._tool_item(index, item)
+            with Horizontal(id="mcp-tools-filter-row"):
+                yield Label("状态筛选", id="mcp-tools-filter-label", markup=False)
+                yield Select(
+                    self._STATUS_OPTIONS,
+                    value="all",
+                    allow_blank=False,
+                    id="mcp-tools-status-filter",
+                )
+            yield McpDataTable(
+                id="mcp-tools-table",
+                cursor_type="row",
+                show_row_labels=False,
+            )
             yield Label(
                 "↑↓ 选择工具 · Enter/Space 切换 · Tab 切换到操作按钮 · q 返回服务列表",
                 id="mcp-tools-help",
@@ -2690,10 +2870,14 @@ class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
                 )
 
     def on_mount(self) -> None:
-        tool_list = self.query_one("#mcp-tools-list", ListView)
+        table = self.query_one("#mcp-tools-table", DataTable)
+        table.add_column("草稿状态", width=12, key="status")
+        table.add_column("工具名称", width=30, key="name")
+        table.add_column("MCP 原始名称", width=26, key="original_name")
+        table.add_column("描述", width=42, key="description")
+        self._reload_rows()
         if self._can_manage and self._tools:
-            tool_list.index = 0
-            tool_list.focus()
+            table.focus()
         else:
             self.query_one("#mcp-tools-close", Button).focus()
 
@@ -2705,48 +2889,123 @@ class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
         if not self._tools:
             return "服务已连接，但当前未提供任何工具"
         enabled_count = sum(not disabled for disabled in self._draft_states.values())
-        return f"共 {len(self._tools)} 个工具 · 草稿启用 {enabled_count} 个 · 可在确认前自由切换"
+        return (
+            f"共 {len(self._tools)} 个工具 · 草稿启用 {enabled_count} 个 · "
+            f"当前显示 {len(self._visible_tool_indices)} 个 · 可在确认前自由切换"
+        )
 
-    def _tool_item(self, index: int, item: dict[str, Any]) -> ListItem:
-        return ListItem(Label(self._tool_label(item), markup=False), id=f"mcp-tool-{index}")
+    def _filtered_tool_indices(self) -> list[int]:
+        if self._status_filter == "all":
+            return list(range(len(self._tools)))
+        want_disabled = self._status_filter == "disabled"
+        return [
+            index
+            for index, item in enumerate(self._tools)
+            if self._draft_states[item["original_name"]] == want_disabled
+        ]
 
-    def _tool_label(self, item: dict[str, Any]) -> Text:
-        original_name = item["original_name"]
-        enabled = not self._draft_states[original_name]
-        label = Text()
-        label.append("● " if enabled else "○ ", style="green" if enabled else "#64748b")
-        label.append(item["name"], style="bold green" if enabled else "#94a3b8")
-        label.append(f"\n   MCP 原始名称：{original_name}", style="#a1a1aa")
-        label.append(f"\n   {item['description']}", style="white")
-        return label
+    def _tool_status(self, item: dict[str, Any]) -> Text:
+        disabled = self._draft_states[item["original_name"]]
+        return Text(
+            "○ 禁用" if disabled else "● 启用",
+            style="#94a3b8" if disabled else "bold green",
+        )
+
+    def _reload_rows(self, selected_index: int = 0) -> None:
+        table = self.query_one("#mcp-tools-table", DataTable)
+        table.clear(columns=False)
+        self._visible_tool_indices = self._filtered_tool_indices()
+        for index in self._visible_tool_indices:
+            item = self._tools[index]
+            table.add_row(
+                self._tool_status(item),
+                Text(item["name"], style="bold green" if not self._draft_states[item["original_name"]] else "#94a3b8"),
+                Text(item["original_name"], style="#a1a1aa"),
+                item["description"],
+                key=str(index),
+                height=None,
+            )
+        self.query_one("#mcp-tools-summary", Label).update(self._summary_text())
+        if self._visible_tool_indices:
+            table.move_cursor(
+                row=min(selected_index, len(self._visible_tool_indices) - 1),
+                column=0,
+                scroll=False,
+            )
 
     def _selected_index(self) -> int:
-        tool_list = self.query_one("#mcp-tools-list", ListView)
-        return tool_list.index if tool_list.index is not None else 0
+        table = self.query_one("#mcp-tools-table", DataTable)
+        return table.cursor_row if table.cursor_row is not None else 0
 
-    def _refresh_tool_row(self, index: int) -> None:
-        tool_list = self.query_one("#mcp-tools-list", ListView)
-        tool_list.children[index].query_one(Label).update(self._tool_label(self._tools[index]))
-        tool_list.index = index
-        tool_list.focus()
-        self.query_one("#mcp-tools-summary", Label).update(self._summary_text())
+    def _selected_tool_index(self) -> int | None:
+        index = self._selected_index()
+        if index >= len(self._visible_tool_indices):
+            return None
+        return self._visible_tool_indices[index]
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.action_toggle()
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id == "mcp-tools-table":
+            self.action_toggle()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "mcp-tools-status-filter":
+            return
+        selected_tool_index = self._selected_tool_index()
+        self._status_filter = str(event.value)
+        table = self.query_one("#mcp-tools-table", DataTable)
+        selected_index = 0
+        filtered_indices = self._filtered_tool_indices()
+        if selected_tool_index in filtered_indices:
+            selected_index = filtered_indices.index(selected_tool_index)
+        self._reload_rows(selected_index)
+        if self._can_manage and self._visible_tool_indices:
+            table.focus()
 
     def action_toggle(self) -> None:
-        if not self._can_manage or not isinstance(self.focused, ListView):
+        if not self._can_manage or not isinstance(self.focused, DataTable):
             return
-        index = self._selected_index()
-        if index >= len(self._tools):
+        tool_index = self._selected_tool_index()
+        if tool_index is None:
             return
-        original_name = self._tools[index]["original_name"]
+        original_name = self._tools[tool_index]["original_name"]
         self._draft_states[original_name] = not self._draft_states[original_name]
-        self._refresh_tool_row(index)
+        table = self.query_one("#mcp-tools-table", DataTable)
+        previous_visible_index = self._visible_tool_indices.index(tool_index)
+        filtered_indices = self._filtered_tool_indices()
+        if tool_index in filtered_indices:
+            self._visible_tool_indices = filtered_indices
+            row_key = str(tool_index)
+            item = self._tools[tool_index]
+            table.update_cell(row_key, "status", self._tool_status(item))
+            table.update_cell(
+                row_key,
+                "name",
+                Text(
+                    item["name"],
+                    style="bold green" if not self._draft_states[original_name] else "#94a3b8",
+                ),
+            )
+            table.move_cursor(row=previous_visible_index, column=0, scroll=False)
+            self.query_one("#mcp-tools-summary", Label).update(self._summary_text())
+            table.focus()
+            return
+
+        table.remove_row(str(tool_index))
+        self._visible_tool_indices = filtered_indices
+        self.query_one("#mcp-tools-summary", Label).update(self._summary_text())
+        if self._visible_tool_indices:
+            table.move_cursor(
+                row=min(previous_visible_index, len(self._visible_tool_indices) - 1),
+                column=0,
+                scroll=False,
+            )
+            table.focus()
+        else:
+            self.query_one("#mcp-tools-status-filter", Select).focus()
 
     def action_confirm_or_toggle(self) -> None:
         focused = self.focused
-        if isinstance(focused, ListView):
+        if isinstance(focused, DataTable):
             self.action_toggle()
         elif isinstance(focused, Button):
             if focused.id == "mcp-tools-apply":
@@ -2783,6 +3042,130 @@ class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class McpViewModal(ClosableModalScreen[str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "close", "Close", priority=True),
+    ]
+
+    _STATUS_OPTIONS = [
+        ("全部状态", "all"),
+        ("已启用", "enabled"),
+        ("已禁用", "disabled"),
+    ]
+
+    def __init__(self, summary: RenderableType, tools: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._summary = summary
+        self._tools = list(tools)
+        self._status_filter = "all"
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="mcp-view-dialog"):
+            yield ModalHeader("🔌 MCP 状态与工具", title_id="mcp-view-title", markup=False)
+            yield RichLog(id="mcp-view-summary", markup=True, wrap=True, min_width=1)
+            with Horizontal(id="mcp-view-filter-row"):
+                yield Label("状态筛选", id="mcp-view-filter-label", markup=False)
+                yield Select(
+                    self._STATUS_OPTIONS,
+                    value="all",
+                    allow_blank=False,
+                    id="mcp-view-status-filter",
+                )
+            yield Label(self._filter_summary(), id="mcp-view-filter-summary", markup=False)
+            yield McpDataTable(
+                id="mcp-view-tools-table",
+                cursor_type="row",
+                show_row_labels=False,
+            )
+            yield Label("↑↓ 浏览工具 · 状态筛选只影响显示 · q 关闭", id="mcp-view-help", markup=False)
+            with Horizontal(id="mcp-view-actions"):
+                yield Button("关闭", id="mcp-view-close", variant="primary")
+
+    def on_mount(self) -> None:
+        summary = self.query_one("#mcp-view-summary", RichLog)
+        summary.write(self._summary, expand=True, shrink=True, scroll_end=False)
+        table = self.query_one("#mcp-view-tools-table", DataTable)
+        table.add_column("状态", width=12, key="status")
+        table.add_column("服务节点", width=24, key="provider")
+        table.add_column("工具名称", width=32, key="name")
+        table.add_column("描述", width=48, key="description")
+        self._reload_rows()
+        if self._tools:
+            table.focus()
+        else:
+            self.query_one("#mcp-view-close", Button).focus()
+
+    def _filtered_tools(self) -> list[dict[str, Any]]:
+        if self._status_filter == "all":
+            return list(self._tools)
+        want_disabled = self._status_filter == "disabled"
+        return [
+            tool
+            for tool in self._tools
+            if bool(tool.get("disabled", False)) == want_disabled
+        ]
+
+    def _filter_summary(self) -> str:
+        return f"当前显示 {len(self._filtered_tools())} / {len(self._tools)} 个工具"
+
+    def _reload_rows(self, selected_index: int = 0) -> None:
+        table = self.query_one("#mcp-view-tools-table", DataTable)
+        table.clear(columns=False)
+        tools = self._filtered_tools()
+        for index, tool in enumerate(tools):
+            disabled = bool(tool.get("disabled", False))
+            table.add_row(
+                Text("○ 禁用" if disabled else "● 启用", style="#94a3b8" if disabled else "bold green"),
+                tool.get("provider", "Unknown"),
+                Text(tool["name"], style="#a1a1aa" if disabled else "bold green"),
+                tool.get("description", ""),
+                key=str(index),
+                height=None,
+            )
+        self.query_one("#mcp-view-filter-summary", Label).update(self._filter_summary())
+        if tools:
+            table.move_cursor(row=min(selected_index, len(tools) - 1), column=0, scroll=False)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "mcp-view-status-filter":
+            return
+        table = self.query_one("#mcp-view-tools-table", DataTable)
+        selected_index = table.cursor_row if table.cursor_row is not None else 0
+        current_tools = self._filtered_tools()
+        selected_tool = (
+            current_tools[selected_index]
+            if selected_index < len(current_tools)
+            else None
+        )
+        self._status_filter = str(event.value)
+        filtered_tools = self._filtered_tools()
+        if selected_tool is not None:
+            selected_index = next(
+                (
+                    index
+                    for index, tool in enumerate(filtered_tools)
+                    if tool is selected_tool
+                ),
+                0,
+            )
+        else:
+            selected_index = 0
+        self._reload_rows(selected_index)
+        if filtered_tools:
+            table.focus()
+        else:
+            self.query_one("#mcp-view-close", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "mcp-view-close":
+            self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss("closed")
 
 
 class McpSwitchModal(ClosableModalScreen[str | dict]):

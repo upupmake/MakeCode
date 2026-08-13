@@ -14,7 +14,7 @@ from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, TaskPanelModal
+from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
@@ -877,16 +877,30 @@ async def test_mcp_tools_modal_applies_original_name_switches_immediately():
     app = ChoiceModalHost(modal, on_dismiss)
     async with app.run_test(size=(90, 28)) as pilot:
         await pilot.pause()
-        tool_list = modal.query_one("#mcp-tools-list", ListView)
-        assert_list_selection(tool_list, 0)
+        tool_table = modal.query_one("#mcp-tools-table", DataTable)
+        assert tool_table.cursor_row == 0
+        assert not tool_table.zebra_stripes
+        assert not any(segment.style.underline for segment in tool_table.render_line(1))
+        separator_line = tool_table.render_line(2)
+        assert sum(segment.text.count("─") for segment in separator_line) > 0
+        assert [str(column.label) for column in tool_table.ordered_columns] == [
+            "草稿状态",
+            "工具名称",
+            "MCP 原始名称",
+            "描述",
+        ]
+        assert "启用" in str(tool_table.get_row_at(0)[0])
+        assert str(tool_table.get_row_at(0)[1]) == "filesystem_read_file"
+        assert str(tool_table.get_row_at(0)[2]) == "read.file"
+        assert str(tool_table.get_row_at(0)[3]) == "Read a file"
         assert "共 2 个工具 · 草稿启用 1 个" in str(
             modal.query_one("#mcp-tools-summary", Label).render()
         )
-        assert "read.file" in str(tool_list.children[0].query_one(Label).render())
-        assert "filesystem_read_file" in str(tool_list.children[0].query_one(Label).render())
 
-        await pilot.press("space")
-        await pilot.pause()
+        with patch.object(tool_table, "clear", side_effect=AssertionError("toggle must update in place")):
+            await pilot.press("space")
+            await pilot.pause()
+        assert "禁用" in str(tool_table.get_row_at(0)[0])
         assert "草稿启用 0 个" in str(modal.query_one("#mcp-tools-summary", Label).render())
         await pilot.click("#mcp-tools-apply")
         await pilot.pause()
@@ -921,6 +935,152 @@ async def test_mcp_tools_modal_explains_unavailable_service_and_cannot_apply():
         assert modal.focused.id == "mcp-tools-close"
         await pilot.press("space")
         await pilot.pause()
+
+    manager.apply_tool_switches.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_mcp_tools_modal_filters_table_by_draft_status():
+    manager = Mock()
+    modal = McpToolsModal(
+        {
+            "server": "filesystem",
+            "loaded": True,
+            "server_disabled": False,
+            "tools": [
+                {
+                    "name": "filesystem_read_file",
+                    "original_name": "read.file",
+                    "description": "Read a file",
+                    "disabled": False,
+                },
+                {
+                    "name": "filesystem_delete_file",
+                    "original_name": "delete.file",
+                    "description": "Delete a file",
+                    "disabled": True,
+                },
+            ],
+        },
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 28)) as pilot:
+        await pilot.pause()
+        status_filter = modal.query_one("#mcp-tools-status-filter", Select)
+        tool_table = modal.query_one("#mcp-tools-table", DataTable)
+
+        status_filter.value = "disabled"
+        await pilot.pause()
+        assert tool_table.row_count == 1
+        assert str(tool_table.get_row_at(0)[2]) == "delete.file"
+        assert "当前显示 1 个" in str(modal.query_one("#mcp-tools-summary", Label).render())
+
+        tool_table.focus()
+        await pilot.press("space")
+        await pilot.pause()
+        assert tool_table.row_count == 0
+        assert "当前显示 0 个" in str(modal.query_one("#mcp-tools-summary", Label).render())
+
+        status_filter.value = "enabled"
+        await pilot.pause()
+        assert tool_table.row_count == 2
+        assert {str(tool_table.get_row_at(index)[2]) for index in range(2)} == {
+            "read.file",
+            "delete.file",
+        }
+
+    manager.apply_tool_switches.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_mcp_view_modal_filters_tools_read_only_by_saved_status():
+    modal = McpViewModal(
+        Text("MCP 状态总览"),
+        [
+            {
+                "provider": "filesystem",
+                "name": "filesystem_read_file",
+                "description": "Read a file",
+                "disabled": False,
+            },
+            {
+                "provider": "filesystem",
+                "name": "filesystem_delete_file",
+                "description": "Delete a file",
+                "disabled": True,
+            },
+        ],
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 28)) as pilot:
+        await pilot.pause()
+        tool_table = modal.query_one("#mcp-view-tools-table", DataTable)
+        status_filter = modal.query_one("#mcp-view-status-filter", Select)
+        assert not tool_table.zebra_stripes
+        assert not any(segment.style.underline for segment in tool_table.render_line(1))
+        separator_line = tool_table.render_line(2)
+        assert sum(segment.text.count("─") for segment in separator_line) > 0
+        assert tool_table.row_count == 2
+        assert {str(tool_table.get_row_at(index)[0]) for index in range(2)} == {
+            "● 启用",
+            "○ 禁用",
+        }
+
+        status_filter.value = "disabled"
+        await pilot.pause()
+        assert tool_table.row_count == 1
+        assert str(tool_table.get_row_at(0)[2]) == "filesystem_delete_file"
+        assert "当前显示 1 / 2 个工具" in str(
+            modal.query_one("#mcp-view-filter-summary", Label).render()
+        )
+        assert modal.query("#mcp-view-apply").__len__() == 0
+
+
+@pytest.mark.anyio
+async def test_mcp_tools_modal_mouse_click_selects_before_toggling_table_row():
+    manager = Mock()
+    modal = McpToolsModal(
+        {
+            "server": "filesystem",
+            "loaded": True,
+            "server_disabled": False,
+            "tools": [
+                {
+                    "name": "filesystem_read_file",
+                    "original_name": "read.file",
+                    "description": "Read a file",
+                    "disabled": False,
+                },
+                {
+                    "name": "filesystem_write_file",
+                    "original_name": "write.file",
+                    "description": "Write a file",
+                    "disabled": False,
+                },
+            ],
+        },
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        tool_table = modal.query_one("#mcp-tools-table", DataTable)
+        assert tool_table.cursor_row == 0
+
+        await pilot.click(tool_table, offset=(2, 4))
+        await pilot.pause()
+        assert tool_table.cursor_row == 1
+        assert "启用" in str(tool_table.get_row_at(1)[0])
+        assert "草稿启用 2 个" in str(modal.query_one("#mcp-tools-summary", Label).render())
+
+        await pilot.click(tool_table, offset=(2, 4))
+        await pilot.pause()
+        assert tool_table.cursor_row == 1
+        assert "草稿启用 1 个" in str(modal.query_one("#mcp-tools-summary", Label).render())
 
     manager.apply_tool_switches.assert_not_called()
 
