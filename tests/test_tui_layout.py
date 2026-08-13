@@ -768,6 +768,51 @@ async def test_skills_panel_filters_draft_changes_and_discards_them_on_cancel(tm
 
 
 @pytest.mark.anyio
+async def test_skills_panel_click_selects_before_toggling_draft(tmp_path):
+    skills_dir = tmp_path / "skills"
+    for name in ("alpha", "beta"):
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\nbody\n",
+            encoding="utf-8",
+        )
+    config_file = tmp_path / "disabled_skills.json"
+    loader = SkillLoader(skills_dir, config_file)
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        result = asyncio.get_running_loop().create_future()
+        app.open_skills_config_modal(loader, result)
+        await pilot.pause()
+        modal = app.screen
+        skills_list = modal.query_one("#skills-list")
+
+        assert skills_list.index == 0
+        assert modal._draft_states == {"alpha": True, "beta": True}
+
+        await pilot.click(skills_list.children[1])
+        await pilot.pause()
+
+        assert skills_list.index == 1
+        assert skills_list.children[1].has_class("-highlight")
+        assert modal._draft_states == {"alpha": True, "beta": True}
+        assert not config_file.exists()
+
+        await pilot.click(skills_list.children[1])
+        await pilot.pause()
+
+        assert skills_list.index == 1
+        assert modal._draft_states == {"alpha": True, "beta": False}
+        assert not config_file.exists()
+        assert "启用 0，禁用 1" in str(modal.query_one("#skills-confirm").label)
+
+        await pilot.click("#skills-close")
+        await pilot.pause()
+        assert await result == "closed"
+
+
+@pytest.mark.anyio
 async def test_skills_panel_filtered_removal_selects_next_then_previous_row(tmp_path):
     skills_dir = tmp_path / "skills"
     for name in ("alpha", "beta", "gamma"):
