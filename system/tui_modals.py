@@ -979,16 +979,6 @@ class ChoiceModal(ClosableModalScreen[str]):
         border: round #475569;
     }
 
-    #mcp-view-actions {
-        height: 3;
-        margin-top: 1;
-    }
-
-    #mcp-view-close {
-        width: 1fr;
-        margin: 0 1;
-    }
-
     #mcp-add-dialog {
         width: 86%;
         height: 90%;
@@ -3082,8 +3072,6 @@ class McpViewModal(ClosableModalScreen[str]):
                 show_row_labels=False,
             )
             yield Label("↑↓ 浏览工具 · 状态筛选只影响显示 · q 关闭", id="mcp-view-help", markup=False)
-            with Horizontal(id="mcp-view-actions"):
-                yield Button("关闭", id="mcp-view-close", variant="primary")
 
     def on_mount(self) -> None:
         summary = self.query_one("#mcp-view-summary", RichLog)
@@ -3097,7 +3085,7 @@ class McpViewModal(ClosableModalScreen[str]):
         if self._tools:
             table.focus()
         else:
-            self.query_one("#mcp-view-close", Button).focus()
+            self.query_one("#mcp-view-status-filter", Select).focus()
 
     def _filtered_tools(self) -> list[dict[str, Any]]:
         if self._status_filter == "all":
@@ -3158,11 +3146,7 @@ class McpViewModal(ClosableModalScreen[str]):
         if filtered_tools:
             table.focus()
         else:
-            self.query_one("#mcp-view-close", Button).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "mcp-view-close":
-            self.action_close()
+            self.query_one("#mcp-view-status-filter", Select).focus()
 
     def action_close(self) -> None:
         self.dismiss("closed")

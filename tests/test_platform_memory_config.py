@@ -1019,6 +1019,9 @@ async def test_mcp_view_modal_filters_tools_read_only_by_saved_status():
         await pilot.pause()
         tool_table = modal.query_one("#mcp-view-tools-table", DataTable)
         status_filter = modal.query_one("#mcp-view-status-filter", Select)
+        assert len(modal.query("#mcp-view-close")) == 0
+        assert len(modal.query("#mcp-view-actions")) == 0
+        assert "q" in {binding.key for binding in modal.BINDINGS}
         assert not tool_table.zebra_stripes
         assert not any(segment.style.underline for segment in tool_table.render_line(1))
         separator_line = tool_table.render_line(2)
