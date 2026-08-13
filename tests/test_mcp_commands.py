@@ -304,11 +304,62 @@ def test_mcp_view_renders_read_only_status_dashboard(monkeypatch):
     assert "3 个  filesystem · remote-api · disabled-api" in shown["text"]
     assert "● 2 个  filesystem · remote-api" in shown["text"]
     assert "○ 1 个  disabled-api" in shown["text"]
-    assert "filesystem (1 工具) · remote-api (1 工具)" in shown["text"]
+    assert "filesystem (工具：启用 1 个 · 停用 0 个)" in shown["text"]
+    assert "remote-api (工具：启用 1 个" in shown["text"]
     assert "MCP 工具明细 · 2 个" in shown["text"]
     assert shown["content"].renderables[2].show_lines is True
     assert "read_file" in shown["text"]
     assert "search_docs" in shown["text"]
+
+
+def test_mcp_view_summarizes_enabled_and_disabled_tools_per_loaded_server(monkeypatch):
+    manager = Mock()
+    manager.get_status_info.return_value = {
+        "config_path": "/project/.makecode/mcp_config.json",
+        "is_running": True,
+        "tool_count": 2,
+        "total_tool_count": 3,
+        "config_servers": ["filesystem", "remote-api"],
+        "enabled_config_servers": ["filesystem", "remote-api"],
+        "disabled_servers": [],
+        "loaded_servers": ["filesystem", "remote-api"],
+        "tools": [
+            {
+                "provider": "filesystem",
+                "name": "filesystem_read_file",
+                "description": "Read a file",
+                "disabled": False,
+            },
+            {
+                "provider": "filesystem",
+                "name": "filesystem_delete_file",
+                "description": "Delete a file",
+                "disabled": True,
+            },
+            {
+                "provider": "remote-api",
+                "name": "remote_search",
+                "description": "Search documents",
+                "disabled": False,
+            },
+        ],
+    }
+    shown = {}
+
+    def show_panel(title, content):
+        console = Console(record=True, width=120)
+        console.print(content)
+        shown["text"] = console.export_text()
+        return "closed"
+
+    monkeypatch.setattr("system.commands.show_info_panel_tui", show_panel)
+    handler = make_handler()
+    handler.mcp_manager = manager
+
+    assert handler.handle_mcp_view() is True
+
+    assert "filesystem (工具：启用 1 个 · 停用 1 个)" in shown["text"]
+    assert "remote-api (工具：启用 1 个 · 停用 0 个)" in shown["text"]
 
 
 def test_mcp_view_marks_disabled_tools_without_adding_controls(monkeypatch):

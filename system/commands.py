@@ -221,13 +221,16 @@ class CommandHandler:
         disabled_servers = status.get("disabled_servers", [])
         loaded_servers = status.get("loaded_servers", [])
 
-        # 统计每个已加载服务的启用工具数量
-        tool_count_by_server = {}
+        # 统计每个已加载服务的启用/停用工具数量
+        tool_counts_by_server = {}
         for tool in status.get("tools", []):
-            if tool.get("disabled", False):
-                continue
             provider = tool.get("provider", "Unknown")
-            tool_count_by_server[provider] = tool_count_by_server.get(provider, 0) + 1
+            counts = tool_counts_by_server.setdefault(
+                provider,
+                {"enabled": 0, "disabled": 0},
+            )
+            state = "disabled" if tool.get("disabled", False) else "enabled"
+            counts[state] += 1
 
         summary_table = Table(
             title="[bold cyan]🔌 MCP 状态总览[/bold cyan]",
@@ -272,8 +275,12 @@ class CommandHandler:
                 if index:
                     loaded_display.append(" · ", style="#71717a")
                 loaded_display.append(name, style="bold magenta")
+                counts = tool_counts_by_server.get(
+                    name,
+                    {"enabled": 0, "disabled": 0},
+                )
                 loaded_display.append(
-                    f" ({tool_count_by_server.get(name, 0)} 工具)",
+                    f" (工具：启用 {counts['enabled']} 个 · 停用 {counts['disabled']} 个)",
                     style="#a1a1aa",
                 )
         else:
