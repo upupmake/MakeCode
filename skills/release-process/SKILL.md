@@ -91,7 +91,15 @@ Release 汇总任务只接收各平台 Actions artifacts，并完成：
 
 ### 3.1 准备发布日志
 
-创建临时 `RELEASE_LOG.md`，写入 markdown 格式发布内容。该文件保持在 `.gitignore` 中，不提交；补丁版本日志按项目既有聚合规则生成。
+创建临时 `RELEASE_LOG.md`，写入 markdown 格式发布内容。该文件保持在 `.gitignore` 中，不提交。
+
+发布日志按 `MAJOR.MINOR` 版本线维护：
+
+- **Patch 版本**：必须保留当前 `MAJOR.MINOR` 版本线此前所有已发布版本的完整日志，并将当前 patch 的变更追加在最前面。例如发布 `6.4.8` 时，日志必须包含 `v6.4.7`、`v6.4.6` 及更早的 `6.4.x` 日志；不能只写当前 patch，也不能因清理旧 Release/tag 而丢失历史内容。
+- **Minor 版本**：从新的 `MAJOR.MINOR` 版本线重新开始，只写新 minor 版本的变更，不继承上一 minor 版本线的日志。例如 `6.5.0` 不继承 `6.4.x` 日志；之后的 `6.5.x` patch 再持续累积 `6.5` 版本线日志。
+- **Major 版本**：同样从新的版本线重新开始，只写新 major/minor 版本线的变更。
+
+准备日志时，优先从远程 latest `version.json` 的 `release_log` 获取当前版本线历史；如果当前版本是新 minor 或新 major 的首个版本，则丢弃旧版本线历史并创建新日志。生成后确认日志从当前版本开始，并且 patch 版本包含同一 `MAJOR.MINOR` 线的完整历史。
 
 ### 3.2 创建 GitHub Release
 
