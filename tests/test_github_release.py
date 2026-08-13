@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -97,3 +98,33 @@ def test_release_workflow_finalizes_only_after_uploading_assets():
     assert upload_index < cleanup_index
     assert "make_latest: false" in workflow
     assert 'python github_release.py --finalize-release "${{ github.ref_name }}"' in workflow
+
+
+def test_tree_sitter_dependencies_are_pinned_to_compatible_versions():
+    requirements = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+    workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
+
+    assert "tree-sitter==0.25.2" in requirements
+    assert "tree-sitter-language-pack==1.14.3" in requirements
+    assert not any(
+        "tree-sitter" in line and ";" in line
+        for line in requirements
+    )
+    assert (
+        "git+https://github.com/xberg-io/tree-sitter-language-pack.git"
+        "@df3bcc39862da6972032d7537d49b782a50a25bb"
+        "#subdirectory=packages/python"
+        in workflow
+    )
+
+
+def test_bundled_tree_sitter_parsers_match_pinned_release():
+    expected_hashes = {
+        "parsers-linux-x86_64.tar.zst": "935c0990f08cde9f41ff5519de5129b6b73acebcc80a6db647a1aadf5ca19a77",
+        "parsers-macos-arm64.tar.zst": "7097f715d07688e6c12740908c712e67d5672aeb05971dec3b65d19cf7080159",
+        "parsers-windows-x86_64.tar.zst": "03e64093297c3bde2139704af580fc80e34eac1bb08b98f737a325a6f6ee6766",
+    }
+
+    for file_name, expected_hash in expected_hashes.items():
+        archive = Path("ts_cache") / file_name
+        assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected_hash

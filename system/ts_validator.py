@@ -1,3 +1,4 @@
+import hashlib
 import os
 import platform
 import sys
@@ -41,6 +42,12 @@ def _current_platform_key() -> str | None:
     if system == "darwin" and arch == "aarch64":
         return "macos-arm64"
     return None
+
+
+def _archive_marker(dst_cache_dir: Path, archive: Path) -> Path:
+    with archive.open("rb") as archive_file:
+        archive_hash = hashlib.file_digest(archive_file, "sha256").hexdigest()
+    return dst_cache_dir / f".extracted_{archive.name}.{archive_hash}"
 
 
 def _mark_ts_unavailable(message: str) -> None:
@@ -115,7 +122,7 @@ def init_ts_cache():
         _mark_ts_unavailable(f"未找到当前平台解析器包：{zst_file.name}，语法校验将被绕过。")
         return
 
-    marker = dst_cache_dir / f".extracted_{zst_file.name}"
+    marker = _archive_marker(dst_cache_dir, zst_file)
     if not marker.exists():
         try:
             with pyzstd.open(zst_file, 'rb') as f:

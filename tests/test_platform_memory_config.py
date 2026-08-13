@@ -534,6 +534,19 @@ def test_ts_validator_platform_key_detection(monkeypatch):
     assert ts_validator._current_platform_key() == "macos-arm64"
 
 
+def test_ts_validator_archive_marker_changes_with_archive_content(tmp_path):
+    archive = tmp_path / "parsers-macos-arm64.tar.zst"
+    archive.write_bytes(b"old parser archive")
+    old_marker = ts_validator._archive_marker(tmp_path, archive)
+
+    archive.write_bytes(b"v1.14.3 parser archive")
+    new_marker = ts_validator._archive_marker(tmp_path, archive)
+
+    assert old_marker != new_marker
+    assert old_marker.parent == tmp_path
+    assert new_marker.name.startswith(f".extracted_{archive.name}.")
+
+
 def test_ts_validator_configure_cache_dir_uses_pack_config(monkeypatch, tmp_path):
     configure_mock = Mock()
     monkeypatch.setattr(ts_validator, "configure", configure_mock)

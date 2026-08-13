@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from rich.panel import Panel
 from rich.text import Text
 
 from system.console_render import _render_startup_banner
@@ -430,6 +431,65 @@ async def test_responsive_reflow_keeps_all_logs_without_horizontal_scroll():
             log = app.query_one(selector)
             assert log.max_scroll_x == 0, region
             assert "".join(line.text.rstrip() for line in log.lines) == payload, region
+
+
+@pytest.mark.anyio
+async def test_formatted_outputs_reflow_with_each_pane_width_in_both_directions():
+    app = MakeCodeTuiApp()
+    regions = {
+        TuiRegion.CONTENT: "#content-log",
+        TuiRegion.TOOLS: "#tools-log",
+        TuiRegion.TASK: "#task-log",
+        TuiRegion.BACKGROUND: "#background-log",
+        TuiRegion.SUB_AGENT: "#sub-agent-log",
+    }
+    payload = "每个输出区域都必须根据当前可用宽度自动重新排版。" * 40
+
+    async with app.run_test(size=(180, 50)) as pilot:
+        await pilot.pause()
+        for region in regions:
+            app.handle_tui_event(
+                TuiEvent(
+                    region,
+                    Panel(Text(payload), title=region.value, expand=True),
+                )
+            )
+        await pilot.pause()
+
+        initial = {
+            region: (
+                app.query_one(selector).scrollable_content_region.width,
+                len(app.query_one(selector).lines),
+            )
+            for region, selector in regions.items()
+        }
+
+        await pilot.resize_terminal(240, 50)
+        await pilot.pause()
+
+        wide = {}
+        for region, selector in regions.items():
+            log = app.query_one(selector)
+            wide[region] = (log.scrollable_content_region.width, len(log.lines))
+            assert wide[region][0] > initial[region][0]
+            assert wide[region][1] < initial[region][1]
+            assert log.max_scroll_x == 0
+            assert log.virtual_size.width <= log.scrollable_content_region.width
+
+        await pilot.resize_terminal(140, 50)
+        await pilot.pause()
+
+        for region, selector in regions.items():
+            log = app.query_one(selector)
+            assert log.scrollable_content_region.width < wide[region][0]
+            assert len(log.lines) > wide[region][1]
+            assert log.max_scroll_x == 0
+            assert log.virtual_size.width <= log.scrollable_content_region.width
+            rendered_body = "".join(
+                line.text.strip(" │╭╮╰╯─")
+                for line in log.lines
+            )
+            assert payload in rendered_body
 
 
 @pytest.mark.anyio

@@ -219,6 +219,8 @@ jobs:
           TSLP_OFFLINE: '1'
         run: |
           python -m pip install --upgrade pip
+          python -m pip install tree-sitter==0.25.2
+          python -m pip install --no-deps "tree-sitter-language-pack @ git+https://github.com/xberg-io/tree-sitter-language-pack.git@df3bcc39862da6972032d7537d49b782a50a25bb#subdirectory=packages/python"
           python -m pip install -r requirements.txt pyinstaller==6.19.0 pytest
 
       - name: Verify bundled tree-sitter parser cache

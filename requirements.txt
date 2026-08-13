@@ -10,5 +10,6 @@ rich
 textual
 tiktoken
 aiofiles
-tree_sitter_language_pack
+tree-sitter==0.25.2
+tree-sitter-language-pack==1.14.3
 pyzstd
