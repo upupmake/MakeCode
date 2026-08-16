@@ -349,14 +349,19 @@ class TuiBridge:
         return future.result()
 
     def _dispatch_event_locked(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
-        with self._region_locks[event.region]:
-            self._dispatch_event(app, event)
+        self._dispatch_event(app, event)
 
     def _dispatch_event(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
         if self._is_app_thread():
-            app.handle_tui_event(event)
+            self._handle_event_on_app_thread(app, event)
         else:
-            app.call_from_thread(app.handle_tui_event, event)
+            # 不得在工作线程持有 region 锁的同时阻塞等待 app 线程回调，
+            # 否则 app 线程（如 bind 重放 pending 事件）获取同一把锁时会死锁。
+            app.call_from_thread(self._handle_event_on_app_thread, app, event)
+
+    def _handle_event_on_app_thread(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
+        with self._region_locks[event.region]:
+            app.handle_tui_event(event)
 
     def _is_app_thread(self) -> bool:
         return self._app_thread_id == threading.get_ident()
