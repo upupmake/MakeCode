@@ -51,6 +51,21 @@ def test_terminal_result_reports_success_and_exit_code():
     assert result.endswith("tests passed")
 
 
+def test_terminal_process_does_not_inherit_tui_stdin():
+    process = FakeProcess(0, stdout=b"ok")
+
+    with patch.object(common, "_resolve_startup_terminal_type", return_value="pwsh"), \
+            patch.object(common, "_workdir"), \
+            patch.object(common, "check_permission", return_value=(True, "")), \
+            patch.object(common.subprocess, "Popen", return_value=process) as popen, \
+            patch("system.stream_cancel.start_terminal_command"), \
+            patch("system.stream_cancel.stop_terminal_command"), \
+            patch("system.stream_cancel.is_terminal_cancelled", return_value=False):
+        common.run_terminal_command("pytest -q")
+
+    assert popen.call_args.kwargs["stdin"] is common.subprocess.DEVNULL
+
+
 def test_terminal_result_reports_nonzero_exit_as_failure_even_without_output():
     result = _run_with_process(FakeProcess(3))
 

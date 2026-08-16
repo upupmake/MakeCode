@@ -250,6 +250,7 @@ def run_terminal_command(command: str) -> str:
         terminal_meta = f"{resolved_terminal}, source={STARTUP_TERMINAL_SOURCE}"
         popen_kwargs = {
             "cwd": _workdir(),
+            "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
         }
