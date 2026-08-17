@@ -36,8 +36,6 @@ from system.commands import (
     CommandAction,
 )
 from system.console_render import (
-    _render_tool_call,
-    _render_tool_output,
     _render_history,
     _render_token_usage,
     _render_startup_banner,
@@ -64,7 +62,6 @@ from system.tui_app import (
     set_agent_loop_active,
     set_temporary_query_enabled,
     refresh_status,
-    refresh_tools_title,
     consume_temporary_query,
     clear_temporary_query,
 )
@@ -527,60 +524,52 @@ async def _agent_loop_with_client(
             tool_error = False
             output = ""
 
-            post_tui(TuiRegion.TOOLS, active=True)
             try:
-                _render_tool_call(tool_name, tool_args)
+                handler = current_handlers.get(tool_name)
+                if not handler:
+                    tool_error = True
+                    output = f"Unknown tool: {tool_name}"
+                elif tool_name in BASE_SUPER_TOOL_MODELS:
+                    arguments = validate_builtin_tool_arguments(
+                        tool_name,
+                        tool_args,
+                        BASE_SUPER_TOOL_MODELS[tool_name],
+                    )
+                elif tool_name in mcp_handlers:
+                    arguments = parse_tool_arguments(tool_name, tool_args)
+                else:
+                    raise RuntimeError(
+                        f"Built-in tool model not registered: {tool_name}"
+                    )
 
-                try:
-                    handler = current_handlers.get(tool_name)
-                    if not handler:
-                        tool_error = True
-                        output = f"Unknown tool: {tool_name}"
-                    elif tool_name in BASE_SUPER_TOOL_MODELS:
-                        arguments = validate_builtin_tool_arguments(
-                            tool_name,
-                            tool_args,
-                            BASE_SUPER_TOOL_MODELS[tool_name],
-                        )
-                    elif tool_name in mcp_handlers:
-                        arguments = parse_tool_arguments(tool_name, tool_args)
+                if not tool_error and is_plan_mode() and tool_name in PLAN_MODE_BLOCKLIST:
+                    tool_error = True
+                    output = (
+                        f"⛔ Plan Mode active: '{tool_name}' is blocked. "
+                        f"Complete your plan first, then exit Plan Mode to execute."
+                    )
+                elif not tool_error and is_plan_mode() and tool_name == "RunTerminalCommand":
+                    cmd = arguments.get("command", "")
+                    if is_plan_mode_command_allowed(cmd):
+                        output = await _run_tool_handler(handler, arguments)
                     else:
-                        raise RuntimeError(
-                            f"Built-in tool model not registered: {tool_name}"
-                        )
-
-                    if not tool_error and is_plan_mode() and tool_name in PLAN_MODE_BLOCKLIST:
                         tool_error = True
                         output = (
-                            f"⛔ Plan Mode active: '{tool_name}' is blocked. "
-                            f"Complete your plan first, then exit Plan Mode to execute."
+                            f"⛔ Plan Mode: this command is not allowed. "
+                            f"Only {', '.join(PLAN_MODE_ALLOWED_COMMANDS)} commands are permitted in Plan Mode."
                         )
-                    elif not tool_error and is_plan_mode() and tool_name == "RunTerminalCommand":
-                        cmd = arguments.get("command", "")
-                        if is_plan_mode_command_allowed(cmd):
-                            output = await _run_tool_handler(handler, arguments)
-                        else:
-                            tool_error = True
-                            output = (
-                                f"⛔ Plan Mode: this command is not allowed. "
-                                f"Only {', '.join(PLAN_MODE_ALLOWED_COMMANDS)} commands are permitted in Plan Mode."
-                            )
-                    elif not tool_error:
-                        output = await _run_tool_handler(handler, arguments)
-                        tool_error = isinstance(output, str) and output.startswith("Error:")
-                except ToolArgumentValidationError as exc:
-                    tool_error = True
-                    output = str(exc)
-                except Exception as e:
-                    tool_error = True
-                    log_error_traceback(
-                        f"Orchestrator tool execution error: {tool_name}", e
-                    )
-                    output = f"Error executing {tool_name}: {e}."
-
-                _render_tool_output(tool_name, output)
-            finally:
-                post_tui(TuiRegion.TOOLS, active=False)
+                elif not tool_error:
+                    output = await _run_tool_handler(handler, arguments)
+                    tool_error = isinstance(output, str) and output.startswith("Error:")
+            except ToolArgumentValidationError as exc:
+                tool_error = True
+                output = str(exc)
+            except Exception as e:
+                tool_error = True
+                log_error_traceback(
+                    f"Orchestrator tool execution error: {tool_name}", e
+                )
+                output = f"Error executing {tool_name}: {e}."
 
             tool_result = llm_client.format_tool_result(
                 tool_id,
@@ -896,7 +885,6 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         _apply_workdir(selected_workdir)
         history[0] = {"role": "system", "content": get_dynamic_system_prompt()}
         refresh_status()
-        refresh_tools_title()
         post_tui(TuiRegion.BACKGROUND, f"[bold green]📂 Workspace switched to: {selected_workdir}[/bold green]")
         render_current_workdir("当前工作目录已切换")
 

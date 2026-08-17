@@ -4297,10 +4297,8 @@ async def test_agent_loop_cancel_after_committed_round_does_not_recheck_compacti
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
             patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
             patch.object(main_module, "estimate_tokens", return_value=0) as estimate_tokens, \
-            patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
-            patch.object(main_module, "_render_tool_call"), \
-            patch.object(main_module, "_render_tool_output"), \
-            patch.object(main_module, "_apply_pending_title"), \
+             patch.object(main_module, "auto_compact", new_callable=AsyncMock) as auto_compact, \
+             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "post_tui"), \
             patch.object(main_module, "is_plan_mode", return_value=False):
         committed = await main_module.agent_loop(messages, llm_client=FakeClient())
@@ -4365,11 +4363,9 @@ async def test_agent_loop_keeps_mcp_arguments_outside_builtin_pydantic_registry(
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {"mcp_tool": handler})), \
-            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
-            patch.object(main_module, "estimate_tokens", return_value=0), \
-            patch.object(main_module, "_render_tool_call"), \
-            patch.object(main_module, "_render_tool_output"), \
-            patch.object(main_module, "_apply_pending_title"), \
+             patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
+             patch.object(main_module, "estimate_tokens", return_value=0), \
+             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
             patch.object(main_module, "post_tui"), \
             patch.object(main_module, "is_plan_mode", return_value=False):
@@ -4442,12 +4438,10 @@ async def test_agent_loop_returns_builtin_validation_error_without_calling_handl
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
-            patch.object(main_module, "estimate_tokens", return_value=0), \
-            patch.object(main_module, "_render_tool_call"), \
-            patch.object(main_module, "_render_tool_output"), \
-            patch.object(main_module, "_apply_pending_title"), \
-            patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
+             patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
+             patch.object(main_module, "estimate_tokens", return_value=0), \
+             patch.object(main_module, "_apply_pending_title"), \
+             patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
             patch.object(main_module, "post_tui"), \
             patch.object(main_module, "is_plan_mode", return_value=False), \
             patch.object(main_module, "BASE_SUPER_TOOLS_HANDLERS", {"ContentSearch": handler}):
@@ -4521,11 +4515,9 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
             patch.object(main_module, "_render_token_usage"), \
             patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
             patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
-            patch.object(main_module.CONVERSATION_STORE, "save_messages") as save_messages, \
-            patch.object(main_module, "estimate_tokens", return_value=0), \
-            patch.object(main_module, "_render_tool_call"), \
-            patch.object(main_module, "_render_tool_output"), \
-            patch.object(main_module, "_apply_pending_title"), \
+             patch.object(main_module.CONVERSATION_STORE, "save_messages") as save_messages, \
+             patch.object(main_module, "estimate_tokens", return_value=0), \
+             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "post_tui"), \
             patch.object(main_module, "is_plan_mode", return_value=False):
         committed = await main_module.agent_loop(messages, llm_client=FakeClient())

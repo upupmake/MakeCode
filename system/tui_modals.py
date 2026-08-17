@@ -4562,7 +4562,6 @@ class LayoutModal(ClosableModalScreen[str | dict[str, int]]):
 
     _LABELS = {
         "content": "Content",
-        "tools": "Tools",
         "task": "Task",
         "background": "Background",
         "sub_agent": "Sub-Agent",

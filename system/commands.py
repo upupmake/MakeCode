@@ -21,7 +21,7 @@ from system.cli import COMMAND_DESCRIPTIONS
 from system.console_render import render_content_assistant_message, render_content_user_message, render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -366,7 +366,7 @@ class CommandHandler:
         summary_content = Group(*summary_items)
         content = Group(*panel_items)
         if show_mcp_view_tui(summary_content, status.get("tools", [])) == "<cancelled>":
-            self.console.print(content, tui_region=TuiRegion.TOOLS)
+            self.console.print(content, tui_region=TuiRegion.BACKGROUND)
         return True
 
     def handle_mcp_restart(self) -> bool:
@@ -429,7 +429,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 """.strip()
         )
         if show_info_panel_tui("🔌 MCP 命令帮助", content) == "<cancelled>":
-            self.console.print(content, tui_region=TuiRegion.TOOLS)
+            self.console.print(content, tui_region=TuiRegion.BACKGROUND)
         return True
 
     def handle_mcp_switch(self) -> bool:
@@ -437,7 +437,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         self.console.print(
             "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
             "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，Enter/Space 切换状态，按 t 管理所选服务的工具；也可通过底部按钮添加服务、管理工具、确认应用或取消。[/#aaaaaa]",
-            tui_region=TuiRegion.TOOLS,
+            tui_region=TuiRegion.BACKGROUND,
         )
         try:
             server_switches = self.mcp_manager.list_server_switches()
@@ -445,7 +445,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             server_switches = []
         except Exception as exc:
             log_error_traceback("commands handle_mcp_switch list", exc)
-            self.console.print(f"\n[bold red]❌ 读取 MCP 配置失败: {exc}[/bold red]", tui_region=TuiRegion.TOOLS)
+            self.console.print(f"\n[bold red]❌ 读取 MCP 配置失败: {exc}[/bold red]", tui_region=TuiRegion.BACKGROUND)
             return True
 
         try:
@@ -454,7 +454,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             log_error_traceback("commands handle_mcp_switch interactive", exc)
             self.console.print(
                 f"\n[bold red]❌ 打开 MCP 开关面板失败: {exc}[/bold red]",
-                tui_region=TuiRegion.TOOLS,
+                tui_region=TuiRegion.BACKGROUND,
             )
             return True
 
@@ -468,7 +468,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             lines.extend(tool_lines)
             lines.extend(added_lines)
             lines.extend(deleted_lines)
-            self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
+            self.console.print("\n".join(lines), tui_region=TuiRegion.BACKGROUND)
             return True
 
         try:
@@ -481,7 +481,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             lines.extend(tool_lines)
             lines.extend(added_lines)
             lines.extend(deleted_lines)
-            self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
+            self.console.print("\n".join(lines), tui_region=TuiRegion.BACKGROUND)
             return True
 
         if not apply_result.get("saved"):
@@ -489,7 +489,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             lines.extend(tool_lines)
             lines.extend(added_lines)
             lines.extend(deleted_lines)
-            self.console.print("\n".join(lines), tui_region=TuiRegion.TOOLS)
+            self.console.print("\n".join(lines), tui_region=TuiRegion.BACKGROUND)
             return True
 
         changed = apply_result.get("changed", [])
@@ -524,7 +524,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         summary_lines.extend(tool_lines)
         summary_lines.extend(added_lines)
         summary_lines.extend(deleted_lines)
-        self.console.print("\n".join(summary_lines), tui_region=TuiRegion.TOOLS)
+        self.console.print("\n".join(summary_lines), tui_region=TuiRegion.BACKGROUND)
         return True
 
     def _format_mcp_panel_tool_lines(self, tool_results: list[dict]) -> list[str]:
@@ -599,17 +599,17 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 "\n[bold yellow]用法：/mcp-add <name> [options] -- <cmd> [args...] 或 /mcp-add <name> --url <url> [options][/bold yellow]\n"
                 "[#aaaaaa]常用选项：--env KEY=VALUE、--header KEY=VALUE、--transport stdio|streamable-http|sse。也支持 headers.X=Y / env.X=Y。服务名已存在时请先 /mcp-delete <name>。[/#aaaaaa]\n"
                 f"[bold red]❌ {escape(str(exc))}[/bold red]",
-                tui_region=TuiRegion.TOOLS,
+                tui_region=TuiRegion.BACKGROUND,
             )
             return True
 
-        self.console.print("\n".join(self._format_mcp_add_lines(server_name, result)), tui_region=TuiRegion.TOOLS)
+        self.console.print("\n".join(self._format_mcp_add_lines(server_name, result)), tui_region=TuiRegion.BACKGROUND)
         return True
 
     def handle_mcp_delete(self, query: str) -> bool:
         parts = query.split()
         if len(parts) != 2:
-            self.console.print("\n[bold yellow]用法：/mcp-delete <name>[/bold yellow]", tui_region=TuiRegion.TOOLS)
+            self.console.print("\n[bold yellow]用法：/mcp-delete <name>[/bold yellow]", tui_region=TuiRegion.BACKGROUND)
             return True
 
         server_name = parts[1]
@@ -618,17 +618,17 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             ["确认删除", "取消"],
         )
         if choice != "确认删除":
-            self.console.print("\n[#aaaaaa]已取消删除 MCP 服务配置。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
+            self.console.print("\n[#aaaaaa]已取消删除 MCP 服务配置。[/#aaaaaa]", tui_region=TuiRegion.BACKGROUND)
             return True
 
         try:
             result = self.mcp_manager.delete_server_config(server_name)
         except Exception as exc:
             log_error_traceback("commands handle_mcp_delete", exc)
-            self.console.print(f"\n[bold red]❌ 删除 MCP 服务失败: {escape(str(exc))}[/bold red]", tui_region=TuiRegion.TOOLS)
+            self.console.print(f"\n[bold red]❌ 删除 MCP 服务失败: {escape(str(exc))}[/bold red]", tui_region=TuiRegion.BACKGROUND)
             return True
 
-        self.console.print("\n".join(self._format_mcp_delete_lines(server_name, result)), tui_region=TuiRegion.TOOLS)
+        self.console.print("\n".join(self._format_mcp_delete_lines(server_name, result)), tui_region=TuiRegion.BACKGROUND)
         return True
 
     def handle_copy(self, history: list) -> bool:
@@ -709,7 +709,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             elif role in ("tool", "function") and msg.get("name") == "RunTerminalCommand":
                 messages.append(msg)
         if not messages:
-            self.console.print("[#aaaaaa]当前对话暂无可查看的内容。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
+            self.console.print("[#aaaaaa]当前对话暂无可查看的内容。[/#aaaaaa]", tui_region=TuiRegion.BACKGROUND)
             return True
         show_copy_content_tui(messages)
         return True
@@ -872,13 +872,13 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         """处理 /models 命令"""
         model_manager = get_model_manager()
         if model_manager is None:
-            self.console.print("\n[bold red]❌ 模型管理器未初始化。[/bold red]", tui_region=TuiRegion.TOOLS)
+            self.console.print("\n[bold red]❌ 模型管理器未初始化。[/bold red]", tui_region=TuiRegion.BACKGROUND)
             return True
 
         result = manage_models_tui(model_manager)
         if result.startswith("selected:"):
             selected_text = result.removeprefix("selected:")
-            self.console.print(f"\n[bold green]✅ 当前模型已切换为: {selected_text}[/bold green]", tui_region=TuiRegion.TOOLS)
+            self.console.print(f"\n[bold green]✅ 当前模型已切换为: {selected_text}[/bold green]", tui_region=TuiRegion.BACKGROUND)
 
         current_model = model_manager.get_current_model()
         current_text = (
@@ -887,7 +887,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             if current_model
             else "未选择"
         )
-        self.console.print(f"\n[bold cyan]已退出模型面板，当前模型：[/bold cyan][bold green]{current_text}[/bold green]", tui_region=TuiRegion.TOOLS)
+        self.console.print(f"\n[bold cyan]已退出模型面板，当前模型：[/bold cyan][bold green]{current_text}[/bold green]", tui_region=TuiRegion.BACKGROUND)
         return True
 
     def handle_layout(self) -> bool:
@@ -895,10 +895,10 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         result = manage_layout_tui()
         if isinstance(result, dict):
             self.console.print(
-                "\n[bold green]✅ Layout 已应用：[/bold green]"
-                f"左侧 Content/Tools = {result['content']}/{result['tools']}；"
-                f"右侧 Task/Background/Sub-Agent = {result['task']}/{result['background']}/{result['sub_agent']}",
-                tui_region=TuiRegion.TOOLS,
+            "\n[bold green]✅ Layout 已应用：[/bold green]"
+            f"Content = {result['content']}；"
+            f"右侧 Task/Background/Sub-Agent = {result['task']}/{result['background']}/{result['sub_agent']}",
+            tui_region=TuiRegion.BACKGROUND,
             )
         return True
 
@@ -958,7 +958,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         self._reset_hitl_session()
         self._reset_conversation_view(history)
         refresh_status()
-        refresh_tools_title()
         self.console.print("[bold green]✅ 工作目录已切换，已开启全新会话。[/bold green]")
         render_current_workdir()
         return True
@@ -977,7 +976,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         TOOL_EXECUTION_HISTORY.clear()
         for region in (
             TuiRegion.CONTENT,
-            TuiRegion.TOOLS,
             TuiRegion.TASK,
             TuiRegion.BACKGROUND,
             TuiRegion.SUB_AGENT,
@@ -1079,7 +1077,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
     def handle_memory_config(self, query: str) -> bool:
         """处理 /memory-config 命令"""
         if query.strip() != "/memory-config":
-            self.console.print("\n[bold yellow]用法：/memory-config[/bold yellow]", tui_region=TuiRegion.TOOLS)
+            self.console.print("\n[bold yellow]用法：/memory-config[/bold yellow]", tui_region=TuiRegion.BACKGROUND)
             return True
 
         model_manager = get_model_manager()
@@ -1100,7 +1098,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         while True:
             result = manage_memory_config_tui(current_values)
             if result == "<cancelled>":
-                self.console.print("\n[#aaaaaa]已取消记忆配置修改。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
+                self.console.print("\n[#aaaaaa]已取消记忆配置修改。[/#aaaaaa]", tui_region=TuiRegion.BACKGROUND)
                 return True
             if not isinstance(result, dict):
                 return True
@@ -1108,7 +1106,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             if result.get("__action") != "choose_recall_model":
                 break
             if model_manager is None:
-                self.console.print("\n[bold red]❌ 模型管理器未初始化，无法选择记忆召回模型。[/bold red]", tui_region=TuiRegion.TOOLS)
+                self.console.print("\n[bold red]❌ 模型管理器未初始化，无法选择记忆召回模型。[/bold red]", tui_region=TuiRegion.BACKGROUND)
                 continue
             model_manager._reload_from_disk()
             options = ["使用主模型（同主模型）"] + [model.get_display_text() for model in model_manager.models]
@@ -1139,7 +1137,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         set_memory_recall_window_size(result["memory_recall_window_size"])
         if model_manager is not None:
             model_manager.set_memory_recall_model_by_key(result.get("memory_recall_model_key"))
-        refresh_tools_title()
         refresh_status()
         recall_model_text = model_manager.get_memory_recall_model_display_text() if model_manager else "同主模型"
         self.console.print(
@@ -1153,7 +1150,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             f"  partial_compact_range: {result['partial_compact_min_percent']}%-{result['partial_compact_max_percent']}%\n"
             f"  memory_recall_window_size: {result['memory_recall_window_size']}\n"
             f"  memory_recall_model: {recall_model_text}",
-            tui_region=TuiRegion.TOOLS,
+            tui_region=TuiRegion.BACKGROUND,
         )
         return True
 
@@ -1184,7 +1181,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         if not conversations:
             self.console.print(
                 "\n[bold yellow]📂 没有找到任何 6.0 对话记录。[/bold yellow]",
-                tui_region=TuiRegion.TOOLS,
+                tui_region=TuiRegion.BACKGROUND,
             )
             return history, self.conversation_store.active_path
 
@@ -1210,7 +1207,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             selected_path = "abort"
 
         if selected_path == "abort":
-            self.console.print("[#aaaaaa]已取消加载。[/#aaaaaa]", tui_region=TuiRegion.TOOLS)
+            self.console.print("[#aaaaaa]已取消加载。[/#aaaaaa]", tui_region=TuiRegion.BACKGROUND)
             return history, self.conversation_store.active_path
 
         try:
@@ -1234,14 +1231,14 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
         except Exception as exc:
             log_error_traceback("commands handle_load error", exc)
-            self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]", tui_region=TuiRegion.TOOLS)
+            self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]", tui_region=TuiRegion.BACKGROUND)
             return history, self.conversation_store.active_path
 
         try:
             self.conversation_store.activate(snapshot)
         except Exception as exc:
             log_error_traceback("commands handle_load activation", exc)
-            self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]", tui_region=TuiRegion.TOOLS)
+            self.console.print(f"\n[bold red]❌ 加载失败: {exc}[/bold red]", tui_region=TuiRegion.BACKGROUND)
             return history, self.conversation_store.active_path
 
         tasks_module.TASK_MANAGER = next_task_manager
@@ -1254,7 +1251,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         try:
             for region in (
                 TuiRegion.CONTENT,
-                TuiRegion.TOOLS,
                 TuiRegion.TASK,
                 TuiRegion.BACKGROUND,
                 TuiRegion.SUB_AGENT,
@@ -1278,7 +1274,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         self.console.print(
             f"\n[bold green]🚀 成功加载对话、任务与子智能体历史！当前上下文包含 {len(loaded)} 条消息。[/bold green]",
-            tui_region=TuiRegion.TOOLS,
+            tui_region=TuiRegion.BACKGROUND,
         )
         return loaded, snapshot.path
 
@@ -1485,7 +1481,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             if not user_query:
                 self.console.print(
                     "\n[bold yellow]用法：/nm <query>[/bold yellow]",
-                    tui_region=TuiRegion.TOOLS,
+                    tui_region=TuiRegion.BACKGROUND,
                 )
                 return CommandResult(action=CommandAction.CONTINUE)
             return CommandResult(

@@ -44,16 +44,15 @@ _custom_theme = Theme({
 class TuiConsole(Console):
     def print(self, *objects: Any, **kwargs: Any) -> None:
         region = kwargs.pop("tui_region", TuiRegion.CONTENT)
-        tool_result_delta = kwargs.pop("tool_result_delta", 0)
         sep = kwargs.get("sep", " ")
         end = kwargs.get("end", "\n")
         if not objects:
-            post_tui(region, "", tool_result_delta=tool_result_delta)
+            post_tui(region, "")
             return
         post_tui(region, active=True)
         try:
-            for index, obj in enumerate(objects):
-                post_tui(region, obj, tool_result_delta=tool_result_delta if index == 0 else 0)
+            for obj in objects:
+                post_tui(region, obj)
             if end and end != "\n":
                 post_tui(region, end.rstrip("\n"))
         finally:
@@ -230,8 +229,8 @@ def _render_agent_response_message(
 def _render_tool_call(
         name: str,
         arguments: Any,
+        tui_region: TuiRegion,
         identity: str = "🧠 Orchestrator",
-        tui_region: TuiRegion = TuiRegion.TOOLS,
 ):
     """渲染工具调用"""
     body = Text(format_tool_arguments(arguments), style="white")
@@ -252,8 +251,8 @@ def _render_tool_call(
 def _render_tool_output(
         name: str,
         output: Any,
+        tui_region: TuiRegion,
         identity: str = "🧠 Orchestrator",
-        tui_region: TuiRegion = TuiRegion.TOOLS,
 ):
     """渲染工具输出"""
     text = _stringify_output(output).strip()
@@ -269,7 +268,6 @@ def _render_tool_output(
             expand=True,
         ),
         tui_region=tui_region,
-        tool_result_delta=1 if tui_region == TuiRegion.TOOLS else 0,
     )
 
 
@@ -300,32 +298,6 @@ def _render_history(messages: list):
             content = msg.get("content")
             if content:
                 _render_agent_response_message(content)
-
-            tool_calls = msg.get("tool_calls") or []
-            for tc in tool_calls:
-                tc_func = (
-                    tc.get("function", {})
-                    if isinstance(tc, dict)
-                    else getattr(tc, "function", {})
-                )
-                if tc_func:
-                    tc_name = (
-                        tc_func.get("name")
-                        if isinstance(tc_func, dict)
-                        else getattr(tc_func, "name", "")
-                    )
-                    tc_args = (
-                        tc_func.get("arguments")
-                        if isinstance(tc_func, dict)
-                        else getattr(tc_func, "arguments", "")
-                    )
-                    if tc_name:
-                        _render_tool_call(tc_name, tc_args)
-        elif role == "tool" or role == "function":
-            content = msg.get("content") or msg.get("output")
-            name = msg.get("name") or "Tool"
-            if content:
-                _render_tool_output(name, content)
 
 
 def format_runtime_info(tokens: int | None = None, threshold: int = 80000) -> str:

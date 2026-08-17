@@ -18,7 +18,6 @@ from utils.skills import SkillLoader
 
 TEST_LAYOUT_RATIOS = {
     "content": 2,
-    "tools": 2,
     "task": 2,
     "background": 3,
     "sub_agent": 1,
@@ -60,10 +59,8 @@ async def test_content_pane_minimum_width_keeps_startup_banner_on_six_lines():
 
         content_pane = app.query_one("#content-pane")
         content_log = app.query_one("#content-log")
-        tools_pane = app.query_one("#tools-pane")
 
         assert content_pane.region.width == 86
-        assert tools_pane.region.width == content_pane.region.width
         assert len(content_log.children) == 1
         assert content_log.children[0].region.height == 10
 
@@ -359,7 +356,6 @@ async def test_f7_opens_tool_history_with_current_messages_and_advertises_shortc
     try:
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
-            assert "F7 History" in str(app.query_one("#tools-pane").border_title)
 
             await pilot.press("f7")
             await pilot.pause()
@@ -419,7 +415,6 @@ async def test_responsive_reflow_keeps_all_logs_without_horizontal_scroll():
     app = MakeCodeTuiApp()
     regions = {
         TuiRegion.CONTENT: "#content-log",
-        TuiRegion.TOOLS: "#tools-log",
         TuiRegion.TASK: "#task-log",
         TuiRegion.BACKGROUND: "#background-log",
         TuiRegion.SUB_AGENT: "#sub-agent-log",
@@ -458,7 +453,6 @@ async def test_formatted_outputs_reflow_with_each_pane_width_in_both_directions(
     app = MakeCodeTuiApp()
     regions = {
         TuiRegion.CONTENT: "#content-log",
-        TuiRegion.TOOLS: "#tools-log",
         TuiRegion.TASK: "#task-log",
         TuiRegion.BACKGROUND: "#background-log",
         TuiRegion.SUB_AGENT: "#sub-agent-log",
@@ -521,14 +515,14 @@ async def test_narrow_main_panes_fit_terminal_without_horizontal_scroll():
 
     async with app.run_test(size=(80, 40)) as pilot:
         await pilot.pause()
-        for region in (TuiRegion.CONTENT, TuiRegion.TOOLS):
+        for region in (TuiRegion.CONTENT,):
             app.handle_tui_event(TuiEvent(region, "", clear=True))
             app.handle_tui_event(TuiEvent(region, payload))
         await pilot.pause()
 
         main_grid = app.query_one("#main-grid")
         assert main_grid.region.width <= app.size.width
-        for selector in ("#content-log", "#tools-log"):
+        for selector in ("#content-log",):
             log = app.query_one(selector)
             assert log.max_scroll_x == 0
             assert log.virtual_size.width <= log.scrollable_content_region.width

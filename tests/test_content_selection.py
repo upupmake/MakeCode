@@ -15,7 +15,6 @@ from system.tui_types import TuiEvent, TuiRegion
 
 TEST_LAYOUT_RATIOS = {
     "content": 2,
-    "tools": 2,
     "task": 2,
     "background": 3,
     "sub_agent": 1,

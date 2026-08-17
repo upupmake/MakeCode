@@ -378,10 +378,9 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
                 patch.object(memory, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
                 patch.object(memory.StreamRenderer, "render_text_stream_async", new_callable=AsyncMock, side_effect=stream_results), \
-                patch.object(memory, "post_tui"), \
-                patch.object(memory, "_render_agent_response_message"), \
-                patch.object(memory, "_render_tool_output"), \
-                patch.object(memory, "TOOL_EXECUTION_HISTORY", tool_history):
+                 patch.object(memory, "post_tui"), \
+                 patch.object(memory, "_render_agent_response_message"), \
+                 patch.object(memory, "TOOL_EXECUTION_HISTORY", tool_history):
             outputs = await memory.memory_agent_loop(
                 conversation_text="[]",
                 summary="",
@@ -436,11 +435,9 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ), \
                 patch.object(memory, "LONG_TERM_MEMORY_TOOL_HANDLERS", {"AppendLongTermMemory": handler}), \
-                patch.object(memory, "post_tui"), \
-                patch.object(memory, "_render_agent_response_message"), \
-                patch.object(memory, "_render_tool_call"), \
-                patch.object(memory, "_render_tool_output"):
-            outputs = await memory.memory_agent_loop(
+                 patch.object(memory, "post_tui"), \
+                 patch.object(memory, "_render_agent_response_message"):
+             outputs = await memory.memory_agent_loop(
                 conversation_text="[]",
                 summary="",
                 reason="test",
@@ -484,10 +481,9 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                         {"role": "assistant", "content": None, "stop_reason": "tool_use"},
                     ),
                 ), \
-                patch.object(memory, "post_tui"), \
-                patch.object(memory, "_render_agent_response_message"), \
-                patch.object(memory, "_render_tool_output"), \
-                patch.object(memory, "TOOL_EXECUTION_HISTORY", ToolExecutionHistory()):
+                 patch.object(memory, "post_tui"), \
+                 patch.object(memory, "_render_agent_response_message"), \
+                 patch.object(memory, "TOOL_EXECUTION_HISTORY", ToolExecutionHistory()):
             with self.assertRaisesRegex(RuntimeError, "tool errors"):
                 await memory.memory_agent_loop(
                     conversation_text="[]",

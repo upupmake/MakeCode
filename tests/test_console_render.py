@@ -38,14 +38,14 @@ def _render_tool_event(render, value):
 
 def _render_terminal_output(output):
     return _render_tool_event(
-        lambda value: _render_tool_output("RunTerminalCommand", value),
+        lambda value: _render_tool_output("RunTerminalCommand", value, TuiRegion.BACKGROUND),
         output,
     )
 
 
 def _render_tool_arguments(arguments):
     return _render_tool_event(
-        lambda value: _render_tool_call("FileEdit", value),
+        lambda value: _render_tool_call("FileEdit", value, TuiRegion.BACKGROUND),
         arguments,
     )
 

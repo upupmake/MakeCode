@@ -16,8 +16,6 @@ from rich.table import Table
 from init import log_error_traceback
 from system.console_render import (
     _render_agent_response_message,
-    _render_tool_call,
-    _render_tool_output,
     console as _compact_console,
 )
 from system.stream_render import StreamRenderer
@@ -987,7 +985,6 @@ async def memory_agent_loop(
                 else:
                     tool_changed = False
                     post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 准备执行记忆写入工具：{escape(tool_name)}[/#aaaaaa]")
-                    _render_tool_call(tool_name, tool_args, identity=MEMORY_AGENT_IDENTITY)
                     try:
                         arguments = validate_builtin_tool_arguments(
                             tool_name,
@@ -1015,7 +1012,6 @@ async def memory_agent_loop(
                         post_tui(TuiRegion.BACKGROUND, f"[bold green]🧠 记忆工具执行完成并产生变更：{escape(tool_name)}[/bold green]")
                     else:
                         post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 记忆工具执行完成：{escape(tool_name)}[/#aaaaaa]")
-                    _render_tool_output(tool_name, output, identity=MEMORY_AGENT_IDENTITY)
                 TOOL_EXECUTION_HISTORY.finish(
                     execution_id,
                     output,
@@ -1363,5 +1359,4 @@ async def auto_compact(
         system_msgs = [{"role": "system", "content": system_prompt_fn()}]
 
     messages[:] = system_msgs + _summary_messages(summary, reason)
-    post_tui(TuiRegion.TOOLS, reset_tool_result_count=True)
     return "History successfully compacted and summarized."

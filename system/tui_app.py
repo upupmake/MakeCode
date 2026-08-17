@@ -62,14 +62,12 @@ class TuiBridge:
         self._client_request_count = 0
         self._client_request_retries: dict[int, tuple[int, int]] = {}
         content_lock = threading.Lock()
-        tools_lock = threading.Lock()
         task_lock = threading.Lock()
         background_lock = threading.Lock()
         sub_agent_lock = threading.Lock()
         self._region_locks = {
             TuiRegion.CONTENT: content_lock,
             TuiRegion.REASONING: content_lock,
-            TuiRegion.TOOLS: tools_lock,
             TuiRegion.TASK: task_lock,
             TuiRegion.BACKGROUND: background_lock,
             TuiRegion.SUB_AGENT: sub_agent_lock,
@@ -100,8 +98,6 @@ class TuiBridge:
         payload: Any = None,
         *,
         clear: bool = False,
-        tool_result_delta: int = 0,
-        reset_tool_result_count: bool = False,
         tail: bool = False,
         active: bool | None = None,
         collapsible_title: str | None = None,
@@ -112,8 +108,6 @@ class TuiBridge:
             TuiRegion(region),
             payload,
             clear,
-            tool_result_delta,
-            reset_tool_result_count,
             tail,
             active,
             collapsible_title,
@@ -449,16 +443,6 @@ class TuiBridge:
             app.refresh_status()
         else:
             app.call_from_thread(app.refresh_status)
-
-    def refresh_tools_title(self) -> None:
-        with self._app_lock:
-            app = self._app
-        if app is None:
-            return
-        if self._is_app_thread():
-            app.refresh_tools_title()
-        else:
-            app.call_from_thread(app.refresh_tools_title)
 
     def flush_screen(self) -> None:
         with self._app_lock:
@@ -898,8 +882,7 @@ class MakeCodeTuiApp(App[None]):
         display: block;
     }
 
-    #content-pane,
-    #tools-pane {
+    #content-pane {
         height: 1fr;
     }
 
@@ -1033,7 +1016,6 @@ class MakeCodeTuiApp(App[None]):
         self._compact_show_runtime = False
         self._last_responsive_width = 0
         self._layout_ratios = load_layout_ratios()
-        self._tool_result_count = 0
         self._pane_active_counts: dict[TuiRegion, int] = {}
         self._batch_render_depth = 0
         self._batch_scroll_regions: set[TuiRegion] = set()
@@ -1067,9 +1049,6 @@ class MakeCodeTuiApp(App[None]):
                 with Vertical(id="content-pane", classes="pane"):
                     yield VerticalScroll(id="content-log", classes="pane-log")
                     yield Static("", id="content-tail", classes="pane-tail")
-                with Vertical(id="tools-pane", classes="pane"):
-                    yield TuiRichLog(id="tools-log", classes="pane-log", markup=True, wrap=True, min_width=1)
-                    yield Static("", id="tools-tail", classes="pane-tail")
                 with Vertical(id="bottom-grid"):
                     yield Static("", id="slash-hints")
                     yield MakeCodeInput(id="input-box", placeholder='Prompt here e.g. "整理当前项目的架构"')
@@ -1093,13 +1072,11 @@ class MakeCodeTuiApp(App[None]):
             TuiRegion.CONTENT: self.query_one("#content-pane", Vertical),
             TuiRegion.REASONING: self.query_one("#content-pane", Vertical),
             TuiRegion.TASK: self.query_one("#task-pane", Vertical),
-            TuiRegion.TOOLS: self.query_one("#tools-pane", Vertical),
             TuiRegion.BACKGROUND: self.query_one("#background-pane", Vertical),
             TuiRegion.SUB_AGENT: self.query_one("#sub-agent-pane", Vertical),
         }
         self._logs = {
             TuiRegion.TASK: self.query_one("#task-log", RichLog),
-            TuiRegion.TOOLS: self.query_one("#tools-log", RichLog),
             TuiRegion.BACKGROUND: self.query_one("#background-log", RichLog),
             TuiRegion.SUB_AGENT: self.query_one("#sub-agent-log", RichLog),
         }
@@ -1108,13 +1085,11 @@ class MakeCodeTuiApp(App[None]):
             TuiRegion.CONTENT: self.query_one("#content-tail", Static),
             TuiRegion.REASONING: self.query_one("#content-tail", Static),
             TuiRegion.TASK: self.query_one("#task-tail", Static),
-            TuiRegion.TOOLS: self.query_one("#tools-tail", Static),
             TuiRegion.BACKGROUND: self.query_one("#background-tail", Static),
             TuiRegion.SUB_AGENT: self.query_one("#sub-agent-tail", Static),
         }
         self.query_one("#content-pane", Vertical).border_title = "Content"
         self.query_one("#task-pane", Vertical).border_title = "Task"
-        self._update_tools_title()
         self.query_one("#background-pane", Vertical).border_title = "Background"
         self.query_one("#sub-agent-pane", Vertical).border_title = "Sub-Agent"
         self._apply_layout_ratios()
@@ -1204,7 +1179,6 @@ class MakeCodeTuiApp(App[None]):
     def _apply_layout_ratios(self) -> None:
         pane_ids = {
             "content": "#content-pane",
-            "tools": "#tools-pane",
             "task": "#task-pane",
             "background": "#background-pane",
             "sub_agent": "#sub-agent-pane",
@@ -1223,14 +1197,6 @@ class MakeCodeTuiApp(App[None]):
 
     def on_unmount(self) -> None:
         TUI_BRIDGE.unbind(self)
-
-    def _update_tools_title(self) -> None:
-        self.query_one("#tools-pane", Vertical).border_title = (
-            f"Tools · Results: {self._tool_result_count} · F7 History"
-        )
-
-    def refresh_tools_title(self) -> None:
-        self._update_tools_title()
 
     def flush_screen(self) -> None:
         self._driver.write("\x1b[2J\x1b[H")
@@ -1277,9 +1243,6 @@ class MakeCodeTuiApp(App[None]):
 
     def _scroll_log_end_after_refresh(self, log: Widget) -> None:
         self.call_after_refresh(lambda: log.scroll_end(animate=False, x_axis=False))
-
-    def _scroll_log_to_after_refresh(self, log: RichLog, y: int) -> None:
-        self.call_after_refresh(lambda: log.scroll_to(y=y, animate=False))
 
     def _defer_or_scroll_now(self, region: TuiRegion, scroller: Widget | None) -> None:
         if scroller is None:
@@ -1365,35 +1328,19 @@ class MakeCodeTuiApp(App[None]):
             self._update_tail(event.region, "")
             self._pane_active_counts[event.region] = 0
             self._set_pane_active(event.region, False)
-            if event.region == TuiRegion.TOOLS:
-                self._tool_result_count = 0
-                self._update_tools_title()
-        if event.reset_tool_result_count:
-            self._tool_result_count = 0
-            self._update_tools_title()
-        if event.tool_result_delta:
-            self._tool_result_count += event.tool_result_delta
-            self._update_tools_title()
         if event.region == TuiRegion.CONTENT and event.payload == "":
             self._mark_runtime_dirty()
             return
         if event.region in {TuiRegion.CONTENT, TuiRegion.REASONING}:
             self._handle_content_block_event(event)
             return
-        if event.payload is not None and event.region in {TuiRegion.TASK, TuiRegion.TOOLS, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
+        if event.payload is not None and event.region in {TuiRegion.TASK, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
             should_scroll_end = self._batch_force_scroll or self._is_log_at_bottom(log)
-            result_start_y = (
-                len(log.lines)
-                if event.region == TuiRegion.TOOLS and event.tool_result_delta and not self._batch_force_scroll
-                else None
-            )
             try:
-                log.write(event.payload, expand=True, shrink=True, scroll_end=should_scroll_end and result_start_y is None)
+                log.write(event.payload, expand=True, shrink=True, scroll_end=should_scroll_end)
             except MarkupError:
-                log.write(Text(str(event.payload)), expand=True, shrink=True, scroll_end=should_scroll_end and result_start_y is None)
-            if result_start_y is not None:
-                self._scroll_log_to_after_refresh(log, result_start_y)
-            elif should_scroll_end:
+                log.write(Text(str(event.payload)), expand=True, shrink=True, scroll_end=should_scroll_end)
+            if should_scroll_end:
                 self._defer_or_scroll_now(event.region, log)
         elif event.payload is not None:
             log.write(event.payload)
@@ -2354,8 +2301,6 @@ def post_tui(
     payload: RenderableType | str | None = None,
     *,
     clear: bool = False,
-    tool_result_delta: int = 0,
-    reset_tool_result_count: bool = False,
     tail: bool = False,
     active: bool | None = None,
     collapsible_title: str | None = None,
@@ -2366,8 +2311,6 @@ def post_tui(
         region,
         payload,
         clear=clear,
-        tool_result_delta=tool_result_delta,
-        reset_tool_result_count=reset_tool_result_count,
         tail=tail,
         active=active,
         collapsible_title=collapsible_title,
@@ -2402,10 +2345,6 @@ def set_client_request_retry(request_id: int, retry_count: int, max_retries: int
 
 def refresh_status() -> None:
     TUI_BRIDGE.refresh_status()
-
-
-def refresh_tools_title() -> None:
-    TUI_BRIDGE.refresh_tools_title()
 
 
 def flush_tui_screen() -> None:

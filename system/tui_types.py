@@ -10,7 +10,6 @@ class TuiRegion(StrEnum):
     CONTENT = "content"
     REASONING = "reasoning"
     TASK = "task"
-    TOOLS = "tools"
     BACKGROUND = "background"
     SUB_AGENT = "sub_agent"
     STATUS = "status"
@@ -22,8 +21,6 @@ class TuiEvent:
     region: TuiRegion
     payload: Any
     clear: bool = False
-    tool_result_delta: int = 0
-    reset_tool_result_count: bool = False
     tail: bool = False
     active: bool | None = None
     collapsible_title: str | None = None
@@ -34,12 +31,11 @@ class TuiEvent:
 LAYOUT_CONFIG_FILE = paths.layout_config_file()
 LAYOUT_DEFAULT_RATIOS: dict[str, int] = {
     "content": 2,
-    "tools": 0,
     "task": 2,
     "background": 3,
     "sub_agent": 1,
 }
-LAYOUT_LEFT_KEYS = ("content", "tools")
+LAYOUT_LEFT_KEYS = ("content",)
 LAYOUT_RIGHT_KEYS = ("task", "background", "sub_agent")
 
 

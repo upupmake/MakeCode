@@ -22,7 +22,6 @@ from utils.paths import directory_completion_candidates
 
 TEST_LAYOUT_RATIOS = {
     "content": 2,
-    "tools": 2,
     "task": 2,
     "background": 3,
     "sub_agent": 1,
@@ -1836,29 +1835,6 @@ async def test_tui_displays_invalid_rich_markup_as_plain_text():
 
 
 @pytest.mark.anyio
-async def test_long_tool_result_scrolls_to_result_start():
-    app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
-
-    async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.pause()
-        app.handle_tui_event(TuiEvent(TuiRegion.TOOLS, "tool call"))
-        await pilot.pause()
-        tools_log = app._logs[TuiRegion.TOOLS]
-        result_start_y = len(tools_log.lines)
-
-        app.handle_tui_event(
-            TuiEvent(
-                TuiRegion.TOOLS,
-                "\n".join(f"result line {index}" for index in range(20)),
-                tool_result_delta=1,
-            )
-        )
-        await pilot.pause()
-        await pilot.pause()
-
-        assert tools_log.scroll_y == result_start_y
-        assert tools_log.scroll_y < tools_log.max_scroll_y
-@pytest.mark.anyio
 async def test_scroll_all_panes_to_bottom_forces_non_bottom_viewports_to_end():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
 
@@ -1866,22 +1842,22 @@ async def test_scroll_all_panes_to_bottom_forces_non_bottom_viewports_to_end():
         await pilot.pause()
         for index in range(30):
             app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"内容 {index}\n\n"))
-            app.handle_tui_event(TuiEvent(TuiRegion.TOOLS, f"工具 {index}\n\n"))
+            app.handle_tui_event(TuiEvent(TuiRegion.BACKGROUND, f"后台 {index}\n\n"))
         await pilot.pause()
 
         content_scroller = app.query_one("#content-log")
-        tools_log = app._logs[TuiRegion.TOOLS]
+        background_log = app._logs[TuiRegion.BACKGROUND]
         content_scroller.scroll_to(y=0, animate=False, immediate=True)
-        tools_log.scroll_to(y=0, animate=False, immediate=True)
+        background_log.scroll_to(y=0, animate=False, immediate=True)
         assert content_scroller.scroll_y == 0
-        assert tools_log.scroll_y == 0
+        assert background_log.scroll_y == 0
 
         app.scroll_all_panes_to_bottom()
         await pilot.pause()
         await pilot.pause()
 
         assert content_scroller.scroll_y == content_scroller.max_scroll_y
-        assert tools_log.scroll_y == tools_log.max_scroll_y
+        assert background_log.scroll_y == background_log.max_scroll_y
 
 
 @pytest.mark.anyio
@@ -1894,25 +1870,25 @@ async def test_force_scroll_batch_does_not_check_previous_viewport_position():
         app._is_scroller_at_bottom = Mock(side_effect=AssertionError("scroller bottom check should be skipped"))
 
         content_scroller = app.query_one("#content-log")
-        tools_log = app._logs[TuiRegion.TOOLS]
+        background_log = app._logs[TuiRegion.BACKGROUND]
 
         app.begin_batch_render(force_scroll=True)
         for index in range(40):
             app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"历史内容 {index}\n\n"))
-            app.handle_tui_event(TuiEvent(TuiRegion.TOOLS, f"工具输出 {index}\n\n"))
+            app.handle_tui_event(TuiEvent(TuiRegion.BACKGROUND, f"后台输出 {index}\n\n"))
 
         await pilot.pause()
         await pilot.pause()
         # 回放过程中（批次尚未结束）就应始终在底部
         assert content_scroller.scroll_y == content_scroller.max_scroll_y
-        assert tools_log.scroll_y == tools_log.max_scroll_y
+        assert background_log.scroll_y == background_log.max_scroll_y
 
         app.end_batch_render()
         await pilot.pause()
         await pilot.pause()
 
         assert content_scroller.scroll_y == content_scroller.max_scroll_y
-        assert tools_log.scroll_y == tools_log.max_scroll_y
+        assert background_log.scroll_y == background_log.max_scroll_y
 
 
 def test_parse_mcp_add_stdio_command_parts_and_env():

@@ -75,13 +75,13 @@ async def test_real_load_flow_scrolls_every_pane_to_bottom(tmp_path, monkeypatch
             # 预置旧内容并把视口停在中上部，模拟加载前的任意滚动位置
             for index in range(30):
                 post_tui(TuiRegion.CONTENT, f"旧内容 {index}\n\n")
-                post_tui(TuiRegion.TOOLS, f"旧工具输出 {index}\n\n")
+                post_tui(TuiRegion.BACKGROUND, f"旧后台输出 {index}\n\n")
             await pilot.pause()
             content_scroller = app.query_one("#content-log")
-            tools_log = app._logs[TuiRegion.TOOLS]
+            background_log = app._logs[TuiRegion.BACKGROUND]
             task_log = app._logs[TuiRegion.TASK]
             content_scroller.scroll_to(y=0, animate=False, immediate=True)
-            tools_log.scroll_to(y=0, animate=False, immediate=True)
+            background_log.scroll_to(y=0, animate=False, immediate=True)
             task_log.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
 
@@ -124,8 +124,8 @@ async def test_real_load_flow_scrolls_every_pane_to_bottom(tmp_path, monkeypatch
             assert content_scroller.scroll_y == content_scroller.max_scroll_y, (
                 "content", content_scroller.scroll_y, content_scroller.max_scroll_y,
             )
-            assert tools_log.scroll_y == tools_log.max_scroll_y, (
-                "tools", tools_log.scroll_y, tools_log.max_scroll_y,
+            assert background_log.scroll_y == background_log.max_scroll_y, (
+                "background", background_log.scroll_y, background_log.max_scroll_y,
             )
             assert task_log.scroll_y == task_log.max_scroll_y, (
                 "task", task_log.scroll_y, task_log.max_scroll_y,
@@ -193,13 +193,13 @@ async def test_load_with_real_choice_modal_scrolls_every_pane_to_bottom(tmp_path
             assert not failures, failures
             assert results.get("path") is not None
             content_scroller = app.query_one("#content-log")
-            tools_log = app._logs[TuiRegion.TOOLS]
+            background_log = app._logs[TuiRegion.BACKGROUND]
             task_log = app._logs[TuiRegion.TASK]
             assert content_scroller.scroll_y == content_scroller.max_scroll_y, (
                 "content", content_scroller.scroll_y, content_scroller.max_scroll_y,
             )
-            assert tools_log.scroll_y == tools_log.max_scroll_y, (
-                "tools", tools_log.scroll_y, tools_log.max_scroll_y,
+            assert background_log.scroll_y == background_log.max_scroll_y, (
+                "background", background_log.scroll_y, background_log.max_scroll_y,
             )
             assert task_log.scroll_y == task_log.max_scroll_y, (
                 "task", task_log.scroll_y, task_log.max_scroll_y,
