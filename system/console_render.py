@@ -288,14 +288,6 @@ def _render_history(messages: list):
         elif role == "user":
             _render_user_message(_extract_message_text(msg))
         elif role == "assistant":
-            reasoning_content = msg.get("reasoning_content") or msg.get("reasoning")
-            if reasoning_content:
-                post_tui(
-                    TuiRegion.REASONING,
-                    render_model_markdown(reasoning_content),
-                    collapsible_title="🧠 Reasoning",
-                )
-
             content = msg.get("content")
             if content:
                 _render_agent_response_message(content)

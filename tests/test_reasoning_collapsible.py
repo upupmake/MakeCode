@@ -148,7 +148,7 @@ async def test_oneshot_reasoning_event_mounts_collapsed_collapsible():
 
 
 @pytest.mark.anyio
-async def test_history_replay_posts_oneshot_collapsible_for_reasoning(monkeypatch):
+async def test_history_replay_skips_reasoning_and_renders_content(monkeypatch):
     posted = []
 
     def fake_post_tui(region, payload=None, **kwargs):
@@ -167,11 +167,7 @@ async def test_history_replay_posts_oneshot_collapsible_for_reasoning(monkeypatc
     _render_history(messages)
 
     reasoning_posts = [item for item in posted if item[0] == TuiRegion.REASONING]
-    assert len(reasoning_posts) == 1
-    region, payload, kwargs = reasoning_posts[0]
-    assert kwargs.get("collapsible_title") == "🧠 Reasoning"
-    assert not kwargs.get("collapsible_open")
-    assert not kwargs.get("collapsible_close")
+    assert reasoning_posts == []
 
     content_posts = [item for item in posted if item[0] == TuiRegion.CONTENT and item[1] is not None]
     assert len(content_posts) == 2
