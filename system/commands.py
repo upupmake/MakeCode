@@ -21,7 +21,7 @@ from system.cli import COMMAND_DESCRIPTIONS
 from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -1241,7 +1241,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                 TuiRegion.SUB_AGENT,
             ):
                 post_tui(region, "", clear=True)
-            begin_tui_batch_render()
+            begin_tui_batch_render(force_scroll=True)
             try:
                 render_banner_fn()
                 render_hint_fn()
@@ -1445,13 +1445,19 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         # /load - 加载历史
         if query == "/load":
-            new_history, new_conversation = self.handle_load(
-                history,
-                current_conversation,
-                render_banner_fn,
-                render_hint_fn,
-                render_history_fn,
-            )
+            set_agent_loop_active(True)
+            try:
+                new_history, new_conversation = self.handle_load(
+                    history,
+                    current_conversation,
+                    render_banner_fn,
+                    render_hint_fn,
+                    render_history_fn,
+                )
+            finally:
+                set_agent_loop_active(False)
+            if new_history is not history:
+                scroll_all_panes_to_bottom()
             return CommandResult(action=CommandAction.LOAD_HISTORY, payload=(new_history, new_conversation))
 
         # /nm <query> - 跳过本次请求的记忆预召回

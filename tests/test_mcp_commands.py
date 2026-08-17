@@ -1038,6 +1038,7 @@ def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp
     handler.console = Mock()
     tool_history = Mock()
     events = []
+    begin_batch = Mock()
 
     monkeypatch.setattr(
         "system.commands.interactive_choose_conversation",
@@ -1045,6 +1046,7 @@ def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp
     )
     monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
     monkeypatch.setattr("system.commands.post_tui", Mock())
+    monkeypatch.setattr("system.commands.begin_tui_batch_render", begin_batch)
     monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
 
     loaded_history, loaded_conversation = handler.handle_load(
@@ -1068,6 +1070,62 @@ def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp
     assert teams_module.TEAM.conversation_id == conversation.parent.name
     assert teams_module.TEAM.history == team_history
     tool_history.clear.assert_called_once_with()
+    begin_batch.assert_called_once_with(force_scroll=True)
+
+
+@pytest.mark.anyio
+async def test_load_command_hides_input_and_scrolls_after_success(monkeypatch):
+    handler = make_handler()
+    loaded_history = [{"role": "system", "content": "loaded"}]
+    active_states = []
+    scroll_to_bottom = Mock()
+
+    monkeypatch.setattr(
+        handler,
+        "handle_load",
+        Mock(return_value=(loaded_history, object())),
+    )
+    monkeypatch.setattr("system.commands.set_agent_loop_active", active_states.append)
+    monkeypatch.setattr("system.commands.scroll_all_panes_to_bottom", scroll_to_bottom)
+
+    result = await handler.process_command(
+        "/load",
+        history=[{"role": "system", "content": "old"}],
+        current_conversation=None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    )
+
+    assert result.action == CommandAction.LOAD_HISTORY
+    assert active_states == [True, False]
+    scroll_to_bottom.assert_called_once_with()
+
+
+@pytest.mark.anyio
+async def test_load_command_does_not_scroll_when_loading_is_cancelled(monkeypatch):
+    handler = make_handler()
+    history = [{"role": "system", "content": "old"}]
+    active_states = []
+    scroll_to_bottom = Mock()
+
+    monkeypatch.setattr(handler, "handle_load", Mock(return_value=(history, None)))
+    monkeypatch.setattr("system.commands.set_agent_loop_active", active_states.append)
+    monkeypatch.setattr("system.commands.scroll_all_panes_to_bottom", scroll_to_bottom)
+
+    result = await handler.process_command(
+        "/load",
+        history=history,
+        current_conversation=None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    )
+
+    assert result.action == CommandAction.LOAD_HISTORY
+    assert active_states == [True, False]
+    scroll_to_bottom.assert_not_called()
+
 
 
 def test_load_conversation_without_sidecars_activates_empty_histories(tmp_path, monkeypatch):
@@ -1775,10 +1833,66 @@ async def test_long_tool_result_scrolls_to_result_start():
 
         assert tools_log.scroll_y == result_start_y
         assert tools_log.scroll_y < tools_log.max_scroll_y
+@pytest.mark.anyio
+async def test_scroll_all_panes_to_bottom_forces_non_bottom_viewports_to_end():
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        for index in range(30):
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"内容 {index}\n\n"))
+            app.handle_tui_event(TuiEvent(TuiRegion.TOOLS, f"工具 {index}\n\n"))
+        await pilot.pause()
+
+        content_scroller = app.query_one("#content-log")
+        tools_log = app._logs[TuiRegion.TOOLS]
+        content_scroller.scroll_to(y=0, animate=False, immediate=True)
+        tools_log.scroll_to(y=0, animate=False, immediate=True)
+        assert content_scroller.scroll_y == 0
+        assert tools_log.scroll_y == 0
+
+        app.scroll_all_panes_to_bottom()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert content_scroller.scroll_y == content_scroller.max_scroll_y
+        assert tools_log.scroll_y == tools_log.max_scroll_y
+
+
+@pytest.mark.anyio
+async def test_force_scroll_batch_does_not_check_previous_viewport_position():
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        app._is_log_at_bottom = Mock(side_effect=AssertionError("log bottom check should be skipped"))
+        app._is_scroller_at_bottom = Mock(side_effect=AssertionError("scroller bottom check should be skipped"))
+
+        content_scroller = app.query_one("#content-log")
+        tools_log = app._logs[TuiRegion.TOOLS]
+
+        app.begin_batch_render(force_scroll=True)
+        for index in range(40):
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"历史内容 {index}\n\n"))
+            app.handle_tui_event(TuiEvent(TuiRegion.TOOLS, f"工具输出 {index}\n\n"))
+
+        await pilot.pause()
+        await pilot.pause()
+        # 回放过程中（批次尚未结束）就应始终在底部
+        assert content_scroller.scroll_y == content_scroller.max_scroll_y
+        assert tools_log.scroll_y == tools_log.max_scroll_y
+
+        app.end_batch_render()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert content_scroller.scroll_y == content_scroller.max_scroll_y
+        assert tools_log.scroll_y == tools_log.max_scroll_y
 
 
 def test_parse_mcp_add_stdio_command_parts_and_env():
     handler = make_handler()
+
 
     name, cfg = handler._parse_mcp_add_config(
         "/mcp-add MiniMax --env MINIMAX_API_KEY=api_key "

@@ -469,15 +469,15 @@ class TuiBridge:
         else:
             app.call_from_thread(app.flush_screen)
 
-    def begin_batch_render(self) -> None:
+    def begin_batch_render(self, force_scroll: bool = False) -> None:
         with self._app_lock:
             app = self._app
         if app is None:
             return
         if self._is_app_thread():
-            app.begin_batch_render()
+            app.begin_batch_render(force_scroll=force_scroll)
         else:
-            app.call_from_thread(app.begin_batch_render)
+            app.call_from_thread(app.begin_batch_render, force_scroll=force_scroll)
 
     def end_batch_render(self) -> None:
         with self._app_lock:
@@ -488,6 +488,16 @@ class TuiBridge:
             app.end_batch_render()
         else:
             app.call_from_thread(app.end_batch_render)
+
+    def scroll_all_panes_to_bottom(self) -> None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            app.scroll_all_panes_to_bottom()
+        else:
+            app.call_from_thread(app.scroll_all_panes_to_bottom)
 
 
 TUI_BRIDGE = TuiBridge()
@@ -1003,6 +1013,7 @@ class MakeCodeTuiApp(App[None]):
         self._pane_active_counts: dict[TuiRegion, int] = {}
         self._batch_render_depth = 0
         self._batch_scroll_regions: set[TuiRegion] = set()
+        self._batch_force_scroll = False
         self._batch_runtime_dirty = False
         self._quick_panel_expanded = False
         self.title = "MakeCode"
@@ -1246,6 +1257,14 @@ class MakeCodeTuiApp(App[None]):
     def _scroll_log_to_after_refresh(self, log: RichLog, y: int) -> None:
         self.call_after_refresh(lambda: log.scroll_to(y=y, animate=False))
 
+    def _defer_or_scroll_now(self, region: TuiRegion, scroller: Widget | None) -> None:
+        if scroller is None:
+            return
+        if self._batch_render_depth > 0 and not self._batch_force_scroll:
+            self._batch_scroll_regions.add(region)
+        else:
+            self._scroll_log_end_after_refresh(scroller)
+
     def _scroll_bottom_panes_after_refresh(self) -> None:
         if self._content_scroller is not None and self._is_scroller_at_bottom(self._content_scroller):
             self._scroll_log_end_after_refresh(self._content_scroller)
@@ -1253,8 +1272,15 @@ class MakeCodeTuiApp(App[None]):
             if self._is_log_at_bottom(log):
                 self._scroll_log_end_after_refresh(log)
 
-    def begin_batch_render(self) -> None:
+    def scroll_all_panes_to_bottom(self) -> None:
+        if self._content_scroller is not None:
+            self._scroll_log_end_after_refresh(self._content_scroller)
+        for log in self._logs.values():
+            self._scroll_log_end_after_refresh(log)
+
+    def begin_batch_render(self, force_scroll: bool = False) -> None:
         self._batch_render_depth += 1
+        self._batch_force_scroll = self._batch_force_scroll or force_scroll
 
     def end_batch_render(self) -> None:
         if self._batch_render_depth == 0:
@@ -1262,11 +1288,15 @@ class MakeCodeTuiApp(App[None]):
         self._batch_render_depth -= 1
         if self._batch_render_depth > 0:
             return
-        for region in self._batch_scroll_regions:
-            scroller = self._region_scroller(region)
-            if scroller is not None:
-                self._scroll_log_end_after_refresh(scroller)
+        if self._batch_force_scroll:
+            self.scroll_all_panes_to_bottom()
+        else:
+            for region in self._batch_scroll_regions:
+                scroller = self._region_scroller(region)
+                if scroller is not None:
+                    self._scroll_log_end_after_refresh(scroller)
         self._batch_scroll_regions.clear()
+        self._batch_force_scroll = False
         if self._batch_runtime_dirty:
             self._update_runtime_info()
             self._batch_runtime_dirty = False
@@ -1293,20 +1323,18 @@ class MakeCodeTuiApp(App[None]):
             self._set_pane_active(event.region, event.active)
         if event.tail:
             if log is not None:
-                should_scroll_end = self._is_log_at_bottom(log)
+                should_scroll_end = self._batch_force_scroll or self._is_log_at_bottom(log)
             else:
-                should_scroll_end = scroller is not None and self._is_scroller_at_bottom(scroller)
+                should_scroll_end = self._batch_force_scroll or (scroller is not None and self._is_scroller_at_bottom(scroller))
             self._update_tail(event.region, event.payload)
             if should_scroll_end:
-                if self._batch_render_depth > 0:
-                    self._batch_scroll_regions.add(event.region)
-                elif scroller is not None:
-                    self._scroll_log_end_after_refresh(scroller)
+                self._defer_or_scroll_now(event.region, scroller)
             return
         if event.clear:
             if event.region in {TuiRegion.CONTENT, TuiRegion.REASONING}:
                 if self._content_scroller is not None:
                     self._content_scroller.remove_children()
+                    self._content_scroller.scroll_to(x=0, y=0, animate=False, immediate=True)
                 self._active_reasoning_collapsible = None
             else:
                 log.clear()
@@ -1329,8 +1357,12 @@ class MakeCodeTuiApp(App[None]):
             self._handle_content_block_event(event)
             return
         if event.payload is not None and event.region in {TuiRegion.TASK, TuiRegion.TOOLS, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
-            should_scroll_end = self._is_log_at_bottom(log)
-            result_start_y = len(log.lines) if event.region == TuiRegion.TOOLS and event.tool_result_delta else None
+            should_scroll_end = self._batch_force_scroll or self._is_log_at_bottom(log)
+            result_start_y = (
+                len(log.lines)
+                if event.region == TuiRegion.TOOLS and event.tool_result_delta and not self._batch_force_scroll
+                else None
+            )
             try:
                 log.write(event.payload, expand=True, shrink=True, scroll_end=should_scroll_end and result_start_y is None)
             except MarkupError:
@@ -1338,10 +1370,7 @@ class MakeCodeTuiApp(App[None]):
             if result_start_y is not None:
                 self._scroll_log_to_after_refresh(log, result_start_y)
             elif should_scroll_end:
-                if self._batch_render_depth > 0:
-                    self._batch_scroll_regions.add(event.region)
-                else:
-                    self._scroll_log_end_after_refresh(log)
+                self._defer_or_scroll_now(event.region, log)
         elif event.payload is not None:
             log.write(event.payload)
         self._mark_runtime_dirty()
@@ -1368,18 +1397,15 @@ class MakeCodeTuiApp(App[None]):
             self._active_reasoning_collapsible.mount_block(self._content_block_renderable(event.payload))
             self._mark_runtime_dirty()
             return
-        was_at_bottom = self._is_scroller_at_bottom(container)
+        was_at_bottom = self._batch_force_scroll or self._is_scroller_at_bottom(container)
         container.mount(Static(self._content_block_renderable(event.payload), markup=False, classes="content-block"))
         if was_at_bottom:
-            if self._batch_render_depth > 0:
-                self._batch_scroll_regions.add(event.region)
-            else:
-                self._scroll_log_end_after_refresh(container)
+            self._defer_or_scroll_now(event.region, container)
         self._mark_runtime_dirty()
 
     def _handle_reasoning_collapsible_event(self, event: TuiEvent) -> None:
         container = self._content_scroller
-        was_at_bottom = self._is_scroller_at_bottom(container)
+        was_at_bottom = self._batch_force_scroll or self._is_scroller_at_bottom(container)
         payload_renderable = self._content_block_renderable(event.payload) if event.payload not in (None, "") else None
 
         if event.collapsible_close:
@@ -1408,10 +1434,7 @@ class MakeCodeTuiApp(App[None]):
             container.mount(collapsible)
 
         if was_at_bottom:
-            if self._batch_render_depth > 0:
-                self._batch_scroll_regions.add(event.region)
-            else:
-                self._scroll_log_end_after_refresh(container)
+            self._defer_or_scroll_now(event.region, container)
         self._mark_runtime_dirty()
 
     def open_choice_modal(
@@ -2358,12 +2381,16 @@ def flush_tui_screen() -> None:
     TUI_BRIDGE.flush_screen()
 
 
-def begin_tui_batch_render() -> None:
-    TUI_BRIDGE.begin_batch_render()
+def begin_tui_batch_render(force_scroll: bool = False) -> None:
+    TUI_BRIDGE.begin_batch_render(force_scroll=force_scroll)
 
 
 def end_tui_batch_render() -> None:
     TUI_BRIDGE.end_batch_render()
+
+
+def scroll_all_panes_to_bottom() -> None:
+    TUI_BRIDGE.scroll_all_panes_to_bottom()
 
 
 def choose_model_panel_tui(title: str, options: list[str]) -> str:

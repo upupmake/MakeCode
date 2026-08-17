@@ -196,6 +196,27 @@ async def test_clear_content_removes_collapsibles_and_resets_active():
 
 
 @pytest.mark.anyio
+async def test_clear_content_resets_scroll_position():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        for index in range(30):
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"内容 {index}\n\n"))
+        await pilot.pause()
+        container = app.query_one("#content-log", VerticalScroll)
+        container.scroll_end(animate=False)
+        await pilot.pause()
+        assert container.scroll_y > 0
+
+        app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, "", clear=True))
+        await pilot.pause()
+
+        assert len(container.children) == 0
+        assert container.scroll_y == 0
+
+
+@pytest.mark.anyio
 async def test_collapsible_and_blocks_track_container_width():
     app = MakeCodeTuiApp()
 
