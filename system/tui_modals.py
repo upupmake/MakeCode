@@ -18,6 +18,7 @@ from textual.geometry import Region
 from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, Static, TextArea, DataTable
+from textual.widgets.text_area import Selection
 
 from system.models import MESSAGE_FORMATS, ModelKey, REASONING_EFFORTS
 from system.clipboard import copy_to_system_clipboard
@@ -400,9 +401,36 @@ class ChoiceModal(ClosableModalScreen[str]):
         margin-top: 1;
     }
 
-    #copy-text {
+    #copy-sections {
         height: 1fr;
         margin-top: 1;
+        overflow-y: auto;
+    }
+
+    .copy-section-label {
+        height: 1;
+        margin-top: 1;
+        text-style: bold;
+    }
+
+    .copy-section-label:first-child {
+        margin-top: 0;
+    }
+
+    .copy-user-label {
+        color: #22c55e;
+    }
+
+    .copy-assistant-label {
+        color: #a78bfa;
+    }
+
+    .copy-terminal-label {
+        color: #38bdf8;
+    }
+
+    .copy-section-text {
+        height: auto;
     }
 
     #copy-status {
@@ -2404,6 +2432,8 @@ class CopyContentModal(ClosableModalScreen[str]):
         super().__init__()
         self._messages = messages
         self._text = self._build_text()
+        self._selected_text_area: TextArea | None = None
+        self._updating_selection = False
 
     def compose(self) -> ComposeResult:
         question_count = sum(
@@ -2437,21 +2467,25 @@ class CopyContentModal(ClosableModalScreen[str]):
                 f"{len(self._text)} 字符",
                 id="copy-summary",
             )
-            yield TextArea(
-                self._text,
-                id="copy-text",
-                read_only=True,
-                show_line_numbers=False,
-                soft_wrap=True,
-            )
-            yield Label("选择正文后可复制选区，也可直接复制全部内容。", id="copy-status")
+            with VerticalScroll(id="copy-sections"):
+                for section_index, (label, content, style_class) in enumerate(self._build_sections()):
+                    yield Label(label, classes=f"copy-section-label {style_class}", markup=False)
+                    yield TextArea(
+                        content,
+                        id=f"copy-section-text-{section_index}",
+                        classes="copy-section-text",
+                        read_only=True,
+                        show_line_numbers=False,
+                        soft_wrap=True,
+                    )
+            yield Label("选择任意正文后可复制选区，也可直接复制全部内容。", id="copy-status")
             with Horizontal(id="copy-actions"):
                 yield Button("复制选中", id="copy-selection", variant="primary")
                 yield Button("复制全部", id="copy-all", variant="success")
                 yield Button("关闭", id="copy-close", variant="warning")
 
     def on_mount(self) -> None:
-        text_area = self.query_one("#copy-text", TextArea)
+        text_area = self.query_one("#copy-sections TextArea", TextArea)
         text_area.focus()
         last_line = text_area.document.line_count - 1
         last_col = len(text_area.document.get_line(last_line)) if last_line >= 0 else 0
@@ -2470,12 +2504,31 @@ class CopyContentModal(ClosableModalScreen[str]):
             event.prevent_default()
             return
         if event.key == "q":
-            text_area = self.query_one("#copy-text", TextArea)
-            if text_area.selected_text:
+            text_area = self.focused
+            if isinstance(text_area, TextArea) and text_area.selected_text:
                 return
             self.action_close()
             event.stop()
             event.prevent_default()
+
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        text_area = event.text_area
+        if not text_area.has_class("copy-section-text") or self._updating_selection:
+            return
+        if text_area.selected_text:
+            self._updating_selection = True
+            try:
+                for other_text_area in self.query(".copy-section-text"):
+                    if other_text_area is not text_area and other_text_area.selected_text:
+                        other_text_area.selection = Selection(
+                            other_text_area.selection.end,
+                            other_text_area.selection.end,
+                        )
+            finally:
+                self._updating_selection = False
+            self._selected_text_area = text_area
+        elif self._selected_text_area is text_area:
+            self._selected_text_area = None
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "copy-selection":
@@ -2485,20 +2538,24 @@ class CopyContentModal(ClosableModalScreen[str]):
         elif event.button.id == "copy-close":
             self.action_close()
 
+    def _selected_text(self) -> str:
+        if self._selected_text_area is not None:
+            return self._selected_text_area.selected_text
+        return ""
+
     def _copy_selected_or_all(self) -> None:
-        text_area = self.query_one("#copy-text", TextArea)
-        selected = text_area.selected_text
-        self._copy_text(selected or text_area.text, "选中文本" if selected else "全部内容")
+        selected = self._selected_text()
+        self._copy_text(selected or self._text, "选中文本" if selected else "全部内容")
 
     def _copy_selection(self) -> None:
-        selected = self.query_one("#copy-text", TextArea).selected_text
+        selected = self._selected_text()
         if not selected:
             self.query_one("#copy-status", Label).update("请先在正文中选择要复制的文本。")
             return
         self._copy_text(selected, "选中文本")
 
     def _copy_all(self) -> None:
-        self._copy_text(self.query_one("#copy-text", TextArea).text, "全部内容")
+        self._copy_text(self._text, "全部内容")
 
     def _copy_text(self, text: str, scope: str) -> None:
         if copy_to_system_clipboard(text):
@@ -2569,8 +2626,8 @@ class CopyContentModal(ClosableModalScreen[str]):
                 commands.append(command)
         return commands
 
-    def _build_text(self) -> str:
-        parts: list[str] = []
+    def _build_sections(self) -> list[tuple[str, str, str]]:
+        sections = []
         user_number = 0
         assistant_number = 0
         terminal_input_number = 0
@@ -2581,21 +2638,17 @@ class CopyContentModal(ClosableModalScreen[str]):
                 content = self._content_text(message)
                 if content:
                     user_number += 1
-                    parts.append(f"──────── User · {user_number} ────────\n{content}")
+                    sections.append((f"User · {user_number}", content, "copy-user-label"))
                 continue
-
             if role == "assistant":
                 content = self._content_text(message)
                 if content:
                     assistant_number += 1
-                    parts.append(f"──── Assistant · {assistant_number} ────\n{content}")
+                    sections.append((f"Assistant · {assistant_number}", content, "copy-assistant-label"))
                 for command in self._terminal_commands(message):
                     terminal_input_number += 1
-                    parts.append(
-                        f"──── Terminal Input · {terminal_input_number} ────\n$ {command}"
-                    )
+                    sections.append((f"Terminal Input · {terminal_input_number}", f"$ {command}", "copy-terminal-label"))
                 continue
-
             if role in {"tool", "function"} and message.get("name") == "RunTerminalCommand":
                 output = message.get("content")
                 if output is None:
@@ -2604,11 +2657,11 @@ class CopyContentModal(ClosableModalScreen[str]):
                     continue
                 terminal_output_number += 1
                 output_text = output if isinstance(output, str) else format_tool_value(output)
-                parts.append(
-                    f"──── Terminal Output · {terminal_output_number} ────\n"
-                    f"{output_text}"
-                )
-        return "\n\n".join(parts)
+                sections.append((f"Terminal Output · {terminal_output_number}", output_text, "copy-terminal-label"))
+        return sections
+
+    def _build_text(self) -> str:
+        return "\n\n".join(f"[{label}]\n{content}" for label, content, _ in self._build_sections())
 
 
 class McpAddModal(ClosableModalScreen[dict[str, Any] | None]):

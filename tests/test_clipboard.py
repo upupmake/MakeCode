@@ -205,8 +205,8 @@ async def test_copy_selection_button_copies_only_selected_text():
 
     with patch("system.tui_modals.copy_to_system_clipboard", return_value=True) as system_copy:
         async with app.run_test(size=(120, 40)) as pilot:
-            text_area = modal.query_one("#copy-text")
-            text_area.selection = Selection((1, 0), (1, 4))
+            text_area = modal.query_one("#copy-section-text-0")
+            text_area.selection = Selection((0, 0), (0, 4))
             await pilot.click("#copy-selection")
             await pilot.pause()
 
@@ -230,6 +230,31 @@ async def test_copy_selection_button_requires_a_selection():
             assert "请先在正文中选择" in str(
                 modal.query_one("#copy-status", Label).render()
             )
+
+
+@pytest.mark.anyio
+async def test_copy_modal_keeps_only_the_latest_section_selection():
+    modal = CopyContentModal([
+        {"role": "assistant", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ])
+    app = CopyModalHost(modal)
+
+    with patch("system.tui_modals.copy_to_system_clipboard", return_value=True) as system_copy:
+        async with app.run_test(size=(120, 40)) as pilot:
+            first = modal.query_one("#copy-section-text-0")
+            second = modal.query_one("#copy-section-text-1")
+            first.selection = Selection((0, 0), (0, 5))
+            await pilot.pause()
+            second.selection = Selection((0, 0), (0, 6))
+            await pilot.pause()
+
+            assert first.selected_text == ""
+            assert second.selected_text == "second"
+            await pilot.click("#copy-selection")
+            await pilot.pause()
+
+            system_copy.assert_called_once_with("second")
 
 
 def test_copy_modal_includes_only_questions_answers_and_terminal_io():

@@ -813,18 +813,40 @@ def test_mcp_manager_does_not_forward_switch_metadata_to_fastmcp():
     })
 
 
-def test_conversation_preview_only_contains_user_messages():
+def test_conversation_preview_excludes_recalled_memory_and_includes_assistant_text():
     preview = _conversation_preview([
+        {
+            "role": "user",
+            "content": (
+                "# Potentially Relevant Memories\n\n"
+                "private recalled context\n\n"
+                "# Current User Request\n\n"
+                "actual question"
+            ),
+        },
+        {"role": "assistant", "content": "assistant answer"},
         {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": "first question"},
-        {"role": "assistant", "content": "first answer"},
-        {"role": "user", "content": "second question"},
     ])
 
-    assert "first question" in preview.plain
-    assert "second question" in preview.plain
-    assert "system prompt" not in preview.plain
-    assert "first answer" not in preview.plain
+    console = Console(record=True, width=120)
+    console.print(preview)
+    rendered = console.export_text()
+
+    assert "actual question" in rendered
+    assert "assistant answer" in rendered
+    assert "private recalled context" not in rendered
+    assert "Potentially Relevant Memories" not in rendered
+    assert "system prompt" not in rendered
+
+
+def test_conversation_preview_reads_assistant_text_blocks():
+    preview = _conversation_preview([
+        {"role": "assistant", "content_blocks": [{"type": "text", "text": "block answer"}]},
+    ])
+
+    console = Console(record=True, width=120)
+    console.print(preview)
+    assert "block answer" in console.export_text()
 
 
 def test_skill_command_history_preview_replay_and_copy_show_only_original_query(monkeypatch):
@@ -842,8 +864,11 @@ def test_skill_command_history_preview_replay_and_copy_show_only_original_query(
 
     assert _extract_message_text(message) == "/demo-skill 处理这个请求"
     preview = _conversation_preview([message])
-    assert "/demo-skill 处理这个请求" in preview.plain
-    assert "loaded demo" not in preview.plain
+    console = Console(record=True, width=120)
+    console.print(preview)
+    rendered = console.export_text()
+    assert "/demo-skill 处理这个请求" in rendered
+    assert "loaded demo" not in rendered
 
     show_copy = Mock(return_value="closed")
     monkeypatch.setattr("system.commands.show_copy_content_tui", show_copy)

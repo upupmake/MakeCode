@@ -18,7 +18,7 @@ from rich.text import Text
 
 from init import log_error_traceback
 from system.cli import COMMAND_DESCRIPTIONS
-from system.console_render import render_current_task_plan, render_current_workdir, toggle_sub_agent_console
+from system.console_render import render_content_assistant_message, render_content_user_message, render_current_task_plan, render_current_workdir, toggle_sub_agent_console
 from system.models import get_model_manager
 from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, refresh_tools_title, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
@@ -119,23 +119,42 @@ def interactive_choose_conversation(
     return lookup.get(selected, "abort")
 
 
-def _conversation_preview(messages: list) -> Text:
-    preview = Text()
-    user_messages = [message for message in messages if message.get("role") == "user"]
-    if not user_messages:
-        preview.append("该对话没有 user 询问记录。", style="bold yellow")
-        return preview
+def _conversation_preview(messages: list) -> Group:
+    preview_items = []
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            content = _copy_user_content(message)
+        elif role == "assistant":
+            content = message.get("content", "")
+            if isinstance(content, list):
+                content = "\n\n".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and block.get("text")
+                )
+            if not isinstance(content, str) or not content:
+                content = "\n\n".join(
+                    block.get("text", "")
+                    for block in message.get("content_blocks") or []
+                    if isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and block.get("text")
+                )
+        else:
+            continue
+        if not isinstance(content, str) or not content:
+            continue
+        if role == "user":
+            preview_items.append(render_content_user_message(content))
+        else:
+            preview_items.append(render_content_assistant_message(content))
 
-    for index, message in enumerate(user_messages, start=1):
-        if index > 1:
-            preview.append("\n\n")
-        preview.append(f"[{index}] User\n", style="bold cyan")
-        content = message.get("content", "")
-        metadata = message.get("message_metadata")
-        display_content = metadata.get("display_content") if isinstance(metadata, dict) else None
-        content = display_content if isinstance(display_content, str) else content
-        preview.append(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False))
-    return preview
+    if not preview_items:
+        return Group(Text("该对话没有可预览的 user 询问或 assistant 回复。", style="bold yellow"))
+    return Group(*preview_items)
 
 
 def _task_plan_preview(plan_data: dict) -> Group:
