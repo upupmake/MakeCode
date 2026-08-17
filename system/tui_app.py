@@ -15,9 +15,11 @@ from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Grid, Horizontal, Vertical
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import Click, Key, Resize
-from textual.widgets import Button, Footer, Input, Label, RichLog, Static, TextArea
+from textual.widget import Widget
+from textual.widgets import Button, Collapsible, Footer, Input, Label, RichLog, Static, TextArea
 
 from system.tui_types import (
     TuiEvent,
@@ -101,8 +103,22 @@ class TuiBridge:
         reset_tool_result_count: bool = False,
         tail: bool = False,
         active: bool | None = None,
+        collapsible_title: str | None = None,
+        collapsible_open: bool = False,
+        collapsible_close: bool = False,
     ) -> None:
-        event = TuiEvent(TuiRegion(region), payload, clear, tool_result_delta, reset_tool_result_count, tail, active)
+        event = TuiEvent(
+            TuiRegion(region),
+            payload,
+            clear,
+            tool_result_delta,
+            reset_tool_result_count,
+            tail,
+            active,
+            collapsible_title,
+            collapsible_open,
+            collapsible_close,
+        )
         with self._app_lock:
             app = self._app
             if app is None:
@@ -565,6 +581,17 @@ class ConversationTitle(Static):
         event.stop()
 
 
+class ReasoningCollapsible(Collapsible):
+    """思考内容收纳容器：支持在 compose 前后安全地追加内容块。"""
+
+    def mount_block(self, renderable: RenderableType) -> None:
+        block = Static(renderable, markup=False, classes="content-block")
+        try:
+            self.query_one(Collapsible.Contents).mount(block)
+        except NoMatches:
+            self._contents_list.append(block)
+
+
 class TuiRichLog(RichLog):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -816,6 +843,17 @@ class MakeCodeTuiApp(App[None]):
         height: 1fr;
     }
 
+    .content-block {
+        width: 1fr;
+    }
+
+    .reasoning-collapsible {
+        border: round #3f3f46;
+        background: #111827;
+        padding-left: 1;
+        padding-bottom: 1;
+    }
+
     .pane-tail {
         display: none;
         height: auto;
@@ -928,6 +966,8 @@ class MakeCodeTuiApp(App[None]):
         self._logs: dict[TuiRegion, RichLog] = {}
         self._panes: dict[TuiRegion, Vertical] = {}
         self._tails: dict[TuiRegion, Static] = {}
+        self._content_scroller: VerticalScroll | None = None
+        self._active_reasoning_collapsible: Collapsible | None = None
         self._status = "MakeCode ready"
         self._runtime_info = ""
         self._submit_handler = submit_handler
@@ -990,7 +1030,7 @@ class MakeCodeTuiApp(App[None]):
         with Horizontal(id="main-grid"):
             with Vertical(id="left-column"):
                 with Vertical(id="content-pane", classes="pane"):
-                    yield TuiRichLog(id="content-log", classes="pane-log", markup=True, wrap=True, min_width=1)
+                    yield VerticalScroll(id="content-log", classes="pane-log")
                     yield Static("", id="content-tail", classes="pane-tail")
                 with Vertical(id="tools-pane", classes="pane"):
                     yield TuiRichLog(id="tools-log", classes="pane-log", markup=True, wrap=True, min_width=1)
@@ -1023,13 +1063,12 @@ class MakeCodeTuiApp(App[None]):
             TuiRegion.SUB_AGENT: self.query_one("#sub-agent-pane", Vertical),
         }
         self._logs = {
-            TuiRegion.CONTENT: self.query_one("#content-log", RichLog),
-            TuiRegion.REASONING: self.query_one("#content-log", RichLog),
             TuiRegion.TASK: self.query_one("#task-log", RichLog),
             TuiRegion.TOOLS: self.query_one("#tools-log", RichLog),
             TuiRegion.BACKGROUND: self.query_one("#background-log", RichLog),
             TuiRegion.SUB_AGENT: self.query_one("#sub-agent-log", RichLog),
         }
+        self._content_scroller = self.query_one("#content-log", VerticalScroll)
         self._tails = {
             TuiRegion.CONTENT: self.query_one("#content-tail", Static),
             TuiRegion.REASONING: self.query_one("#content-tail", Static),
@@ -1193,13 +1232,23 @@ class MakeCodeTuiApp(App[None]):
     def _is_log_at_bottom(self, log: RichLog) -> bool:
         return bool(log.is_vertical_scroll_end or log.scroll_y >= log.max_scroll_y - 1)
 
-    def _scroll_log_end_after_refresh(self, log: RichLog) -> None:
+    def _is_scroller_at_bottom(self, scroller: Widget) -> bool:
+        return scroller.scroll_y >= scroller.max_scroll_y - 1
+
+    def _region_scroller(self, region: TuiRegion) -> Widget | None:
+        if region in {TuiRegion.CONTENT, TuiRegion.REASONING}:
+            return self._content_scroller
+        return self._logs.get(region)
+
+    def _scroll_log_end_after_refresh(self, log: Widget) -> None:
         self.call_after_refresh(lambda: log.scroll_end(animate=False, x_axis=False))
 
     def _scroll_log_to_after_refresh(self, log: RichLog, y: int) -> None:
         self.call_after_refresh(lambda: log.scroll_to(y=y, animate=False))
 
     def _scroll_bottom_panes_after_refresh(self) -> None:
+        if self._content_scroller is not None and self._is_scroller_at_bottom(self._content_scroller):
+            self._scroll_log_end_after_refresh(self._content_scroller)
         for log in self._logs.values():
             if self._is_log_at_bottom(log):
                 self._scroll_log_end_after_refresh(log)
@@ -1214,9 +1263,9 @@ class MakeCodeTuiApp(App[None]):
         if self._batch_render_depth > 0:
             return
         for region in self._batch_scroll_regions:
-            log = self._logs.get(region)
-            if log is not None:
-                self._scroll_log_end_after_refresh(log)
+            scroller = self._region_scroller(region)
+            if scroller is not None:
+                self._scroll_log_end_after_refresh(scroller)
         self._batch_scroll_regions.clear()
         if self._batch_runtime_dirty:
             self._update_runtime_info()
@@ -1238,20 +1287,29 @@ class MakeCodeTuiApp(App[None]):
             runtime_info.update(str(event.payload))
             return
 
-        log = self._logs[event.region]
+        scroller = self._region_scroller(event.region)
+        log = self._logs.get(event.region)
         if event.active is not None:
             self._set_pane_active(event.region, event.active)
         if event.tail:
-            should_scroll_end = self._is_log_at_bottom(log)
+            if log is not None:
+                should_scroll_end = self._is_log_at_bottom(log)
+            else:
+                should_scroll_end = scroller is not None and self._is_scroller_at_bottom(scroller)
             self._update_tail(event.region, event.payload)
             if should_scroll_end:
                 if self._batch_render_depth > 0:
                     self._batch_scroll_regions.add(event.region)
-                else:
-                    self._scroll_log_end_after_refresh(log)
+                elif scroller is not None:
+                    self._scroll_log_end_after_refresh(scroller)
             return
         if event.clear:
-            log.clear()
+            if event.region in {TuiRegion.CONTENT, TuiRegion.REASONING}:
+                if self._content_scroller is not None:
+                    self._content_scroller.remove_children()
+                self._active_reasoning_collapsible = None
+            else:
+                log.clear()
             self._update_tail(event.region, "")
             self._pane_active_counts[event.region] = 0
             self._set_pane_active(event.region, False)
@@ -1267,7 +1325,10 @@ class MakeCodeTuiApp(App[None]):
         if event.region == TuiRegion.CONTENT and event.payload == "":
             self._mark_runtime_dirty()
             return
-        if event.payload is not None and event.region in {TuiRegion.CONTENT, TuiRegion.REASONING, TuiRegion.TASK, TuiRegion.TOOLS, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
+        if event.region in {TuiRegion.CONTENT, TuiRegion.REASONING}:
+            self._handle_content_block_event(event)
+            return
+        if event.payload is not None and event.region in {TuiRegion.TASK, TuiRegion.TOOLS, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
             should_scroll_end = self._is_log_at_bottom(log)
             result_start_y = len(log.lines) if event.region == TuiRegion.TOOLS and event.tool_result_delta else None
             try:
@@ -1283,6 +1344,74 @@ class MakeCodeTuiApp(App[None]):
                     self._scroll_log_end_after_refresh(log)
         elif event.payload is not None:
             log.write(event.payload)
+        self._mark_runtime_dirty()
+
+    def _content_block_renderable(self, payload: Any) -> RenderableType:
+        if not isinstance(payload, str):
+            return payload
+        try:
+            return Text.from_markup(payload)
+        except MarkupError:
+            return Text(payload)
+
+    def _handle_content_block_event(self, event: TuiEvent) -> None:
+        container = self._content_scroller
+        if event.region == TuiRegion.CONTENT and event.payload == "":
+            self._mark_runtime_dirty()
+            return
+        if event.collapsible_title is not None:
+            self._handle_reasoning_collapsible_event(event)
+            return
+        if event.payload is None:
+            return
+        if event.region == TuiRegion.REASONING and self._active_reasoning_collapsible is not None:
+            self._active_reasoning_collapsible.mount_block(self._content_block_renderable(event.payload))
+            self._mark_runtime_dirty()
+            return
+        was_at_bottom = self._is_scroller_at_bottom(container)
+        container.mount(Static(self._content_block_renderable(event.payload), markup=False, classes="content-block"))
+        if was_at_bottom:
+            if self._batch_render_depth > 0:
+                self._batch_scroll_regions.add(event.region)
+            else:
+                self._scroll_log_end_after_refresh(container)
+        self._mark_runtime_dirty()
+
+    def _handle_reasoning_collapsible_event(self, event: TuiEvent) -> None:
+        container = self._content_scroller
+        was_at_bottom = self._is_scroller_at_bottom(container)
+        payload_renderable = self._content_block_renderable(event.payload) if event.payload not in (None, "") else None
+
+        if event.collapsible_close:
+            collapsible = self._active_reasoning_collapsible
+            if collapsible is not None:
+                if payload_renderable is not None:
+                    collapsible.mount_block(payload_renderable)
+                collapsible.collapsed = True
+                self._active_reasoning_collapsible = None
+        elif event.collapsible_open:
+            collapsible = ReasoningCollapsible(
+                *([Static(payload_renderable, markup=False, classes="content-block")] if payload_renderable is not None else []),
+                title=event.collapsible_title or "🧠 Reasoning",
+                collapsed=False,
+                classes="content-block reasoning-collapsible",
+            )
+            container.mount(collapsible)
+            self._active_reasoning_collapsible = collapsible
+        else:
+            collapsible = ReasoningCollapsible(
+                *([Static(payload_renderable, markup=False, classes="content-block")] if payload_renderable is not None else []),
+                title=event.collapsible_title or "🧠 Reasoning",
+                collapsed=True,
+                classes="content-block reasoning-collapsible",
+            )
+            container.mount(collapsible)
+
+        if was_at_bottom:
+            if self._batch_render_depth > 0:
+                self._batch_scroll_regions.add(event.region)
+            else:
+                self._scroll_log_end_after_refresh(container)
         self._mark_runtime_dirty()
 
     def open_choice_modal(
@@ -2175,6 +2304,9 @@ def post_tui(
     reset_tool_result_count: bool = False,
     tail: bool = False,
     active: bool | None = None,
+    collapsible_title: str | None = None,
+    collapsible_open: bool = False,
+    collapsible_close: bool = False,
 ) -> None:
     TUI_BRIDGE.post(
         region,
@@ -2184,6 +2316,9 @@ def post_tui(
         reset_tool_result_count=reset_tool_result_count,
         tail=tail,
         active=active,
+        collapsible_title=collapsible_title,
+        collapsible_open=collapsible_open,
+        collapsible_close=collapsible_close,
     )
 
 

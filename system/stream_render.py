@@ -93,6 +93,7 @@ class StreamRenderer:
         text_started = False
         reasoning_content = ""
         reasoning_buffer = ""
+        reasoning_container_open = False
         tool_calls_started = False
 
         post_tui(TuiRegion.STATUS, f"Awakening {agent_name}...")
@@ -108,6 +109,7 @@ class StreamRenderer:
                     reasoning_content, reasoning_buffer, reasoning_started = self._handle_reasoning(
                         event["content"], reasoning_content, reasoning_buffer, reasoning_started
                     )
+                    reasoning_container_open = True
 
                 elif event_type == "tool_calls":
                     if not tool_calls_started:
@@ -120,9 +122,12 @@ class StreamRenderer:
                     live_buffer += chunk
 
                     if not text_started and text_content.strip():
-                        if reasoning_buffer:
-                            self._safe_cleanup(reasoning_buffer, region=TuiRegion.REASONING)
-                            reasoning_buffer = ""
+                        if reasoning_started:
+                            if reasoning_buffer:
+                                self._safe_cleanup(reasoning_buffer, region=TuiRegion.REASONING)
+                                reasoning_buffer = ""
+                            self._close_reasoning_collapsible()
+                            reasoning_container_open = False
                             self._clear_tail(TuiRegion.REASONING)
                         self._start_text_section(agent_name, reasoning_started)
                         text_started = True
@@ -146,7 +151,11 @@ class StreamRenderer:
                     break
         finally:
             await self._close_async_stream(stream_generator)
-            self._safe_cleanup(reasoning_buffer, region=TuiRegion.REASONING)
+            if reasoning_container_open:
+                self._safe_cleanup(reasoning_buffer, region=TuiRegion.REASONING)
+                self._close_reasoning_collapsible()
+                reasoning_buffer = ""
+                reasoning_container_open = False
             self._clear_tail(TuiRegion.REASONING)
             if live_buffer and text_started and not is_cancelled():
                 self._safe_cleanup(live_buffer)
@@ -190,13 +199,26 @@ class StreamRenderer:
     def _handle_reasoning(self, content: str, reasoning_content: str, reasoning_buffer: str, is_started: bool):
         if not is_started:
             self._set_active(TuiRegion.REASONING, True)
-            post_tui(TuiRegion.REASONING, "\n[bold cyan]🧠 Reasoning...[/bold cyan]")
+            post_tui(
+                TuiRegion.REASONING,
+                None,
+                collapsible_title="🧠 Reasoning",
+                collapsible_open=True,
+            )
 
         reasoning_buffer += content
         reasoning_buffer, emitted_chunk = self._process_block_commit(reasoning_content, reasoning_buffer, region=TuiRegion.REASONING)
         self._update_tail(reasoning_buffer, region=TuiRegion.REASONING, force=bool(emitted_chunk))
 
         return reasoning_content, reasoning_buffer, True
+
+    def _close_reasoning_collapsible(self):
+        post_tui(
+            TuiRegion.REASONING,
+            None,
+            collapsible_title="🧠 Reasoning",
+            collapsible_close=True,
+        )
 
     def _handle_tool_calls_generation(self, name: str):
         self._set_active(TuiRegion.BACKGROUND, True)

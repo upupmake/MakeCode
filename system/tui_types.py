@@ -26,6 +26,9 @@ class TuiEvent:
     reset_tool_result_count: bool = False
     tail: bool = False
     active: bool | None = None
+    collapsible_title: str | None = None
+    collapsible_open: bool = False
+    collapsible_close: bool = False
 
 
 LAYOUT_CONFIG_FILE = paths.layout_config_file()

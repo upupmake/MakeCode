@@ -25,6 +25,25 @@ TEST_LAYOUT_RATIOS = {
 }
 
 
+def _region_text(widget) -> str:
+    lines = getattr(widget, "lines", None)
+    if lines is not None:
+        return "".join(line.text.rstrip() for line in lines)
+    parts = []
+    for child in widget.children:
+        content = getattr(child, "content", None)
+        inner = getattr(content, "renderable", None)
+        parts.append(str(inner) if inner is not None else str(content))
+    return "".join(parts)
+
+
+def _region_rendered_height(widget) -> int:
+    lines = getattr(widget, "lines", None)
+    if lines is not None:
+        return len(lines)
+    return sum(child.region.height for child in widget.children)
+
+
 @pytest.fixture(autouse=True)
 def isolate_tui_layout_config(monkeypatch):
     monkeypatch.setattr("system.tui_app.load_layout_ratios", lambda: dict(TEST_LAYOUT_RATIOS))
@@ -45,7 +64,8 @@ async def test_content_pane_minimum_width_keeps_startup_banner_on_six_lines():
 
         assert content_pane.region.width == 86
         assert tools_pane.region.width == content_pane.region.width
-        assert len(content_log.lines) == 10
+        assert len(content_log.children) == 1
+        assert content_log.children[0].region.height == 10
 
 
 @pytest.mark.anyio
@@ -422,7 +442,7 @@ async def test_responsive_reflow_keeps_all_logs_without_horizontal_scroll():
             log = app.query_one(selector)
             assert log.max_scroll_x == 0, region
             assert log.virtual_size.width <= log.scrollable_content_region.width, region
-            assert "".join(line.text.rstrip() for line in log.lines) == payload, region
+            assert _region_text(log) == payload, region
 
         await pilot.resize_terminal(240, 50)
         await pilot.pause()
@@ -430,7 +450,7 @@ async def test_responsive_reflow_keeps_all_logs_without_horizontal_scroll():
         for region, selector in regions.items():
             log = app.query_one(selector)
             assert log.max_scroll_x == 0, region
-            assert "".join(line.text.rstrip() for line in log.lines) == payload, region
+            assert _region_text(log) == payload, region
 
 
 @pytest.mark.anyio
@@ -459,18 +479,19 @@ async def test_formatted_outputs_reflow_with_each_pane_width_in_both_directions(
         initial = {
             region: (
                 app.query_one(selector).scrollable_content_region.width,
-                len(app.query_one(selector).lines),
+                _region_rendered_height(app.query_one(selector)),
             )
             for region, selector in regions.items()
         }
 
         await pilot.resize_terminal(240, 50)
         await pilot.pause()
+        await pilot.pause()
 
         wide = {}
         for region, selector in regions.items():
             log = app.query_one(selector)
-            wide[region] = (log.scrollable_content_region.width, len(log.lines))
+            wide[region] = (log.scrollable_content_region.width, _region_rendered_height(log))
             assert wide[region][0] > initial[region][0]
             assert wide[region][1] < initial[region][1]
             assert log.max_scroll_x == 0
@@ -478,17 +499,18 @@ async def test_formatted_outputs_reflow_with_each_pane_width_in_both_directions(
 
         await pilot.resize_terminal(140, 50)
         await pilot.pause()
+        await pilot.pause()
 
         for region, selector in regions.items():
             log = app.query_one(selector)
             assert log.scrollable_content_region.width < wide[region][0]
-            assert len(log.lines) > wide[region][1]
+            assert _region_rendered_height(log) > wide[region][1]
             assert log.max_scroll_x == 0
             assert log.virtual_size.width <= log.scrollable_content_region.width
             rendered_body = "".join(
                 line.text.strip(" │╭╮╰╯─")
                 for line in log.lines
-            )
+            ) if hasattr(log, "lines") else _region_text(log)
             assert payload in rendered_body
 
 
@@ -510,7 +532,7 @@ async def test_narrow_main_panes_fit_terminal_without_horizontal_scroll():
             log = app.query_one(selector)
             assert log.max_scroll_x == 0
             assert log.virtual_size.width <= log.scrollable_content_region.width
-            assert "".join(line.text.rstrip() for line in log.lines) == payload
+            assert _region_text(log).rstrip() == payload
 
 
 @pytest.mark.anyio

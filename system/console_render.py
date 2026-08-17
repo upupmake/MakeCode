@@ -263,10 +263,10 @@ def _render_history(messages: list):
         elif role == "assistant":
             reasoning_content = msg.get("reasoning_content") or msg.get("reasoning")
             if reasoning_content:
-                _render_agent_response_message(
-                    reasoning_content,
-                    identity="Reasoning",
-                    tui_region=TuiRegion.REASONING,
+                post_tui(
+                    TuiRegion.REASONING,
+                    render_model_markdown(reasoning_content),
+                    collapsible_title="🧠 Reasoning",
                 )
 
             content = msg.get("content")

@@ -1405,8 +1405,8 @@ async def test_submitting_flush_preserves_existing_pane_content():
     async with app.run_test() as pilot:
         app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, "existing content"))
         await pilot.pause()
-        content_log = app._logs[TuiRegion.CONTENT]
-        before = list(content_log.lines)
+        content_log = app.query_one("#content-log")
+        before = list(content_log.children)
 
         input_box = app.query_one("#input-box", MakeCodeInput)
         input_box.load_text("/flush")
@@ -1414,7 +1414,7 @@ async def test_submitting_flush_preserves_existing_pane_content():
         await pilot.pause()
         assert await asyncio.to_thread(submitted_event.wait, 1)
 
-        assert list(content_log.lines) == before
+        assert list(content_log.children) == before
         assert submitted == ["/flush"]
 
 
@@ -1747,8 +1747,8 @@ async def test_tui_displays_invalid_rich_markup_as_plain_text():
         app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, payload))
         await pilot.pause()
 
-        content_log = app._logs[TuiRegion.CONTENT]
-        rendered = "\n".join(line.text for line in content_log.lines)
+        content_log = app.query_one("#content-log")
+        rendered = "".join(str(child.content) for child in content_log.children)
         assert payload in rendered
 
 
