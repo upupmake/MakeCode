@@ -98,8 +98,16 @@ def get_sub_agent_console():
     return SHOW_SUB_AGENT_CONSOLE
 
 
-def _content_panel(body: Any, title: str, border_style: str) -> Panel:
-    return Panel(
+class CopyablePanel(Panel):
+    """携带原始文本的面板，供 TUI 选区复制时提取内容"""
+
+    def __init__(self, *args: Any, copy_text: str = "", **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.copy_text = copy_text
+
+
+def _content_panel(body: Any, title: str, border_style: str, copy_text: str = "") -> CopyablePanel:
+    return CopyablePanel(
         body,
         title=title,
         title_align="left",
@@ -107,34 +115,54 @@ def _content_panel(body: Any, title: str, border_style: str) -> Panel:
         box=box.ROUNDED,
         padding=(0, 1),
         expand=True,
+        copy_text=copy_text,
     )
 
 
-def render_content_user_message(text: str) -> Panel:
+def render_content_user_message(text: str) -> CopyablePanel:
     return _content_panel(
         Text(text, style="white"),
         "[bold #22c55e]You[/bold #22c55e]",
         "#22c55e",
+        copy_text=text,
     )
 
 
-def render_model_markdown(text: str) -> Markdown:
-    markdown = Markdown(text)
-    markdown.parsed = (
+def _parse_model_markdown(text: str):
+    return (
         MarkdownIt()
         .disable(["html_block", "html_inline"])
         .enable("strikethrough")
         .enable("table")
         .parse(text)
     )
+
+
+def render_model_markdown(text: str) -> Markdown:
+    markdown = Markdown(text)
+    markdown.parsed = _parse_model_markdown(text)
     return markdown
 
 
-def render_content_assistant_message(text: str, identity: str = "Assistant") -> Panel:
+class CopyableMarkdown(Markdown):
+    """携带原始文本的 Markdown 渲染对象，供 TUI 双击复制流式正文块"""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.copy_text = text
+        self.parsed = _parse_model_markdown(text)
+
+
+def render_copyable_markdown(text: str) -> CopyableMarkdown:
+    return CopyableMarkdown(text)
+
+
+def render_content_assistant_message(text: str, identity: str = "Assistant") -> CopyablePanel:
     return _content_panel(
         render_model_markdown(text),
         f"[bold #a78bfa]{identity}[/bold #a78bfa]",
         "#a78bfa",
+        copy_text=text,
     )
 
 

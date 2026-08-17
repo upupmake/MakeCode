@@ -3,7 +3,7 @@ from typing import Any, AsyncIterator, List, Tuple
 
 from rich.text import Text
 
-from system.console_render import render_model_markdown
+from system.console_render import render_copyable_markdown, render_model_markdown
 from system.stream_cancel import is_cancelled
 from system.tui_app import TuiRegion, post_tui
 
@@ -236,6 +236,13 @@ class StreamRenderer:
             post_tui(TuiRegion.CONTENT, "")
         post_tui(TuiRegion.CONTENT, f"\n[bold cyan]📝 {name} Content...[/bold cyan]")
 
+    @staticmethod
+    def _region_markdown(region: TuiRegion, text: str):
+        """CONTENT 正文块携带原始文本支持双击复制；其他区域（如 Reasoning）保持普通渲染"""
+        if region == TuiRegion.CONTENT:
+            return render_copyable_markdown(text)
+        return render_model_markdown(text)
+
     def _process_block_commit(self, full_text: str, current_buffer: str, region: TuiRegion = TuiRegion.CONTENT) -> tuple[str, str]:
         """
         增量渲染逻辑：
@@ -249,7 +256,7 @@ class StreamRenderer:
             if len(parts) == 2:
                 complete_blocks, remaining_buffer = parts
                 self._clear_tail(region)
-                post_tui(region, render_model_markdown(complete_blocks))
+                post_tui(region, self._region_markdown(region, complete_blocks))
                 return remaining_buffer, f"{complete_blocks}\n\n"
 
         return current_buffer, ""
@@ -281,12 +288,12 @@ class StreamRenderer:
     def _safe_cleanup(self, buffer: str, region: TuiRegion = TuiRegion.CONTENT):
         """流结束时输出剩余内容。"""
         if buffer.strip():
-            post_tui(region, render_model_markdown(buffer))
+            post_tui(region, self._region_markdown(region, buffer))
 
     def _handle_fallback(self, name: str, content: str, reasoning_started: bool, text_started: bool):
         if not text_started and content.strip():
             self._start_text_section(name, reasoning_started)
-            post_tui(TuiRegion.CONTENT, render_model_markdown(content))
+            post_tui(TuiRegion.CONTENT, render_copyable_markdown(content))
             self._set_active(TuiRegion.CONTENT, False)
         elif not reasoning_started and not text_started:
             post_tui(TuiRegion.CONTENT, "")

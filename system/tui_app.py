@@ -21,6 +21,7 @@ from textual.events import Click, Key, Resize
 from textual.widget import Widget
 from textual.widgets import Button, Collapsible, Footer, Input, Label, RichLog, Static, TextArea
 
+from system.clipboard import copy_to_system_clipboard
 from system.tui_types import (
     TuiEvent,
     TuiRegion,
@@ -591,11 +592,34 @@ class ConversationTitle(Static):
         event.stop()
 
 
+class ContentBlock(Static):
+    """Content 消息块：双击复制整条原文；选区命中时返回原始文本供 Cmd+C 使用"""
+
+    def __init__(self, renderable: Any, copy_text: str | None = None, **kwargs: Any) -> None:
+        super().__init__(renderable, markup=False, **kwargs)
+        self.copy_text = copy_text
+
+    def on_click(self, event: Click) -> None:
+        if event.chain != 2 or self.copy_text is None:
+            return
+        if copy_to_system_clipboard(self.copy_text):
+            self.app.notify(f"📋 已复制该消息（{len(self.copy_text)} 个字符）到系统剪贴板")
+        else:
+            self.app.copy_to_clipboard(self.copy_text)
+            self.app.notify("📋 已发送复制请求；当前终端可能不支持系统剪贴板")
+        event.stop()
+
+    def get_selection(self, selection) -> tuple[str, str] | None:
+        if self.copy_text is not None:
+            return self.copy_text, "\n"
+        return None
+
+
 class ReasoningCollapsible(Collapsible):
     """思考内容收纳容器：支持在 compose 前后安全地追加内容块。"""
 
     def mount_block(self, renderable: RenderableType) -> None:
-        block = Static(renderable, markup=False, classes="content-block")
+        block = ContentBlock(renderable, classes="content-block")
         try:
             self.query_one(Collapsible.Contents).mount(block)
         except NoMatches:
@@ -1398,7 +1422,14 @@ class MakeCodeTuiApp(App[None]):
             self._mark_runtime_dirty()
             return
         was_at_bottom = self._batch_force_scroll or self._is_scroller_at_bottom(container)
-        container.mount(Static(self._content_block_renderable(event.payload), markup=False, classes="content-block"))
+        copy_text = getattr(event.payload, "copy_text", None)
+        container.mount(
+            ContentBlock(
+                self._content_block_renderable(event.payload),
+                copy_text=copy_text,
+                classes="content-block",
+            )
+        )
         if was_at_bottom:
             self._defer_or_scroll_now(event.region, container)
         self._mark_runtime_dirty()
@@ -1417,7 +1448,7 @@ class MakeCodeTuiApp(App[None]):
                 self._active_reasoning_collapsible = None
         elif event.collapsible_open:
             collapsible = ReasoningCollapsible(
-                *([Static(payload_renderable, markup=False, classes="content-block")] if payload_renderable is not None else []),
+                *([ContentBlock(payload_renderable, classes="content-block")] if payload_renderable is not None else []),
                 title=event.collapsible_title or "🧠 Reasoning",
                 collapsed=False,
                 classes="content-block reasoning-collapsible",
@@ -1426,7 +1457,7 @@ class MakeCodeTuiApp(App[None]):
             self._active_reasoning_collapsible = collapsible
         else:
             collapsible = ReasoningCollapsible(
-                *([Static(payload_renderable, markup=False, classes="content-block")] if payload_renderable is not None else []),
+                *([ContentBlock(payload_renderable, classes="content-block")] if payload_renderable is not None else []),
                 title=event.collapsible_title or "🧠 Reasoning",
                 collapsed=True,
                 classes="content-block reasoning-collapsible",
