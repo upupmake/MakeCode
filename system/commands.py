@@ -1174,6 +1174,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             render_banner_fn,
             render_hint_fn,
             render_history_fn,
+            conversation_id: str | None = None,
     ) -> tuple:
         """加载一份 6.0 conversation，并自动恢复其任务与 Sub-Agent 历史。"""
         conversations = self.conversation_store.list_conversations()
@@ -1195,12 +1196,24 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             return f"对话预览 · {snapshot.title or '未命名对话'}", _conversation_preview(snapshot.messages)
 
         try:
-            selected_path = interactive_choose_conversation(
-                conversations,
-                delete_handler=_delete_conversation,
-                preview_handler=_preview_conversation,
-                title_handler=self.conversation_store.get_title,
-            )
+            if conversation_id is not None:
+                selected_path = next(
+                    (
+                        path
+                        for path in conversations
+                        if path.parent.name == conversation_id
+                    ),
+                    None,
+                )
+            else:
+                selected_path = None
+            if selected_path is None:
+                selected_path = interactive_choose_conversation(
+                    conversations,
+                    delete_handler=_delete_conversation,
+                    preview_handler=_preview_conversation,
+                    title_handler=self.conversation_store.get_title,
+                )
         except Exception as exc:
             log_error_traceback("commands handle_load conversation", exc)
             selected_path = "abort"

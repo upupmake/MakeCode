@@ -809,6 +809,7 @@ The following options execute and exit immediately without starting the workspac
 | `--memory-list` | List active long-term memories in the current workspace by ascending update time |
 | `--check-update` | Check online for a newer version without downloading or installing it |
 | `--update` | Check, download, and install updates in frozen Windows/Linux builds; asks for confirmation after displaying release notes |
+| `--load [CONVERSATION_ID]` | Skip the startup workspace chooser; without an ID open the conversation picker, or load the specified conversation and fall back to the picker if it is not found |
 | `-y`, `--yes` | Use only with `--update` to explicitly skip installation confirmation |
 
 For a source run, use `python main.py <option>`. For packaged releases, use the platform entry point, for example:

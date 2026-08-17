@@ -25,6 +25,26 @@ def _run_main(*args: str) -> subprocess.CompletedProcess[str]:
 
 def test_no_arguments_keeps_interactive_startup_path():
     assert run_external_cli([]) is None
+    from system import cli as cli_module
+
+    assert cli_module.STARTUP_LOAD_REQUESTED is False
+    assert cli_module.STARTUP_LOAD_ID is None
+
+
+def test_load_without_id_keeps_interactive_startup_path_and_requests_picker():
+    from system import cli as cli_module
+
+    assert run_external_cli(["--load"]) is None
+    assert cli_module.STARTUP_LOAD_REQUESTED is True
+    assert cli_module.STARTUP_LOAD_ID is None
+
+
+def test_load_with_id_keeps_interactive_startup_path_and_preserves_id():
+    from system import cli as cli_module
+
+    assert run_external_cli(["--load", "conv_0123456789abcdef0123456789abcdef"]) is None
+    assert cli_module.STARTUP_LOAD_REQUESTED is True
+    assert cli_module.STARTUP_LOAD_ID == "conv_0123456789abcdef0123456789abcdef"
 
 
 def test_version_exits_before_interactive_startup():
@@ -73,6 +93,7 @@ def test_help_exits_before_interactive_startup():
     assert "--memory-list" in result.stdout
     assert "--check-update" in result.stdout
     assert "--update" in result.stdout
+    assert "--load" in result.stdout
     assert "-y, --yes" in result.stdout
     assert "当前工作目录" not in result.stdout
     assert result.stderr == ""

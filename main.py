@@ -6,11 +6,11 @@ import sys
 import threading
 from pathlib import Path
 
-from system.cli import run_external_cli
+from system import cli as cli_module
 
 
 if __name__ == "__main__":
-    external_cli_exit_code = run_external_cli(sys.argv[1:])
+    external_cli_exit_code = cli_module.run_external_cli(sys.argv[1:])
     if external_cli_exit_code is not None:
         raise SystemExit(external_cli_exit_code)
 
@@ -62,6 +62,7 @@ from system.tui_app import (
     set_agent_loop_active,
     set_temporary_query_enabled,
     refresh_status,
+    scroll_all_panes_to_bottom,
     consume_temporary_query,
     clear_temporary_query,
 )
@@ -867,12 +868,36 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
     return None
 
 
-def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for_workdir: bool) -> None:
+def _run_textual_main(
+        history: list,
+        command_handler: CommandHandler,
+        prompt_for_workdir: bool,
+        startup_load_id: str | None = None,
+) -> None:
     async def submit_handler(query: str) -> str | None:
         return await _process_user_query(query, history, command_handler)
 
     async def conversation_title_regenerate_handler() -> None:
         await _regenerate_conversation_title(history)
+
+    def startup_load_handler() -> None:
+        nonlocal history
+        set_agent_loop_active(True)
+        try:
+            loaded_history, _ = command_handler.handle_load(
+                history,
+                CONVERSATION_STORE.active_path,
+                _render_startup_banner,
+                _render_env_customization_hint,
+                _render_history,
+                conversation_id=startup_load_id,
+            )
+            if loaded_history is not history:
+                history = loaded_history
+                scroll_all_panes_to_bottom()
+        finally:
+            set_agent_loop_active(False)
+        refresh_status()
 
     def startup_workdir_provider():
         return _current_workdir()
@@ -928,6 +953,7 @@ def _run_textual_main(history: list, command_handler: CommandHandler, prompt_for
         slash_commands_provider=command_handler.get_slash_completion_commands,
         startup_workdir_provider=startup_workdir_provider if prompt_for_workdir else None,
         startup_workdir_handler=startup_workdir_handler if prompt_for_workdir else None,
+        startup_load_handler=startup_load_handler if cli_module.STARTUP_LOAD_REQUESTED else None,
     )
     app.run()
 
@@ -944,14 +970,21 @@ def _launch_macos_terminal_if_needed() -> bool:
     script = """
 on run argv
     set executablePath to item 1 of argv
+    set commandLine to "env MAKECODE_TERMINAL_RELAUNCHED=1 " & quoted form of executablePath
+    set argumentCount to count of argv
+    if argumentCount > 1 then
+        repeat with index from 2 to argumentCount
+            set commandLine to commandLine & " " & quoted form of (item index of argv)
+        end repeat
+    end if
     tell application "Terminal"
         activate
-        do script "env MAKECODE_TERMINAL_RELAUNCHED=1 " & quoted form of executablePath
+        do script commandLine
     end tell
 end run
 """
     subprocess.run(
-        ["/usr/bin/osascript", "-e", script, sys.executable],
+        ["/usr/bin/osascript", "-e", script, sys.executable, *sys.argv[1:]],
         check=True,
     )
     return True
@@ -964,7 +997,7 @@ if __name__ == "__main__":
     startup_workdir = resolve_startup_workdir()
     _apply_workdir(startup_workdir)
     _signal_legacy_updater_ready()
-    prompt_for_workdir = should_prompt_for_workdir()
+    prompt_for_workdir = should_prompt_for_workdir() and not cli_module.STARTUP_LOAD_REQUESTED
 
     _render_startup_banner()
     _render_env_customization_hint()
@@ -993,9 +1026,18 @@ if __name__ == "__main__":
     )
 
     try:
-        _run_textual_main(history, command_handler, prompt_for_workdir)
+        _run_textual_main(
+            history,
+            command_handler,
+            prompt_for_workdir,
+            startup_load_id=cli_module.STARTUP_LOAD_ID,
+        )
     finally:
         GLOBAL_MCP_MANAGER.stop()
+
+    if CONVERSATION_STORE.active_id:
+        executable = "MakeCode" if getattr(sys, "frozen", False) else "python main.py"
+        print(f"{executable} --load {CONVERSATION_STORE.active_id}")
 
     if _PENDING_UPDATE_EXE_PATH is not None:
         launch_updater(_PENDING_UPDATE_EXE_PATH)

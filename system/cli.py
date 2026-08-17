@@ -8,6 +8,10 @@ from urllib.parse import urlsplit, urlunsplit
 from version import CURRENT_VERSION
 
 
+STARTUP_LOAD_REQUESTED = False
+STARTUP_LOAD_ID: str | None = None
+
+
 COMMAND_DESCRIPTIONS = {
     "/cmds": "列出所有可用内置命令和功能描述。",
     "/models": "打开模型管理面板，可添加、删除、标记常用、选择当前模型。",
@@ -60,6 +64,7 @@ def _build_parser() -> argparse.ArgumentParser:
     commands.add_argument("--memory-list", action="store_true", help="列出当前工作区长期记忆并退出")
     commands.add_argument("--check-update", action="store_true", help="检查新版本但不下载或安装")
     commands.add_argument("--update", action="store_true", help="检查、下载并安装最新版本")
+    commands.add_argument("--load", nargs="?", const="", metavar="CONVERSATION_ID", help="启动后加载会话；可指定会话 ID")
     parser.add_argument("-y", "--yes", action="store_true", help="与 --update 配合使用，跳过安装确认")
     return parser
 
@@ -366,6 +371,9 @@ def _update(*, assume_yes: bool) -> int:
 
 
 def run_external_cli(argv: Sequence[str]) -> int | None:
+    global STARTUP_LOAD_REQUESTED, STARTUP_LOAD_ID
+    STARTUP_LOAD_REQUESTED = False
+    STARTUP_LOAD_ID = None
     if not argv:
         return None
     if argv[0] == "--mcp-add":
@@ -395,4 +403,8 @@ def run_external_cli(argv: Sequence[str]) -> int | None:
         return _check_update()
     if args.update:
         return _update(assume_yes=args.yes)
+    if args.load is not None:
+        STARTUP_LOAD_REQUESTED = True
+        STARTUP_LOAD_ID = args.load or None
+        return None
     return None

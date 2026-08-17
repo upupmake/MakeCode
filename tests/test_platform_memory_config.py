@@ -4604,6 +4604,27 @@ async def test_models_command_does_not_create_or_close_an_llm_client():
     command_handler.process_command.assert_awaited_once()
 
 
+@pytest.mark.anyio
+async def test_normal_query_enters_agent_loop():
+    command_handler = Mock()
+    command_handler.process_command = AsyncMock(return_value=CommandResult(
+        action=CommandAction.RUN_AGENT,
+        payload="hello",
+        skip_memory_recall=True,
+    ))
+    history = [{"role": "system", "content": "system"}]
+
+    with patch.object(main_module, "_ensure_active_conversation"), \
+            patch.object(main_module, "agent_loop", new_callable=AsyncMock) as agent_loop, \
+            patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "post_tui"), \
+            patch.object(main_module, "_apply_pending_title"), \
+            patch.object(main_module, "refresh_status"):
+        await main_module._process_user_query("hello", history, command_handler)
+
+    agent_loop.assert_awaited_once_with(history)
+    assert history[-1] == {"role": "user", "content": "hello"}
+
 
 def test_textual_submit_delegates_client_lifecycle_to_business_operations():
     history = [{"role": "system", "content": "system"}]
@@ -4621,6 +4642,37 @@ def test_textual_submit_delegates_client_lifecycle_to_business_operations():
         main_module._run_textual_main(history, command_handler, prompt_for_workdir=False)
 
     process_query.assert_awaited_once_with("hello", history, command_handler)
+
+
+def test_textual_startup_load_scrolls_loaded_history_to_bottom():
+    history = [{"role": "system", "content": "system"}]
+    loaded_history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "loaded"},
+    ]
+    command_handler = Mock()
+    command_handler.handle_load.return_value = (loaded_history, object())
+
+    class FakeTuiApp:
+        def __init__(self, **kwargs):
+            self.startup_load_handler = kwargs["startup_load_handler"]
+
+        def run(self):
+            self.startup_load_handler()
+
+    with patch.object(main_module, "MakeCodeTuiApp", FakeTuiApp), \
+            patch.object(main_module.cli_module, "STARTUP_LOAD_REQUESTED", True), \
+            patch.object(main_module, "scroll_all_panes_to_bottom") as scroll_to_bottom, \
+            patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "refresh_status"):
+        main_module._run_textual_main(
+            history,
+            command_handler,
+            prompt_for_workdir=False,
+            startup_load_id="conv_0123456789abcdef0123456789abcdef",
+        )
+
+    scroll_to_bottom.assert_called_once_with()
 
 
 def test_current_client_factory_reflects_reasoning_effort_without_cache():

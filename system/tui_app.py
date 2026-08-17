@@ -50,6 +50,7 @@ from system.tui_modals import (
     ToolHistoryModal,
 )
 from utils import paths
+from utils.terminal import set_terminal_title
 
 
 class TuiBridge:
@@ -1006,6 +1007,7 @@ class MakeCodeTuiApp(App[None]):
         slash_commands_provider: Callable[[], dict[str, str]] | None = None,
         startup_workdir_provider: Callable[[], Any] | None = None,
         startup_workdir_handler: Callable[[str], None] | None = None,
+        startup_load_handler: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._logs: dict[TuiRegion, RichLog] = {}
@@ -1027,6 +1029,7 @@ class MakeCodeTuiApp(App[None]):
         self._slash_commands_provider = slash_commands_provider
         self._startup_workdir_provider = startup_workdir_provider
         self._startup_workdir_handler = startup_workdir_handler
+        self._startup_load_handler = startup_load_handler
         self._mode_label = "ACT"
         self._agent_loop_active = False
         self._temporary_query_enabled = False
@@ -1137,8 +1140,27 @@ class MakeCodeTuiApp(App[None]):
         render_task_pane()
         if self._startup_workdir_provider is not None and self._startup_workdir_handler is not None:
             self.call_after_refresh(self._open_startup_workdir_modal)
+        elif self._startup_load_handler is not None:
+            self.call_after_refresh(self._run_startup_load)
         else:
             self.query_one("#input-box", MakeCodeInput).focus()
+
+    def _run_startup_load(self) -> None:
+        if self._startup_load_handler is None:
+            return
+
+        def _load() -> None:
+            try:
+                self._startup_load_handler()
+            finally:
+                self.call_from_thread(self._finish_startup_load)
+
+        self._modal_active = True
+        self.run_worker(_load, exclusive=True, thread=True)
+
+    def _finish_startup_load(self) -> None:
+        self._modal_active = False
+        self.query_one("#input-box", MakeCodeInput).focus()
 
     def _open_startup_workdir_modal(self) -> None:
         if self._startup_workdir_provider is None or self._startup_workdir_handler is None:
@@ -1977,6 +1999,7 @@ class MakeCodeTuiApp(App[None]):
                 conversation_title = ""
         display_title = f"MakeCode · {conversation_title}" if conversation_title else "MakeCode"
         self.title = display_title
+        set_terminal_title(display_title)
         title_widget = self.query_one("#top-title", Static)
         responsive_width = self._last_responsive_width or self.size.width
         title_widget.styles.max_width = (

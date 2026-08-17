@@ -991,6 +991,59 @@ def test_flush_screen_clears_terminal_and_requests_full_repaint():
     app._driver.flush.assert_called_once_with()
     app.refresh.assert_called_once_with(repaint=True, layout=True)
 
+def test_load_by_id_skips_picker(tmp_path, monkeypatch):
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "system"}])
+    handler = make_handler(store)
+    handler.console = Mock()
+    monkeypatch.setattr(
+        "system.commands.interactive_choose_conversation",
+        lambda *args, **kwargs: pytest.fail("direct load must not open the picker"),
+    )
+    monkeypatch.setattr("system.commands.post_tui", Mock())
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+
+    loaded_history, loaded_conversation = handler.handle_load(
+        [{"role": "system", "content": "old"}],
+        None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+        conversation_id=conversation.parent.name,
+    )
+
+    assert loaded_history[0] == {"role": "system", "content": ""}
+    assert loaded_conversation == conversation
+
+
+def test_load_by_invalid_id_falls_back_to_picker(tmp_path, monkeypatch):
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "system"}])
+    handler = make_handler(store)
+    handler.console = Mock()
+    picked = []
+
+    def choose_conversation(conversations, **kwargs):
+        picked.append(conversations)
+        return str(conversation)
+
+    monkeypatch.setattr("system.commands.interactive_choose_conversation", choose_conversation)
+    monkeypatch.setattr("system.commands.post_tui", Mock())
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+
+    _, loaded_conversation = handler.handle_load(
+        [{"role": "system", "content": "old"}],
+        None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+        conversation_id="conv_ffffffffffffffffffffffffffffffff",
+    )
+
+    assert picked == [[conversation]]
+    assert loaded_conversation == conversation
+
+
 def test_load_cannot_delete_current_conversation(tmp_path, monkeypatch):
     store = ConversationStore(tmp_path / "conversations")
     conversation = store.save_messages([{"role": "system", "content": "system"}])

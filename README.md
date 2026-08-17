@@ -783,6 +783,7 @@ python main.py
 | `--memory-list` | 按更新时间升序列出当前工作区的 active 长期记忆 |
 | `--check-update` | 联网检查是否有新版本，但不下载或安装 |
 | `--update` | Windows/Linux 冻结版检查、下载并安装更新；展示更新说明后要求确认 |
+| `--load [CONVERSATION_ID]` | 启动时跳过工作目录选择；不指定 ID 时打开会话选择面板，指定 ID 时直接加载对应会话，找不到时回退到选择面板 |
 | `-y`, `--yes` | 仅与 `--update` 配合使用，显式跳过安装确认 |
 
 源码版使用 `python main.py <参数>`。打包版可直接使用对应平台入口，例如：
