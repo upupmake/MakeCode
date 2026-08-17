@@ -9,7 +9,7 @@ from system.console_render import (
     render_content_user_message,
 )
 from system.stream_render import StreamRenderer
-from system.tui_app import ContentBlock, MakeCodeTuiApp
+from system.tui_app import CopyableContentGroup, ContentBlock, MakeCodeTuiApp
 from system.tui_types import TuiEvent, TuiRegion
 
 
@@ -33,19 +33,20 @@ def test_message_panels_carry_raw_text():
     assert assistant_panel.copy_text == "# 标题\n正文"
 
 
-def test_content_block_get_selection_returns_raw_text():
+def test_copyable_group_get_selection_returns_raw_text():
     panel = render_content_user_message("整条消息原文")
-    block = ContentBlock(panel, copy_text=panel.copy_text)
+    group = CopyableContentGroup(panel.copy_text)
 
-    assert block.get_selection(Selection(None, None)) == ("整条消息原文", "\n")
+    assert group.get_selection(Selection(None, None)) == ("整条消息原文", "\n")
+    assert "on_click" not in ContentBlock.__dict__
 
 
-def test_content_block_without_copy_text_yields_no_selection_text():
-    """非 user/assistant 内容块（横幅、系统提示、reasoning）拖选不产生可复制文本"""
+def test_content_block_has_no_copy_behavior():
+    """子 block 只负责渲染，不处理点击或选区复制。"""
     block = ContentBlock("普通文本块")
 
-    assert block.copy_text is None
-    assert block.get_selection(Selection(None, None)) is None
+    assert "on_click" not in ContentBlock.__dict__
+    assert "get_selection" not in ContentBlock.__dict__
 
 
 def test_copyable_markdown_carries_raw_text():
@@ -74,26 +75,40 @@ def test_stream_committed_blocks_carry_raw_text_for_content_only():
     content_payloads = [payload for region, payload in events if region == TuiRegion.CONTENT and not isinstance(payload, str) and payload is not None]
     reasoning_payloads = [payload for region, payload in events if region == TuiRegion.REASONING and not isinstance(payload, str) and payload is not None]
 
-    assert [payload.copy_text for payload in content_payloads] == ["第一段完整", "收尾正文"]
+    assert [payload.copy_text for payload in content_payloads] == ["第一段完整\n\n", "收尾正文"]
     assert all(not hasattr(payload, "copy_text") for payload in reasoning_payloads)
 
 
 @pytest.mark.anyio
-async def test_double_click_on_streamed_markdown_block_copies_raw_text():
+async def test_double_click_on_streamed_block_copies_complete_response_from_transparent_parent():
     app = MakeCodeTuiApp()
 
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        app._handle_content_block_event(TuiEvent(TuiRegion.CONTENT, render_copyable_markdown("流式正文段落")))
+        app._handle_content_block_event(TuiEvent(TuiRegion.CONTENT, None, active=True))
+        app._handle_content_block_event(
+            TuiEvent(TuiRegion.CONTENT, render_copyable_markdown("第一段", copy_text="第一段\n\n"))
+        )
+        app._handle_content_block_event(
+            TuiEvent(TuiRegion.CONTENT, render_copyable_markdown("第二段"))
+        )
+        app._handle_content_block_event(TuiEvent(TuiRegion.CONTENT, None, active=False))
         await pilot.pause()
 
-        block = app.query_one(ContentBlock)
+        container = app.query_one("#content-log")
+        assert len(container.children) == 1
+        group = container.children[0]
+        assert isinstance(group, CopyableContentGroup)
+        assert group.copy_text == "第一段\n\n第二段"
+        assert group.has_class("copyable-content-group")
+        blocks = group.query(ContentBlock)
+        assert len(blocks) == 2
 
         with patch("system.tui_app.copy_to_system_clipboard", return_value=True) as system_copy:
-            await pilot.double_click(block, offset=(2, 0))
+            await pilot.double_click(blocks[1], offset=(2, 0))
             await pilot.pause()
 
-        system_copy.assert_called_once_with("流式正文段落")
+        system_copy.assert_called_once_with("第一段\n\n第二段")
 
 
 @pytest.mark.anyio

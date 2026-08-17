@@ -144,16 +144,17 @@ def render_model_markdown(text: str) -> Markdown:
 
 
 class CopyableMarkdown(Markdown):
-    """携带原始文本的 Markdown 渲染对象，供 TUI 双击复制流式正文块"""
+    """携带原始文本的 Markdown 渲染对象，供 TUI 的透明父容器累积正文"""
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, copy_text: str | None = None) -> None:
         super().__init__(text)
-        self.copy_text = text
+        self.copy_text = text if copy_text is None else copy_text
+        self.group_stream_blocks = True
         self.parsed = _parse_model_markdown(text)
 
 
-def render_copyable_markdown(text: str) -> CopyableMarkdown:
-    return CopyableMarkdown(text)
+def render_copyable_markdown(text: str, copy_text: str | None = None) -> CopyableMarkdown:
+    return CopyableMarkdown(text, copy_text=copy_text)
 
 
 def render_content_assistant_message(text: str, identity: str = "Assistant") -> CopyablePanel:

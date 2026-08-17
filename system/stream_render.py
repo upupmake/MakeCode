@@ -237,10 +237,10 @@ class StreamRenderer:
         post_tui(TuiRegion.CONTENT, f"\n[bold cyan]📝 {name} Content...[/bold cyan]")
 
     @staticmethod
-    def _region_markdown(region: TuiRegion, text: str):
-        """CONTENT 正文块携带原始文本支持双击复制；其他区域（如 Reasoning）保持普通渲染"""
+    def _region_markdown(region: TuiRegion, text: str, copy_text: str | None = None):
+        """CONTENT 正文块提供父容器累积用原文；其他区域保持普通渲染。"""
         if region == TuiRegion.CONTENT:
-            return render_copyable_markdown(text)
+            return render_copyable_markdown(text, copy_text=copy_text)
         return render_model_markdown(text)
 
     def _process_block_commit(self, full_text: str, current_buffer: str, region: TuiRegion = TuiRegion.CONTENT) -> tuple[str, str]:
@@ -256,7 +256,10 @@ class StreamRenderer:
             if len(parts) == 2:
                 complete_blocks, remaining_buffer = parts
                 self._clear_tail(region)
-                post_tui(region, self._region_markdown(region, complete_blocks))
+                post_tui(
+                    region,
+                    self._region_markdown(region, complete_blocks, copy_text=f"{complete_blocks}\n\n"),
+                )
                 return remaining_buffer, f"{complete_blocks}\n\n"
 
         return current_buffer, ""

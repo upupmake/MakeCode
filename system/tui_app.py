@@ -577,14 +577,25 @@ class ConversationTitle(Static):
 
 
 class ContentBlock(Static):
-    """Content 消息块：双击复制整条原文；选区命中时返回原始文本供 Cmd+C 使用"""
+    """Content/Reasoning 的纯渲染块，不处理交互事件。"""
 
-    def __init__(self, renderable: Any, copy_text: str | None = None, **kwargs: Any) -> None:
+    def __init__(self, renderable: Any, **kwargs: Any) -> None:
         super().__init__(renderable, markup=False, **kwargs)
+
+
+class CopyableContentGroup(Vertical):
+    """透明消息容器：统一处理整条消息的复制。"""
+
+    def __init__(self, copy_text: str = "", *children: Widget, **kwargs: Any) -> None:
+        super().__init__(*children, **kwargs)
         self.copy_text = copy_text
 
+    def append_block(self, block: ContentBlock, copy_text: str) -> None:
+        self.copy_text += copy_text
+        self.mount(block)
+
     def on_click(self, event: Click) -> None:
-        if event.chain != 2 or self.copy_text is None:
+        if event.chain != 2 or not self.copy_text:
             return
         if copy_to_system_clipboard(self.copy_text):
             self.app.notify(f"📋 已复制该消息（{len(self.copy_text)} 个字符）到系统剪贴板")
@@ -594,13 +605,17 @@ class ContentBlock(Static):
         event.stop()
 
     def get_selection(self, selection) -> tuple[str, str] | None:
-        if self.copy_text is not None:
+        if self.copy_text:
             return self.copy_text, "\n"
         return None
 
 
 class ReasoningCollapsible(Collapsible):
     """思考内容收纳容器：支持在 compose 前后安全地追加内容块。"""
+
+    def on_click(self, event: Click) -> None:
+        self.collapsed = not self.collapsed
+        event.stop()
 
     def mount_block(self, renderable: RenderableType) -> None:
         block = ContentBlock(renderable, classes="content-block")
@@ -865,11 +880,24 @@ class MakeCodeTuiApp(App[None]):
         width: 1fr;
     }
 
+    .copyable-content-group {
+        width: 1fr;
+        height: auto;
+        margin: 0;
+        padding: 0;
+        border: none;
+        background: transparent;
+    }
+
     .reasoning-collapsible {
         border: round #3f3f46;
         background: #111827;
         padding-left: 1;
         padding-bottom: 1;
+    }
+
+    .reasoning-collapsible CollapsibleTitle {
+        width: 1fr;
     }
 
     .pane-tail {
@@ -985,6 +1013,8 @@ class MakeCodeTuiApp(App[None]):
         self._tails: dict[TuiRegion, Static] = {}
         self._content_scroller: VerticalScroll | None = None
         self._active_reasoning_collapsible: Collapsible | None = None
+        self._content_copy_group_active = False
+        self._active_content_copy_group: CopyableContentGroup | None = None
         self._status = "MakeCode ready"
         self._runtime_info = ""
         self._submit_handler = submit_handler
@@ -1325,6 +1355,8 @@ class MakeCodeTuiApp(App[None]):
                     self._content_scroller.remove_children()
                     self._content_scroller.scroll_to(x=0, y=0, animate=False, immediate=True)
                 self._active_reasoning_collapsible = None
+                self._content_copy_group_active = False
+                self._active_content_copy_group = None
             else:
                 log.clear()
             self._update_tail(event.region, "")
@@ -1358,6 +1390,9 @@ class MakeCodeTuiApp(App[None]):
 
     def _handle_content_block_event(self, event: TuiEvent) -> None:
         container = self._content_scroller
+        if event.region == TuiRegion.CONTENT and event.active is not None:
+            self._content_copy_group_active = event.active
+            self._active_content_copy_group = None
         if event.region == TuiRegion.CONTENT and event.payload == "":
             self._mark_runtime_dirty()
             return
@@ -1371,14 +1406,32 @@ class MakeCodeTuiApp(App[None]):
             self._mark_runtime_dirty()
             return
         was_at_bottom = self._batch_force_scroll or self._is_scroller_at_bottom(container)
+        renderable = self._content_block_renderable(event.payload)
+        block = ContentBlock(renderable, classes="content-block")
         copy_text = getattr(event.payload, "copy_text", None)
-        container.mount(
-            ContentBlock(
-                self._content_block_renderable(event.payload),
-                copy_text=copy_text,
-                classes="content-block",
+        group_stream_blocks = bool(getattr(event.payload, "group_stream_blocks", False))
+        if group_stream_blocks and self._content_copy_group_active:
+            group = self._active_content_copy_group
+            if group is None:
+                group = CopyableContentGroup(
+                    copy_text or "",
+                    block,
+                    classes="copyable-content-group",
+                )
+                container.mount(group)
+                self._active_content_copy_group = group
+            else:
+                group.append_block(block, copy_text or "")
+        elif copy_text is not None:
+            container.mount(
+                CopyableContentGroup(
+                    copy_text,
+                    block,
+                    classes="copyable-content-group",
+                )
             )
-        )
+        else:
+            container.mount(block)
         if was_at_bottom:
             self._defer_or_scroll_now(event.region, container)
         self._mark_runtime_dirty()

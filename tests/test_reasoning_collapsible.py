@@ -4,7 +4,7 @@ from textual.widgets import Collapsible, Static
 
 import system.console_render as console_render
 from system.console_render import _render_history
-from system.tui_app import MakeCodeTuiApp
+from system.tui_app import CopyableContentGroup, ContentBlock, MakeCodeTuiApp
 from system.tui_types import TuiEvent, TuiRegion
 
 
@@ -294,7 +294,29 @@ async def test_render_async_stream_finalizes_reasoning_collapsible():
         assert isinstance(collapsible, Collapsible)
         assert collapsible.collapsed is True
         assert len(collapsible.query_one(Collapsible.Contents).children) == 2
-        assert all(isinstance(child, Static) for child in container.children[1:])
+        assert isinstance(container.children[1], Static)
+        assert isinstance(container.children[2], CopyableContentGroup)
+
+
+@pytest.mark.anyio
+async def test_reasoning_parent_toggles_when_clicking_content_block():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        _open_reasoning(app)
+        app.handle_tui_event(TuiEvent(TuiRegion.REASONING, "思考内容\n\n"))
+        await pilot.pause()
+
+        container = app.query_one("#content-log", VerticalScroll)
+        collapsible = container.children[0]
+        block = collapsible.query_one(ContentBlock)
+        assert collapsible.collapsed is False
+
+        await pilot.click(block, offset=(2, 0))
+        await pilot.pause()
+
+        assert collapsible.collapsed is True
 
 
 @pytest.mark.anyio
