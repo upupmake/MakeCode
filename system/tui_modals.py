@@ -37,7 +37,6 @@ from system.tool_history import (
 )
 from system.tui_types import (
     LAYOUT_DEFAULT_RATIOS,
-    LAYOUT_LEFT_KEYS,
     LAYOUT_RIGHT_KEYS,
     normalize_layout_ratios,
 )
@@ -691,11 +690,6 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     #layout-columns {
-        height: auto;
-    }
-
-    .layout-column {
-        width: 1fr;
         height: auto;
     }
 
@@ -4561,7 +4555,6 @@ class LayoutModal(ClosableModalScreen[str | dict[str, int]]):
     ]
 
     _LABELS = {
-        "content": "Content",
         "task": "Task",
         "background": "Background",
         "sub_agent": "Sub-Agent",
@@ -4577,22 +4570,17 @@ class LayoutModal(ClosableModalScreen[str | dict[str, int]]):
                 "🧩 Layout 布局比例\n点击按钮或按 Space 在 0-10 间循环；0 表示隐藏但继续接收渲染。",
                 title_id="choice-title",
             )
-            with Horizontal(id="layout-columns"):
-                with Vertical(classes="layout-column"):
-                    yield Label("左侧高度比例")
-                    for key in LAYOUT_LEFT_KEYS:
-                        yield Button(self._button_label(key), id=f"layout-{key}", classes="layout-button")
-                with Vertical(classes="layout-column"):
-                    yield Label("右侧高度比例")
-                    for key in LAYOUT_RIGHT_KEYS:
-                        yield Button(self._button_label(key), id=f"layout-{key}", classes="layout-button")
+            with Vertical(id="layout-columns"):
+                yield Label("右侧高度比例")
+                for key in LAYOUT_RIGHT_KEYS:
+                    yield Button(self._button_label(key), id=f"layout-{key}", classes="layout-button")
             with Horizontal(id="layout-actions"):
                 yield Button("确认应用", id="layout-apply", variant="success", classes="layout-action-button")
                 yield Button("重置默认", id="layout-reset", variant="primary", classes="layout-action-button")
                 yield Button("取消", id="layout-cancel", variant="warning", classes="layout-action-button")
 
     def on_mount(self) -> None:
-        self.query_one("#layout-content", Button).focus()
+        self.query_one("#layout-task", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""

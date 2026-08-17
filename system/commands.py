@@ -896,7 +896,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         if isinstance(result, dict):
             self.console.print(
             "\n[bold green]✅ Layout 已应用：[/bold green]"
-            f"Content = {result['content']}；"
             f"右侧 Task/Background/Sub-Agent = {result['task']}/{result['background']}/{result['sub_agent']}",
             tui_region=TuiRegion.BACKGROUND,
             )

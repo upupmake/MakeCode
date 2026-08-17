@@ -11,7 +11,7 @@ from version import CURRENT_VERSION
 COMMAND_DESCRIPTIONS = {
     "/cmds": "列出所有可用内置命令和功能描述。",
     "/models": "打开模型管理面板，可添加、删除、标记常用、选择当前模型。",
-    "/layout": "调整 TUI 面板高度比例：左侧 Content，右侧 Task/Background/Sub-Agent。",
+    "/layout": "调整 TUI 右侧 Task/Background/Sub-Agent 面板高度比例。",
     "/flush": "完整刷新 TUI 屏幕，不改变任何面板中已有的内容。",
     "/mcp-view": "查看当前已加载的 MCP 服务器和工具。",
     "/mcp-help": "显示 MCP 相关命令介绍。",

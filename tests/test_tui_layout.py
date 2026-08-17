@@ -17,7 +17,6 @@ from utils.skills import SkillLoader
 
 
 TEST_LAYOUT_RATIOS = {
-    "content": 2,
     "task": 2,
     "background": 3,
     "sub_agent": 1,

@@ -21,7 +21,6 @@ from utils.paths import directory_completion_candidates
 
 
 TEST_LAYOUT_RATIOS = {
-    "content": 2,
     "task": 2,
     "background": 3,
     "sub_agent": 1,

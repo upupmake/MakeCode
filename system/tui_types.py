@@ -30,12 +30,10 @@ class TuiEvent:
 
 LAYOUT_CONFIG_FILE = paths.layout_config_file()
 LAYOUT_DEFAULT_RATIOS: dict[str, int] = {
-    "content": 2,
     "task": 2,
     "background": 3,
     "sub_agent": 1,
 }
-LAYOUT_LEFT_KEYS = ("content",)
 LAYOUT_RIGHT_KEYS = ("task", "background", "sub_agent")
 
 

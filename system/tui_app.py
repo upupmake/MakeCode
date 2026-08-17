@@ -1178,7 +1178,6 @@ class MakeCodeTuiApp(App[None]):
 
     def _apply_layout_ratios(self) -> None:
         pane_ids = {
-            "content": "#content-pane",
             "task": "#task-pane",
             "background": "#background-pane",
             "sub_agent": "#sub-agent-pane",
@@ -1189,6 +1188,9 @@ class MakeCodeTuiApp(App[None]):
             pane.set_class(ratio == 0, "hidden")
             if ratio > 0:
                 pane.styles.height = f"{ratio}fr"
+        content_pane = self.query_one("#content-pane", Vertical)
+        content_pane.set_class(False, "hidden")
+        content_pane.styles.height = "1fr"
 
     def update_layout_ratios(self, ratios: dict[str, int]) -> None:
         self._layout_ratios = normalize_layout_ratios(ratios)
