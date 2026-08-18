@@ -3626,7 +3626,6 @@ class ModelManagerModal(ClosableModalScreen[str]):
         label.append(f" · 格式：{model.message_format}", style="#94a3b8")
         label.append(" · effort：", style="#94a3b8")
         label.append(model.reasoning_effort, style="bold #c4b5fd")
-        label.append("\n   当前运行" if is_current else "\n   可按 Enter 切换为当前模型", style="green" if is_current else "#64748b")
         return label
 
     def _reload_rows(

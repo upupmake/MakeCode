@@ -1866,7 +1866,9 @@ async def test_model_manager_modal_shows_efforts_and_changes_current_model_with_
         row_text = str(row.render())
         assert "effort：high" in row_text
         assert "格式：openai_chat" in row_text
-        assert "当前运行" in row_text
+        assert "● main" in row_text
+        assert "当前运行" not in row_text
+        assert "可按 Enter 切换为当前模型" not in row_text
         assert modal.query_one("#model-manager-add", Button).region.height > 0
         assert modal.query_one("#model-manager-select", Button).region.height > 0
         assert app.status_refreshes == 1
