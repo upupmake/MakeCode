@@ -154,7 +154,7 @@ def test_live_display_formatting_does_not_change_tool_result_sent_to_model():
     assert tool_message["content"] == expected_model_content
     assert sanitize_openai_messages([tool_message])[0]["content"] == expected_model_content
 
-    _, anthropic_messages = build_anthropic_request_messages([tool_message], "claude-test")
+    _, anthropic_messages = build_anthropic_request_messages([tool_message])
     assert anthropic_messages[0]["content"][0]["content"] == expected_model_content
 
 

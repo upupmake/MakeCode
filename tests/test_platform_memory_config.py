@@ -2383,7 +2383,6 @@ def test_openai_shaped_messages_can_be_rebuilt_for_anthropic_from_conversation(t
 
     system, rebuilt = llm_client_module.build_anthropic_request_messages(
         store.load(conversation).messages,
-        "claude-test",
     )
 
     assert system == "system"

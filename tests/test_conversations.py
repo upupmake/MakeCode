@@ -89,7 +89,6 @@ def test_sidecars_and_traces_never_enter_provider_messages(tmp_path):
     openai_request = sanitize_openai_messages(snapshot.messages)
     system, anthropic_request = build_anthropic_request_messages(
         snapshot.messages,
-        "claude-test",
     )
     provider_payload = json.dumps(
         {"openai": openai_request, "system": system, "anthropic": anthropic_request},

@@ -852,12 +852,13 @@ def _anthropic_user_content(content: Any) -> list[dict[str, Any]]:
     return blocks
 
 
-def _anthropic_assistant_content(message: dict[str, Any], model: str) -> list[dict[str, Any]]:
+def _anthropic_assistant_content(message: dict[str, Any]) -> list[dict[str, Any]]:
     metadata = message.get("message_metadata")
+    # Anthropic 的 thinking 块不是 origin-locked：跨模型回放由服务端渲染或静默丢弃，
+    # 而客户端剥离反而可能触发 ordering/signature 400，因此不按模型区分。
     if (
         isinstance(metadata, dict)
         and metadata.get("source_format") == "anthropic"
-        and metadata.get("source_model") == model
         and isinstance(metadata.get("native_blocks"), list)
     ):
         return copy.deepcopy(metadata["native_blocks"])
@@ -884,7 +885,6 @@ def _anthropic_assistant_content(message: dict[str, Any], model: str) -> list[di
 
 def build_anthropic_request_messages(
     messages: list[dict[str, Any]],
-    model: str,
 ) -> tuple[str, list[dict[str, Any]]]:
     system_parts = []
     request_messages = []
@@ -917,7 +917,7 @@ def build_anthropic_request_messages(
             continue
 
         if role == "assistant":
-            content = _anthropic_assistant_content(message, model)
+            content = _anthropic_assistant_content(message)
         elif role == "user":
             content = _anthropic_user_content(message.get("content"))
         else:
@@ -992,7 +992,7 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
         messages: list,
         tools: list = None,
     ):
-        system, request_messages = build_anthropic_request_messages(messages, self.model)
+        system, request_messages = build_anthropic_request_messages(messages)
         kwargs = {
             "model": self.model,
             "max_tokens": 64_000,

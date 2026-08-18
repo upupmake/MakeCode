@@ -152,7 +152,7 @@ def test_anthropic_message_conversion_extracts_system_and_groups_parallel_tool_r
         {"role": "user", "content": "continue"},
     ]
 
-    system, converted = build_anthropic_request_messages(messages, "claude-test")
+    system, converted = build_anthropic_request_messages(messages)
 
     assert system == "system one\n\nsystem two"
     assert converted == [
@@ -190,7 +190,7 @@ def test_anthropic_message_conversion_extracts_system_and_groups_parallel_tool_r
     ]
 
 
-def test_anthropic_message_conversion_replays_native_blocks_only_for_same_model():
+def test_anthropic_message_conversion_replays_native_blocks_across_models():
     native_blocks = [
         {"type": "thinking", "thinking": "summary", "signature": "sig"},
         {"type": "redacted_thinking", "data": "encrypted"},
@@ -208,12 +208,30 @@ def test_anthropic_message_conversion_replays_native_blocks_only_for_same_model(
         },
     }
 
-    _, same_model = build_anthropic_request_messages([message], "claude-source")
-    _, other_model = build_anthropic_request_messages([message], "claude-other")
+    _, replayed = build_anthropic_request_messages([message])
 
-    assert same_model[0]["content"] == native_blocks
-    assert same_model[0]["content"] is not native_blocks
-    assert other_model == [{
+    assert replayed[0]["content"] == native_blocks
+    assert replayed[0]["content"] is not native_blocks
+
+
+def test_anthropic_message_conversion_never_replays_openai_sourced_native_blocks():
+    message = {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "chain of thought",
+        "message_metadata": {
+            "source_format": "openai_chat",
+            "source_model": "gpt-test",
+            "native_blocks": [
+                {"type": "thinking", "thinking": "chain of thought", "signature": "forged"},
+                {"type": "text", "text": "answer"},
+            ],
+        },
+    }
+
+    _, rebuilt = build_anthropic_request_messages([message])
+
+    assert rebuilt == [{
         "role": "assistant",
         "content": [{"type": "text", "text": "answer"}],
     }]
@@ -509,7 +527,7 @@ def test_cross_model_rebuild_uses_normalized_content_blocks_when_legacy_fields_a
         "reasoning_content": "reasoning summary",
     }
 
-    _, anthropic_messages = build_anthropic_request_messages([message], "claude-other")
+    _, anthropic_messages = build_anthropic_request_messages([message])
     from utils.llm_client import sanitize_openai_messages
 
     assert anthropic_messages == [{
