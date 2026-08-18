@@ -18,7 +18,7 @@ from rich.text import Text
 
 from init import log_error_traceback
 from system.cli import COMMAND_DESCRIPTIONS
-from system.console_render import render_content_assistant_message, render_content_user_message, render_current_task_plan, render_current_workdir, toggle_sub_agent_console
+from system.console_render import render_content_assistant_message, render_current_task_plan, render_current_workdir, render_preview_user_message, toggle_sub_agent_console
 from system.models import get_model_manager
 from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
@@ -148,7 +148,7 @@ def _conversation_preview(messages: list) -> Group:
         if not isinstance(content, str) or not content:
             continue
         if role == "user":
-            preview_items.append(render_content_user_message(content))
+            preview_items.append(render_preview_user_message(content))
         else:
             preview_items.append(render_content_assistant_message(content))
 

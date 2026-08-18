@@ -11,7 +11,11 @@ from textual.widgets import Input, Label, Static
 
 from init import resolve_chosen_workdir
 from system.commands import COMMAND_DESCRIPTIONS, CommandAction, CommandHandler, _conversation_preview, _task_plan_preview
-from system.console_render import _extract_message_text
+from system.console_render import (
+    _extract_message_text,
+    render_content_user_message,
+    render_preview_user_message,
+)
 from system.tui_app import MakeCodeInput, MakeCodeTuiApp
 from system.tui_modals import StartupWorkdirModal
 from system.tui_types import TuiEvent, TuiRegion
@@ -809,6 +813,14 @@ def test_mcp_manager_does_not_forward_switch_metadata_to_fastmcp():
             "filesystem": {"command": "npx", "args": ["server"]}
         }
     })
+
+
+def test_preview_user_message_uses_markdown_without_changing_content_user_message():
+    preview_panel = render_preview_user_message("# 标题\n\n**加粗**")
+    content_panel = render_content_user_message("# 标题\n\n**加粗**")
+
+    assert preview_panel.renderable.__class__.__name__ == "Markdown"
+    assert content_panel.renderable.__class__.__name__ == "Text"
 
 
 def test_conversation_preview_excludes_recalled_memory_and_includes_assistant_text():

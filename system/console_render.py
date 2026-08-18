@@ -127,6 +127,15 @@ def render_content_user_message(text: str) -> CopyablePanel:
     )
 
 
+def render_preview_user_message(text: str) -> CopyablePanel:
+    return _content_panel(
+        render_model_markdown(text),
+        "[bold #22c55e]You[/bold #22c55e]",
+        "#22c55e",
+        copy_text=text,
+    )
+
+
 def _parse_model_markdown(text: str):
     return (
         MarkdownIt()
