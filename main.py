@@ -65,6 +65,7 @@ from system.tui_app import (
     scroll_all_panes_to_bottom,
     consume_temporary_query,
     clear_temporary_query,
+    restore_temporary_query_to_input,
 )
 from utils.common import (
     COMMON_TOOLS,
@@ -338,6 +339,7 @@ async def agent_loop(
     try:
         return await _agent_loop_with_client(messages, llm_client)
     finally:
+        restore_temporary_query_to_input()
         set_temporary_query_enabled(False)
         clear_temporary_query()
         if owns_client:
@@ -588,6 +590,7 @@ async def _agent_loop_with_client(
             clear_temporary_query()
             break
 
+    restore_temporary_query_to_input()
     set_temporary_query_enabled(False)
     clear_temporary_query()
     if not committed_response:

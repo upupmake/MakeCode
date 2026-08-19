@@ -1309,6 +1309,9 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
         if value:
             self.dismiss(value)
 
+    def current_text(self) -> str:
+        return self.query_one("#temporary-query-input", TextArea).text
+
     def action_insert_newline(self) -> None:
         self.query_one("#temporary-query-input", TextArea).insert("\n")
 

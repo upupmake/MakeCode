@@ -360,6 +360,16 @@ class TuiBridge:
         app.call_from_thread(app.consume_temporary_query, future)
         return future.result()
 
+    def restore_temporary_query_to_input(self) -> None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            app.restore_temporary_query_to_input()
+        else:
+            app.call_from_thread(app.restore_temporary_query_to_input)
+
     def _dispatch_event_locked(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
         self._dispatch_event(app, event)
 
@@ -1542,6 +1552,15 @@ class MakeCodeTuiApp(App[None]):
             future.set_result(query)
         return query
 
+    def restore_temporary_query_to_input(self) -> None:
+        query = self._temporary_query
+        if isinstance(self.screen, TemporaryQueryModal):
+            query = self.screen.current_text()
+        if query is not None:
+            input_box = self.query_one("#input-box", MakeCodeInput)
+            input_box.load_text(query)
+            input_box.cursor_location = input_box.document.end
+
     def clear_temporary_query(self) -> None:
         self._temporary_query = None
 
@@ -1964,6 +1983,7 @@ class MakeCodeTuiApp(App[None]):
         was_active = self._agent_loop_active
         self._agent_loop_active = active
         if was_active and not active:
+            self.restore_temporary_query_to_input()
             self.set_temporary_query_enabled(False)
         self._update_header_status()
         self._update_input_visibility()
@@ -2407,6 +2427,10 @@ def set_temporary_query_enabled(enabled: bool) -> None:
 
 def consume_temporary_query() -> str | None:
     return TUI_BRIDGE.consume_temporary_query()
+
+
+def restore_temporary_query_to_input() -> None:
+    TUI_BRIDGE.restore_temporary_query_to_input()
 
 
 def clear_temporary_query() -> None:

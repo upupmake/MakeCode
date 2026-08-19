@@ -282,6 +282,62 @@ async def test_temporary_query_is_cleared_when_agent_loop_becomes_inactive():
 
 
 @pytest.mark.anyio
+async def test_temporary_query_restores_pending_input_when_agent_loop_ends():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+        app._temporary_query = "pending\nsecond line"
+
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+
+        input_box = app.query_one("#input-box")
+        assert input_box.text == "pending\nsecond line"
+        assert input_box.cursor_location == input_box.document.end
+        assert app._temporary_query is None
+
+
+@pytest.mark.anyio
+async def test_consumed_temporary_query_is_not_restored_to_input():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+        app._temporary_query = "consumed"
+
+        assert app.consume_temporary_query() == "consumed"
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+
+        assert app.query_one("#input-box").text == ""
+
+
+@pytest.mark.anyio
+async def test_open_temporary_query_restores_current_draft_when_agent_loop_ends():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.press("d", "r", "a", "f", "t")
+
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+
+        assert app.query_one("#input-box").text == "draft"
+        assert not app._modal_active
+
+
+@pytest.mark.anyio
 async def test_quick_panel_toggle_follows_actual_title_width():
     current_title = {"value": None}
     app = MakeCodeTuiApp(
