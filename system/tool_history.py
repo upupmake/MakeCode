@@ -140,6 +140,34 @@ def format_tool_arguments(value: Any) -> str:
     return _format_json(value)
 
 
+def format_tool_call_block(
+    tool_name: str,
+    arguments: Any,
+    *,
+    tool_call_id: str = "",
+) -> str:
+    lines = [f"工具: {tool_name}"]
+    if tool_call_id:
+        lines.append(f"调用 ID: {tool_call_id}")
+    lines.extend(["", "Arguments", "─────────", format_tool_arguments(arguments)])
+    return "\n".join(lines)
+
+
+def format_tool_result_block(
+    result: Any,
+    *,
+    status: str = "",
+    error: str = "",
+) -> str:
+    lines = []
+    if status:
+        lines.append(f"状态: {status}")
+    lines.extend(["Result", "─────────", format_tool_value(result)])
+    if error:
+        lines.extend(["", "Error", "─────", error])
+    return "\n".join(lines)
+
+
 def tool_result_status(*, is_error: bool, output: Any) -> str:
     text = "" if output is None else str(output)
     if "Plan Mode" in text and ("blocked" in text or "⛔" in text):

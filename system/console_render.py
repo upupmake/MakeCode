@@ -17,7 +17,13 @@ from rich.text import Text
 from rich.theme import Theme
 
 from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
-from system.tool_history import format_tool_arguments, format_tool_value
+from system.tool_history import (
+    format_tool_arguments,
+    format_tool_call_block,
+    format_tool_result_block,
+    format_tool_value,
+    tool_result_status,
+)
 from system.tui_app import TuiRegion, post_tui
 from utils import paths
 
@@ -223,6 +229,91 @@ def _extract_message_text(msg: dict) -> str:
     return "\n\n".join(chunks).strip()
 
 
+def _message_tool_calls(message: dict) -> list[dict[str, Any]]:
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        return [tool_call for tool_call in tool_calls if isinstance(tool_call, dict)]
+    return [
+        {
+            "id": block.get("id", ""),
+            "name": block.get("name", ""),
+            "arguments": block.get("arguments", block.get("input", {})),
+        }
+        for block in message.get("content_blocks") or []
+        if isinstance(block, dict) and block.get("type") == "tool_call"
+    ]
+
+
+def _tool_call_parts(tool_call: dict) -> tuple[str, str, Any]:
+    function = tool_call.get("function")
+    if isinstance(function, dict):
+        return (
+            str(tool_call.get("id") or ""),
+            str(function.get("name") or tool_call.get("name") or ""),
+            function.get("arguments", tool_call.get("arguments", "")),
+        )
+    return (
+        str(tool_call.get("id") or tool_call.get("call_id") or ""),
+        str(tool_call.get("name") or ""),
+        tool_call.get("arguments", ""),
+    )
+
+
+def _tool_results_after(messages: list[dict], assistant_index: int) -> dict[str, dict]:
+    results = {}
+    for message in messages[assistant_index + 1:]:
+        role = message.get("role")
+        if role not in {"tool", "function"} and message.get("type") != "function_call_output":
+            break
+        call_id = str(message.get("tool_call_id") or message.get("call_id") or "")
+        if call_id:
+            results[call_id] = message
+    return results
+
+
+def _render_tool_round(messages: list[dict], assistant_index: int) -> None:
+    tool_calls = _message_tool_calls(messages[assistant_index])
+    if not tool_calls:
+        return
+    results = _tool_results_after(messages, assistant_index)
+    for tool_call in tool_calls:
+        call_id, tool_name, arguments = _tool_call_parts(tool_call)
+        post_tui(
+            TuiRegion.CONTENT,
+            collapsible_title=f"🛠️ Tool: {tool_name}",
+            collapsible_open=True,
+            collapsible_kind="tools",
+        )
+        post_tui(
+            TuiRegion.CONTENT,
+            render_tool_call_block(tool_name, arguments, tool_call_id=call_id),
+        )
+        result_message = results.get(call_id)
+        result = None
+        is_error = False
+        error = ""
+        if result_message is not None:
+            result = result_message.get("content", result_message.get("output"))
+            is_error = result_message.get("is_error") is True
+            error = str(result) if is_error else ""
+        post_tui(
+            TuiRegion.CONTENT,
+            render_tool_result_block(
+                result,
+                status=tool_result_status(is_error=is_error, output=result)
+                if result_message is not None
+                else "incomplete",
+                error=error,
+            ),
+        )
+        post_tui(
+            TuiRegion.CONTENT,
+            collapsible_title=f"🛠️ Tool: {tool_name}",
+            collapsible_close=True,
+            collapsible_kind="tools",
+        )
+
+
 def _render_agent_response_message(
         text: str,
         identity: str = "Assistant",
@@ -234,6 +325,28 @@ def _render_agent_response_message(
         return
 
     console.print(render_content_assistant_message(text, identity), tui_region=tui_region)
+
+
+def render_tool_call_block(
+        name: str,
+        arguments: Any,
+        tool_call_id: str = "",
+) -> Text:
+    return Text(
+        format_tool_call_block(name, arguments, tool_call_id=tool_call_id),
+        style="white",
+    )
+
+
+def render_tool_result_block(
+        output: Any,
+        status: str = "",
+        error: str = "",
+) -> Text:
+    return Text(
+        format_tool_result_block(output, status=status, error=error),
+        style="white",
+    )
 
 
 def _render_tool_call(
@@ -290,16 +403,18 @@ def _render_user_message(text: str):
 
 def _render_history(messages: list):
     """渲染历史消息"""
-    for msg in messages:
+    for index, msg in enumerate(messages):
         role = msg.get("role")
         if role == "system":
             continue
-        elif role == "user":
+        if role == "user":
             _render_user_message(_extract_message_text(msg))
         elif role == "assistant":
-            content = msg.get("content")
+            content = _extract_message_text(msg)
             if content:
                 _render_agent_response_message(content)
+            if _message_tool_calls(msg):
+                _render_tool_round(messages, index)
 
 
 def format_runtime_info(tokens: int | None = None, threshold: int = 80000) -> str:

@@ -47,6 +47,8 @@ from system.console_render import (
     render_current_workdir,
     render_current_task_plan,
     render_content_user_message,
+    render_tool_call_block,
+    render_tool_result_block,
     format_runtime_info,
     console,
 )
@@ -123,6 +125,7 @@ from utils.tool_validation import (
     parse_tool_arguments,
     validate_builtin_tool_arguments,
 )
+from system.tool_history import tool_result_status
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 
@@ -539,6 +542,16 @@ async def _agent_loop_with_client(
             tool_name = tc["name"]
             tool_id = tc["id"]
             tool_args = tc["arguments"]
+            post_tui(
+                TuiRegion.CONTENT,
+                collapsible_title=f"🛠️ Tool: {tool_name}",
+                collapsible_open=True,
+                collapsible_kind="tools",
+            )
+            post_tui(
+                TuiRegion.CONTENT,
+                render_tool_call_block(tool_name, tool_args, tool_call_id=tool_id),
+            )
             tool_error = False
             output = ""
 
@@ -597,6 +610,20 @@ async def _agent_loop_with_client(
             if tool_error:
                 tool_result["is_error"] = True
             messages.append(tool_result)
+            post_tui(
+                TuiRegion.CONTENT,
+                render_tool_result_block(
+                    output,
+                    status=tool_result_status(is_error=tool_error, output=output),
+                    error=str(output) if tool_error else "",
+                ),
+            )
+            post_tui(
+                TuiRegion.CONTENT,
+                collapsible_title=f"🛠️ Tool: {tool_name}",
+                collapsible_close=True,
+                collapsible_kind="tools",
+            )
 
         if has_tool_call:
             CONVERSATION_STORE.save_messages(messages)

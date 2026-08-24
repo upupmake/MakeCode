@@ -26,6 +26,7 @@ class TuiEvent:
     collapsible_title: str | None = None
     collapsible_open: bool = False
     collapsible_close: bool = False
+    collapsible_kind: str = "reasoning"
 
 
 LAYOUT_CONFIG_FILE = paths.layout_config_file()

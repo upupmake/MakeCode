@@ -108,6 +108,7 @@ class TuiBridge:
         collapsible_title: str | None = None,
         collapsible_open: bool = False,
         collapsible_close: bool = False,
+        collapsible_kind: str = "reasoning",
     ) -> None:
         event = TuiEvent(
             TuiRegion(region),
@@ -118,6 +119,7 @@ class TuiBridge:
             collapsible_title,
             collapsible_open,
             collapsible_close,
+            collapsible_kind,
         )
         with self._app_lock:
             app = self._app
@@ -698,9 +700,12 @@ class CopyableContentGroup(Vertical):
             return self.copy_text, "\n"
         return None
 
+class InlineCollapsible(Collapsible):
+    """思考和工具内容收纳容器：支持在 compose 前后追加内容块。"""
 
-class ReasoningCollapsible(Collapsible):
-    """思考内容收纳容器：支持在 compose 前后安全地追加内容块。"""
+    def __init__(self, *children: Widget, **kwargs: Any) -> None:
+        super().__init__(*children, **kwargs)
+        self._suppress_scroll_visible = False
 
     def on_click(self, event: Click) -> None:
         self.collapsed = not self.collapsed
@@ -712,6 +717,26 @@ class ReasoningCollapsible(Collapsible):
             self.query_one(Collapsible.Contents).mount(block)
         except NoMatches:
             self._contents_list.append(block)
+
+    def collapse_without_scrolling(self) -> None:
+        self._suppress_scroll_visible = True
+        try:
+            self.collapsed = True
+        finally:
+            self._suppress_scroll_visible = False
+
+    def _watch_collapsed(self, collapsed: bool) -> None:
+        self._update_collapsed(collapsed)
+        if self.collapsed:
+            self.post_message(self.Collapsed(self))
+        else:
+            self.post_message(self.Expanded(self))
+        if self.is_mounted and not self._suppress_scroll_visible:
+            self.call_after_refresh(self.scroll_visible)
+
+
+ReasoningCollapsible = InlineCollapsible
+ToolsCollapsible = InlineCollapsible
 
 
 class TuiRichLog(RichLog):
@@ -985,7 +1010,15 @@ class MakeCodeTuiApp(App[None]):
         padding-bottom: 1;
     }
 
-    .reasoning-collapsible CollapsibleTitle {
+    .tools-collapsible {
+        border: round #92400e;
+        background: #1c1917;
+        padding-left: 1;
+        padding-bottom: 1;
+    }
+
+    .reasoning-collapsible CollapsibleTitle,
+    .tools-collapsible CollapsibleTitle {
         width: 1fr;
     }
 
@@ -1105,6 +1138,7 @@ class MakeCodeTuiApp(App[None]):
         self._tails: dict[TuiRegion, Static] = {}
         self._content_scroller: VerticalScroll | None = None
         self._active_reasoning_collapsible: Collapsible | None = None
+        self._active_tools_collapsible: Collapsible | None = None
         self._content_copy_group_active = False
         self._active_content_copy_group: CopyableContentGroup | None = None
         self._status = "MakeCode ready"
@@ -1471,6 +1505,7 @@ class MakeCodeTuiApp(App[None]):
                     self._content_scroller.remove_children()
                     self._content_scroller.scroll_to(x=0, y=0, animate=False, immediate=True)
                 self._active_reasoning_collapsible = None
+                self._active_tools_collapsible = None
                 self._content_copy_group_active = False
                 self._active_content_copy_group = None
             else:
@@ -1513,9 +1548,13 @@ class MakeCodeTuiApp(App[None]):
             self._mark_runtime_dirty()
             return
         if event.collapsible_title is not None:
-            self._handle_reasoning_collapsible_event(event)
+            self._handle_inline_collapsible_event(event)
             return
         if event.payload is None:
+            return
+        if event.region == TuiRegion.CONTENT and self._active_tools_collapsible is not None:
+            self._active_tools_collapsible.mount_block(self._content_block_renderable(event.payload))
+            self._mark_runtime_dirty()
             return
         if event.region == TuiRegion.REASONING and self._active_reasoning_collapsible is not None:
             self._active_reasoning_collapsible.mount_block(self._content_block_renderable(event.payload))
@@ -1552,39 +1591,57 @@ class MakeCodeTuiApp(App[None]):
             self._defer_or_scroll_now(event.region, container)
         self._mark_runtime_dirty()
 
-    def _handle_reasoning_collapsible_event(self, event: TuiEvent) -> None:
+    def _handle_inline_collapsible_event(self, event: TuiEvent) -> None:
         container = self._content_scroller
+        is_tools = event.collapsible_kind == "tools"
+        active_attr = "_active_tools_collapsible" if is_tools else "_active_reasoning_collapsible"
+        active_collapsible = getattr(self, active_attr)
         was_at_bottom = self._batch_force_scroll or self._is_scroller_at_bottom(container)
+        previous_scroll_y = container.scroll_y
         payload_renderable = self._content_block_renderable(event.payload) if event.payload not in (None, "") else None
+        classes = "content-block tools-collapsible" if is_tools else "content-block reasoning-collapsible"
 
         if event.collapsible_close:
-            collapsible = self._active_reasoning_collapsible
-            if collapsible is not None:
+            if active_collapsible is not None:
                 if payload_renderable is not None:
-                    collapsible.mount_block(payload_renderable)
-                collapsible.collapsed = True
-                self._active_reasoning_collapsible = None
+                    active_collapsible.mount_block(payload_renderable)
+                active_collapsible.collapse_without_scrolling()
+                setattr(self, active_attr, None)
         elif event.collapsible_open:
-            collapsible = ReasoningCollapsible(
+            collapsible_type = ToolsCollapsible if is_tools else ReasoningCollapsible
+            collapsible = collapsible_type(
                 *([ContentBlock(payload_renderable, classes="content-block")] if payload_renderable is not None else []),
-                title=event.collapsible_title or "🧠 Reasoning",
+                title=event.collapsible_title or ("🛠️ Tools" if is_tools else "🧠 Reasoning"),
                 collapsed=False,
-                classes="content-block reasoning-collapsible",
+                classes=classes,
             )
             container.mount(collapsible)
-            self._active_reasoning_collapsible = collapsible
+            setattr(self, active_attr, collapsible)
         else:
-            collapsible = ReasoningCollapsible(
+            collapsible_type = ToolsCollapsible if is_tools else ReasoningCollapsible
+            collapsible = collapsible_type(
                 *([ContentBlock(payload_renderable, classes="content-block")] if payload_renderable is not None else []),
-                title=event.collapsible_title or "🧠 Reasoning",
+                title=event.collapsible_title or ("🛠️ Tools" if is_tools else "🧠 Reasoning"),
                 collapsed=True,
-                classes="content-block reasoning-collapsible",
+                classes=classes,
             )
             container.mount(collapsible)
 
         if was_at_bottom:
             self._defer_or_scroll_now(event.region, container)
+        else:
+            self.call_after_refresh(
+                lambda: self.call_after_refresh(
+                    lambda: container.scroll_to(
+                        x=0,
+                        y=min(previous_scroll_y, container.max_scroll_y),
+                        animate=False,
+                        immediate=True,
+                    )
+                )
+            )
         self._mark_runtime_dirty()
+
 
     def open_choice_modal(
         self,
@@ -2538,6 +2595,7 @@ def post_tui(
     collapsible_title: str | None = None,
     collapsible_open: bool = False,
     collapsible_close: bool = False,
+    collapsible_kind: str = "reasoning",
 ) -> None:
     TUI_BRIDGE.post(
         region,
@@ -2548,6 +2606,7 @@ def post_tui(
         collapsible_title=collapsible_title,
         collapsible_open=collapsible_open,
         collapsible_close=collapsible_close,
+        collapsible_kind=collapsible_kind,
     )
 
 

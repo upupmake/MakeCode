@@ -81,6 +81,31 @@ async def test_close_collapses_reasoning_and_releases_active_reference():
 
 
 @pytest.mark.anyio
+async def test_closing_reasoning_preserves_non_bottom_content_view():
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        container = app.query_one("#content-log", VerticalScroll)
+        for index in range(50):
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"历史内容 {index}\n\n"))
+        await pilot.pause()
+
+        container.scroll_to(y=0, animate=False, immediate=True)
+        await pilot.pause()
+        _open_reasoning(app)
+        app.handle_tui_event(TuiEvent(TuiRegion.REASONING, "思考收尾\n\n"))
+        await pilot.pause()
+        container.scroll_to(y=0, animate=False, immediate=True)
+
+        _close_reasoning(app)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert container.scroll_y == 0
+
+
+@pytest.mark.anyio
 async def test_content_blocks_never_enter_reasoning_collapsible():
     app = MakeCodeTuiApp()
 
