@@ -233,8 +233,7 @@ def _read_file_path_from_windows_clipboard() -> str | None:
         "Add-Type -AssemblyName System.Windows.Forms; "
         "$files = [System.Windows.Forms.Clipboard]::GetFileDropList(); "
         "if ($files.Count -eq 0) { exit 1 }; "
-        "$bytes = [System.Text.Encoding]::Unicode.GetBytes($files[0]); "
-        "[Console]::Out.Write([Convert]::ToBase64String($bytes))"
+        "[Console]::Out.Write($files[0])"
     )
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     path_data = _run_binary_command([
@@ -248,9 +247,16 @@ def _read_file_path_from_windows_clipboard() -> str | None:
     if not path_data:
         return None
     try:
-        return base64.b64decode(path_data.strip(), validate=True).decode("utf-16le") or None
+        raw_path = path_data.decode("utf-8", "replace").strip()
+    except UnicodeDecodeError:
+        raw_path = ""
+    try:
+        legacy_path = base64.b64decode(path_data.strip(), validate=True).decode("utf-16le")
     except (ValueError, UnicodeDecodeError):
-        return None
+        legacy_path = ""
+    if legacy_path and Path(legacy_path).is_file():
+        return legacy_path
+    return raw_path or None
 
 
 def _file_path_from_uri_list(data: bytes | None) -> str | None:
