@@ -4,15 +4,13 @@ import base64
 import copy
 import mimetypes
 import re
-import shutil
 import uuid
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(
-    r"\[\[image:(?:id=(?P<id>img_[0-9a-f]{32})|path=(?P<path>[^\]]+))\]\]"
+    r"\[\[image:id=(?P<id>img_[0-9a-f]{32})\]\]"
 )
 IMAGE_ATTACHMENT_PATTERN = re.compile(r"^img_[0-9a-f]{32}$")
 SUPPORTED_IMAGE_TYPES = {
@@ -54,94 +52,6 @@ def _attachment_record(path: Path, attachment_id: str) -> dict[str, str]:
         "filename": filename,
         "media_type": _image_media_type(path),
     }
-
-
-def _pasted_path(reference: str) -> Path | None:
-    reference = reference.strip()
-    if not reference:
-        return None
-    if reference.startswith("file://"):
-        parsed = urlparse(reference)
-        if parsed.scheme != "file":
-            return None
-        if parsed.netloc:
-            reference = f"//{parsed.netloc}{unquote(parsed.path)}"
-        else:
-            reference = unquote(parsed.path)
-            if re.match(r"^/[A-Za-z]:/", reference):
-                reference = reference[1:]
-    elif (
-        len(reference) >= 2
-        and reference[0] == reference[-1]
-        and reference[0] in {"'", '"'}
-    ):
-        reference = reference[1:-1]
-    path = Path(reference).expanduser()
-    if not path.exists() or path.is_symlink() or not path.is_file():
-        return None
-    return path
-
-
-def image_filename_from_pasted_text(text: str, media_type: str) -> str | None:
-    references = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(references) != 1:
-        return None
-    reference = references[0]
-    if reference.startswith("file://"):
-        parsed = urlparse(reference)
-        if parsed.scheme != "file":
-            return None
-        filename = Path(unquote(parsed.path)).name
-    else:
-        if len(reference) >= 2 and reference[0] == reference[-1] and reference[0] in {"'", '"'}:
-            reference = reference[1:-1]
-        filename = (
-            PureWindowsPath(reference).name
-            if "\\" in reference and "/" not in reference
-            else Path(reference).name
-        )
-    if not filename or filename in {".", ".."}:
-        return None
-    guessed_type, _ = mimetypes.guess_type(filename)
-    return filename if guessed_type == media_type else None
-
-
-def parse_pasted_image_references(
-    text: str,
-    conversation_root: Path,
-) -> tuple[str, list[dict[str, str]]] | None:
-    references = [line.strip() for line in text.splitlines() if line.strip()]
-    if not references:
-        return None
-    paths = [_pasted_path(reference) for reference in references]
-    if any(path is None for path in paths):
-        return None
-    image_paths = [path for path in paths if path is not None]
-    try:
-        media_types = [_image_media_type(path) for path in image_paths]
-    except ValueError:
-        return None
-    parts: list[dict[str, str]] = []
-    for path, media_type in zip(image_paths, media_types):
-        parts.append(store_image_attachment(conversation_root, path))
-    display_text = "".join(image_placeholder_text(part) for part in parts)
-    return display_text, parts
-
-
-def store_image_attachment(conversation_root: Path, source_path: str | Path) -> dict[str, str]:
-    source_input = Path(source_path).expanduser()
-    if source_input.is_symlink():
-        raise ValueError(f"Image path is not a regular file: {source_input}")
-    source = source_input.resolve()
-    if not source.is_file():
-        raise ValueError(f"Image path is not a regular file: {source}")
-    media_type = _image_media_type(source)
-    return store_image_bytes_attachment(
-        conversation_root,
-        source.read_bytes(),
-        source.name,
-        media_type,
-    )
 
 
 def store_image_bytes_attachment(
@@ -200,7 +110,7 @@ def image_placeholder_text(block: dict[str, Any]) -> str:
 
 
 def remove_image_placeholders(text: str) -> str:
-    text = re.sub(r"\[\[image:(?:id|path)=[^\]]+\]\]", "", text)
+    text = re.sub(r"\[\[image:id=[^\]]+\]\]", "", text)
     return re.sub(r"\[图片：[^\]]+\]", "", text)
 
 
@@ -276,16 +186,13 @@ def parse_image_placeholders(
     for match in IMAGE_PLACEHOLDER_PATTERN.finditer(text):
         if match.start() > position:
             parts.append({"type": "text", "text": text[position:match.start()]})
-        if match.group("id"):
-            attachment_id = match.group("id")
-            attachment_dir = conversation_root / "attachments"
-            matches = list(attachment_dir.glob(f"{attachment_id}_*"))
-            if len(matches) != 1:
-                raise ValueError(f"Image attachment not found: {attachment_id}")
-            block = _attachment_record(matches[0], attachment_id)
-            resolve_image_attachment(conversation_root, block)
-        else:
-            block = store_image_attachment(conversation_root, match.group("path"))
+        attachment_id = match.group("id")
+        attachment_dir = conversation_root / "attachments"
+        matches = list(attachment_dir.glob(f"{attachment_id}_*"))
+        if len(matches) != 1:
+            raise ValueError(f"Image attachment not found: {attachment_id}")
+        block = _attachment_record(matches[0], attachment_id)
+        resolve_image_attachment(conversation_root, block)
         parts.append(block)
         position = match.end()
     if position < len(text):
@@ -297,4 +204,3 @@ def parse_image_placeholders(
         for part in parts
     )
     return display_text, parts
-

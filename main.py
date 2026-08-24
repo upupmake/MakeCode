@@ -87,7 +87,6 @@ from utils import paths
 from utils.vision import (
     image_reference_marker,
     parse_image_placeholders,
-    parse_pasted_image_references,
     remove_image_placeholders,
     store_image_bytes_attachment,
 )
@@ -801,11 +800,7 @@ def _background_update_check():
 
 def _parse_input_images(text: str) -> tuple[str, list[dict[str, str]]]:
     _ensure_active_conversation()
-    display_text, parts = parse_image_placeholders(text, CONVERSATION_STORE.active_root)
-    if parts:
-        return display_text, parts
-    pasted = parse_pasted_image_references(text, CONVERSATION_STORE.active_root)
-    return pasted if pasted is not None else (display_text, parts)
+    return parse_image_placeholders(text, CONVERSATION_STORE.active_root)
 
 
 def _paste_image_from_system_clipboard() -> str | None:

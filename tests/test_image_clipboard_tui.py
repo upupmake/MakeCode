@@ -2,7 +2,6 @@ import pytest
 from textual.events import Paste
 
 from system.tui_app import MakeCodeTuiApp
-from utils.vision import parse_pasted_image_references
 
 
 @pytest.mark.anyio
@@ -37,24 +36,18 @@ async def test_nonempty_finder_paste_prefers_image_bytes_over_filename_text():
 
 
 @pytest.mark.anyio
-async def test_finder_file_path_paste_is_converted_to_attachment_marker(tmp_path):
+async def test_finder_file_path_paste_stays_text(tmp_path):
     source = tmp_path / "Finder Screenshot.png"
     source.write_bytes(b"png clipboard fixture")
-    conversation_root = tmp_path / "conversation"
 
-    def parse_pasted(text):
-        return parse_pasted_image_references(text, conversation_root) or (text, [])
-
-    app = MakeCodeTuiApp(image_placeholder_handler=parse_pasted)
+    app = MakeCodeTuiApp()
 
     async with app.run_test(size=(180, 40)) as pilot:
         await pilot.pause()
         input_box = app.query_one("#input-box")
         input_box.on_paste(Paste(str(source)))
 
-        assert input_box.text.startswith("[[image:id=img_")
-        assert input_box.text.endswith("]]" )
-        assert "Finder Screenshot.png" not in input_box.text
+        assert input_box.text == str(source)
 
 
 @pytest.mark.anyio

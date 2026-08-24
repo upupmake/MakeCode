@@ -1,13 +1,12 @@
 import base64
 from pathlib import Path
 
-import pytest
-
 from utils.llm_client import build_anthropic_request_messages, sanitize_openai_messages
 from utils.vision import (
+    image_reference_marker,
     parse_image_placeholders,
-    parse_pasted_image_references,
     remove_image_placeholders,
+    store_image_bytes_attachment,
     text_only_messages,
 )
 
@@ -18,85 +17,56 @@ def _image_file(tmp_path: Path, name: str = "sample.png") -> Path:
     return path
 
 
-def test_image_placeholder_is_copied_and_parsed_in_input_order(tmp_path):
+def test_manual_image_path_marker_is_plain_text(tmp_path):
+    conversation_root = tmp_path / "conv"
+    source = _image_file(tmp_path)
+    text = f"before [[image:path={source}]] after"
+
+    display, parts = parse_image_placeholders(text, conversation_root)
+
+    assert display == text
+    assert parts == []
+    assert not (conversation_root / "attachments").exists()
+
+
+def test_manual_filesystem_path_is_not_converted(tmp_path):
     conversation_root = tmp_path / "conv"
     source = _image_file(tmp_path)
 
-    display, parts = parse_image_placeholders(
-        f"before [[image:path={source}]] after",
-        conversation_root,
-    )
+    display, parts = parse_image_placeholders(str(source), conversation_root)
 
-    assert display == "before [图片：sample.png] after"
-    assert [part["type"] for part in parts] == ["text", "image", "text"]
-    block = parts[1]
-    attachment = conversation_root / "attachments" / f"{block['attachment_id']}_sample.png"
-    assert attachment.read_bytes() == b"png-bytes"
+    assert display == str(source)
+    assert parts == []
+    assert not (conversation_root / "attachments").exists()
 
 
-def test_image_placeholder_combinations_preserve_all_images_and_text(tmp_path):
+def test_manual_file_url_is_not_converted(tmp_path):
     conversation_root = tmp_path / "conv"
-    first = _image_file(tmp_path, "first.png")
-    second = _image_file(tmp_path, "second.jpg")
+    source = _image_file(tmp_path)
 
-    cases = [
-        (f"[[image:path={first}]]", "[图片：first.png]", ["image"]),
-        (
-            f"[[image:path={first}]][[image:path={second}]]",
-            "[图片：first.png][图片：second.jpg]",
-            ["image", "image"],
-        ),
-        (
-            f"[[image:path={first}]] question",
-            "[图片：first.png] question",
-            ["image", "text"],
-        ),
-        (
-            f"[[image:path={first}]] question [[image:path={second}]]",
-            "[图片：first.png] question [图片：second.jpg]",
-            ["image", "text", "image"],
-        ),
-    ]
-    for query, expected_display, expected_types in cases:
-        display, parts = parse_image_placeholders(query, conversation_root)
-        assert display == expected_display
-        assert [part["type"] for part in parts] == expected_types
+    display, parts = parse_image_placeholders(source.as_uri(), conversation_root)
+
+    assert display == source.as_uri()
+    assert parts == []
+    assert not (conversation_root / "attachments").exists()
 
 
 def test_existing_attachment_placeholder_can_be_restored(tmp_path):
     conversation_root = tmp_path / "conv"
-    source = _image_file(tmp_path)
-    _, parts = parse_image_placeholders(f"[[image:path={source}]]", conversation_root)
-    attachment_id = parts[0]["attachment_id"]
+    block = store_image_bytes_attachment(
+        conversation_root,
+        b"png-bytes",
+        "sample.png",
+        "image/png",
+    )
 
     display, restored = parse_image_placeholders(
-        f"[[image:id={attachment_id}]]",
+        image_reference_marker(block),
         conversation_root,
     )
 
     assert display == "[图片：sample.png]"
-    assert restored[0]["attachment_id"] == attachment_id
-
-
-def test_finder_style_path_paste_creates_filename_placeholder(tmp_path):
-    conversation_root = tmp_path / "conv"
-    source = _image_file(tmp_path, "Finder Image.png")
-
-    display, parts = parse_pasted_image_references(str(source), conversation_root)
-
-    assert display == "[图片：Finder Image.png]"
-    assert parts[0]["filename"] == "Finder Image.png"
-    assert (conversation_root / "attachments" / f"{parts[0]['attachment_id']}_Finder Image.png").is_file()
-
-
-def test_file_url_paste_creates_filename_placeholder(tmp_path):
-    conversation_root = tmp_path / "conv"
-    source = _image_file(tmp_path, "url-image.png")
-
-    display, parts = parse_pasted_image_references(source.as_uri(), conversation_root)
-
-    assert display == "[图片：url-image.png]"
-    assert parts[0]["filename"] == "url-image.png"
+    assert restored[0]["attachment_id"] == block["attachment_id"]
 
 
 def test_text_only_projection_removes_images_without_mutating_history():
@@ -138,8 +108,16 @@ def test_post_compaction_projection_removes_images_from_all_messages():
 
 def test_openai_and_anthropic_convert_canonical_image_blocks(tmp_path):
     conversation_root = tmp_path / "conv"
-    source = _image_file(tmp_path)
-    _, parts = parse_image_placeholders(f"question [[image:path={source}]]", conversation_root)
+    block = store_image_bytes_attachment(
+        conversation_root,
+        b"png-bytes",
+        "sample.png",
+        "image/png",
+    )
+    _, parts = parse_image_placeholders(
+        f"question {image_reference_marker(block)}",
+        conversation_root,
+    )
     message = {"role": "user", "content": parts}
 
     openai = sanitize_openai_messages([message], conversation_root)
@@ -160,8 +138,16 @@ def test_openai_and_anthropic_convert_canonical_image_blocks(tmp_path):
 
 def test_protocol_clients_drop_images_when_no_conversation_root_is_supplied(tmp_path):
     conversation_root = tmp_path / "conv"
-    source = _image_file(tmp_path)
-    _, parts = parse_image_placeholders(f"question [[image:path={source}]]", conversation_root)
+    block = store_image_bytes_attachment(
+        conversation_root,
+        b"png-bytes",
+        "sample.png",
+        "image/png",
+    )
+    _, parts = parse_image_placeholders(
+        f"question {image_reference_marker(block)}",
+        conversation_root,
+    )
     message = {"role": "user", "content": parts}
 
     assert sanitize_openai_messages([message])[0]["content"] == [{"type": "text", "text": "question "}]
