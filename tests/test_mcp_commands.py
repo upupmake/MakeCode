@@ -1899,6 +1899,55 @@ async def test_tui_displays_invalid_rich_markup_as_plain_text():
 
 
 @pytest.mark.anyio
+async def test_finished_agent_response_preserves_non_bottom_content_view():
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        for index in range(30):
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"历史内容 {index}\n\n"))
+        await pilot.pause()
+
+        content_scroller = app.query_one("#content-log")
+        content_scroller.scroll_to(y=0, animate=False, immediate=True)
+        await pilot.pause()
+        assert content_scroller.scroll_y == 0
+
+        app.set_agent_loop_active(True)
+        app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, "本轮回复\n\n"))
+        await pilot.pause()
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+
+        assert content_scroller.scroll_y == 0
+
+
+@pytest.mark.anyio
+async def test_finished_agent_response_follows_content_view_when_already_at_bottom():
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        for index in range(30):
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"历史内容 {index}\n\n"))
+        await pilot.pause()
+
+        content_scroller = app.query_one("#content-log")
+        content_scroller.scroll_end(animate=False)
+        await pilot.pause()
+        assert content_scroller.scroll_y == content_scroller.max_scroll_y
+
+        app.set_agent_loop_active(True)
+        app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, "本轮回复\n\n"))
+        await pilot.pause()
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert content_scroller.scroll_y == content_scroller.max_scroll_y
+
+
+@pytest.mark.anyio
 async def test_scroll_all_panes_to_bottom_forces_non_bottom_viewports_to_end():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
 

@@ -1390,6 +1390,15 @@ class MakeCodeTuiApp(App[None]):
     def _scroll_log_end_after_refresh(self, log: Widget) -> None:
         self.call_after_refresh(lambda: log.scroll_end(animate=False, x_axis=False))
 
+    def _scroll_content_end_after_layout(self) -> None:
+        if self._content_scroller is None:
+            return
+        self.call_after_refresh(
+            lambda: self.call_after_refresh(
+                lambda: self._content_scroller.scroll_end(animate=False, x_axis=False)
+            )
+        )
+
     def _defer_or_scroll_now(self, region: TuiRegion, scroller: Widget | None) -> None:
         if scroller is None:
             return
@@ -1397,13 +1406,6 @@ class MakeCodeTuiApp(App[None]):
             self._batch_scroll_regions.add(region)
         else:
             self._scroll_log_end_after_refresh(scroller)
-
-    def _scroll_bottom_panes_after_refresh(self) -> None:
-        if self._content_scroller is not None and self._is_scroller_at_bottom(self._content_scroller):
-            self._scroll_log_end_after_refresh(self._content_scroller)
-        for log in self._logs.values():
-            if self._is_log_at_bottom(log):
-                self._scroll_log_end_after_refresh(log)
 
     def scroll_all_panes_to_bottom(self) -> None:
         if self._content_scroller is not None:
@@ -2107,14 +2109,20 @@ class MakeCodeTuiApp(App[None]):
 
     def set_agent_loop_active(self, active: bool) -> None:
         was_active = self._agent_loop_active
+        should_scroll_content = (
+            was_active
+            and not active
+            and self._content_scroller is not None
+            and self._is_scroller_at_bottom(self._content_scroller)
+        )
         self._agent_loop_active = active
         if was_active and not active:
             self.restore_temporary_query_to_input()
             self.set_temporary_query_enabled(False)
         self._update_header_status()
         self._update_input_visibility()
-        if was_active and not active:
-            self._scroll_bottom_panes_after_refresh()
+        if should_scroll_content:
+            self._scroll_content_end_after_layout()
         self._update_runtime_info()
 
     def set_client_request_active(
