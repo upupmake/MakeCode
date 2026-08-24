@@ -17,11 +17,15 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import Click, Key, Resize
+from textual.events import Click, Key, Paste, Resize
 from textual.widget import Widget
 from textual.widgets import Button, Collapsible, Footer, Input, Label, RichLog, Static, TextArea
 
 from system.clipboard import copy_to_system_clipboard
+from utils.vision import (
+    IMAGE_PLACEHOLDER_PATTERN,
+    image_reference_marker,
+)
 from system.tui_types import (
     TuiEvent,
     TuiRegion,
@@ -500,6 +504,72 @@ TUI_BRIDGE = TuiBridge()
 
 
 class MakeCodeInput(TextArea):
+    def _navigate_image_placeholder(self, event: Key) -> bool:
+        if event.key not in {"left", "right"} or self.selection.start != self.selection.end:
+            return False
+        row, column = self.cursor_location
+        cursor_index = self.document.get_index_from_location((row, column))
+        for match in IMAGE_PLACEHOLDER_PATTERN.finditer(self.text):
+            if event.key == "left" and match.start() < cursor_index <= match.end():
+                target_index = match.start()
+            elif event.key == "right" and match.start() <= cursor_index < match.end():
+                target_index = match.end()
+            else:
+                continue
+            self.cursor_location = self.document.get_location_from_index(target_index)
+            event.stop()
+            event.prevent_default()
+            return True
+        return False
+
+    def _delete_image_placeholder(self, event: Key) -> bool:
+        if event.key not in {"backspace", "delete"}:
+            return False
+        row, column = self.cursor_location
+        cursor_index = self.document.get_index_from_location((row, column))
+        text = self.text
+        match = None
+        if event.key == "backspace":
+            match = next(
+                (
+                    candidate
+                    for candidate in IMAGE_PLACEHOLDER_PATTERN.finditer(text)
+                    if candidate.start() < cursor_index <= candidate.end()
+                ),
+                None,
+            )
+        else:
+            match = next(
+                (
+                    candidate
+                    for candidate in IMAGE_PLACEHOLDER_PATTERN.finditer(text)
+                    if candidate.start() <= cursor_index < candidate.end()
+                ),
+                None,
+            )
+        if match is None:
+            return False
+        start = self.document.get_location_from_index(match.start())
+        end = self.document.get_location_from_index(match.end())
+        self.document.replace_range(start, end, "")
+        self.cursor_location = start
+        event.stop()
+        event.prevent_default()
+        return True
+
+    def on_paste(self, event: Paste) -> None:
+        app = self.app
+        if not isinstance(app, MakeCodeTuiApp):
+            return
+        if app.paste_image_from_system_clipboard():
+            event.stop()
+            event.prevent_default()
+            return
+        text = app.tokenize_image_placeholders(event.text)
+        self.insert(text)
+        event.stop()
+        event.prevent_default()
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         app = self.app
         if not isinstance(app, MakeCodeTuiApp):
@@ -509,6 +579,14 @@ class MakeCodeInput(TextArea):
     def _on_key(self, event: Key) -> None:
         app = self.app
         if not isinstance(app, MakeCodeTuiApp):
+            return
+        if self._delete_image_placeholder(event):
+            return
+        if self._navigate_image_placeholder(event):
+            return
+        if event.key in {"ctrl+v", "ctrl+shift+v"} and app.paste_image_from_system_clipboard():
+            event.stop()
+            event.prevent_default()
             return
         if event.key == "enter":
             app.submit_current_input()
@@ -1018,6 +1096,8 @@ class MakeCodeTuiApp(App[None]):
         startup_workdir_provider: Callable[[], Any] | None = None,
         startup_workdir_handler: Callable[[str], None] | None = None,
         startup_load_handler: Callable[[], None] | None = None,
+        image_placeholder_handler: Callable[[str], tuple[str, list[dict[str, str]]]] | None = None,
+        image_clipboard_handler: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__()
         self._logs: dict[TuiRegion, RichLog] = {}
@@ -1040,6 +1120,8 @@ class MakeCodeTuiApp(App[None]):
         self._startup_workdir_provider = startup_workdir_provider
         self._startup_workdir_handler = startup_workdir_handler
         self._startup_load_handler = startup_load_handler
+        self._image_placeholder_handler = image_placeholder_handler
+        self._image_clipboard_handler = image_clipboard_handler
         self._mode_label = "ACT"
         self._agent_loop_active = False
         self._temporary_query_enabled = False
@@ -1814,6 +1896,48 @@ class MakeCodeTuiApp(App[None]):
         input_box = self.query_one("#input-box", MakeCodeInput)
         input_box.insert("\n")
 
+    def tokenize_image_placeholders(self, text: str) -> str:
+        if self._image_placeholder_handler is None:
+            return text
+        try:
+            _, parts = self._image_placeholder_handler(text)
+        except ValueError as exc:
+            post_tui(TuiRegion.BACKGROUND, f"[bold red]⚠️ 图片占位符无效：{escape(str(exc))}[/bold red]")
+            return text
+        if not any(part.get("type") == "image" for part in parts):
+            return text
+        return "".join(
+            part.get("text", "")
+            if part.get("type") == "text"
+            else image_reference_marker(part)
+            for part in parts
+        )
+
+    def paste_image_from_system_clipboard(self) -> bool:
+        if self._image_clipboard_handler is None:
+            return False
+        try:
+            marker = self._image_clipboard_handler()
+        except ValueError as exc:
+            post_tui(TuiRegion.BACKGROUND, f"[bold red]⚠️ 粘贴图片失败：{escape(str(exc))}[/bold red]")
+            return False
+        if not marker:
+            return False
+        self.query_one("#input-box", MakeCodeInput).insert(marker)
+        return True
+
+    def _serialize_input_text(self, text: str) -> str:
+        return text
+
+    def _display_input_text(self, text: str) -> str:
+        if self._image_placeholder_handler is None:
+            return text
+        try:
+            display_text, _ = self._image_placeholder_handler(text)
+            return display_text
+        except ValueError:
+            return text
+
     def _record_input_history(self, text: str) -> None:
         if not self._input_history or self._input_history[-1] != text:
             self._input_history.append(text)
@@ -1931,6 +2055,8 @@ class MakeCodeTuiApp(App[None]):
         text = input_box.text.strip()
         if not text:
             return
+        serialized_text = self._serialize_input_text(text)
+        display_text = self._display_input_text(text)
         if self._submit_handler is None or not self._submit_lock.acquire(blocking=False):
             return
         try:
@@ -1941,12 +2067,12 @@ class MakeCodeTuiApp(App[None]):
             self._slash_match_index = 0
             self._cd_completion_state = None
             self._hide_slash_hints()
-            if text != "/flush":
+            if serialized_text != "/flush":
                 from system.console_render import render_content_user_message
 
                 post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
-                self.handle_tui_event(TuiEvent(TuiRegion.CONTENT, render_content_user_message(text)))
-            self._launch_submit_handler(text)
+                self.handle_tui_event(TuiEvent(TuiRegion.CONTENT, render_content_user_message(display_text)))
+            self._launch_submit_handler(serialized_text)
         except Exception:
             self._submit_lock.release()
             raise

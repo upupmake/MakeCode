@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import copy
 import hashlib
 import hmac
@@ -10,6 +11,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 import httpx
@@ -17,6 +19,7 @@ from anthropic import AsyncAnthropic
 from openai import APIError, AsyncOpenAI
 
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
+from utils.vision import image_data_uri, resolve_image_attachment
 
 
 _LLM_TIMEOUT = (10.0, 120.0, 120.0, 120.0)
@@ -371,10 +374,13 @@ class AsyncBaseLLMClient(ABC):
         client: Any,
         model: str,
         reasoning_effort: str = "medium",
+        *,
+        conversation_root: Path | None = None,
     ):
         self.client = client
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.conversation_root = conversation_root
 
     @abstractmethod
     async def generate_stream(
@@ -549,13 +555,35 @@ def _text_from_content_blocks(message: dict[str, Any]) -> str:
     )
 
 
-def sanitize_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _openai_content(content: Any, conversation_root: Path | None) -> Any:
+    if not isinstance(content, list):
+        return content
+    result = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "image":
+            result.append(copy.deepcopy(block))
+            continue
+        if conversation_root is None:
+            continue
+        result.append({
+            "type": "image_url",
+            "image_url": {"url": image_data_uri(conversation_root, block)},
+        })
+    return result
+
+
+def sanitize_openai_messages(
+    messages: list[dict[str, Any]],
+    conversation_root: Path | None = None,
+) -> list[dict[str, Any]]:
     sanitized = []
     for message in messages:
         role = message.get("role")
         clean_message: dict[str, Any] = {"role": role}
         if "content" in message:
             content = copy.deepcopy(message.get("content"))
+            if role == "user":
+                content = _openai_content(content, conversation_root)
             if role == "assistant" and content is None:
                 content = _text_from_content_blocks(message) or None
             clean_message["content"] = content
@@ -625,8 +653,9 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
         *,
         base_url: str = "",
         api_key: str = "",
+        conversation_root: Path | None = None,
     ):
-        super().__init__(client, model, reasoning_effort)
+        super().__init__(client, model, reasoning_effort, conversation_root=conversation_root)
         self.base_url = base_url
         self.api_key = api_key
 
@@ -644,7 +673,7 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
         messages: list,
         tools: list = None,
     ):
-        request_messages = sanitize_openai_messages(messages)
+        request_messages = sanitize_openai_messages(messages, self.conversation_root)
         kwargs = {
             "model": self.model,
             "messages": request_messages,
@@ -837,7 +866,10 @@ def _anthropic_tool_use_block(tool_call: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _anthropic_user_content(content: Any) -> list[dict[str, Any]]:
+def _anthropic_user_content(
+    content: Any,
+    conversation_root: Path | None = None,
+) -> list[dict[str, Any]]:
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
     if not isinstance(content, list):
@@ -847,6 +879,18 @@ def _anthropic_user_content(content: Any) -> list[dict[str, Any]]:
     for block in content:
         if isinstance(block, str):
             blocks.append({"type": "text", "text": block})
+        elif isinstance(block, dict) and block.get("type") == "image":
+            if conversation_root is None:
+                continue
+            record, data = resolve_image_attachment(conversation_root, block)
+            blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": record["media_type"],
+                    "data": base64.b64encode(data).decode("ascii"),
+                },
+            })
         elif isinstance(block, dict):
             blocks.append(copy.deepcopy(block))
     return blocks
@@ -885,6 +929,7 @@ def _anthropic_assistant_content(message: dict[str, Any]) -> list[dict[str, Any]
 
 def build_anthropic_request_messages(
     messages: list[dict[str, Any]],
+    conversation_root: Path | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     system_parts = []
     request_messages = []
@@ -919,7 +964,7 @@ def build_anthropic_request_messages(
         if role == "assistant":
             content = _anthropic_assistant_content(message)
         elif role == "user":
-            content = _anthropic_user_content(message.get("content"))
+            content = _anthropic_user_content(message.get("content"), conversation_root)
         else:
             index += 1
             continue
@@ -992,7 +1037,10 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
         messages: list,
         tools: list = None,
     ):
-        system, request_messages = build_anthropic_request_messages(messages)
+        system, request_messages = build_anthropic_request_messages(
+            messages,
+            self.conversation_root,
+        )
         kwargs = {
             "model": self.model,
             "max_tokens": 64_000,
@@ -1101,7 +1149,7 @@ def _normalize_anthropic_base_url(base_url: str) -> str:
     return base_url
 
 
-def _create_async_chat_client(model_config):
+def _create_async_chat_client(model_config, conversation_root: Path | None = None):
     if model_config.message_format == "anthropic":
         client = _TrackedAsyncAnthropic(
             base_url=_normalize_anthropic_base_url(model_config.base_url),
@@ -1114,6 +1162,7 @@ def _create_async_chat_client(model_config):
             client,
             model_config.model_id,
             model_config.reasoning_effort,
+            conversation_root=conversation_root,
         )
 
     normalized_base_url = _normalize_base_url(model_config.base_url)
@@ -1130,6 +1179,7 @@ def _create_async_chat_client(model_config):
         model_config.reasoning_effort,
         base_url=normalized_base_url,
         api_key=model_config.api_key,
+        conversation_root=conversation_root,
     )
 
 
@@ -1152,11 +1202,11 @@ async def close_async_llm_client(client) -> None:
         await result
 
 
-def create_current_async_llm_client():
+def create_current_async_llm_client(conversation_root: Path | None = None):
     current_model = get_current_model_config()
     if current_model is None:
         return None
-    return _create_async_chat_client(current_model)
+    return _create_async_chat_client(current_model, conversation_root=conversation_root)
 
 
 def create_memory_recall_llm_client():

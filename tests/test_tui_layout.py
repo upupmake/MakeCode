@@ -255,7 +255,34 @@ async def test_temporary_query_escape_closes_without_cancelling_outer_response(m
 
 
 @pytest.mark.anyio
-async def test_temporary_query_shortcut_is_inactive_outside_agent_loop():
+async def test_image_placeholder_is_rendered_as_atomic_single_cell_and_deleted_once(tmp_path):
+    block = {
+        "type": "image",
+        "attachment_id": "img_00000000000000000000000000000000",
+        "filename": "sample.png",
+        "media_type": "image/png",
+    }
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=lambda text: (
+            "before [图片：sample.png] after",
+            [
+                {"type": "text", "text": "before "},
+                block,
+                {"type": "text", "text": " after"},
+            ],
+        ),
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.load_text(app.tokenize_image_placeholders("before [[image:id=img_00000000000000000000000000000000]] after"))
+        input_box.cursor_location = (0, len("before [[image:id=img_00000000000000000000000000000000]]"))
+        await pilot.press("backspace")
+        assert input_box.text == "before  after"
+
+
+
     app = MakeCodeTuiApp()
 
     async with app.run_test(size=(180, 40)) as pilot:

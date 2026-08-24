@@ -35,6 +35,10 @@ from system.commands import (
     CommandHandler,
     CommandAction,
 )
+from system.clipboard import (
+    read_image_file_from_system_clipboard,
+    read_image_from_system_clipboard,
+)
 from system.console_render import (
     _render_history,
     _render_token_usage,
@@ -80,6 +84,13 @@ from utils.llm_client import (
 )
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
+from utils.vision import (
+    image_reference_marker,
+    parse_image_placeholders,
+    parse_pasted_image_references,
+    remove_image_placeholders,
+    store_image_bytes_attachment,
+)
 from utils.memory import (
     MEMORY_RECALL_TOOLS,
     MEMORY_RECALL_TOOLS_HANDLERS,
@@ -330,7 +341,12 @@ async def agent_loop(
     set_temporary_query_enabled(False)
     owns_client = llm_client is None
     if owns_client:
-        llm_client = create_current_async_llm_client()
+        if CONVERSATION_STORE.active_root is None:
+            llm_client = create_current_async_llm_client()
+        else:
+            llm_client = create_current_async_llm_client(
+                conversation_root=CONVERSATION_STORE.active_root,
+            )
     if llm_client is None:
         console.print(
             "[bold yellow]⚠️ 未配置模型。请先使用 /models 命令配置模型。[/bold yellow]"
@@ -691,12 +707,12 @@ def _collect_user_message_content(history: list) -> str:
         display_content = metadata.get("display_content") if isinstance(metadata, dict) else None
         content = display_content if isinstance(display_content, str) else content
         if isinstance(content, str):
-            text = content.strip()
+            text = remove_image_placeholders(content).strip()
         elif isinstance(content, list):
             text = "\n\n".join(
-                block.get("text", "").strip()
+                remove_image_placeholders(block.get("text", "")).strip()
                 for block in content
-                if isinstance(block, dict) and block.get("text", "").strip()
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip()
             )
         else:
             text = ""
@@ -783,6 +799,56 @@ def _background_update_check():
             post_tui(TuiRegion.BACKGROUND, active=False)
 
 
+def _parse_input_images(text: str) -> tuple[str, list[dict[str, str]]]:
+    _ensure_active_conversation()
+    display_text, parts = parse_image_placeholders(text, CONVERSATION_STORE.active_root)
+    if parts:
+        return display_text, parts
+    pasted = parse_pasted_image_references(text, CONVERSATION_STORE.active_root)
+    return pasted if pasted is not None else (display_text, parts)
+
+
+def _paste_image_from_system_clipboard() -> str | None:
+    file_image = read_image_file_from_system_clipboard()
+    if file_image is not None:
+        data, filename, media_type = file_image
+    else:
+        image = read_image_from_system_clipboard()
+        if image is None:
+            return None
+        data, media_type = image
+        extension = media_type.removeprefix("image/")
+        filename = f"clipboard.{('jpg' if extension == 'jpeg' else extension)}"
+    _ensure_active_conversation()
+    block = store_image_bytes_attachment(
+        CONVERSATION_STORE.active_root,
+        data,
+        filename,
+        media_type,
+    )
+    return image_reference_marker(block)
+
+
+def _message_from_user_query(
+    user_query: str,
+    recalled_memory: str = "",
+) -> tuple[dict, str]:
+    display_text, parts = _parse_input_images(user_query)
+    image_present = any(part.get("type") == "image" for part in parts)
+    if not image_present:
+        content = prepend_recalled_memory_to_query(user_query, recalled_memory)
+        return {"role": "user", "content": content}, display_text
+
+    content_parts = []
+    if recalled_memory:
+        content_parts.append({
+            "type": "text",
+            "text": prepend_recalled_memory_to_query("", recalled_memory),
+        })
+    content_parts.extend(parts)
+    return {"role": "user", "content": content_parts}, display_text
+
+
 def _get_previous_assistant_content(history: list) -> str:
     for message in reversed(history):
         if message.get("role") != "assistant":
@@ -828,9 +894,10 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                     TuiRegion.BACKGROUND,
                     "[#aaaaaa]🧠 已跳过本次请求的记忆预召回流程。[/#aaaaaa]",
                 )
-                user_message = user_query
+                user_message, display_query = _message_from_user_query(user_query)
             else:
                 recall_query = original_query or user_query
+                recall_query = remove_image_placeholders(recall_query)
                 previous_assistant_content = _get_previous_assistant_content(history)
                 recall_result = await recall_long_term_memories(
                     recall_query,
@@ -838,15 +905,19 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                     source="用户请求预召回",
                     agent_id=ORCHESTRATOR_AGENT_ID,
                 )
-                user_message = prepend_recalled_memory_to_query(
+                user_message, display_query = _message_from_user_query(
                     user_query,
                     recall_result.get("content", ""),
                 )
-            user_message_record = {"role": "user", "content": user_message}
+            user_message_record = user_message
             if original_query is not None:
                 user_message_record["message_metadata"] = {
                     "display_content": original_query,
                     "skill_command": True,
+                }
+            elif isinstance(user_message_record.get("content"), list):
+                user_message_record["message_metadata"] = {
+                    "display_content": display_query,
                 }
             history.append(user_message_record)
 
@@ -957,6 +1028,8 @@ def _run_textual_main(
         startup_workdir_provider=startup_workdir_provider if prompt_for_workdir else None,
         startup_workdir_handler=startup_workdir_handler if prompt_for_workdir else None,
         startup_load_handler=startup_load_handler if cli_module.STARTUP_LOAD_REQUESTED else None,
+        image_placeholder_handler=_parse_input_images,
+        image_clipboard_handler=_paste_image_from_system_clipboard,
     )
     app.run()
 

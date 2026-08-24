@@ -28,6 +28,7 @@ from utils.llm_client import (
     create_memory_recall_llm_client,
     strip_native_message_payloads,
 )
+from utils.vision import strip_images_in_place, text_only_messages
 from utils import text_tokens
 from utils.text_tokens import truncate_text_by_tokens
 from utils.tool_validation import (
@@ -1061,9 +1062,9 @@ async def memory_agent_loop(
 
 async def manual_memory_update(prompt: str, history: list = None) -> list[dict]:
     prompt = prompt.strip()
-    conversation_messages = strip_native_message_payloads([
+    conversation_messages = text_only_messages(strip_native_message_payloads([
         msg for msg in (history or []) if msg.get("role") != "system"
-    ])
+    ]))
     return await memory_agent_loop(
         conversation_text=json.dumps(
             conversation_messages,
@@ -1091,7 +1092,7 @@ def estimate_text_tokens(text: str) -> int:
 
 def estimate_tokens(messages: list, tools_definition: list = None):
     # 计算基础文本的 token 数（messages 已包含系统提示词）
-    text = json.dumps(strip_native_message_payloads(messages), ensure_ascii=False)
+    text = json.dumps(text_only_messages(strip_native_message_payloads(messages)), ensure_ascii=False)
     base_tokens = estimate_text_tokens(text)
 
     # 加上工具定义的 token 数
@@ -1233,7 +1234,7 @@ def _select_partial_compaction_range(
 def _write_compaction_transcript(messages: list[dict]) -> list[dict]:
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     transcript_path = TRANSCRIPT_DIR / f"transcript_{time.time_ns()}.jsonl"
-    transcript_messages = strip_native_message_payloads(messages)
+    transcript_messages = text_only_messages(strip_native_message_payloads(messages))
     with open(transcript_path, "w", encoding="utf-8") as f:
         for message in transcript_messages:
             f.write(json.dumps(message, default=str, ensure_ascii=False) + "\n")
@@ -1338,6 +1339,7 @@ async def partial_compact(
     )
     candidate = copy.deepcopy(messages)
     candidate[start:end] = _summary_messages(summary, reason)
+    strip_images_in_place(candidate)
     messages[:] = candidate
     return True
 
@@ -1359,4 +1361,5 @@ async def auto_compact(
         system_msgs = [{"role": "system", "content": system_prompt_fn()}]
 
     messages[:] = system_msgs + _summary_messages(summary, reason)
+    strip_images_in_place(messages)
     return "History successfully compacted and summarized."

@@ -4,6 +4,7 @@ import os
 import pytest
 
 from utils.conversations import (
+    ATTACHMENTS_DIR,
     CONVERSATION_FILE,
     SCHEMA_VERSION,
     SUB_AGENT_HISTORY_FILE,
@@ -18,6 +19,9 @@ def test_conversation_store_saves_and_loads_bound_history(tmp_path):
     messages = [{"role": "system", "content": "system"}, {"role": "user", "content": "hello"}]
 
     conversation_path = store.save_messages(messages)
+    manifest = json.loads(conversation_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 1
+    assert "attachments" not in manifest["artifacts"]
     root = conversation_path.parent
     task_plan = {
         "schema_version": SCHEMA_VERSION,
@@ -44,6 +48,71 @@ def test_conversation_store_saves_and_loads_bound_history(tmp_path):
     assert snapshot.sub_agent_history == [
         {"conversation_id": store.active_id, "plan_task_id": "1", "status": "completed"}
     ]
+
+
+def test_conversation_store_saves_image_attachment_as_optional_artifact(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    attachment_id = "img_00000000000000000000000000000000"
+    root = tmp_path / "conversations" / "conv_00000000000000000000000000000000"
+    root.mkdir(parents=True)
+    (root / ATTACHMENTS_DIR).mkdir()
+    (root / ATTACHMENTS_DIR / f"{attachment_id}_sample.png").write_bytes(b"png")
+    messages = [{
+        "role": "user",
+        "content": [{
+            "type": "image",
+            "attachment_id": attachment_id,
+            "filename": "sample.png",
+            "media_type": "image/png",
+        }],
+    }]
+
+    store._active_id = root.name
+    store._active_path = root / CONVERSATION_FILE
+    store._active_title = None
+    store._active_created_at = "now"
+    path = store.save_messages(messages)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+
+    assert manifest["schema_version"] == 1
+    assert manifest["artifacts"]["attachments"] == ATTACHMENTS_DIR
+    assert store.load(path).messages == messages
+
+
+def test_conversation_store_saves_and_loads_image_attachment(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    attachment_id = "img_00000000000000000000000000000000"
+    root = (tmp_path / "conversations" / "conv_00000000000000000000000000000000")
+    root.mkdir(parents=True)
+    (root / ATTACHMENTS_DIR).mkdir()
+    (root / ATTACHMENTS_DIR / f"{attachment_id}_sample.png").write_bytes(b"png")
+    path = root / CONVERSATION_FILE
+    path.write_text(json.dumps({
+        "schema_version": SCHEMA_VERSION,
+        "conversation_id": root.name,
+        "title": None,
+        "created_at": "now",
+        "updated_at": "now",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image",
+                "attachment_id": attachment_id,
+                "filename": "sample.png",
+                "media_type": "image/png",
+            }],
+        }],
+        "artifacts": {
+            "task_plan": TASK_PLAN_FILE,
+            "sub_agent_history": SUB_AGENT_HISTORY_FILE,
+            "sub_agent_runs": "sub_agents/runs",
+            "attachments": ATTACHMENTS_DIR,
+        },
+    }), encoding="utf-8")
+
+    snapshot = store.load(path)
+
+    assert snapshot.messages[0]["content"][0]["attachment_id"] == attachment_id
 
 
 def test_sidecars_and_traces_never_enter_provider_messages(tmp_path):

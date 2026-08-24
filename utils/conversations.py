@@ -9,6 +9,7 @@ from typing import Any
 
 from utils import paths
 from utils.common import sanitize_title
+from utils.vision import image_blocks_from_content, resolve_image_attachment
 
 
 SCHEMA_VERSION = 1
@@ -16,6 +17,7 @@ CONVERSATION_FILE = "conversation.json"
 TASK_PLAN_FILE = "task_plan.json"
 SUB_AGENT_HISTORY_FILE = "sub_agents/history.json"
 SUB_AGENT_RUNS_DIR = "sub_agents/runs"
+ATTACHMENTS_DIR = "attachments"
 _CONVERSATION_ID_PATTERN = re.compile(r"conv_[0-9a-f]{32}")
 
 
@@ -101,9 +103,17 @@ class ConversationStore:
     def save_messages(self, messages: list) -> Path:
         path = self.ensure_active()
         self._validate_conversation_path(path)
+        self._validate_sidecar_paths(path.parent)
         if path.exists():
             self._validate_manifest(path)
         now = _now()
+        artifacts = {
+            "task_plan": TASK_PLAN_FILE,
+            "sub_agent_history": SUB_AGENT_HISTORY_FILE,
+            "sub_agent_runs": SUB_AGENT_RUNS_DIR,
+        }
+        if any(image_blocks_from_content(message.get("content")) for message in messages):
+            artifacts["attachments"] = ATTACHMENTS_DIR
         data = {
             "schema_version": SCHEMA_VERSION,
             "conversation_id": self._active_id,
@@ -111,11 +121,7 @@ class ConversationStore:
             "created_at": self._active_created_at,
             "updated_at": now,
             "messages": messages,
-            "artifacts": {
-                "task_plan": TASK_PLAN_FILE,
-                "sub_agent_history": SUB_AGENT_HISTORY_FILE,
-                "sub_agent_runs": SUB_AGENT_RUNS_DIR,
-            },
+            "artifacts": artifacts,
         }
         _write_object(path, data)
         return path
@@ -227,17 +233,30 @@ class ConversationStore:
                 or any(not isinstance(tool_call, dict) for tool_call in tool_calls)
             ):
                 raise ValueError(f"Invalid conversation tool calls: {path}")
+            for block in image_blocks_from_content(message.get("content")):
+                resolve_image_attachment(path.parent, block)
         if not isinstance(data.get("created_at"), str) or not isinstance(data.get("updated_at"), str):
             raise ValueError(f"Invalid conversation timestamps: {path}")
         title = data.get("title")
         if title is not None and not isinstance(title, str):
             raise ValueError(f"Invalid conversation title: {path}")
-        expected_artifacts = {
+        base_artifacts = {
             "task_plan": TASK_PLAN_FILE,
             "sub_agent_history": SUB_AGENT_HISTORY_FILE,
             "sub_agent_runs": SUB_AGENT_RUNS_DIR,
         }
-        if data.get("artifacts") != expected_artifacts:
+        actual_artifacts = data.get("artifacts")
+        allowed_artifacts = (
+            base_artifacts,
+            {**base_artifacts, "attachments": ATTACHMENTS_DIR},
+        )
+        image_present = any(
+            image_blocks_from_content(message.get("content"))
+            for message in data["messages"]
+        )
+        if actual_artifacts not in allowed_artifacts or (
+            image_present and actual_artifacts != allowed_artifacts[1]
+        ):
             raise ValueError(f"Invalid conversation artifact map: {path}")
         return data
 
@@ -265,13 +284,20 @@ class ConversationStore:
             root / "sub_agents",
             root / SUB_AGENT_HISTORY_FILE,
             root / SUB_AGENT_RUNS_DIR,
+            root / ATTACHMENTS_DIR,
         )
         sub_agents_dir = root / "sub_agents"
         runs_dir = root / SUB_AGENT_RUNS_DIR
+        attachments_dir = root / ATTACHMENTS_DIR
         if (
             any(path.is_symlink() for path in paths_to_validate)
             or (sub_agents_dir.exists() and not sub_agents_dir.is_dir())
             or (runs_dir.exists() and not runs_dir.is_dir())
+            or (attachments_dir.exists() and not attachments_dir.is_dir())
+            or (
+                attachments_dir.exists()
+                and any(path.is_symlink() or not path.is_file() for path in attachments_dir.iterdir())
+            )
         ):
             raise ValueError(f"Invalid conversation storage path: {root}")
 
