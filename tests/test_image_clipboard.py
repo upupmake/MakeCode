@@ -1,3 +1,4 @@
+import base64
 import random
 import struct
 import subprocess
@@ -140,19 +141,23 @@ def test_read_image_from_linux_wayland_clipboard():
 
 def test_read_image_file_from_windows_file_clipboard(tmp_path):
     image, scanlines, width, height = _random_png(11)
-    source = tmp_path / "windows.png"
+    source = tmp_path / "Windows 图片.png"
     source.write_bytes(image)
+    encoded_path = base64.b64encode(str(source).encode("utf-16le"))
 
     with (
         patch("system.clipboard.sys.platform", "win32"),
         patch("system.clipboard.shutil.which", side_effect=lambda command: "powershell.exe" if command == "powershell.exe" else None),
         patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
-            ["powershell.exe"], 0, stdout=(str(source) + "\n").encode(),
-        )),
+            ["powershell.exe"], 0, stdout=encoded_path,
+        )) as run,
     ):
         result = read_image_file_from_system_clipboard()
 
-    assert result == (image, "windows.png", "image/png")
+    assert result == (image, "Windows 图片.png", "image/png")
+    command = run.call_args.args[0]
+    assert command[0] == "powershell.exe"
+    assert "-STA" in command
     _assert_image_content(result[0], scanlines, width, height)
 
 
@@ -211,7 +216,7 @@ def test_all_platform_file_clipboards_preserve_generated_image_content(tmp_path)
     source.write_bytes(image)
     clipboard_payloads = {
         "darwin": str(source).encode(),
-        "win32": str(source).encode(),
+        "win32": base64.b64encode(str(source).encode("utf-16le")),
         "linux": (source.as_uri() + "\n").encode(),
     }
 
@@ -298,6 +303,8 @@ def test_clipboard_file_routes_reject_non_image_files(tmp_path):
         else:
             payload = (str(source) + "\n").encode()
             executable = "osascript" if platform == "darwin" else "powershell.exe"
+            if platform == "win32":
+                payload = base64.b64encode(str(source).encode("utf-16le"))
             which = lambda command, executable=executable: executable if command == executable else None
         with (
             patch("system.clipboard.sys.platform", platform),
