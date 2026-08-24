@@ -196,9 +196,14 @@ def _read_image_file(path_text: str) -> tuple[bytes, str, str] | None:
     except OSError:
         return None
     normalized = _normalize_image_data(data)
-    if normalized is None or normalized[1] != expected_type:
+    if normalized is None:
         return None
-    return normalized[0], path.name, normalized[1]
+    image_bytes, media_type = normalized
+    if media_type == expected_type:
+        return image_bytes, path.name, media_type
+    # 扩展名与实际内容不符时以内容为准，改写扩展名保证下游按扩展名推导类型的一致性
+    extension = "jpg" if media_type == "image/jpeg" else media_type.removeprefix("image/")
+    return image_bytes, f"{path.stem}.{extension}", media_type
 
 
 def _read_text_command(command: list[str]) -> str | None:
@@ -224,6 +229,7 @@ def _read_file_path_from_windows_clipboard() -> str | None:
     if not powershell:
         return None
     script = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
         "Add-Type -AssemblyName System.Windows.Forms; "
         "$files = [System.Windows.Forms.Clipboard]::GetFileDropList(); "
         "if ($files.Count -eq 0) { exit 1 }; "

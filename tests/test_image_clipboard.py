@@ -1,8 +1,11 @@
 import random
 import struct
 import subprocess
+import sys
 import zlib
 from unittest.mock import patch
+
+import pytest
 
 import main
 from system.clipboard import (
@@ -156,6 +159,45 @@ def test_read_image_file_from_windows_file_clipboard(tmp_path):
     _assert_image_content(result[0], scanlines, width, height)
 
 
+def test_windows_file_clipboard_script_forces_utf8_output(tmp_path):
+    image, _, _, _ = _random_png(13)
+    source = tmp_path / "壁纸.png"
+    source.write_bytes(image)
+
+    with (
+        patch("system.clipboard.sys.platform", "win32"),
+        patch("system.clipboard.shutil.which", side_effect=lambda command: "powershell.exe" if command == "powershell.exe" else None),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["powershell.exe"], 0, stdout=(str(source) + "\n").encode("utf-8"),
+        )) as run,
+    ):
+        assert read_image_file_from_system_clipboard() == (image, "壁纸.png", "image/png")
+
+    encoded = run.call_args.args[0][run.call_args.args[0].index("-EncodedCommand") + 1]
+    import base64
+    script = base64.b64decode(encoded).decode("utf-16le")
+    assert script.startswith("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;")
+
+
+def test_read_image_file_accepts_mismatched_extension_using_content_type(tmp_path):
+    # 扩展名是 .png 但内容是 JPEG（常见于壁纸/下载图片）：以内容类型为准并改写扩展名
+    jpeg = b"\xff\xd8\xff" + b"jpeg-body" + b"\xff\xd9"
+    source = tmp_path / "【在室内】2024-08-17 02_34_00.png"
+    source.write_bytes(jpeg)
+
+    with (
+        patch("system.clipboard.sys.platform", "win32"),
+        patch("system.clipboard.shutil.which", side_effect=lambda command: "powershell.exe" if command == "powershell.exe" else None),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["powershell.exe"], 0, stdout=(str(source) + "\n").encode("utf-8"),
+        )),
+    ):
+        result = read_image_file_from_system_clipboard()
+
+    assert result == (jpeg, "【在室内】2024-08-17 02_34_00.jpg", "image/jpeg")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux file URI route requires a POSIX host")
 def test_read_image_file_from_linux_uri_clipboard(tmp_path):
     image, scanlines, width, height = _random_png(12)
     source = tmp_path / "linux.png"
@@ -214,6 +256,9 @@ def test_all_platform_file_clipboards_preserve_generated_image_content(tmp_path)
         "win32": str(source).encode(),
         "linux": (source.as_uri() + "\n").encode(),
     }
+    if sys.platform == "win32":
+        # Linux file URI 无法映射到 Windows 宿主的真实路径，跳过 linux 分支
+        del clipboard_payloads["linux"]
 
     for platform, payload in clipboard_payloads.items():
         if platform == "darwin":
