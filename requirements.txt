@@ -1,6 +1,6 @@
 fastmcp
 openai
-anthropic
+anthropic==0.125.0
 pydantic
 python_frontmatter
 PyYAML
