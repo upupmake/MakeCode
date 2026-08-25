@@ -96,7 +96,16 @@ def test_json_string_tool_arguments_expand_real_newlines_but_preserve_literal_es
 
     assert '"content":\n    "\n    first line\n    \n    second line\n    "' in rendered
     assert "first line\\n\\nsecond line" not in rendered
-    assert '"literal": "first\\\\nsecond"' in rendered
+    assert '"literal": "first\\nsecond"' in rendered
+
+
+def test_tool_arguments_render_code_special_characters_without_escaping():
+    code = '\t\tusername, _, err := auth.RequireLogin(c.String("username"))'
+    rendered = _render_tool_arguments({"replace_content": code})
+
+    assert 'username, _, err := auth.RequireLogin(c.String("username"))' in rendered
+    assert "\\t" not in rendered
+    assert '\\"username\\"' not in rendered
 
 
 def test_structured_tool_output_uses_json_layout_and_expands_multiline_strings():

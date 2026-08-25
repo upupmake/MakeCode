@@ -84,6 +84,9 @@ def _format_json_lines(value: Any, indent_level: int = 0) -> list[str]:
         lines.append(f'{indent}"')
         return lines
 
+    if isinstance(value, str):
+        return [f'{indent}"{value}"']
+
     return [f"{indent}{json.dumps(value, ensure_ascii=False, default=str)}"]
 
 
@@ -117,8 +120,6 @@ def _decode_structured_json(value: str) -> Any | None:
 def _format_json(value: Any) -> str:
     normalized = json.loads(json.dumps(value, ensure_ascii=False, default=str))
     display_value = _normalize_json_for_display(normalized)
-    if not _contains_multiline_string(display_value):
-        return json.dumps(display_value, ensure_ascii=False, indent=2, default=str)
     return "\n".join(_format_json_lines(display_value))
 
 
