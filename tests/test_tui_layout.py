@@ -443,14 +443,11 @@ async def test_f7_opens_tool_history_with_current_messages_and_advertises_shortc
             await pilot.pause()
 
             assert isinstance(app.screen, ToolHistoryModal)
+            assert ("Orchestrator", "orchestrator") not in app.screen._SOURCE_OPTIONS
             assert {item.tool_name for item in app.screen._row_values} == {
-                "FileRead",
                 "AppendLongTermMemory",
             }
-            current_record = next(
-                item for item in app.screen._row_values if item.tool_name == "FileRead"
-            )
-            assert current_record.result == "current message contents"
+            assert app.screen._history.snapshot()[0].tool_name == "AppendLongTermMemory"
             assert app.screen._message_history.snapshot()[0].result == "current message contents"
             app.screen.action_close()
             await pilot.pause()

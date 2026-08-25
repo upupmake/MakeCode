@@ -1681,7 +1681,6 @@ class ToolHistoryModal(ClosableModalScreen[str]):
     ]
     _SOURCE_OPTIONS = [
         ("全部来源", ""),
-        ("Orchestrator", "orchestrator"),
         ("记忆代理", "memory"),
         ("Sub-Agent", "sub_agent"),
     ]
@@ -1702,18 +1701,14 @@ class ToolHistoryModal(ClosableModalScreen[str]):
         super().__init__()
         self._message_history = ToolExecutionHistory()
         self._history = ToolExecutionHistory()
-        if messages is None:
-            self._history.replace_with(history)
-        else:
+        visible_records = [
+            record
+            for record in history.snapshot(newest_first=False)
+            if record.source != "orchestrator"
+        ]
+        self._history.append_records(visible_records)
+        if messages is not None:
             self._message_history.rebuild_from_messages(messages)
-            self._history.replace_with(self._message_history)
-            self._history.append_records(
-                [
-                    record
-                    for record in history.snapshot(newest_first=False)
-                    if record.source != "orchestrator"
-                ]
-            )
         self._view = "timeline"
         self._tool_filter = ""
         self._row_values: list[ToolExecutionRecord | ToolExecutionSummary] = []

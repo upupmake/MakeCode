@@ -31,7 +31,13 @@ class ToolHistoryModalHost(App):
 
 def _build_modal_history() -> ToolExecutionHistory:
     history = ToolExecutionHistory()
-    first = history.start("FileRead", {"path": "alpha.py"}, tool_call_id="call_read")
+    first = history.start(
+        "FileRead",
+        {"path": "alpha.py"},
+        tool_call_id="call_read",
+        source="memory",
+        actor="🧠 记忆代理",
+    )
     history.finish(first, '{"needle":"result","count":2}')
     second = history.start(
         "RunTerminalCommand",
@@ -407,7 +413,7 @@ async def test_tool_history_modal_opens_sorted_current_message_output_token_usag
 
 
 @pytest.mark.anyio
-async def test_tool_history_modal_mounts_each_current_message_record_once():
+async def test_tool_history_modal_excludes_current_message_records_from_visible_history():
     messages = [
         {
             "role": "assistant",
@@ -431,9 +437,11 @@ async def test_tool_history_modal_mounts_each_current_message_record_once():
         await pilot.pause()
 
         history_list = modal.query_one("#tool-history-list", ListView)
-        assert len(modal._history.snapshot()) == 1
-        assert len(modal._row_values) == 1
+        assert modal._history.snapshot() == []
+        assert len(modal._message_history.snapshot()) == 1
+        assert modal._row_values == []
         assert len(history_list.children) == 1
+        assert history_list.children[0].query_one(Label).render().plain == "暂无匹配的工具执行记录"
 
 
 @pytest.mark.anyio
@@ -447,6 +455,8 @@ async def test_tool_history_modal_expands_multiline_json_strings():
                 "replace_content": "new line\n\nnew code",
             }],
         },
+        source="memory",
+        actor="🧠 记忆代理",
     )
     history.finish(
         execution_id,
@@ -468,7 +478,7 @@ async def test_tool_history_modal_expands_multiline_json_strings():
 
 
 @pytest.mark.anyio
-async def test_tool_history_modal_omits_unavailable_checkpoint_metadata():
+async def test_tool_history_modal_excludes_recovered_main_agent_checkpoint_records():
     history = ToolExecutionHistory()
     history.rebuild_from_messages([
         {
@@ -491,17 +501,9 @@ async def test_tool_history_modal_omits_unavailable_checkpoint_metadata():
 
     async with app.run_test(size=(140, 40)) as pilot:
         await pilot.pause()
-        assert modal._row_label(modal._row_values[0]).startswith("✓ FileRead")
-        assert "历史" not in modal._row_label(modal._row_values[0])
-        detail_text = modal.query_one("#tool-history-detail", TextArea).text
-
-        assert "调用 ID: call_recovered" in detail_text
-        assert "任务 ID:" not in detail_text
-        assert "开始:" not in detail_text
-        assert "结束:" not in detail_text
-        assert "耗时:" not in detail_text
-        assert "历史重建:" not in detail_text
-        assert "checkpoint 未记录" not in detail_text
+        assert modal._history.snapshot() == []
+        assert modal._row_values == []
+        assert modal.query_one("#tool-history-detail", TextArea).text == "暂无详情。"
 
 
 @pytest.mark.anyio
@@ -531,7 +533,12 @@ async def test_tool_history_modal_copies_full_detail_to_system_clipboard():
 @pytest.mark.anyio
 async def test_tool_history_modal_uses_open_time_snapshot():
     history = ToolExecutionHistory()
-    first_id = history.start("FileRead", {"path": "first.py"})
+    first_id = history.start(
+        "FileRead",
+        {"path": "first.py"},
+        source="memory",
+        actor="🧠 记忆代理",
+    )
     history.finish(first_id, "first result")
     modal = ToolHistoryModal(history)
     app = ToolHistoryModalHost(modal)
@@ -540,7 +547,12 @@ async def test_tool_history_modal_uses_open_time_snapshot():
         await pilot.pause()
         assert [item.tool_name for item in modal._row_values] == ["FileRead"]
 
-        second_id = history.start("ContentSearch", {"content_regex": "later"})
+        second_id = history.start(
+            "ContentSearch",
+            {"content_regex": "later"},
+            source="memory",
+            actor="🧠 记忆代理",
+        )
         history.finish(second_id, "later result")
         await pilot.pause()
 
