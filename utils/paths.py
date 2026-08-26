@@ -79,10 +79,6 @@ def workspace_conversations_dir() -> Path:
     return workspace_makecode_dir() / "conversations"
 
 
-def workspace_transcript_dir() -> Path:
-    return workspace_makecode_dir() / "transcripts"
-
-
 def workspace_memory_dir() -> Path:
     return workspace_makecode_dir() / "memory"
 

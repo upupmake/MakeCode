@@ -5,7 +5,6 @@ import os
 import re
 import tempfile
 import threading
-import time
 import uuid
 from datetime import datetime
 
@@ -88,10 +87,8 @@ def _memory_config_file_signature() -> tuple[int, int, int] | None:
 
 
 def refresh_workspace_paths() -> None:
-    global MAKECODE_DIR, TRANSCRIPT_DIR, MEMORY_DIR, MEMORY_JSONL_FILE, MEMORY_CONFIG_FILE, _MEMORY_RECALL_WINDOWS
-
+    global MAKECODE_DIR, MEMORY_DIR, MEMORY_JSONL_FILE, MEMORY_CONFIG_FILE, _MEMORY_RECALL_WINDOWS
     MAKECODE_DIR = paths.workspace_makecode_dir()
-    TRANSCRIPT_DIR = paths.workspace_transcript_dir()
     MEMORY_DIR = paths.workspace_memory_dir()
     MEMORY_JSONL_FILE = paths.workspace_memory_jsonl_file()
     MEMORY_CONFIG_FILE = paths.workspace_memory_config_file()
@@ -1231,17 +1228,165 @@ def _select_partial_compaction_range(
     return None
 
 
-def _write_compaction_transcript(messages: list[dict]) -> list[dict]:
-    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-    transcript_path = TRANSCRIPT_DIR / f"transcript_{time.time_ns()}.jsonl"
-    transcript_messages = text_only_messages(strip_native_message_payloads(messages))
-    with open(transcript_path, "w", encoding="utf-8") as f:
-        for message in transcript_messages:
-            f.write(json.dumps(message, default=str, ensure_ascii=False) + "\n")
-    print_formatted_text(
-        f"\n[yellow][对话记录已保存到：{escape(str(transcript_path))}][/yellow]"
-    )
-    return transcript_messages
+def _compaction_message_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block
+            if isinstance(block, str)
+            else block.get("text", "")
+            for block in content
+            if isinstance(block, str)
+            or (isinstance(block, dict) and block.get("type") == "text")
+        )
+
+    content_blocks = message.get("content_blocks")
+    if isinstance(content_blocks, list):
+        return "".join(
+            block.get("text", "")
+            for block in content_blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    if content is None:
+        return ""
+    return str(content)
+
+
+def _compaction_tool_calls(message: dict) -> list[tuple[str, str, object]]:
+    if message.get("type") == "function_call":
+        return [(
+            str(message.get("call_id") or ""),
+            str(message.get("name") or ""),
+            message.get("arguments", ""),
+        )]
+
+    tool_calls = message.get("tool_calls")
+    if not tool_calls:
+        tool_calls = [
+            block
+            for block in message.get("content_blocks") or []
+            if isinstance(block, dict) and block.get("type") == "tool_call"
+        ]
+
+    calls = []
+    for tool_call in tool_calls or []:
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        function = function if isinstance(function, dict) else {}
+        arguments = tool_call.get("arguments")
+        if arguments is None:
+            arguments = function.get("arguments", tool_call.get("input", ""))
+        calls.append((
+            str(tool_call.get("id") or tool_call.get("call_id") or ""),
+            str(tool_call.get("name") or function.get("name") or ""),
+            arguments,
+        ))
+    return calls
+
+
+def _compaction_tool_results(messages: list[dict]) -> dict[str, dict]:
+    results = {}
+    for message in messages:
+        if (
+            message.get("role") not in {"tool", "function"}
+            and message.get("type") != "function_call_output"
+        ):
+            continue
+        call_id = message.get("tool_call_id") or message.get("call_id")
+        if call_id:
+            results[str(call_id)] = message
+    return results
+
+
+def _compaction_value_text(value: object) -> str:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    if value is None:
+        return ""
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _compaction_tool_entry(
+        name: str,
+        arguments: object,
+        result: dict | None,
+) -> str:
+    output = "" if result is None else result.get("output", result.get("content", ""))
+    output = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False, default=str)
+    lines = [
+        f"name: {name}",
+        f"arguments: {_compaction_value_text(arguments)}",
+        "output:",
+    ]
+    if result is not None and result.get("is_error") is True:
+        lines.append("[tool error]")
+    if output:
+        lines.append(output)
+    return "\n".join(lines)
+
+
+def _format_compaction_context(messages: list[dict]) -> str:
+    results = _compaction_tool_results(messages)
+    consumed_result_ids = set()
+    sections = []
+
+    for message in messages:
+        if message.get("role") == "system":
+            continue
+
+        role = message.get("role")
+        if role == "user":
+            text = _compaction_message_text(message)
+            if text:
+                sections.append(f"### user:\n{text}")
+            continue
+
+        if role == "assistant":
+            text = _compaction_message_text(message)
+            if text:
+                sections.append(f"### assistant:\n{text}")
+            calls = _compaction_tool_calls(message)
+            if calls:
+                entries = []
+                for call_id, name, arguments in calls:
+                    result = results.get(call_id) if call_id else None
+                    if call_id:
+                        consumed_result_ids.add(call_id)
+                    entries.append(_compaction_tool_entry(name, arguments, result))
+                sections.append("### tools:\n" + "\n\n".join(entries))
+            continue
+
+        if message.get("type") == "function_call":
+            entries = [
+                _compaction_tool_entry(name, arguments, results.get(call_id) if call_id else None)
+                for call_id, name, arguments in _compaction_tool_calls(message)
+            ]
+            sections.append("### tools:\n" + "\n\n".join(entries))
+            consumed_result_ids.update(
+                call_id for call_id, _, _ in _compaction_tool_calls(message) if call_id
+            )
+            continue
+
+        if role in {"tool", "function"} or message.get("type") == "function_call_output":
+            call_id = str(message.get("tool_call_id") or message.get("call_id") or "")
+            if call_id in consumed_result_ids:
+                continue
+            sections.append(
+                "### tools:\n"
+                + _compaction_tool_entry(
+                    str(message.get("name") or ""),
+                    "(unavailable)",
+                    message,
+                )
+            )
+
+    return "\n\n".join(sections)
 
 
 async def _summarize_messages(
@@ -1251,11 +1396,12 @@ async def _summarize_messages(
         clear_tool_history: bool,
         require_memory_success: bool = False,
 ) -> str:
-    transcript_messages = _write_compaction_transcript(messages)
+    context_messages = text_only_messages(strip_native_message_payloads(messages))
     filtered_messages = [
-        message for message in transcript_messages if message.get("role") != "system"
+        message for message in context_messages if message.get("role") != "system"
     ]
-    conversation_text = json.dumps(filtered_messages, default=str, ensure_ascii=False)
+
+    conversation_text = _format_compaction_context(filtered_messages)
 
     _compact_console.print(
         f"\n[bold yellow]⚡️ 正在压缩上下文...[/bold yellow]  "

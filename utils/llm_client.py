@@ -483,7 +483,7 @@ class AsyncBaseLLMClient(ABC):
                     f"## Reason or User Request\n{reason}\n\n"
                     f"## Current Active Long-Term Memories\n{current_memory_content or '(none)'}\n\n"
                     f"{summary_section}"
-                    f"## Conversation Transcript JSON\n{conversation_text}"
+                    f"## Conversation Transcript\n{conversation_text}"
                 ),
             },
         ]

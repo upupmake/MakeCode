@@ -2757,8 +2757,99 @@ async def test_manual_memory_update_strips_private_native_payloads():
     assert history[0]["message_metadata"]["native_blocks"][0]["signature"] == "private-signature"
 
 
+def test_compaction_context_formats_messages_and_tools_without_reasoning():
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "Read the file."},
+        {
+            "role": "assistant",
+            "reasoning_content": "private reasoning",
+            "content": "I will read it.",
+            "tool_calls": [{
+                "id": "call_1",
+                "name": "FileRead",
+                "arguments": '{"path":"README.md"}',
+                "raw": {"secret": "private"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "FileRead",
+            "content": "file contents",
+        },
+        {"role": "assistant", "content": "The file says hello."},
+        {"role": "user", "content": "Thanks."},
+    ]
+
+    context = memory._format_compaction_context(messages)
+
+    assert context == (
+        "### user:\n"
+        "Read the file.\n\n"
+        "### assistant:\n"
+        "I will read it.\n\n"
+        "### tools:\n"
+        "name: FileRead\n"
+        "arguments: {\"path\": \"README.md\"}\n"
+        "output:\n"
+        "file contents\n\n"
+        "### assistant:\n"
+        "The file says hello.\n\n"
+        "### user:\n"
+        "Thanks."
+    )
+    assert "private reasoning" not in context
+    assert "private" not in context
+
+
+def test_compaction_tool_arguments_fall_back_to_raw_text_when_invalid_json():
+    context = memory._format_compaction_context([
+        {"role": "user", "content": "Run it."},
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_1",
+                "name": "RunTerminalCommand",
+                "arguments": '{"command":',
+            }],
+        },
+    ])
+
+    assert "arguments: {\"command\":" in context
+
+
 @pytest.mark.anyio
-async def test_auto_compact_transcript_and_summary_ignore_private_native_payloads(tmp_path):
+async def test_summary_request_uses_plain_text_compaction_context():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "answer", "reasoning_content": "reasoning"},
+    ]
+    fake_client = Mock()
+    fake_client.get_summary_stream_events.return_value = object()
+
+    with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+            patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
+            patch.object(memory, "_compact_console"), \
+            patch.object(
+                memory.StreamRenderer,
+                "render_text_stream_async",
+                new_callable=AsyncMock,
+                return_value=("summary", [], None),
+            ), \
+            patch.object(memory, "memory_agent_loop", new_callable=AsyncMock, return_value=[]), \
+            patch.object(memory, "print_formatted_text"), \
+            patch.object(memory, "post_tui"):
+        await memory.auto_compact(messages)
+
+    summary_request = fake_client.get_summary_stream_events.call_args.args
+    assert summary_request[0] == "### user:\nquestion\n\n### assistant:\nanswer"
+    assert "reasoning" not in summary_request[0]
+
+
+@pytest.mark.anyio
+async def test_auto_compact_summary_ignores_private_native_payloads():
     messages = [
         {"role": "system", "content": "system"},
         {
@@ -2774,8 +2865,7 @@ async def test_auto_compact_transcript_and_summary_ignore_private_native_payload
     fake_client = Mock()
     fake_client.get_summary_stream_events.return_value = object()
 
-    with patch.object(memory, "TRANSCRIPT_DIR", tmp_path), \
-            patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+    with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
             patch.object(memory, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
             patch.object(memory, "_compact_console"), \
             patch.object(
@@ -2789,9 +2879,6 @@ async def test_auto_compact_transcript_and_summary_ignore_private_native_payload
             patch.object(memory, "post_tui"):
         await memory.auto_compact(messages)
 
-    transcript = next(tmp_path.glob("transcript_*.jsonl")).read_text(encoding="utf-8")
-    assert "private-signature" not in transcript
-    assert "native_blocks" not in transcript
     conversation_text = memory_loop.await_args.kwargs["conversation_text"]
     assert "private-signature" not in conversation_text
     assert "native_blocks" not in conversation_text
@@ -2799,7 +2886,7 @@ async def test_auto_compact_transcript_and_summary_ignore_private_native_payload
 
 
 @pytest.mark.anyio
-async def test_auto_compact_clears_old_tool_history_before_memory_agent_and_preserves_new_history(tmp_path):
+async def test_auto_compact_clears_old_tool_history_before_memory_agent_and_preserves_new_history():
     messages = [{"role": "system", "content": "system"}]
     execution_id = memory.TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "old.py"})
     memory.TOOL_EXECUTION_HISTORY.finish(execution_id, "old content")
@@ -2820,8 +2907,7 @@ async def test_auto_compact_clears_old_tool_history_before_memory_agent_and_pres
     memory_loop = AsyncMock(side_effect=run_memory_agent)
 
     try:
-        with patch.object(memory, "TRANSCRIPT_DIR", tmp_path), \
-                patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+        with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
                 patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
                 patch.object(memory, "_compact_console"), \
                 patch.object(
@@ -2845,14 +2931,13 @@ async def test_auto_compact_clears_old_tool_history_before_memory_agent_and_pres
 
 
 @pytest.mark.anyio
-async def test_auto_compact_preserves_tool_execution_history_when_compaction_fails(tmp_path):
+async def test_auto_compact_preserves_tool_execution_history_when_compaction_fails():
     messages = [{"role": "system", "content": "system"}]
     execution_id = memory.TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "old.py"})
     memory.TOOL_EXECUTION_HISTORY.finish(execution_id, "old content")
 
     try:
-        with patch.object(memory, "TRANSCRIPT_DIR", tmp_path), \
-                patch.object(memory, "_compact_console"), \
+        with patch.object(memory, "_compact_console"), \
                 patch.object(memory, "create_current_async_llm_client", return_value=None):
             with pytest.raises(RuntimeError, match="No model configured"):
                 await memory.auto_compact(messages)

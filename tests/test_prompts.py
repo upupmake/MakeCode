@@ -174,7 +174,7 @@ class PromptPolicyTests(unittest.TestCase):
         reminder = "后续如果当前上下文中缺少用户请求相关的记忆，可先进行一次记忆召回，但召回内容仅供参考。"
 
         self.assertIn("## Applied long-term memories", prompt)
-        self.assertIn("conversation span represented by the provided JSON dump", prompt)
+        self.assertIn("conversation span represented by the provided transcript", prompt)
         self.assertIn("later assistant decision, tool action, implementation choice, verification command, or answer", prompt)
         self.assertIn("can be specifically connected to it", prompt)
         self.assertIn("A memory being recalled, potentially relevant, mentioned, or topically similar is not evidence", prompt)
