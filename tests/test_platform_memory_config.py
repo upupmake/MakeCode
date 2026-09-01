@@ -3393,7 +3393,7 @@ def test_user_pre_recall_has_no_valid_assistant_content():
 
 
 @pytest.mark.anyio
-async def test_user_request_pre_recall_receives_previous_assistant_content():
+async def test_user_request_passes_recall_query_to_agent_loop():
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(
         action=CommandAction.RUN_AGENT,
@@ -3406,13 +3406,11 @@ async def test_user_request_pre_recall_receives_previous_assistant_content():
 
     with patch.object(main_module, "set_agent_loop_active"), \
             patch.object(main_module, "_ensure_active_conversation"), \
-            patch.object(main_module, "recall_long_term_memories", AsyncMock(return_value={"content": ""})) as recall, \
-            patch.object(main_module, "agent_loop", new_callable=AsyncMock), \
+            patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
             patch.object(main_module, "refresh_status"):
         await main_module._process_user_query("新的用户请求", history, command_handler)
 
-    assert recall.call_args.args[0] == "新的用户请求"
-    assert recall.call_args.kwargs["previous_assistant_content"] == "上一轮 assistant 回复"
+    run_agent_loop.assert_awaited_once_with(history, recall_query="新的用户请求")
 
 
 @pytest.mark.anyio
@@ -3427,13 +3425,11 @@ async def test_nm_request_skips_pre_recall_and_submits_suffix_as_user_query():
 
     with patch.object(main_module, "set_agent_loop_active"), \
             patch.object(main_module, "_ensure_active_conversation"), \
-            patch.object(main_module, "recall_long_term_memories", AsyncMock()) as recall, \
             patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
             patch.object(main_module, "post_tui") as post_tui, \
             patch.object(main_module, "refresh_status"):
         await main_module._process_user_query("/nm 直接处理这个请求", history, command_handler)
 
-    recall.assert_not_awaited()
     run_agent_loop.assert_awaited_once_with(history)
     assert history[-1] == {"role": "user", "content": "直接处理这个请求"}
     post_tui.assert_any_call(
@@ -3443,7 +3439,7 @@ async def test_nm_request_skips_pre_recall_and_submits_suffix_as_user_query():
 
 
 @pytest.mark.anyio
-async def test_skill_command_recalls_with_original_query_and_sends_injected_content():
+async def test_skill_command_passes_original_recall_query_and_loaded_content():
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(
         action=CommandAction.RUN_AGENT,
@@ -3457,7 +3453,6 @@ async def test_skill_command_recalls_with_original_query_and_sends_injected_cont
 
     with patch.object(main_module, "set_agent_loop_active"), \
             patch.object(main_module, "_ensure_active_conversation"), \
-            patch.object(main_module, "recall_long_term_memories", AsyncMock(return_value={"content": "memory"})) as recall, \
             patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
             patch.object(main_module, "refresh_status"):
         await main_module._process_user_query(
@@ -3466,16 +3461,16 @@ async def test_skill_command_recalls_with_original_query_and_sends_injected_cont
             command_handler,
         )
 
-    recall.assert_awaited_once()
-    assert recall.call_args.args[0] == "/demo-skill 处理这个请求"
-    run_agent_loop.assert_awaited_once_with(history)
+    run_agent_loop.assert_awaited_once_with(
+        history,
+        recall_query="/demo-skill 处理这个请求",
+    )
     message = history[-1]
     assert message["message_metadata"] == {
         "display_content": "/demo-skill 处理这个请求",
         "skill_command": True,
     }
-    assert message["content"].startswith("# Potentially Relevant Memories")
-    assert "<skill name=\"demo-skill\">\nloaded demo\n</skill>" in message["content"]
+    assert message["content"].startswith("<skill name=\"demo-skill\">\nloaded demo\n</skill>")
     assert message["content"].endswith("User: /demo-skill 处理这个请求")
     assert main_module._collect_user_message_content(history) == "/demo-skill 处理这个请求"
 
@@ -3490,7 +3485,6 @@ async def test_process_user_query_runs_agent_loop_for_title_detection():
 
     with patch.object(main_module, "set_agent_loop_active"), \
             patch.object(main_module, "_ensure_active_conversation"), \
-            patch.object(main_module, "recall_long_term_memories", AsyncMock(return_value={"content": ""})), \
             patch.object(main_module, "agent_loop", new_callable=AsyncMock, return_value=True) as run_agent_loop, \
             patch.object(main_module, "generate_title", new_callable=AsyncMock) as generate_title, \
             patch.object(main_module, "_apply_pending_title"), \
@@ -3498,7 +3492,7 @@ async def test_process_user_query_runs_agent_loop_for_title_detection():
         history = [{"role": "system", "content": "system"}]
         await main_module._process_user_query("hello", history, command_handler)
 
-    run_agent_loop.assert_awaited_once_with(history)
+    run_agent_loop.assert_awaited_once_with(history, recall_query="hello")
     generate_title.assert_not_awaited()
 
 
@@ -4145,6 +4139,95 @@ async def test_agent_loop_runs_at_most_one_entry_compaction_layer(
     for expected_message in expected_messages:
         assert any(expected_message in message for message in background_messages)
     assert not any("第三层" in message for message in background_messages)
+
+
+@pytest.mark.anyio
+async def test_agent_loop_recalls_memory_after_entry_compaction():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "current request"},
+    ]
+    events = []
+
+    async def compact(*args):
+        events.append("compact")
+        return True
+
+    async def recall(query, **kwargs):
+        events.append("recall")
+        assert query == "current request"
+        assert kwargs["previous_assistant_content"] == "old answer"
+        return {"content": "## mem_new\n- Insight: use the updated memory"}
+
+    async def stream(*args):
+        events.append("stream")
+        return "", [], None, True
+
+    with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "get_context_token_limit", return_value=100), \
+            patch.object(main_module, "get_compaction_thresholds", return_value=(70, 90)), \
+            patch.object(main_module, "estimate_tokens", return_value=90), \
+            patch.object(main_module, "partial_compact", new=AsyncMock(side_effect=compact)), \
+            patch.object(main_module, "recall_long_term_memories", new=AsyncMock(side_effect=recall)), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "_stream_with_render", new=AsyncMock(side_effect=stream)), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "post_tui"):
+        committed = await main_module.agent_loop(
+            messages,
+            llm_client=Mock(),
+            recall_query="current request",
+        )
+
+    assert committed is False
+    assert events == ["compact", "recall", "stream"]
+    assert messages[-1]["content"].startswith("# Potentially Relevant Memories")
+    assert messages[-1]["content"].endswith("current request")
+
+
+@pytest.mark.anyio
+async def test_agent_loop_prepends_recalled_memory_without_dropping_current_image():
+    image = {
+        "type": "image",
+        "attachment_id": "img_00000000000000000000000000000000",
+        "filename": "x.png",
+        "media_type": "image/png",
+    }
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": [{"type": "text", "text": "question"}, image]},
+    ]
+
+    with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "get_context_token_limit", return_value=100), \
+            patch.object(main_module, "get_compaction_thresholds", return_value=(70, 90)), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(
+                main_module,
+                "recall_long_term_memories",
+                new=AsyncMock(return_value={"content": "## mem_new\n- Insight: relevant"}),
+            ), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                new=AsyncMock(return_value=("", [], None, True)),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "post_tui"):
+        committed = await main_module.agent_loop(
+            messages,
+            llm_client=Mock(),
+            recall_query="question",
+        )
+
+    assert committed is False
+    assert messages[-1]["content"][0]["text"].startswith("# Potentially Relevant Memories")
+    assert messages[-1]["content"][1:] == [{"type": "text", "text": "question"}, image]
 
 
 @pytest.mark.anyio

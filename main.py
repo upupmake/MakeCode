@@ -338,6 +338,8 @@ async def _run_tool_handler(handler, arguments: dict):
 async def agent_loop(
     messages: list,
     llm_client=None,
+    *,
+    recall_query: str | None = None,
 ) -> bool:
     """Agent 主循环：每次业务请求独占一个 LLM client。"""
     set_temporary_query_enabled(False)
@@ -355,7 +357,7 @@ async def agent_loop(
         )
         return False
     try:
-        return await _agent_loop_with_client(messages, llm_client)
+        return await _agent_loop_with_client(messages, llm_client, recall_query=recall_query)
     finally:
         restore_temporary_query_to_input()
         set_temporary_query_enabled(False)
@@ -367,6 +369,8 @@ async def agent_loop(
 async def _agent_loop_with_client(
     messages: list,
     llm_client,
+    *,
+    recall_query: str | None = None,
 ) -> bool:
     committed_response = False
     was_cancelled = False
@@ -464,6 +468,33 @@ async def _agent_loop_with_client(
                 TuiRegion.BACKGROUND,
                 "[#aaaaaa]第一层已检查，没有可裁剪的较早工具输出。[/#aaaaaa]",
             )
+
+    if recall_query is not None:
+        recall_result = await recall_long_term_memories(
+            recall_query,
+            previous_assistant_content=_get_previous_assistant_content(messages),
+            source="用户请求预召回",
+            agent_id=ORCHESTRATOR_AGENT_ID,
+        )
+        memory_context = recall_result.get("content", "")
+        if memory_context:
+            latest_user_message = next(
+                message for message in reversed(messages) if message.get("role") == "user"
+            )
+            content = latest_user_message.get("content")
+            if isinstance(content, list):
+                latest_user_message["content"] = [
+                    {
+                        "type": "text",
+                        "text": prepend_recalled_memory_to_query("", memory_context),
+                    },
+                    *content,
+                ]
+            else:
+                latest_user_message["content"] = prepend_recalled_memory_to_query(
+                    content if isinstance(content, str) else "",
+                    memory_context,
+                )
 
     def _append_temporary_query() -> dict | None:
         temporary_query = consume_temporary_query()
@@ -851,24 +882,13 @@ def _paste_image_from_system_clipboard() -> str | None:
     return image_reference_marker(block)
 
 
-def _message_from_user_query(
-    user_query: str,
-    recalled_memory: str = "",
-) -> tuple[dict, str]:
+def _message_from_user_query(user_query: str) -> tuple[dict, str]:
     display_text, parts = _parse_input_images(user_query)
     image_present = any(part.get("type") == "image" for part in parts)
     if not image_present:
-        content = prepend_recalled_memory_to_query(user_query, recalled_memory)
-        return {"role": "user", "content": content}, display_text
+        return {"role": "user", "content": user_query}, display_text
 
-    content_parts = []
-    if recalled_memory:
-        content_parts.append({
-            "type": "text",
-            "text": prepend_recalled_memory_to_query("", recalled_memory),
-        })
-    content_parts.extend(parts)
-    return {"role": "user", "content": content_parts}, display_text
+    return {"role": "user", "content": parts}, display_text
 
 
 def _get_previous_assistant_content(history: list) -> str:
@@ -916,21 +936,7 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                     TuiRegion.BACKGROUND,
                     "[#aaaaaa]🧠 已跳过本次请求的记忆预召回流程。[/#aaaaaa]",
                 )
-                user_message, display_query = _message_from_user_query(user_query)
-            else:
-                recall_query = original_query or user_query
-                recall_query = remove_image_placeholders(recall_query)
-                previous_assistant_content = _get_previous_assistant_content(history)
-                recall_result = await recall_long_term_memories(
-                    recall_query,
-                    previous_assistant_content=previous_assistant_content,
-                    source="用户请求预召回",
-                    agent_id=ORCHESTRATOR_AGENT_ID,
-                )
-                user_message, display_query = _message_from_user_query(
-                    user_query,
-                    recall_result.get("content", ""),
-                )
+            user_message, display_query = _message_from_user_query(user_query)
             user_message_record = user_message
             if original_query is not None:
                 user_message_record["message_metadata"] = {
@@ -943,7 +949,13 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                 }
             history.append(user_message_record)
 
-            await agent_loop(history)
+            if command_result.skip_memory_recall:
+                await agent_loop(history)
+            else:
+                await agent_loop(
+                    history,
+                    recall_query=remove_image_placeholders(original_query or user_query),
+                )
         except RuntimeError as exc:
             console.print(f"[bold yellow]⚠️ {escape(str(exc))}[/bold yellow]")
         finally:
