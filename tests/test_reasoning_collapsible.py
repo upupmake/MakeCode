@@ -31,7 +31,7 @@ def _close_reasoning(app: MakeCodeTuiApp) -> None:
 
 
 @pytest.mark.anyio
-async def test_streaming_reasoning_goes_into_expanded_collapsible():
+async def test_streaming_reasoning_starts_collapsed():
     app = MakeCodeTuiApp()
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -45,7 +45,7 @@ async def test_streaming_reasoning_goes_into_expanded_collapsible():
         assert len(container.children) == 1
         collapsible = container.children[0]
         assert isinstance(collapsible, Collapsible)
-        assert collapsible.collapsed is False
+        assert collapsible.collapsed is True
         contents = collapsible.query_one(Collapsible.Contents)
         assert len(contents.children) == 2
 
@@ -55,7 +55,7 @@ async def test_streaming_reasoning_goes_into_expanded_collapsible():
 
 
 @pytest.mark.anyio
-async def test_close_collapses_reasoning_and_releases_active_reference():
+async def test_completion_releases_reasoning_reference_without_changing_user_state():
     app = MakeCodeTuiApp()
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -66,11 +66,13 @@ async def test_close_collapses_reasoning_and_releases_active_reference():
 
         container = app.query_one("#content-log", VerticalScroll)
         collapsible = container.children[0]
+        collapsible.collapsed = False
+        await pilot.pause()
 
         _close_reasoning(app)
         await pilot.pause()
 
-        assert collapsible.collapsed is True
+        assert collapsible.collapsed is False
         assert app._active_reasoning_collapsible is None
 
         # 关闭后普通 REASONING 输出回到容器顶层，不再进入收纳容器
@@ -332,7 +334,9 @@ async def test_reasoning_parent_toggles_when_clicking_content_block():
         container = app.query_one("#content-log", VerticalScroll)
         collapsible = container.children[0]
         block = collapsible.query_one(ContentBlock)
-        assert collapsible.collapsed is False
+        assert collapsible.collapsed is True
+        collapsible.collapsed = False
+        await pilot.pause()
 
         await pilot.click(block, offset=(2, 0))
         await pilot.pause()

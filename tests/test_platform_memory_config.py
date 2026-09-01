@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 from openai import APIError
+from rich.panel import Panel
 from rich.text import Text
 
 from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
@@ -2736,6 +2737,94 @@ def test_estimate_tokens_ignores_private_native_payloads():
     )
 
 
+def test_estimate_token_breakdown_uses_explicit_role_tags():
+    messages = [
+        {"role": "system", "content": "system text"},
+        {"role": "user", "content": "user text"},
+        {
+            "role": "assistant",
+            "reasoning_content": "reasoning text",
+            "content": "assistant text",
+            "tool_calls": [{
+                "id": "call_1",
+                "name": "Read",
+                "arguments": {"path": "README.md"},
+            }],
+        },
+        {
+            "role": "tool",
+            "name": "Read",
+            "tool_call_id": "call_1",
+            "content": "tool output",
+        },
+    ]
+    tools = [{"name": "Read", "description": "read a file"}]
+
+    sections = memory._build_token_estimation_sections(messages, tools)
+    breakdown = memory.estimate_token_breakdown(messages, tools)
+
+    assert "<system>system text</system>" in sections["system"]
+    assert "<system>name: Read" in sections["system"]
+    assert sections["user"] == "<user>user text</user>"
+    assert sections["reasoning"] == "<reasoning>reasoning text</reasoning>"
+    assert "<assistant>assistant text</assistant>" in sections["assistant"]
+    assert "<tool>name: Read" in sections["tool"]
+    assert "arguments: path: README.md" in sections["tool"]
+    assert "tool output" in sections["tool"]
+    assert breakdown == {
+        key: memory.estimate_text_tokens(value)
+        for key, value in sections.items()
+    }
+    assert memory.estimate_tokens(messages, tools) == sum(breakdown.values())
+
+
+@pytest.mark.anyio
+async def test_token_usage_bar_click_opens_breakdown_modal():
+    from system.tui_app import MakeCodeTuiApp
+    from system.tui_modals import TokenUsageModal
+
+    app = MakeCodeTuiApp(
+        runtime_info_provider=lambda: "📈 Context: 10/100 Tokens (10.0%)",
+        token_usage_provider=lambda: ({
+            "system": 1,
+            "user": 2,
+            "reasoning": 3,
+            "assistant": 4,
+            "tool": 5,
+        }, 100),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        runtime_info = app.query_one("#runtime-info-bar")
+        token_usage = app.query_one("#token-usage-bar")
+        assert runtime_info.tooltip is None
+        assert isinstance(token_usage.tooltip, Panel)
+        assert token_usage.tooltip.title == "📈 Context Tokens"
+        await pilot.click(runtime_info)
+        await pilot.pause()
+        assert not isinstance(app.screen, InfoPanelModal)
+        await pilot.click(token_usage)
+        await pilot.pause()
+        assert isinstance(app.screen, TokenUsageModal)
+        dialog = app.screen.query_one("#token-usage-dialog")
+        assert dialog.region.width < app.size.width
+        assert dialog.region.height < app.size.height
+        assert app.screen.query_one("#modal-close")
+        assert app.screen.query("#token-usage-close").__len__() == 0
+        assert app.screen.query_one("#token-usage-title").render().plain == "📈 上下文 Token 使用"
+        assert app.screen.query_one("#token-usage-table")
+        assert app.screen.query_one("#token-usage-table").query_one(".token-usage-header", expect_type=Label).render().plain == "类型"
+        assert "system（含工具定义）" in "\n".join(
+            str(label.render())
+            for label in app.screen.query(".token-usage-label")
+        )
+        assert "tool" in "\n".join(
+            str(label.render())
+            for label in app.screen.query(".token-usage-label")
+        )
+
+
 @pytest.mark.anyio
 async def test_manual_memory_update_strips_private_native_payloads():
     history = [{
@@ -4943,6 +5032,7 @@ def test_runtime_info_displays_current_reasoning_effort():
         runtime_info = console_render.format_runtime_info()
 
     assert "Model: main (example.com) · Effort: high" in runtime_info
+    assert "HITL" not in runtime_info
     assert "Format:" not in runtime_info
 
 

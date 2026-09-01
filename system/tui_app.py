@@ -8,10 +8,13 @@ from pathlib import Path
 from queue import Queue
 from typing import Any
 
+from rich import box
 from rich.console import RenderableType
 from rich.cells import cell_len
 from rich.errors import MarkupError
 from rich.markup import escape
+from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -51,6 +54,7 @@ from system.tui_modals import (
     StartupWorkdirModal,
     TaskPanelModal,
     TemporaryQueryModal,
+    TokenUsageModal,
     ToolHistoryModal,
 )
 from utils import paths
@@ -667,6 +671,51 @@ class ConversationTitle(Static):
         event.stop()
 
 
+class TokenUsageBar(Static):
+    _LABELS = ("system", "user", "reasoning", "assistant", "tool")
+    _DISPLAY_LABELS = {
+        "system": "system*",
+        "user": "user",
+        "reasoning": "reasoning",
+        "assistant": "assistant",
+        "tool": "tool",
+    }
+
+    def update_usage(self, breakdown: dict[str, int], threshold: int) -> None:
+        total = sum(breakdown.get(key, 0) for key in self._LABELS)
+        ratio = total / threshold * 100 if threshold else 0
+        self.update(Text(f"📈 {total:,}/{threshold:,} ({ratio:.1f}%)", style="bold #bfdbfe"))
+        table = Table.grid(padding=(0, 1))
+        table.add_column(style="bold #93c5fd", no_wrap=True)
+        table.add_column(justify="right", style="#e0f2fe", no_wrap=True)
+        table.add_column(justify="right", style="#cbd5e1", no_wrap=True)
+        table.add_row("类型", "Tokens", "占比")
+        table.add_row("总计", f"{total:,}", f"{ratio:.1f}%")
+        for key in self._LABELS:
+            tokens = breakdown.get(key, 0)
+            item_ratio = tokens / threshold * 100 if threshold else 0
+            table.add_row(
+                self._DISPLAY_LABELS[key],
+                f"{tokens:,}",
+                f"{item_ratio:.1f}%",
+            )
+        self.tooltip = Panel(
+            table,
+            title="📈 Context Tokens",
+            subtitle="* system 包含工具定义 · 点击查看明细",
+            border_style="bright_blue",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+
+    def on_click(self, event: Click) -> None:
+        app = self.app
+        if not isinstance(app, MakeCodeTuiApp):
+            return
+        app.open_token_usage_modal()
+        event.stop()
+
+
 class ContentBlock(Static):
     """Content/Reasoning 的纯渲染块，不处理交互事件。"""
 
@@ -1068,11 +1117,27 @@ class MakeCodeTuiApp(App[None]):
         height: 1;
         background: #111827;
         color: #e5e7eb;
+        padding: 0 1;
+    }
+
+    #token-usage-bar {
+        width: auto;
+        min-width: 25;
+        height: 1;
+        padding: 0 1;
+        background: #172554;
+        color: #bfdbfe;
+        text-style: bold;
+    }
+
+    #token-usage-bar:hover {
+        background: #1e3a8a;
+        color: #eff6ff;
     }
 
     #hitl-toggle {
-        width: 14;
-        min-width: 14;
+        width: 16;
+        min-width: 16;
         height: 1;
         min-height: 1;
         max-height: 1;
@@ -1131,6 +1196,7 @@ class MakeCodeTuiApp(App[None]):
         startup_load_handler: Callable[[], None] | None = None,
         image_placeholder_handler: Callable[[str], tuple[str, list[dict[str, str]]]] | None = None,
         image_clipboard_handler: Callable[[], str | None] | None = None,
+        token_usage_provider: Callable[[], tuple[dict[str, int], int]] | None = None,
     ) -> None:
         super().__init__()
         self._logs: dict[TuiRegion, RichLog] = {}
@@ -1156,6 +1222,7 @@ class MakeCodeTuiApp(App[None]):
         self._startup_load_handler = startup_load_handler
         self._image_placeholder_handler = image_placeholder_handler
         self._image_clipboard_handler = image_clipboard_handler
+        self._token_usage_provider = token_usage_provider
         self._mode_label = "ACT"
         self._agent_loop_active = False
         self._temporary_query_enabled = False
@@ -1223,7 +1290,8 @@ class MakeCodeTuiApp(App[None]):
                     yield Static("", id="sub-agent-tail", classes="pane-tail")
         with Horizontal(id="runtime-info-row"):
             yield Static(self._runtime_info, id="runtime-info-bar")
-            yield Button("HITL", id="hitl-toggle")
+            yield TokenUsageBar("📈 Tokens", id="token-usage-bar")
+            yield Button("🛡️ HITL", id="hitl-toggle")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1605,14 +1673,13 @@ class MakeCodeTuiApp(App[None]):
             if active_collapsible is not None:
                 if payload_renderable is not None:
                     active_collapsible.mount_block(payload_renderable)
-                active_collapsible.collapse_without_scrolling()
                 setattr(self, active_attr, None)
         elif event.collapsible_open:
             collapsible_type = ToolsCollapsible if is_tools else ReasoningCollapsible
             collapsible = collapsible_type(
                 *([ContentBlock(payload_renderable, classes="content-block")] if payload_renderable is not None else []),
                 title=event.collapsible_title or ("🛠️ Tools" if is_tools else "🧠 Reasoning"),
-                collapsed=False,
+                collapsed=True,
                 classes=classes,
             )
             container.mount(collapsible)
@@ -2263,6 +2330,21 @@ class MakeCodeTuiApp(App[None]):
         messages = self._messages_provider() if self._messages_provider is not None else []
         self.open_tool_history_modal(TOOL_EXECUTION_HISTORY, list(messages))
 
+    def open_token_usage_modal(self) -> None:
+        if self._modal_active or self._token_usage_provider is None:
+            return
+        try:
+            breakdown, threshold = self._token_usage_provider()
+        except Exception:
+            return
+
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            self.query_one("#input-box", MakeCodeInput).focus()
+
+        self._modal_active = True
+        self.push_screen(TokenUsageModal(breakdown, threshold), _done)
+
     def action_toggle_hitl(self) -> None:
         from utils.hitl import toggle_hitl
 
@@ -2331,7 +2413,7 @@ class MakeCodeTuiApp(App[None]):
         except Exception:
             enabled = False
         button = self.query_one("#hitl-toggle", Button)
-        button.label = "HITL ON" if enabled else "HITL OFF"
+        button.label = "🛡️ HITL: ON" if enabled else "🛡️ HITL: OFF"
 
     def refresh_status(self) -> None:
         self._update_header_status()
@@ -2346,6 +2428,17 @@ class MakeCodeTuiApp(App[None]):
         except Exception:
             return
         runtime_info = self.query_one("#runtime-info-bar", Static)
+        token_usage = self.query_one("#token-usage-bar", TokenUsageBar)
+        if self._token_usage_provider is not None:
+            try:
+                breakdown, threshold = self._token_usage_provider()
+                token_usage.update_usage(breakdown, threshold)
+            except Exception:
+                token_usage.update(Text("📈 Tokens", style="bold #bfdbfe"))
+                token_usage.tooltip = None
+        else:
+            token_usage.update(Text("📈 Tokens", style="bold #bfdbfe"))
+            token_usage.tooltip = None
         if self._client_request_active:
             if self._client_retry_count:
                 client_state = (

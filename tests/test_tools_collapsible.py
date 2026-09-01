@@ -75,6 +75,43 @@ async def test_tool_round_creates_one_collapsible_per_tool_with_call_and_result_
         assert "搜索成功" in str(second_contents.children[1].content)
 
 
+@pytest.mark.anyio
+async def test_tool_completion_preserves_user_expansion_state():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.handle_tui_event(
+            TuiEvent(
+                TuiRegion.CONTENT,
+                None,
+                collapsible_title="🛠️ Tool: FileRead",
+                collapsible_open=True,
+                collapsible_kind="tools",
+            )
+        )
+        await pilot.pause()
+        container = app.query_one("#content-log", VerticalScroll)
+        collapsible = container.children[0]
+        assert collapsible.collapsed is True
+
+        collapsible.collapsed = False
+        await pilot.pause()
+        app.handle_tui_event(
+            TuiEvent(
+                TuiRegion.CONTENT,
+                None,
+                collapsible_title="🛠️ Tool: FileRead",
+                collapsible_close=True,
+                collapsible_kind="tools",
+            )
+        )
+        await pilot.pause()
+
+        assert collapsible.collapsed is False
+        assert app._active_tools_collapsible is None
+
+
 def test_history_replay_renders_main_agent_tools_round(monkeypatch):
     posted = []
 

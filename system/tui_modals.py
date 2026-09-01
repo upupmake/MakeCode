@@ -11,12 +11,13 @@ from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.events import Click, Key, Resize
 from textual.geometry import Region
 from textual.screen import ModalScreen
 from textual.strip import Strip
+from textual.widget import Widget
 from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, Static, TextArea, DataTable
 from textual.widgets.text_area import Selection
 
@@ -86,7 +87,8 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal,
+    TokenUsageModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
         align: center middle;
     }
 
@@ -182,6 +184,64 @@ class ChoiceModal(ClosableModalScreen[str]):
         border: round #f59e0b;
         background: $surface;
         padding: 1 2;
+    }
+
+    #token-usage-dialog {
+        width: auto;
+        max-width: 100%;
+        height: auto;
+        max-height: 100%;
+        border: round #3b82f6;
+        padding: 1 2;
+        align: center top;
+    }
+
+    #token-usage-dialog #token-usage-title,
+    #token-usage-dialog #token-usage-table {
+        width: auto;
+        height: auto;
+    }
+
+    #token-usage-dialog > .modal-close {
+        dock: right;
+        margin: 0;
+    }
+
+    #token-usage-title {
+        height: auto;
+        margin-bottom: 1;
+        color: #e5e7eb;
+        text-align: center;
+    }
+
+    #token-usage-table {
+        height: auto;
+        grid-size: 3;
+        grid-columns: auto auto auto;
+        grid-rows: auto;
+        grid-gutter: 0 2;
+        padding: 0 1;
+        border: round #3b82f6;
+    }
+
+    .token-usage-header {
+        color: #93c5fd;
+        text-style: bold;
+    }
+
+    .token-usage-label {
+        color: #e0f2fe;
+    }
+
+    .token-usage-tokens {
+        color: #f8fafc;
+        text-style: bold;
+        text-align: right;
+    }
+
+    .token-usage-ratio {
+        color: #cbd5e1;
+        text-align: right;
     }
 
     #task-dialog {
@@ -2370,6 +2430,69 @@ class SkillsConfigModal(ClosableModalScreen[str | dict[str, Any]]):
             "enabled": enabled_count,
             "disabled": disabled_count,
         })
+
+    def action_close(self) -> None:
+        self.dismiss("closed")
+
+
+class TokenUsageModal(ClosableModalScreen[str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "close", "Close", priority=True),
+    ]
+
+    _LABELS = (
+        ("system", "system（含工具定义）"),
+        ("user", "user"),
+        ("reasoning", "reasoning"),
+        ("assistant", "assistant"),
+        ("tool", "tool"),
+    )
+
+    def __init__(self, breakdown: dict[str, int], threshold: int) -> None:
+        super().__init__()
+        self._breakdown = breakdown
+        self._threshold = threshold
+
+    def compose(self) -> ComposeResult:
+        total = sum(self._breakdown.get(key, 0) for key, _ in self._LABELS)
+        total_ratio = total / self._threshold * 100 if self._threshold else 0
+        yield VerticalScroll(
+            Label("📈 上下文 Token 使用", id="token-usage-title", markup=False),
+            ModalCloseButton(),
+            self._table(total, total_ratio),
+            id="token-usage-dialog",
+        )
+
+
+
+
+
+
+
+
+
+    def _table(self, total: int, total_ratio: float) -> Grid:
+        cells: list[Widget] = [
+            Label("类型", classes="token-usage-header"),
+            Label("Tokens", classes="token-usage-header"),
+            Label("占上限", classes="token-usage-header"),
+        ]
+        for key, label in self._LABELS:
+            tokens = self._breakdown.get(key, 0)
+            ratio = tokens / self._threshold * 100 if self._threshold else 0
+            cells.extend((
+                Label(label, classes="token-usage-label"),
+                Label(f"{tokens:,}", classes="token-usage-tokens"),
+                Label(f"{ratio:.1f}%", classes="token-usage-ratio"),
+            ))
+        cells.extend((
+            Label("合计", classes="token-usage-total"),
+            Label(f"{total:,} / {self._threshold:,}", classes="token-usage-total token-usage-tokens"),
+            Label(f"{total_ratio:.1f}%", classes="token-usage-total token-usage-ratio"),
+        ))
+        return Grid(*cells, id="token-usage-table")
 
     def action_close(self) -> None:
         self.dismiss("closed")

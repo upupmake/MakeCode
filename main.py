@@ -102,6 +102,7 @@ from utils.memory import (
     auto_compact,
     compact_tool_outputs,
     estimate_tokens,
+    estimate_token_breakdown,
     get_active_memory_count,
     get_compaction_thresholds,
     get_context_token_limit,
@@ -1021,11 +1022,16 @@ def _run_textual_main(
         render_current_workdir("当前工作目录已切换")
 
     def runtime_info_provider() -> str:
-        tokens = estimate_tokens(
-            history,
-            tools_definition=get_current_tools_definition(),
+        return format_runtime_info()
+
+    def token_usage_provider() -> tuple[dict[str, int], int]:
+        return (
+            estimate_token_breakdown(
+                history,
+                tools_definition=get_current_tools_definition(),
+            ),
+            get_context_token_limit(),
         )
-        return format_runtime_info(tokens, get_context_token_limit())
 
     def header_info_provider() -> str:
         workdir = paths.workdir()
@@ -1053,6 +1059,7 @@ def _run_textual_main(
     app = MakeCodeTuiApp(
         submit_handler=submit_handler,
         runtime_info_provider=runtime_info_provider,
+        token_usage_provider=token_usage_provider,
         header_info_provider=header_info_provider,
         conversation_title_provider=_get_current_conversation_title,
         conversation_title_regenerate_handler=conversation_title_regenerate_handler,

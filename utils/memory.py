@@ -1087,17 +1087,109 @@ def estimate_text_tokens(text: str) -> int:
     return text_tokens.estimate_text_tokens(text, encoder=_ENCODER)
 
 
+def _token_value_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n".join(
+            f"{key}: {_token_value_text(item)}"
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return "\n".join(_token_value_text(item) for item in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _token_reasoning_text(message: dict) -> str:
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning:
+        return reasoning
+    return "".join(
+        block.get("text", "")
+        for block in message.get("content_blocks") or []
+        if isinstance(block, dict) and block.get("type") == "reasoning"
+    )
+
+
+def _token_tool_call_text(name: str, arguments: object) -> str:
+    return "\n".join((
+        f"name: {name}",
+        f"arguments: {_token_value_text(arguments)}",
+    ))
+
+
+def _build_token_estimation_sections(messages: list, tools_definition: list = None) -> dict[str, str]:
+    projected_messages = text_only_messages(
+        strip_native_message_payloads(messages)
+    )
+    sections = {
+        "system": [],
+        "user": [],
+        "reasoning": [],
+        "assistant": [],
+        "tool": [],
+    }
+    for message in projected_messages:
+        role = message.get("role")
+        if role == "system":
+            text = _compaction_message_text(message)
+            if text:
+                sections["system"].append(f"<system>{text}</system>")
+            continue
+        if role == "user":
+            text = _compaction_message_text(message)
+            if text:
+                sections["user"].append(f"<user>{text}</user>")
+            continue
+        if role == "assistant":
+            reasoning = _token_reasoning_text(message)
+            if reasoning:
+                sections["reasoning"].append(f"<reasoning>{reasoning}</reasoning>")
+            text = _compaction_message_text(message)
+            if text:
+                sections["assistant"].append(f"<assistant>{text}</assistant>")
+            for _, name, arguments in _compaction_tool_calls(message):
+                sections["tool"].append(
+                    f"<tool>{_token_tool_call_text(name, arguments)}</tool>"
+                )
+            continue
+        if role in {"tool", "function"} or message.get("type") == "function_call_output":
+            name = str(message.get("name") or "")
+            output = message.get("output", message.get("content", ""))
+            text = _token_value_text(output)
+            tool_content = "\n".join(
+                part for part in (f"name: {name}" if name else "", text) if part
+            )
+            if tool_content:
+                sections["tool"].append(f"<tool>{tool_content}</tool>")
+            continue
+        if message.get("type") == "function_call":
+            for _, name, arguments in _compaction_tool_calls(message):
+                sections["tool"].append(
+                    f"<tool>{_token_tool_call_text(name, arguments)}</tool>"
+                )
+            continue
+        if isinstance(role, str):
+            text = _compaction_message_text(message)
+            if text:
+                sections["assistant"].append(f"<{role}>{text}</{role}>")
+
+    for tool in tools_definition or []:
+        sections["system"].append(f"<system>{_token_value_text(tool)}</system>")
+    return {key: "\n\n".join(value) for key, value in sections.items()}
+
+
+def estimate_token_breakdown(messages: list, tools_definition: list = None) -> dict[str, int]:
+    return {
+        key: estimate_text_tokens(value)
+        for key, value in _build_token_estimation_sections(messages, tools_definition).items()
+    }
+
+
 def estimate_tokens(messages: list, tools_definition: list = None):
-    # 计算基础文本的 token 数（messages 已包含系统提示词）
-    text = json.dumps(text_only_messages(strip_native_message_payloads(messages)), ensure_ascii=False)
-    base_tokens = estimate_text_tokens(text)
-
-    # 加上工具定义的 token 数
-    if tools_definition:
-        tools_text = json.dumps(tools_definition, ensure_ascii=False)
-        base_tokens += estimate_text_tokens(tools_text)
-
-    return base_tokens
+    return sum(estimate_token_breakdown(messages, tools_definition).values())
 
 
 def _conversation_groups(messages: list[dict]) -> list[tuple[int, int, bool]]:

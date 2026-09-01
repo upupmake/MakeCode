@@ -808,6 +808,19 @@ async def test_runtime_info_displays_client_request_state():
 
 
 @pytest.mark.anyio
+async def test_hitl_button_uses_shield_emoji_and_state_label():
+    from unittest.mock import patch
+
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "runtime")
+
+    with patch("utils.hitl.get_hitl_status", return_value=True):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            button = app.query_one("#hitl-toggle")
+            assert str(button.label) == "🛡️ HITL: ON"
+
+
+@pytest.mark.anyio
 async def test_runtime_info_displays_retry_count_without_agent_running():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "runtime")
 

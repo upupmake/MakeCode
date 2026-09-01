@@ -419,7 +419,6 @@ def _render_history(messages: list):
 
 def format_runtime_info(tokens: int | None = None, threshold: int = 80000) -> str:
     from system.models import get_current_model_config
-    from utils.hitl import get_hitl_status
     from utils.plan_mode import is_plan_mode
 
     mode_text = "📋 Plan" if is_plan_mode() else "🎬 Act"
@@ -432,9 +431,7 @@ def format_runtime_info(tokens: int | None = None, threshold: int = 80000) -> st
         )
     else:
         model_text = "未选择"
-    token_text = "N/A" if tokens is None else f"{tokens}/{threshold} ({(tokens / threshold) * 100:.1f}%)"
-    hitl_text = "ON" if get_hitl_status() else "OFF"
-    return f"{mode_text} | 🤖 Model: {model_text} | 📈 Tokens: {token_text} | 🛡️ HITL: {hitl_text}"
+    return f"{mode_text} | 🤖 Model: {model_text}"
 
 
 def _render_runtime_info(tokens: int | None = None, threshold: int = 80000) -> None:
@@ -453,16 +450,10 @@ def _render_token_usage(
     如果未提供 estimate_tokens_fn，则无法显示 token 使用情况。
     """
     if estimate_tokens_fn is None:
-        # 如果没有提供估算函数，则跳过显示
+        # 如果没有提供 estimate_tokens_fn，则无法显示 token 使用情况。
         return
 
-    tokens = estimate_tokens_fn(
-        messages,
-        tools_definition=tools_definition,
-    )
-    pct = (tokens / threshold) * 100
-    post_tui(TuiRegion.STATUS, f"📈 Context: {tokens}/{threshold} Tokens ({pct:.1f}%)")
-    _render_runtime_info(tokens, threshold)
+    return
 
 
 def _render_startup_banner():
