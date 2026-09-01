@@ -3619,6 +3619,47 @@ async def test_agent_loop_discards_pending_temporary_query_when_final_round_ends
 
 
 @pytest.mark.anyio
+async def test_agent_loop_restores_temporary_query_before_clearing_after_final_round():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    events = []
+
+    class FakeClient:
+        def append_assistant_message(self, history, raw_message):
+            history.append(raw_message)
+
+    with patch.object(main_module, "compact_tool_outputs"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                AsyncMock(return_value=(
+                    "done",
+                    [],
+                    {"role": "assistant", "content": "done", "stop_reason": "end_turn"},
+                    False,
+                )),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "consume_temporary_query", return_value=None), \
+            patch.object(main_module, "restore_temporary_query_to_input", side_effect=lambda: events.append("restore")), \
+            patch.object(main_module, "clear_temporary_query", side_effect=lambda: events.append("clear")), \
+            patch.object(main_module, "set_temporary_query_enabled"), \
+            patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
+            patch.object(main_module, "_apply_pending_title"):
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert committed is True
+    assert events[:2] == ["restore", "clear"]
+
+
+@pytest.mark.anyio
 async def test_agent_loop_removes_injected_temporary_query_when_cancelled():
     messages = [
         {"role": "system", "content": "system"},

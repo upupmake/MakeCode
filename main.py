@@ -660,7 +660,6 @@ async def _agent_loop_with_client(
             CONVERSATION_STORE.save_messages(messages)
 
         if not has_tool_call and stop_reason != "pause_turn":
-            clear_temporary_query()
             break
 
     restore_temporary_query_to_input()
