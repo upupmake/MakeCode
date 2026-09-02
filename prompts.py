@@ -223,16 +223,18 @@ def _hitl_section(is_orchestrator: bool = True) -> str:
     )
 
 
-def _memory_action_section() -> str:
+def _memory_action_section(*, plan_mode: bool) -> str:
     """Guide the orchestrator on when to consider memory-related actions."""
-    return """# Long-Term Memory Actions
-Use memory actions only when they help the current work or preserve durable future context.
-
-You can call `RecallLongTermMemory` when the current task may depend on prior project conventions, workflow preferences, release/build rules, environment facts, recurring pitfalls, or stable user preferences. Recall before making decisions that would benefit from that context. For example, when the current project encounters a problem or you have a question that might be answered by prior context, consider recalling relevant memory before using `AskUser`; ask the user only if memory cannot resolve the uncertainty.
-
-You can call `RememberLongTermMemory` to ask the memory manager to update long-term memory when the current conversation reveals a durable, reusable preference, convention, workflow rule, pitfall, environment fact, or release/build norm that is likely to matter in future sessions. Request updates after the reusable fact is clear enough to preserve.
-
-Do not use memory actions for temporary task progress, one-off implementation details, facts directly readable from the repository, or information that is only relevant to the current turn. Tool-specific schemas and argument requirements are defined by the tools themselves."""
+    lines = [
+        "# Long-Term Memory Actions",
+        "Call `RecallLongTermMemory` before acting when the current task may depend on a durable user preference, project convention, workflow rule, pitfall, environment fact, or release/build norm.",
+    ]
+    if not plan_mode:
+        lines.extend([
+            "",
+            "Call `ManageLongTermMemory` when the current conversation establishes durable information that should be added to, updated in, or deleted from long-term memory. Do not call it for temporary task progress, one-off details, or facts directly readable from the repository.",
+        ])
+    return "\n".join(lines)
 
 
 # ============================================================================
@@ -260,10 +262,12 @@ Work only on analysis and task planning. Do not modify files, execute modificati
 
 Blocked tools:
  - FileCreate, FileEdit — file create/edit operations
+ - ManageLongTermMemory — long-term memory changes
  - DelegateTasks — sub-agent delegation
 
 Allowed tools:
  - FileRead, ContentSearch, FileSearch — file reading and searching
+ - RecallLongTermMemory — read-only long-term memory recall
  - RunTerminalCommand — restricted to {_allowed_cmds}; other commands are blocked and allowed commands require confirmation
  - TaskManager planning tools (CreateTasks, UpdateTasksContent, UpdateTasksStatus, UpdateTasksDependencies, GetRunnableTasks, GetTaskTable)
  - LoadSkill — load domain-specific skills
@@ -332,7 +336,7 @@ For simple answers or focused reviews, respond directly without forcing this str
         _error_recovery_section(),
         _hitl_section(is_orchestrator=True),
         final_answer_format,
-        _memory_action_section(),
+        _memory_action_section(plan_mode=plan_mode),
         skills_prompt_block,
     ]
 
@@ -416,7 +420,7 @@ Note: The system will automatically generate a detailed report based on your wor
 
 
 def get_sub_agent_summary_prompt(
-    executed_steps: int, max_steps: int, todo_snapshot: str, messages_text: str
+    executed_steps: int, max_steps: int, todo_snapshot: str, conversation_text: str
 ) -> str:
     """Prompt 3: Sub-Agent fallback summary prompt (when stopped before completion)."""
     return f"""The sub-agent stopped before formal completion. Produce a concise recovery report for the Orchestrator based only on the provided state.
@@ -449,8 +453,8 @@ Executed steps: {executed_steps}/{max_steps}
 Current todo snapshot:
 {todo_snapshot}
 
-Conversation transcript (stringified JSON):
-{messages_text}
+Conversation transcript:
+{conversation_text}
 """
 
 
@@ -533,7 +537,7 @@ Execution boundaries:
 
 Modes:
 - compact: Evaluate the supplied reason, compacted transcript, summary, and current active memories for durable information worth preserving across future sessions. Make no change when there is no qualifying information.
-- active: Memory management was explicitly requested through /memory-update or RememberLongTermMemory. Use the Reason or User Request as the primary scope and the transcript only as supporting context and evidence. Do not derive memories from unrelated context. If the requested memory change is ambiguous, incomplete, or not durable, make no change.
+- active: Memory management was explicitly requested through /memory-update or ManageLongTermMemory. Use the Reason or User Request as the primary scope and the transcript only as supporting context and evidence. Do not derive memories from unrelated context. If the requested memory change is ambiguous, incomplete, or not durable, make no change.
 
 Available actions:
 - AppendLongTermMemory: add one durable memory for a distinct future trigger not already covered.

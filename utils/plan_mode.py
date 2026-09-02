@@ -14,7 +14,7 @@ PLAN_MODE_BLOCKLIST = frozenset({
     "FileCreate",
     "FileEdit",
     # Memory writes
-    "RememberLongTermMemory",
+    "ManageLongTermMemory",
     # Team delegation
     "DelegateTasks",
 })

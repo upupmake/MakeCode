@@ -78,6 +78,17 @@ class PromptPolicyTests(unittest.TestCase):
         self.assertIn("DeleteAllTasks — use only when the user explicitly requests", prompt)
         self.assertIn("requires confirmation", prompt)
 
+    def test_memory_actions_match_mode_tool_availability(self):
+        plan_prompt = self._orchestrator_prompt(plan_mode=True)
+        act_prompt = self._orchestrator_prompt(plan_mode=False)
+
+        self.assertIn("RecallLongTermMemory — read-only long-term memory recall", plan_prompt)
+        self.assertIn("ManageLongTermMemory — long-term memory changes", plan_prompt)
+        self.assertNotIn("Call `ManageLongTermMemory`", plan_prompt)
+        self.assertIn("Call `ManageLongTermMemory`", act_prompt)
+        self.assertNotIn("RememberLongTermMemory", plan_prompt)
+        self.assertNotIn("RememberLongTermMemory", act_prompt)
+
     def test_prompts_follow_the_users_language(self):
         expected = "Respond in the user's language"
 
@@ -119,7 +130,7 @@ class PromptPolicyTests(unittest.TestCase):
             executed_steps=4,
             max_steps=40,
             todo_snapshot="[>] verify",
-            messages_text="[]",
+            conversation_text="### user:\nwork",
         )
         assistant_prompt = get_report_assistant_system_prompt()
 
@@ -136,6 +147,8 @@ class PromptPolicyTests(unittest.TestCase):
 
         self.assertIn("Executed steps: 4/40", summary_prompt)
         self.assertIn("[>] verify", summary_prompt)
+        self.assertIn("Conversation transcript:\n### user:\nwork", summary_prompt)
+        self.assertNotIn("stringified JSON", summary_prompt)
 
     def test_sub_agent_uses_todos_only_for_multi_step_tasks(self):
         prompt = self._sub_agent_prompt()

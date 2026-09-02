@@ -184,6 +184,7 @@ async def test_sub_agent_loop_consumes_unified_result_without_legacy_done_conten
                     assistant_message={
                         "role": "assistant",
                         "content": "work finished",
+                        "reasoning_content": "private reasoning",
                         "message_metadata": {
                             "source_format": "anthropic",
                             "source_model": "claude-test",
@@ -219,8 +220,14 @@ async def test_sub_agent_loop_consumes_unified_result_without_legacy_done_conten
     assert result["report"].endswith("COMPLETION_STATUS: completed")
     assert client.calls == 2
     assert client.requests[1][0]["role"] == "system"
-    assert "private-signature" not in json.dumps(client.requests[1])
-    assert "native_blocks" not in json.dumps(client.requests[1])
+    report_prompt = client.requests[1][1]["content"]
+    assert "Conversation transcript:\n### user:\nComplete the test task." in report_prompt
+    assert "### assistant:\nwork finished" in report_prompt
+    assert "You are a subagent" not in report_prompt
+    assert "private reasoning" not in report_prompt
+    assert "private-signature" not in report_prompt
+    assert "native_blocks" not in report_prompt
+    assert '"role": "assistant"' not in report_prompt
 
 
 @pytest.mark.anyio
@@ -251,7 +258,17 @@ async def test_sub_agent_loop_awaits_async_tool_handlers(tmp_path):
                         "name": "AsyncTool",
                         "arguments": '{"value": 2}',
                     }],
-                    assistant_message={"role": "assistant", "content": None},
+                    assistant_message={
+                        "role": "assistant",
+                        "content": None,
+                        "reasoning_content": "private reasoning",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "name": "AsyncTool",
+                            "arguments": '{"value": 2}',
+                            "raw": {"secret": "private"},
+                        }],
+                    },
                 )
             elif self.calls == 2:
                 result = SimpleNamespace(
@@ -289,6 +306,12 @@ async def test_sub_agent_loop_awaits_async_tool_handlers(tmp_path):
     async_handler.assert_awaited_once_with(value=2)
     assert result["report"].endswith("COMPLETION_STATUS: completed")
     assert client.requests[1][-1]["content"] == {"value": 4}
+    report_prompt = client.requests[2][1]["content"]
+    assert "### user:\nUse the async tool." in report_prompt
+    assert "### tools:\nname: AsyncTool" in report_prompt
+    assert 'arguments: {"value": 2}' in report_prompt
+    assert "output:\n{\"value\": 4}" in report_prompt
+    assert '"tool_calls"' not in report_prompt
 
 
 @pytest.mark.anyio

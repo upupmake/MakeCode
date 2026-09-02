@@ -45,7 +45,6 @@ from utils.hitl import current_agent_role
 from utils.llm_client import (
     _create_async_chat_client,
     close_async_llm_client,
-    strip_native_message_payloads,
 )
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
@@ -54,7 +53,7 @@ from utils.skills import (
     SKILL_TOOLS_HANDLERS,
     SKILL_TOOL_MODELS,
 )
-from utils.memory import recall_long_term_memories
+from utils.memory import format_clean_conversation_context, recall_long_term_memories
 from utils.conversations import SCHEMA_VERSION, SUB_AGENT_HISTORY_FILE, SUB_AGENT_RUNS_DIR
 from utils import tasks as tasks_module
 from utils.tool_validation import (
@@ -559,14 +558,9 @@ class TeammateManager:
         ) -> str:
             """生成详细的完成报告，并判断是否应该标记为 completed"""
             todo_snapshot = local_todo.render()
-            messages_text = json.dumps(
-                strip_native_message_payloads(messages),
-                ensure_ascii=False,
-                default=str,
-                indent=2,
-            )
+            conversation_text = format_clean_conversation_context(messages)
             summary_prompt = get_sub_agent_summary_prompt(
-                executed_steps, max_steps, todo_snapshot, messages_text
+                executed_steps, max_steps, todo_snapshot, conversation_text
             )
             fallback_messages = [
                 {

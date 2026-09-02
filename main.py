@@ -376,20 +376,20 @@ async def _agent_loop_with_client(
     committed_response = False
     was_cancelled = False
 
-    async def _remember_long_term_memory(prompt: str, **kwargs):
+    async def _manage_long_term_memory(prompt: str, **kwargs):
         post_tui(TuiRegion.BACKGROUND, active=True)
-        post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 Agent 主动请求写入长期记忆：{escape(prompt.strip())}[/#aaaaaa]")
+        post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 Agent 主动请求管理长期记忆：{escape(prompt.strip())}[/#aaaaaa]")
         try:
             return await manual_memory_update(prompt, messages)
         finally:
-            post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 Agent 主动记忆写入流程已返回。[/#aaaaaa]")
+            post_tui(TuiRegion.BACKGROUND, "[#aaaaaa]🧠 Agent 主动记忆管理流程已返回。[/#aaaaaa]")
             post_tui(TuiRegion.BACKGROUND, active=False)
 
     mcp_tools, mcp_handlers = GLOBAL_MCP_MANAGER.get_registry_snapshot()
     current_handlers = {
         **BASE_SUPER_TOOLS_HANDLERS,
         **mcp_handlers,
-        "RememberLongTermMemory": _remember_long_term_memory, # 单独注册，因为只提供给 Agent 主循环使用，不暴露给技能调用
+        "ManageLongTermMemory": _manage_long_term_memory, # 单独注册，因为只提供给 Agent 主循环使用，不暴露给技能调用
     }
     try:
         current_super_tools = get_current_tools_definition(mcp_tools, llm_client=llm_client)

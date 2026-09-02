@@ -159,15 +159,14 @@ class RecallLongTermMemory(ToolArgumentsModel):
     query: str = Field(..., description="The current task, user request, or sub-question to recall relevant long-term memories for.")
 
 
-class RememberLongTermMemory(ToolArgumentsModel):
-    """Ask the memory manager to update long-term memory from the current conversation."""
+class ManageLongTermMemory(ToolArgumentsModel):
+    """Add, update, or delete long-term memories when the current conversation establishes durable information for future sessions."""
 
     prompt: str = Field(
         ...,
         description=(
-            "A concrete memory-management request written by the agent. Use this only when the current conversation "
-            "reveals a durable user preference, project convention, workflow rule, pitfall, environment fact, or release/build norm "
-            "that should be reused in future sessions. Do not save temporary task progress, one-off details, or facts directly readable from code."
+            "The memory changes needed based on the durable information established in the current conversation. "
+            "Exclude temporary task progress, one-off details, and facts directly readable from the repository."
         ),
     )
 
@@ -184,7 +183,7 @@ MEMORY_RECALL_TOOLS, MEMORY_RECALL_TOOL_MODELS = build_tool_definitions(
     RecallLongTermMemory,
 )
 MEMORY_SELF_MANAGEMENT_TOOLS, MEMORY_SELF_MANAGEMENT_TOOL_MODELS = build_tool_definitions(
-    RememberLongTermMemory,
+    ManageLongTermMemory,
 )
 
 
@@ -1059,15 +1058,8 @@ async def memory_agent_loop(
 
 async def manual_memory_update(prompt: str, history: list = None) -> list[dict]:
     prompt = prompt.strip()
-    conversation_messages = text_only_messages(strip_native_message_payloads([
-        msg for msg in (history or []) if msg.get("role") != "system"
-    ]))
     return await memory_agent_loop(
-        conversation_text=json.dumps(
-            conversation_messages,
-            ensure_ascii=False,
-            default=str,
-        ),
+        conversation_text=format_clean_conversation_context(history or []),
         summary="",
         reason=prompt,
         current_memory_content=render_long_term_memory_markdown(),
@@ -1423,12 +1415,13 @@ def _compaction_tool_entry(
     return "\n".join(lines)
 
 
-def _format_compaction_context(messages: list[dict]) -> str:
-    results = _compaction_tool_results(messages)
+def format_clean_conversation_context(messages: list[dict]) -> str:
+    clean_messages = text_only_messages(strip_native_message_payloads(messages))
+    results = _compaction_tool_results(clean_messages)
     consumed_result_ids = set()
     sections = []
 
-    for message in messages:
+    for message in clean_messages:
         if message.get("role") == "system":
             continue
 
@@ -1488,12 +1481,7 @@ async def _summarize_messages(
         clear_tool_history: bool,
         require_memory_success: bool = False,
 ) -> str:
-    context_messages = text_only_messages(strip_native_message_payloads(messages))
-    filtered_messages = [
-        message for message in context_messages if message.get("role") != "system"
-    ]
-
-    conversation_text = _format_compaction_context(filtered_messages)
+    conversation_text = format_clean_conversation_context(messages)
 
     _compact_console.print(
         f"\n[bold yellow]⚡️ 正在压缩上下文...[/bold yellow]  "

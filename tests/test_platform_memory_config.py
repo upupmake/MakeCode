@@ -2826,27 +2826,65 @@ async def test_token_usage_bar_click_opens_breakdown_modal():
 
 
 @pytest.mark.anyio
-async def test_manual_memory_update_strips_private_native_payloads():
-    history = [{
-        "role": "assistant",
-        "content": "answer",
-        "message_metadata": {
-            "source_format": "anthropic",
-            "source_model": "claude-test",
-            "native_blocks": [{"type": "thinking", "signature": "private-signature"}],
+async def test_manual_memory_update_uses_clean_role_based_context():
+    history = [
+        {"role": "system", "content": "system prompt"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Read the file."},
+                {"type": "image", "attachment_id": "image-1"},
+            ],
         },
-    }]
+        {
+            "role": "assistant",
+            "content": "I will read it.",
+            "reasoning_content": "private reasoning",
+            "message_metadata": {
+                "source_format": "anthropic",
+                "source_model": "claude-test",
+                "native_blocks": [{"type": "thinking", "signature": "private-signature"}],
+            },
+            "tool_calls": [{
+                "id": "call_1",
+                "name": "FileRead",
+                "arguments": '{"path":"README.md"}',
+                "raw": {"secret": "private"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "FileRead",
+            "content": "file contents",
+        },
+    ]
 
     with patch.object(memory, "memory_agent_loop", new_callable=AsyncMock, return_value=[]) as loop:
         await memory.manual_memory_update("remember convention", history)
 
     conversation_text = loop.await_args.kwargs["conversation_text"]
+    assert conversation_text == (
+        "### user:\n"
+        "Read the file.\n\n"
+        "### assistant:\n"
+        "I will read it.\n\n"
+        "### tools:\n"
+        "name: FileRead\n"
+        'arguments: {"path": "README.md"}\n'
+        "output:\n"
+        "file contents"
+    )
+    assert "system prompt" not in conversation_text
+    assert "private reasoning" not in conversation_text
     assert "private-signature" not in conversation_text
     assert "native_blocks" not in conversation_text
-    assert history[0]["message_metadata"]["native_blocks"][0]["signature"] == "private-signature"
+    assert "attachment_id" not in conversation_text
+    assert history[2]["message_metadata"]["native_blocks"][0]["signature"] == "private-signature"
+    assert history[2]["tool_calls"][0]["raw"] == {"secret": "private"}
 
 
-def test_compaction_context_formats_messages_and_tools_without_reasoning():
+def test_clean_conversation_context_formats_messages_and_tools_without_reasoning():
     messages = [
         {"role": "system", "content": "system prompt"},
         {"role": "user", "content": "Read the file."},
@@ -2871,7 +2909,7 @@ def test_compaction_context_formats_messages_and_tools_without_reasoning():
         {"role": "user", "content": "Thanks."},
     ]
 
-    context = memory._format_compaction_context(messages)
+    context = memory.format_clean_conversation_context(messages)
 
     assert context == (
         "### user:\n"
@@ -2892,8 +2930,8 @@ def test_compaction_context_formats_messages_and_tools_without_reasoning():
     assert "private" not in context
 
 
-def test_compaction_tool_arguments_fall_back_to_raw_text_when_invalid_json():
-    context = memory._format_compaction_context([
+def test_clean_conversation_context_keeps_invalid_tool_arguments_as_raw_text():
+    context = memory.format_clean_conversation_context([
         {"role": "user", "content": "Run it."},
         {
             "role": "assistant",

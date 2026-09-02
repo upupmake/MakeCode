@@ -206,7 +206,7 @@ def test_builtin_tool_registries_match_handler_boundaries():
         | set(todo.TODO_TOOL_MODELS)
     )
     assert set(main_module.BASE_SUPER_TOOL_MODELS) == (
-        set(main_module.BASE_SUPER_TOOLS_HANDLERS) | {"RememberLongTermMemory"}
+        set(main_module.BASE_SUPER_TOOLS_HANDLERS) | {"ManageLongTermMemory"}
     )
     assert set(memory.LONG_TERM_MEMORY_TOOL_MODELS).isdisjoint(
         main_module.BASE_SUPER_TOOL_MODELS

@@ -728,12 +728,13 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("old insight should not be in candidates", orchestrator_prompt)
         self.assertIn("# Long-Term Memory Actions", orchestrator_prompt)
         self.assertIn("RecallLongTermMemory", orchestrator_prompt)
-        self.assertIn("RememberLongTermMemory", orchestrator_prompt)
-        self.assertIn("durable, reusable preference", orchestrator_prompt)
-        self.assertIn("Tool-specific schemas and argument requirements are defined by the tools themselves", orchestrator_prompt)
+        self.assertIn("ManageLongTermMemory", orchestrator_prompt)
+        self.assertNotIn("RememberLongTermMemory", orchestrator_prompt)
+        self.assertIn("added to, updated in, or deleted from long-term memory", orchestrator_prompt)
 
         self.assertNotIn("# User Memory", sub_agent_prompt)
         self.assertNotIn("RecallLongTermMemory", sub_agent_prompt)
+        self.assertNotIn("ManageLongTermMemory", sub_agent_prompt)
         self.assertNotIn("RememberLongTermMemory", sub_agent_prompt)
         self.assertNotIn("old insight should not be in candidates", sub_agent_prompt)
 
@@ -741,15 +742,26 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         long_term_tool_names = [tool["function"]["name"] for tool in memory.LONG_TERM_MEMORY_TOOLS]
         recall_tool_names = [tool["function"]["name"] for tool in memory.MEMORY_RECALL_TOOLS]
         self_memory_tool_names = [tool["function"]["name"] for tool in memory.MEMORY_SELF_MANAGEMENT_TOOLS]
+        manage_tool = memory.MEMORY_SELF_MANAGEMENT_TOOLS[0]["function"]
 
         self.assertEqual(
             long_term_tool_names,
             ["AppendLongTermMemory", "DeleteLongTermMemory", "UpdateLongTermMemory"],
         )
         self.assertEqual(recall_tool_names, ["RecallLongTermMemory"])
-        self.assertEqual(self_memory_tool_names, ["RememberLongTermMemory"])
+        self.assertEqual(self_memory_tool_names, ["ManageLongTermMemory"])
+        self.assertEqual(
+            manage_tool["description"],
+            "Add, update, or delete long-term memories when the current conversation establishes durable information for future sessions.",
+        )
+        self.assertIn(
+            "durable information established in the current conversation",
+            manage_tool["parameters"]["properties"]["prompt"]["description"],
+        )
+        self.assertNotIn("manager", manage_tool["description"].lower())
         self.assertNotIn("RecallLongTermMemory", long_term_tool_names)
-        self.assertNotIn("RememberLongTermMemory", long_term_tool_names)
+        self.assertNotIn("ManageLongTermMemory", long_term_tool_names)
+        self.assertNotIn("RememberLongTermMemory", self_memory_tool_names)
 
 
 if __name__ == "__main__":

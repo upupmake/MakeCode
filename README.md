@@ -180,9 +180,9 @@ Team 模块支持：
 - 调用模型对历史进行摘要后再重建上下文。
 - 在压缩完成后自动分析是否需要写入、更新或删除**长期记忆**，将可跨会话复用的稳定信息注入后续 Prompt。
 - 长期记忆同时支持**主动管理模式**：用户可显式发起记忆维护请求，而不必等待自动压缩流程触发。
-- **请求前自动召回（Pre-Recall）**：每次主请求开始前，编排器会先以当前用户输入为查询，调用 `RecallLongTermMemory` 检索相关长期记忆，并作为处理上下文注入到对话中；编排器还可主动调用 `RememberLongTermMemory` 请求记忆管理器更新长期记忆。
+- **请求前自动召回（Pre-Recall）**：每次主请求开始前，编排器会先以当前用户输入为查询，调用 `RecallLongTermMemory` 检索相关长期记忆，并作为处理上下文注入到对话中；编排器还可主动调用 `ManageLongTermMemory` 新增、更新或删除长期记忆。
 - **TUI Background 区渲染**：记忆召回与写入活动会在独立的 `Background` 面板中实时展示，不污染主对话区。
-- **Plan Mode 隔离**：`RememberLongTermMemory` 在 Plan Mode 下被拦截，防止规划阶段写入记忆；读取类动作不受影响。
+- **Plan Mode 隔离**：`ManageLongTermMemory` 在 Plan Mode 下被拦截，防止规划阶段修改记忆；读取类动作不受影响。
 
 #### 长期记忆管理机制
 

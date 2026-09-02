@@ -196,9 +196,9 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - Uses the model to summarize past history and rebuild context.
 - After compaction, the system automatically analyzes whether durable information should be appended, updated, or deleted from **long-term memory**, then injects reusable cross-session knowledge into future prompts.
 - Long-term memory also supports an **active management mode**, so users can explicitly request memory maintenance without waiting for the compaction flow.
-- **Pre-recall before every main request**: At the start of every main user request, the orchestrator queries `RecallLongTermMemory` with the current user input and injects relevant long-term memories into the conversation as contextual hints; the orchestrator can also call `RememberLongTermMemory` to ask the memory manager to update long-term memory when durable, reusable facts emerge.
+- **Pre-recall before every main request**: At the start of every main user request, the orchestrator queries `RecallLongTermMemory` with the current user input and injects relevant long-term memories into the conversation as contextual hints; the orchestrator can also call `ManageLongTermMemory` to add, update, or delete long-term memories.
 - **TUI Background pane rendering**: long-term memory recall and write activity are rendered in the dedicated `Background` pane so they do not pollute the main conversation area.
-- **Plan Mode isolation**: `RememberLongTermMemory` is intercepted in Plan Mode to prevent memory writes during planning; read-only memory actions are unaffected.
+- **Plan Mode isolation**: `ManageLongTermMemory` is intercepted in Plan Mode to prevent memory changes during planning; read-only memory actions are unaffected.
 
 #### Long-Term Memory Management
 
