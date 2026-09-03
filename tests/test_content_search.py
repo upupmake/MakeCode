@@ -20,19 +20,19 @@ def _search_in_workspace(monkeypatch, tmp_path: Path, content_regex: str, contex
 def test_content_search_defaults_to_one_context_line(monkeypatch, tmp_path):
     result = _search_in_workspace(monkeypatch, tmp_path, "needle")
 
-    assert "1- before" in result
-    assert "2: first needle" in result
-    assert "3- between" in result
-    assert "4: second needle" in result
-    assert "5- after" in result
+    assert "1-before" in result
+    assert "2:first needle" in result
+    assert "3-between" in result
+    assert "4:second needle" in result
+    assert "5-after" in result
 
 
 def test_content_search_merges_overlapping_context_ranges(monkeypatch, tmp_path):
     result = _search_in_workspace(monkeypatch, tmp_path, "needle", context_size=1)
 
-    assert result.count("--") == 0
-    assert result.index("1- before") < result.index("2: first needle")
-    assert result.index("3- between") < result.index("4: second needle")
+    assert "skipped" not in result
+    assert result.index("1-before") < result.index("2:first needle")
+    assert result.index("3-between") < result.index("4:second needle")
 
 
 def test_content_search_context_is_limited_at_file_boundaries(monkeypatch, tmp_path):
@@ -41,19 +41,27 @@ def test_content_search_context_is_limited_at_file_boundaries(monkeypatch, tmp_p
 
     result = common.content_search("needle", context_size=3)
 
-    assert "1: first needle" in result
-    assert "2- last" in result
+    assert "1:first needle" in result
+    assert "2-last" in result
     assert "0" not in result
 
 
 def test_content_search_zero_context_returns_only_matching_lines(monkeypatch, tmp_path):
     result = _search_in_workspace(monkeypatch, tmp_path, "needle", context_size=0)
 
-    assert "2: first needle" in result
-    assert "4: second needle" in result
-    assert "1- before" not in result
-    assert "3- between" not in result
-    assert "5- after" not in result
+    assert "2:first needle" in result
+    assert "4:second needle" in result
+    assert "1-before" not in result
+    assert "3-between" not in result
+    assert "5-after" not in result
+
+
+def test_content_search_marks_skipped_lines_between_ranges(monkeypatch, tmp_path):
+    result = _search_in_workspace(monkeypatch, tmp_path, "needle", context_size=0)
+
+    assert "@@ 3-3 skipped @@" in result
+    assert result.index("2:first needle") < result.index("@@ 3-3 skipped @@")
+    assert result.index("@@ 3-3 skipped @@") < result.index("4:second needle")
 
 
 def test_content_search_filters_by_path_regex(monkeypatch, tmp_path):

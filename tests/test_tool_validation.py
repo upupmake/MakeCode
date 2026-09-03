@@ -11,6 +11,7 @@ from utils.tool_validation import (
     ToolArgumentsModel,
     ToolArgumentValidationError,
     build_tool_definitions,
+    is_tool_error_output,
     merge_tool_model_registries,
     parse_tool_arguments,
     validate_builtin_tool_arguments,
@@ -25,6 +26,37 @@ def test_parse_tool_arguments_accepts_dict_and_json_object():
         "content_regex": "needle"
     }
     assert parse_tool_arguments("ContentSearch", "") == {}
+
+
+def test_is_tool_error_output_flags_error_strings_denials_and_error_mappings():
+    assert is_tool_error_output("Error: File a.py not found.")
+    assert is_tool_error_output("Error: FileEdit rejected 2 edit block(s) for a.py: ...")
+    assert is_tool_error_output("User Denied Execution. Reason: 用户拒绝")
+    assert is_tool_error_output({"status": "error", "message": "User Denied Execution."})
+    assert is_tool_error_output({"error": "boom"})
+
+    assert not is_tool_error_output("Edited a.py: applied 2 edit block(s) atomically.")
+    assert not is_tool_error_output("Created a.py: 3 lines written")
+    assert not is_tool_error_output({"status": "success", "message": "done"})
+    assert not is_tool_error_output({"summary": {}, "rows": []})
+    assert not is_tool_error_output(None)
+
+
+def test_hitl_denied_tool_output_is_classified_as_an_error(monkeypatch, tmp_path):
+    """A declined FileEdit must reach the model flagged, not reported as a success."""
+    monkeypatch.setattr(common.paths, "_WORKDIR", tmp_path)
+    monkeypatch.setattr(common, "check_permission", lambda *args: (False, "用户拒绝"))
+    target = tmp_path / "sample.py"
+    target.write_text("a = 1\n", encoding="utf-8")
+
+    output = common.file_edit(
+        "sample.py",
+        [{"search_content": "a = 1", "replace_content": "a = 2"}],
+    )
+
+    assert output == "User Denied Execution. Reason: 用户拒绝"
+    assert is_tool_error_output(output)
+    assert target.read_text(encoding="utf-8") == "a = 1\n"
 
 
 def test_parse_tool_arguments_rejects_invalid_json_with_raw_payload():

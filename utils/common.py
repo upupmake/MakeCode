@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ _OUTPUT_TRUNCATION_MARKER_PATTERN = re.compile(
 )
 _OUTPUT_TRUNCATION_MAX_TOKENS = 8000
 _OUTPUT_TRUNCATION_EDGE_TOKENS = 4000
+_UTF8_BOM = b"\xef\xbb\xbf"
 
 
 def _workdir() -> Path:
@@ -64,14 +66,47 @@ def _is_excluded_dir_path(rel_path: Path, is_dir: bool, exclude_dirs: set[str]) 
     return any(part.startswith(".") or part in exclude_dirs for part in dir_parts)
 
 
-def truncate_output(text: str, max_tokens: int = _OUTPUT_TRUNCATION_MAX_TOKENS) -> str:
-    return truncate_text_by_tokens(
+def _align_truncation_to_lines(text: str) -> str:
+    """Drop the partial lines that a token-level cut leaves around the marker.
+
+    Token slicing can end the head mid-line and start the tail mid-line, which
+    produces fragments that look like whole numbered lines but are not present in
+    the file. Copying such a fragment into FileEdit can never match.
+    """
+    match = _OUTPUT_TRUNCATION_MARKER_PATTERN.search(text)
+    if match is None:
+        return text
+
+    head = text[:match.start()]
+    tail = text[match.end():]
+
+    head_cut = head.rfind("\n")
+    if head_cut > 0:
+        head = head[:head_cut]
+
+    tail_cut = tail.find("\n")
+    if 0 <= tail_cut < len(tail) - 1:
+        tail = tail[tail_cut + 1:]
+
+    return head + match.group(0) + tail
+
+
+def truncate_output(
+        text: str,
+        max_tokens: int = _OUTPUT_TRUNCATION_MAX_TOKENS,
+        *,
+        line_aligned: bool = False,
+) -> str:
+    result = truncate_text_by_tokens(
         text,
         max_tokens=max_tokens,
         edge_tokens=_OUTPUT_TRUNCATION_EDGE_TOKENS,
         marker="\n\n[...此处省略 {omitted_tokens} tokens...]\n\n",
         existing_marker_pattern=_OUTPUT_TRUNCATION_MARKER_PATTERN,
     )
+    if not line_aligned or result is text:
+        return result
+    return _align_truncation_to_lines(result)
 
 
 def sanitize_title(title: str) -> str | None:
@@ -361,6 +396,14 @@ class FileRead(ToolArgumentsModel):
     - Line numbers are 1-indexed (first line is 1, not 0)
     - 'end' is INCLUSIVE (e.g., {start:1, end:100} reads lines 1-100)
 
+    OUTPUT FORMAT (same convention as `grep -n`):
+    - Each line is rendered as `<line number>:<verbatim line content>`. Everything after
+      the FIRST colon is the exact file content, including its indentation.
+    - The `<line number>:` prefix is display-only and is NOT part of the file. Never copy
+      it into FileEdit's search_content or replace_content.
+    - Non-adjacent regions are separated by a `@@ <a>-<b> skipped @@` marker. Lines on
+      opposite sides of that marker are NOT adjacent in the file.
+
     PERFORMANCE GUIDELINES:
     1. Provide specific regions when possible to reduce context usage.
     2. PREFER providing MULTIPLE regions in a SINGLE call rather than multiple separate calls.
@@ -454,7 +497,8 @@ def file_read(
                 return f"Error: File {path} appears to be a binary file and cannot be read as text."
 
             # 显式指定 utf-8 编码，并使用 replace 处理无法解码的字节，防止读取崩溃
-            text = fp.read_text(encoding="utf-8", errors="replace")
+            # utf-8-sig 让 BOM 不出现在第 1 行内容里，与 FileEdit 的快照保持一致
+            text = fp.read_text(encoding="utf-8-sig", errors="replace")
 
             lines = text.splitlines()
             total_lines = len(lines)
@@ -479,18 +523,22 @@ def file_read(
         # 合并区间
         merged = merge_intervals(intervals)
 
-        # 收集行号
-        line_numbers = []
+        # 格式化输出：不连续的 region 之间插入断点标记，避免模型跨空洞拼接行
+        formatted_lines = []
+        previous_end = None
         for s, e in merged:
-            line_numbers.extend(range(s, e + 1))
+            if previous_end is not None:
+                formatted_lines.append(f"@@ {previous_end + 1}-{s - 1} skipped @@")
+            formatted_lines.extend(f"{n}:{lines[n - 1]}" for n in range(s, e + 1))
+            previous_end = e
 
-        if not line_numbers:
+        if not formatted_lines:
             return f"File: {path}, Total lines: {total_lines}\n(No valid lines to read)"
 
-        # 格式化输出
-        formatted_lines = [f"{n}: {lines[n - 1]}" for n in line_numbers]
-
-        return truncate_output(f"File: {path}, Total lines: {total_lines}\n" + "\n".join(formatted_lines))
+        return truncate_output(
+            f"File: {path}, Total lines: {total_lines}\n" + "\n".join(formatted_lines),
+            line_aligned=True,
+        )
     except Exception as e:
         log_error_traceback("FileRead execution", e)
         return f"Error: {e}"
@@ -551,7 +599,7 @@ def file_create(path: str, content: str) -> str:
             if not is_valid:
                 return f"Success with Warning: 文件已写入，但检测到语法错误(Syntax error)\n\n{err_msg}"
 
-            return f"Created {path}: {content.count('\n') + 1} lines written"
+            return f"Created {path}: {len(content.splitlines())} lines written"
     except Exception as e:
         log_error_traceback("FileCreate execution", e)
         return f"Error: {e}"
@@ -559,26 +607,31 @@ def file_create(path: str, content: str) -> str:
 
 class EditBlock(ToolArgumentsModel):
     """
-    Represents a single search-and-replace operation.
-    It locates the exact text matching `search_content` and replaces it with `replace_content`.
+    Represents a single whole-line search-and-replace operation.
+    `search_content` is matched against the file as it was read, and the matched lines
+    are replaced by `replace_content`.
     """
 
     search_content: str = Field(
         ...,
         description=(
-            "The EXACT original text to be replaced. "
+            "The EXACT original lines to be replaced, copied verbatim from the file. "
             "CRITICAL RULES: "
-            "1. You MUST include sufficient context (2-3 unchanged lines before and after the target) to uniquely identify the location. "
-            "2. You must output the exact literal text. Indentation and line breaks must perfectly match the original file."
+            "1. You MUST include sufficient context (2-3 unchanged lines before and after the target) "
+            "so that the block matches exactly one location in the file. "
+            "2. Whole lines only, with the original indentation. "
+            "3. Never include FileRead's or ContentSearch's '<line number>:' prefix, never wrap the "
+            "block in ``` fences, and never use '...' to skip lines."
         ),
     )
     replace_content: str = Field(
         ...,
         description=(
-            "The NEW text that will replace `search_content`. "
+            "The NEW lines that replace `search_content`. "
             "CRITICAL RULES: "
             "1. If you included unchanged context lines in `search_content`, you MUST duplicate them exactly here, otherwise they will be permanently deleted! "
-            "2. Ensure absolute indentation spaces are perfectly maintained."
+            "2. Ensure absolute indentation spaces are perfectly maintained. "
+            "3. Use an empty string to delete the matched lines."
         ),
     )
 
@@ -600,22 +653,30 @@ class EditBlock(ToolArgumentsModel):
 
 class FileEdit(ToolArgumentsModel):
     """
-    Replace specific text blocks in a file with new content.
+    Replace whole-line blocks in an existing file.
 
     HOW TO USE PERFECTLY:
-    1. Provide the exact lines to change in `search_content`.
-    2. Copy those lines into `search_content`, adding 2-3 lines of unchanged code above and below as context.
-    3. Write the modified version into `replace_content`, making sure to KEEP the unchanged context lines!
+    1. Provide the exact lines to change in `search_content`, adding 2-3 lines of unchanged
+       code above and below as context.
+    2. Write the modified version into `replace_content`, making sure to KEEP the unchanged
+       context lines!
+    3. Put EVERY edit to the same file into ONE call, so they either all apply or none do.
+       Do not issue two FileEdit calls for the same file in the same turn.
 
-    MATCHING RULES (in order):
-    1. Exact match tried first
-    2. If no exact match, whitespace-tolerant matching attempted
-    3. Fuzzy matching (95% similarity) as last resort
-    - If multiple matches found, the edit is REJECTED
+    MATCHING RULES:
+    - Every block is first matched against the file as it was read, so blocks copied from one
+      FileRead result do not interfere with each other.
+    - A block that cannot be placed yet is retried against the text produced by the blocks
+      already applied, so chaining one block onto another block's output still works.
+    - Matching is whole-line: exact lines first, then ignoring trailing whitespace and a
+      uniform indentation shift (the replacement is re-indented by the same amount).
+    - Each block MUST match exactly one location. If any block never resolves, nothing is
+      written and every problem is reported at once.
 
     WARNINGS:
     - Never invent code or guess indentation.
     - Never use `...` to skip code.
+    - Never copy the `<line number>:` prefix from FileRead or ContentSearch output.
     - If your search block is not unique, include more context lines.
     """
 
@@ -625,7 +686,13 @@ class FileEdit(ToolArgumentsModel):
     )
     edits: list[EditBlock] = Field(
         ...,
-        description="A list of edits. Each edit has: search_content (exact text to find) and replace_content (new text). Processed sequentially. Do not overlap target regions."
+        min_length=1,
+        description=(
+            "A non-empty list of edits. Each edit has: search_content (exact lines to find) and "
+            "replace_content (new lines). Blocks are matched against the file as it was read; a "
+            "block that cannot be placed yet is retried against the text earlier blocks produced. "
+            "All blocks are applied atomically."
+        ),
     )
 
     @field_validator("edits", mode="before")
@@ -644,75 +711,324 @@ class FileEdit(ToolArgumentsModel):
         return v
 
 
-def apply_edit_block(file_text: str, search: str, replace: str) -> tuple[bool, str, str]:
+_LINE_NUMBER_PREFIX_PATTERN = re.compile(r"^(\d+)[:\-](.*)$")
+_DIAGNOSTIC_DIFF_MAX_LINES = 24
+_AMBIGUOUS_LOCATIONS_SHOWN = 5
+_FILE_EDIT_SNAPSHOT_NOTE = (
+    "Blocks are matched against the file as it was read; a block that cannot be placed yet is "
+    "retried against the text produced by the blocks already applied. Nothing is written "
+    "unless every block resolves, so re-read the file and resubmit all blocks together."
+)
+
+
+def _split_edit_lines(text: str) -> list[str]:
+    """Split an edit payload into whole lines, tolerating CRLF and a trailing newline."""
+    if not text:
+        return []
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _leading_whitespace(line: str) -> str:
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _find_exact_spans(file_lines: list[str], search_lines: list[str]) -> list[tuple[int, int]]:
+    """Locate every whole-line exact occurrence of the search block."""
+    size = len(search_lines)
+    if size == 0 or size > len(file_lines):
+        return []
+    first = search_lines[0]
+    return [
+        (index, index + size)
+        for index in range(len(file_lines) - size + 1)
+        if file_lines[index] == first and file_lines[index: index + size] == search_lines
+    ]
+
+
+def _match_indent_shift(window: list[str], search_lines: list[str]) -> tuple[str, bool] | None:
+    """Match a window ignoring trailing whitespace and a uniform indentation shift.
+
+    Returns ``(delta, search_is_deeper)`` where ``delta`` is the whitespace separating the
+    file's indentation from the search block's indentation, or None when the window does
+    not correspond to the search block.
     """
-    尝试在文本中替换块，包含三重容错机制：精确匹配 -> Strip匹配 -> Difflib模糊匹配
+    shift: tuple[str, bool] | None = None
+    for file_line, search_line in zip(window, search_lines):
+        if file_line.strip() != search_line.strip():
+            return None
+        if not search_line.strip():
+            continue
+
+        file_indent = _leading_whitespace(file_line)
+        search_indent = _leading_whitespace(search_line)
+        if file_indent == search_indent:
+            current = ("", False)
+        elif file_indent.endswith(search_indent):
+            current = (file_indent[: len(file_indent) - len(search_indent)], False)
+        elif search_indent.endswith(file_indent):
+            current = (search_indent[: len(search_indent) - len(file_indent)], True)
+        else:
+            return None
+
+        if shift is None:
+            shift = current
+        elif shift != current:
+            return None
+    return ("", False) if shift is None else shift
+
+
+def _find_shifted_spans(
+        file_lines: list[str], search_lines: list[str]
+) -> list[tuple[int, int, str, bool]]:
+    size = len(search_lines)
+    if size == 0 or size > len(file_lines):
+        return []
+    first = search_lines[0].strip()
+    spans = []
+    for index in range(len(file_lines) - size + 1):
+        if file_lines[index].strip() != first:
+            continue
+        shift = _match_indent_shift(file_lines[index: index + size], search_lines)
+        if shift is not None:
+            spans.append((index, index + size, shift[0], shift[1]))
+    return spans
+
+
+def _reindent(lines: list[str], delta: str, search_is_deeper: bool) -> list[str]:
+    if not delta:
+        return list(lines)
+    if search_is_deeper:
+        return [
+            line[len(delta):] if line.startswith(delta) else line
+            for line in lines
+        ]
+    return [delta + line if line.strip() else line for line in lines]
+
+
+def _apply_located(file_lines: list[str], located: list[dict]) -> list[str]:
+    """Splice replacements bottom-up so earlier spans keep their original indices."""
+    result = list(file_lines)
+    for item in sorted(located, key=lambda entry: entry["start"], reverse=True):
+        result[item["start"]: item["end"]] = item["replace_lines"]
+    return result
+
+
+def _search_anchor(
+        file_lines: list[str], search_lines: list[str]
+) -> tuple[str, int] | None:
+    """Pick the search line to anchor diagnostics on, and its offset in the block.
+
+    Prefers the rarest line that exists verbatim in the file. When no line exists
+    verbatim, falls back to the file line closest to the block's most distinctive line so
+    the model still gets a location instead of a bare "not found".
     """
-    # 统一换行符
-    file_text = file_text.replace("\r\n", "\n")
-    search = search.replace("\r\n", "\n")
-    replace = replace.replace("\r\n", "\n")
-
-    # 1. 尝试精确匹配
-    count = file_text.count(search)
-    if count == 1:
-        return True, file_text.replace(search, replace), ""
-    elif count > 1:
-        return False, file_text, "Search content found multiple times. Please include more context to make it unique. IMPORTANT: Verify the current file contents before retrying."
-
-    # 2. 尝试容错匹配 (去除首尾空白)
-    search_stripped = search.strip()
-    if not search_stripped:
-        return False, file_text, "Search content cannot be empty or only whitespace."
-
-    count_stripped = file_text.count(search_stripped)
-    if count_stripped == 1:
-        start_idx = file_text.find(search_stripped)
-        end_idx = start_idx + len(search_stripped)
-        new_text = file_text[:start_idx] + replace.strip() + file_text[end_idx:]
-        return True, new_text, ""
-    elif count_stripped > 1:
-        return False, file_text, "Stripped search content matches multiple locations. Please include more context. IMPORTANT: Verify the current file contents before retrying."
-
-    # 3. difflib 模糊匹配兜底
-    SIMILARITY_THRESHOLD = 0.95
-
-    file_lines = file_text.splitlines()
-    search_lines = search_stripped.splitlines()
-    replace_lines = replace.splitlines()
-
-    search_len = len(search_lines)
-    if search_len == 0 or not file_lines:
-        return False, file_text, "Search content NOT found. IMPORTANT: Verify the current file contents before retrying."
-
-    best_ratio = 0.0
-    best_start_idx = -1
-    best_end_idx = -1
-
-    max_window_diff = 2
-    min_window = max(1, search_len - max_window_diff)
-    max_window = min(len(file_lines), search_len + max_window_diff)
-
-    for window_len in range(min_window, max_window + 1):
-        for i in range(len(file_lines) - window_len + 1):
-            window_text = "\n".join(file_lines[i: i + window_len]).strip()
-            ratio = difflib.SequenceMatcher(None, window_text, search_stripped).ratio()
-
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_start_idx = i
-                best_end_idx = i + window_len
-
-    if best_ratio >= SIMILARITY_THRESHOLD:
-        new_lines = file_lines[:best_start_idx] + replace_lines + file_lines[best_end_idx:]
-        new_text = "\n".join(new_lines)
-        return True, new_text, f"(Warning: Exact match failed. Used fuzzy match with similarity {best_ratio:.2f})"
-
-    return False, file_text, (
-        f"Search content NOT found. Best match similarity was {best_ratio:.2f} "
-        f"(needs >= {SIMILARITY_THRESHOLD}). Ensure exact indentation and spaces. "
-        f"IMPORTANT: Verify the current file contents before retrying the edit."
+    counts = Counter(line.strip() for line in file_lines)
+    exact = sorted(
+        (counts[line.strip()], offset)
+        for offset, line in enumerate(search_lines)
+        if line.strip() and counts[line.strip()]
     )
+    if exact:
+        _, offset = exact[0]
+        return search_lines[offset].strip(), offset
+
+    probe_offset = max(
+        (offset for offset, line in enumerate(search_lines) if line.strip()),
+        key=lambda offset: len(search_lines[offset].strip()),
+        default=None,
+    )
+    if probe_offset is None:
+        return None
+    close = difflib.get_close_matches(
+        search_lines[probe_offset].strip(),
+        [line.strip() for line in file_lines if line.strip()],
+        n=1,
+        cutoff=0.6,
+    )
+    return (close[0], probe_offset) if close else None
+
+
+def _closest_region(
+        file_lines: list[str], search_lines: list[str]
+) -> tuple[int, int, float] | None:
+    """Find the file region most similar to the search block, anchored on one line.
+
+    Anchoring keeps this diagnostic cheap: only windows around a matching line are
+    scored, instead of every window in the file.
+    """
+    anchor_info = _search_anchor(file_lines, search_lines)
+    if anchor_info is None:
+        return None
+
+    anchor, anchor_offset = anchor_info
+    size = len(search_lines)
+    search_text = "\n".join(line.strip() for line in search_lines)
+
+    best = None
+    for index, line in enumerate(file_lines):
+        if line.strip() != anchor:
+            continue
+        start = max(0, index - anchor_offset)
+        end = min(len(file_lines), start + size)
+        window_text = "\n".join(item.strip() for item in file_lines[start:end])
+        ratio = difflib.SequenceMatcher(None, window_text, search_text).ratio()
+        if best is None or ratio > best[2]:
+            best = (start, end, ratio)
+    return best
+
+
+def _region_diff(
+        path: str, file_lines: list[str], start: int, end: int, search_lines: list[str]
+) -> list[str]:
+    diff = list(difflib.unified_diff(
+        file_lines[start:end],
+        search_lines,
+        fromfile=f"{path} lines {start + 1}-{end}",
+        tofile="your search_content",
+        lineterm="",
+        n=1,
+    ))
+    if len(diff) > _DIAGNOSTIC_DIFF_MAX_LINES:
+        diff = diff[:_DIAGNOSTIC_DIFF_MAX_LINES] + ["... (diff truncated)"]
+    return diff
+
+
+def _numbered_prefix_hint(search_lines: list[str], file_lines: list[str]) -> str:
+    """Detect a search block that was copied straight out of numbered tool output.
+
+    Every line must carry an increasing `<line number>:` prefix whose payload equals the
+    real file line, which makes false positives on genuine code effectively impossible.
+    """
+    if len(search_lines) < 2:
+        return ""
+
+    previous_number = None
+    for line in search_lines:
+        match = _LINE_NUMBER_PREFIX_PATTERN.match(line)
+        if not match:
+            return ""
+        number, payload = int(match.group(1)), match.group(2)
+        if previous_number is not None and number <= previous_number:
+            return ""
+        previous_number = number
+        if not 1 <= number <= len(file_lines):
+            return ""
+        actual = file_lines[number - 1]
+        if payload != actual and payload != f" {actual}":
+            return ""
+
+    return (
+        "Every line of this block carries a FileRead/ContentSearch '<line number>:' prefix. "
+        "That prefix is display-only and is not part of the file. Resubmit the block with "
+        "the prefixes removed."
+    )
+
+
+def _describe_missing_block(
+        index: int, path: str, file_lines: list[str], search_lines: list[str]
+) -> str:
+    lines = [f"Block {index}: search_content not found in {path}."]
+
+    prefix_hint = _numbered_prefix_hint(search_lines, file_lines)
+    if prefix_hint:
+        lines.append(f"  {prefix_hint}")
+        return "\n".join(lines)
+
+    closest = _closest_region(file_lines, search_lines)
+    if closest is None:
+        lines.append(
+            "  No line of this search_content exists anywhere in the file. "
+            "Re-read the file before retrying."
+        )
+        return "\n".join(lines)
+
+    start, end, ratio = closest
+    lines.append(f"  Closest region: lines {start + 1}-{end} (similarity {ratio:.2f})")
+    lines.extend(f"  {item}" for item in _region_diff(path, file_lines, start, end, search_lines))
+    return "\n".join(lines)
+
+
+def _describe_ambiguous_block(index: int, spans: list[tuple[int, int, str, bool]]) -> str:
+    shown = spans[:_AMBIGUOUS_LOCATIONS_SHOWN]
+    locations = ", ".join(f"lines {start + 1}-{end}" for start, end, _, _ in shown)
+    if len(spans) > len(shown):
+        locations += f", +{len(spans) - len(shown)} more"
+    return (
+        f"Block {index}: search_content matches {len(spans)} locations ({locations}). "
+        "Add more surrounding context so it matches exactly one location."
+    )
+
+
+def _locate_block(
+        file_lines: list[str], search_lines: list[str]
+) -> tuple[list[tuple[int, int, str, bool]], str]:
+    """Return every span the block matches, preferring exact lines over an indent shift."""
+    spans = [
+        (start, end, "", False)
+        for start, end in _find_exact_spans(file_lines, search_lines)
+    ]
+    if spans:
+        return spans, "exact"
+    return _find_shifted_spans(file_lines, search_lines), "reindented"
+
+
+def _describe_unresolved_block(
+        index: int,
+        path: str,
+        current_lines: list[str],
+        search_lines: list[str],
+        snapshot_spans: list[tuple[int, int, str, bool]],
+        applied: list[dict],
+) -> str:
+    spans, _ = _locate_block(current_lines, search_lines)
+    if len(spans) > 1:
+        return _describe_ambiguous_block(index, spans)
+
+    if len(snapshot_spans) == 1 and applied:
+        start, end = snapshot_spans[0][0], snapshot_spans[0][1]
+        blockers = sorted(
+            item["index"] for item in applied
+            if item["stage"] == 1 and item["start"] < end and start < item["end"]
+        )
+        culprit = (
+            " Block " + ", ".join(f"#{i}" for i in blockers) + " already rewrote those lines;"
+            " merge the overlapping edits into a single block."
+            if blockers else
+            " An earlier block in this call changed those lines."
+        )
+        return (
+            f"Block {index}: search_content matched the file as it was read "
+            f"(lines {start + 1}-{end}) but no longer matches after earlier blocks were "
+            f"applied.{culprit}"
+        )
+
+    return _describe_missing_block(index, path, current_lines, search_lines)
+
+
+def _detect_newline(text: str) -> str:
+    crlf_count = text.count("\r\n")
+    lf_count = text.count("\n") - crlf_count
+    cr_count = text.count("\r") - crlf_count
+    if crlf_count and crlf_count >= max(lf_count, cr_count):
+        return "\r\n"
+    if cr_count > lf_count:
+        return "\r"
+    return "\n"
+
+
+def _write_file_atomically(fp: Path, payload: bytes, mode: int) -> None:
+    temp_path = fp.with_name(f"{fp.name}.makecode.tmp")
+    try:
+        temp_path.write_bytes(payload)
+        os.chmod(temp_path, mode & 0o7777)
+        os.replace(temp_path, fp)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def file_edit(path: str, edits: Any) -> str:
@@ -734,34 +1050,145 @@ def file_edit(path: str, edits: Any) -> str:
             if not fp.exists():
                 return f"Error: File {path} not found."
 
-            text = fp.read_text(encoding="utf-8", errors="replace")
-            warnings = []
-            for i, block in enumerate(parsed_blocks):
-                success, new_text, msg = apply_edit_block(
-                    text, block.search_content, block.replace_content
+            raw = fp.read_bytes()
+            if b"\0" in raw[:1024]:
+                return (
+                    f"Error: File {path} appears to be a binary file and cannot be edited as text."
                 )
 
-                if not success:
-                    return f"Error in edit block {i + 1}:\n{msg}\nNo changes were saved. Verify the current file contents before retrying."
+            original_mode = fp.stat().st_mode
+            has_bom = raw.startswith(_UTF8_BOM)
+            try:
+                text = (raw[len(_UTF8_BOM):] if has_bom else raw).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                return (
+                    f"Error: File {path} is not valid UTF-8 ({exc.reason} at byte {exc.start}). "
+                    "FileEdit will not rewrite it because that would corrupt the undecodable bytes."
+                )
 
-                if "Warning" in msg:
-                    warnings.append(f"Block {i + 1}: {msg}")
+            newline = _detect_newline(text)
+            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+            trailing_newline = normalized.endswith("\n")
+            if not normalized:
+                file_lines = []
+            else:
+                file_lines = normalized.split("\n")
+                if trailing_newline:
+                    file_lines.pop()
 
-                text = new_text
+            # Locate and apply in stages. Every block is first matched against the file as it
+            # was read; a block that cannot be placed yet is deferred and retried against the
+            # text the applied blocks produced. That keeps chained edits working while still
+            # refusing to let a stale block silently undo an earlier one.
+            problems: list[tuple[int, str]] = []
+            pending: list[dict] = []
+            for index, block in enumerate(parsed_blocks, 1):
+                search_lines = _split_edit_lines(block.search_content)
+                if not any(line.strip() for line in search_lines):
+                    problems.append(
+                        (index, f"Block {index}: search_content is empty or only whitespace.")
+                    )
+                    continue
+                pending.append({
+                    "index": index,
+                    "search_lines": search_lines,
+                    "replace_lines": _split_edit_lines(block.replace_content),
+                })
 
-            if not text.endswith("\n"):
-                text += "\n"
+            snapshot_spans = {
+                item["index"]: _locate_block(file_lines, item["search_lines"])[0]
+                for item in pending
+            }
 
-            fp.write_text(text, encoding="utf-8")
+            current = list(file_lines)
+            applied: list[dict] = []
+            stage = 0
+            while pending:
+                stage += 1
+                resolved, unmatched = [], []
+                for item in pending:
+                    spans, tier = _locate_block(current, item["search_lines"])
+                    if len(spans) == 1:
+                        resolved.append((item, spans[0], tier))
+                    else:
+                        unmatched.append(item)
 
-            is_valid, err_msg = validate_code(path, text)
+                accepted, deferred = [], []
+                for item, span, tier in resolved:
+                    start, end, delta, search_is_deeper = span
+                    if any(start < other["end"] and other["start"] < end for other in accepted):
+                        deferred.append(item)
+                        continue
+                    accepted.append({
+                        "index": item["index"],
+                        "start": start,
+                        "end": end,
+                        "tier": tier,
+                        "delta": delta,
+                        "search_is_deeper": search_is_deeper,
+                        "stage": stage,
+                        "replace_lines": _reindent(item["replace_lines"], delta, search_is_deeper),
+                    })
+
+                if not accepted:
+                    pending = unmatched
+                    break
+
+                current = _apply_located(current, accepted)
+                applied.extend(accepted)
+                pending = sorted(unmatched + deferred, key=lambda item: item["index"])
+
+            for item in pending:
+                problems.append((
+                    item["index"],
+                    _describe_unresolved_block(
+                        item["index"], path, current, item["search_lines"],
+                        snapshot_spans[item["index"]], applied,
+                    ),
+                ))
+
+            if problems:
+                report = [
+                    f"Error: FileEdit rejected {len(parsed_blocks)} edit block(s) for {path}: "
+                    f"{len(problems)} problem(s) found. No changes were saved."
+                ]
+                for _, message in sorted(problems, key=lambda item: item[0]):
+                    report.append("")
+                    report.append(message)
+                report.append("")
+                report.append(_FILE_EDIT_SNAPSHOT_NOTE)
+                return "\n".join(report)
+
+            # Commit atomically, preserving the file's original identity.
+            assembled = newline.join(current) + (newline if trailing_newline else "")
+            payload = assembled.encode("utf-8")
+            _write_file_atomically(fp, _UTF8_BOM + payload if has_bom else payload, original_mode)
+
+            report = [f"Edited {path}: applied {len(applied)} edit block(s) atomically."]
+            for item in sorted(applied, key=lambda entry: entry["index"]):
+                detail = (
+                    f"  #{item['index']} {item['tier']:<11} "
+                    f"lines {item['start'] + 1}-{item['end']} "
+                    f"-> {len(item['replace_lines'])} line(s)"
+                )
+                if item["delta"]:
+                    direction = "-" if item["search_is_deeper"] else "+"
+                    detail += f" (indent {direction}{len(item['delta'])})"
+                if item["stage"] > 1:
+                    detail += f" (chained, stage {item['stage']})"
+                report.append(detail)
+            if any(item["stage"] > 1 for item in applied):
+                report.append(
+                    "  note: chained blocks matched the text produced by earlier blocks, so "
+                    "their line numbers refer to that intermediate state."
+                )
+
+            is_valid, err_msg = validate_code(path, assembled)
             if not is_valid:
-                return f"Edited {path}: 成功应用 {len(parsed_blocks)} 个编辑块，但检测到语法错误(Syntax error)\n\n{err_msg}"
+                report.append("")
+                report.append(f"Warning: 检测到语法错误(Syntax error)\n\n{err_msg}")
 
-        success_msg = f"Edited {path}: Successfully applied {len(parsed_blocks)} edit block(s)."
-        if warnings:
-            success_msg += "\n" + "\n".join(warnings)
-        return success_msg
+        return "\n".join(report)
 
     except Exception as e:
         log_error_traceback("FileEdit execution", e)
@@ -771,6 +1198,13 @@ def file_edit(path: str, edits: Any) -> str:
 class ContentSearch(ToolArgumentsModel):
     """
     Search for a regex pattern in text files within a specific directory.
+
+    OUTPUT FORMAT (same convention as `grep -n`):
+    - Matched lines are rendered as `<line number>:<verbatim line content>`, context lines
+      as `<line number>-<verbatim line content>`. Everything after the first separator is
+      the exact file content, including its indentation.
+    - That prefix is display-only and is NOT part of the file. Never copy it into FileEdit.
+    - Non-adjacent ranges are separated by a `@@ <a>-<b> skipped @@` marker.
 
     AUTO-EXCLUDED:
     - Binary files (detected by null bytes)
@@ -860,7 +1294,7 @@ def content_search(
 
                 matched_line_numbers = []
                 try:
-                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                    with open(filepath, "r", encoding="utf-8-sig", errors="ignore") as f:
                         file_lines = f.readlines()
 
                     for i, line in enumerate(file_lines, 1):
@@ -885,14 +1319,16 @@ def content_search(
 
                     output_lines = []
                     matched_line_set = set(matched_line_numbers)
+                    previous_end = None
                     for start, end in context_ranges:
-                        if output_lines and context_size > 0:
-                            output_lines.append("--")
+                        if previous_end is not None:
+                            output_lines.append(f"@@ {previous_end + 1}-{start - 1} skipped @@")
                         for line_number in range(start, end + 1):
                             marker = ":" if line_number in matched_line_set else "-"
                             output_lines.append(
-                                f"{line_number}{marker} {file_lines[line_number - 1].rstrip('\n')}"
+                                f"{line_number}{marker}{file_lines[line_number - 1].rstrip('\n')}"
                             )
+                        previous_end = end
                     results[rel_path_str] = output_lines
 
                 if total_matches >= MAX_MATCHES:
@@ -922,7 +1358,7 @@ def content_search(
             f"\n[!] Notice: Output truncated to first {MAX_MATCHES} matched lines to prevent context overflow."
         )
 
-    return truncate_output("\n".join(output_blocks).strip())
+    return truncate_output("\n".join(output_blocks).strip(), line_aligned=True)
 
 
 class FileSearch(ToolArgumentsModel):

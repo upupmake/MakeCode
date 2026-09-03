@@ -59,6 +59,7 @@ from utils import tasks as tasks_module
 from utils.tool_validation import (
     ToolArgumentsModel,
     build_tool_definitions,
+    is_tool_error_output,
     merge_tool_model_registries,
     parse_tool_arguments,
     validate_builtin_tool_arguments,
@@ -698,7 +699,7 @@ class TeammateManager:
                             output = await asyncio.to_thread(handler, **args)
                             if inspect.isawaitable(output):
                                 output = await output
-                        tool_error = isinstance(output, str) and output.startswith("Error:")
+                        tool_error = is_tool_error_output(output)
                     elif tool_name in mcp_handlers:
                         args = parse_tool_arguments(tool_name, tool_args)
                         if inspect.iscoroutinefunction(handler):
@@ -707,7 +708,7 @@ class TeammateManager:
                             output = await asyncio.to_thread(handler, **args)
                             if inspect.isawaitable(output):
                                 output = await output
-                        tool_error = isinstance(output, str) and output.startswith("Error:")
+                        tool_error = is_tool_error_output(output)
                     else:
                         raise RuntimeError(
                             f"Built-in tool model not registered: {tool_name}"

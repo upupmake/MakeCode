@@ -76,20 +76,21 @@ chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode sou
 
 Provides the following execution primitives:
 
-- `FileRead`: read file contents, optionally by line range
-- `FileCreate`: only for creating and writing a NEW file (when target file does not exist or is empty). **Automatically triggers Tree-sitter syntax validation before writing**, blocks and displays detailed error line numbers if syntax errors are detected.
-- `FileEdit`: modify an existing file. **Uses text search-and-replace mechanism (search_content → replace_content) instead of line number ranges**. No prior `FileRead` call is required; each edit block is matched against the current file contents. **Supports triple fallback: exact match → strip match → difflib fuzzy match (similarity ≥90%)**. Failed matches do not save changes, and Tree-sitter syntax validation runs after editing.
-- `ContentSearch`: recursively search text file contents under `root_dir` with `content_regex`, optionally filtering files by absolute path with `path_regex`; supports `context_size` to include that many lines before and after each match (default: 1); regex uses Python syntax. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
+- `FileRead`: read file contents, optionally by line range. Output follows the `grep -n` convention: `<line number>:<verbatim line>` with **no space after the colon**, so everything after the first colon is the exact line content (indentation included) and can be fed straight into `FileEdit`. Non-adjacent regions are separated by an `@@ a-b skipped @@` marker so lines are never concatenated across a gap.
+- `FileCreate`: only for creating and writing a NEW file (when target file does not exist or is empty). Tree-sitter syntax validation runs after writing; detected syntax errors are appended as a warning with line numbers and do not roll back the write.
+- `FileEdit`: modify an existing file. **Uses whole-line search-and-replace (search_content → replace_content) instead of line number ranges**. No prior `FileRead` call is required. **Staged matching**: every block is first matched against the file as it was read; a block that cannot be placed yet is deferred and retried against the text the applied blocks produced, so **chaining one block onto another block's output still works** regardless of the order the blocks are written in. Matching is whole-line: exact first, then tolerating trailing whitespace and a uniform indentation shift (the replacement is re-indented by the same amount). Each block must match exactly one location; if any block never resolves, the **whole batch is rejected and every problem is reported at once** (candidate line numbers, a unified diff against the closest region, plus targeted hints for "an earlier block rewrote those lines" and for copied line-number prefixes). Applying splices bottom-up, and the commit uses a same-directory temp file plus an atomic replace that preserves the original line endings, trailing-newline state, BOM and file mode. Non-UTF-8 and binary files are refused outright.
+- `ContentSearch`: recursively search text file contents under `root_dir` with `content_regex`, optionally filtering files by absolute path with `path_regex`; supports `context_size` to include that many lines before and after each match (default: 1); regex uses Python syntax. Output follows the same `grep -n` convention: matched lines as `<line number>:<verbatim line>`, context lines as `<line number>-<verbatim line>`, both without a separator space, and non-adjacent ranges separated by `@@ a-b skipped @@`. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
 - `FileSearch`: recursively search files and directories under `root_dir`, matching `path_regex` against absolute paths; supports type filtering (`file`/`dir`/`all`). Automatically excludes hidden and build/dependency directories and returns up to 500 items. Ideal for quickly exploring project structure.
 - `RunTerminalCommand`: run a non-interactive terminal command
 
 #### 📋 Tree-sitter Syntax Validation (`system/ts_validator.py`)
 
-`FileCreate` and `FileEdit` automatically invoke Tree-sitter for syntax checking before writing files:
+`FileCreate` and `FileEdit` automatically invoke Tree-sitter for syntax checking after writing files:
 
 - **Multi-language Support**: Automatically detects Python, JavaScript, TypeScript, Go, Rust, and more
 - **Smart Exclusion**: Automatically skips plain text and documentation files (`.md`, `.txt`, `.rst`, `.log`, etc.) to avoid false positives
-- **Detailed Error Reporting**: If syntax errors are detected, blocks the write and shows precise line/column numbers, displaying up to 5 core errors
+- **Detailed Error Reporting**: If syntax errors are detected, the tool result carries precise line/column numbers, showing up to 3 core errors
+- **Writes Are Never Blocked**: A syntax warning does not roll back the write. Intermediate states of a multi-step edit are legitimately allowed to be invalid, and blocking writes would deadlock the agent
 - **Fail-Open Strategy**: Silently bypasses when language parser is unavailable, environment exception occurs, or language cannot be determined — does not block normal operations
 
 Implementation details:
@@ -103,7 +104,7 @@ Implementation details:
 ### 2.4 File Access Control Mechanism (`utils/file_access.py`)
 
 - **Fine-Grained File-Level Locks**: Multi-agent concurrent read/write uses per-file `RLock` instead of a global lock, improving concurrency performance.
-- **Match Validation**: `FileEdit` validates current file contents using exact, strip, and fuzzy matching; failed matches do not save changes.
+- **Atomic Batch Editing**: `FileEdit` locates every block against the snapshot and validates uniqueness before touching the file. Blocks that cannot be placed yet, or that overlap an already-accepted block, are deferred to the next stage and retried. If any block never resolves the whole batch is rejected without writing; once all blocks resolve, spans are spliced bottom-up and the file is replaced atomically.
 - **Transactional Dependency Rollback**: `UpdateTasksDependencies` automatically rolls back the entire update batch on
   topology validation failure, maintaining data consistency.
 

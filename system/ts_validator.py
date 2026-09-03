@@ -141,9 +141,11 @@ def init_ts_cache():
 def validate_code(path: str, content: str) -> tuple[bool, str]:
     """
     校验代码语法的正确性。
+    调用时机：在 FileCreate / FileEdit 完成写入之后。返回的语法错误仅作为告警附在
+    工具结果上，不回滚已写入的内容：多步编辑的中间态本来可能不合法。
     采用 Fail-Open (静默放行) 策略：
     如果找不到语言、缺少 DLL、文件被意外删除、或发生任何加载错误，均静默跳过（返回 True, ""）。
-    仅在成功解析出语法树且包含明确的 has_error 时，才拦截写入，并提取精准报错。
+    仅在成功解析出语法树且包含明确的 has_error 时，才报告语法错误并提取精准报错。
     """
     if not _TS_VALIDATOR_AVAILABLE:
         return True, ""
@@ -198,7 +200,7 @@ def validate_code(path: str, content: str) -> tuple[bool, str]:
                         if len(diagnostics) > 3:
                             error_msg += f"\n... (还有 {len(diagnostics) - 3} 个错误未显示)"
                 except Exception:
-                    pass  # 提取详细诊断失败不影响拦截，直接返回基础报错
+                    pass  # 提取详细诊断失败不影响告警，直接返回基础报错
 
             return False, error_msg
 

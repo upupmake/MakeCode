@@ -16,6 +16,23 @@ class ToolArgumentValidationError(ValueError):
         super().__init__(message)
 
 
+# HITL declines return this prefix instead of raising, so classification must recognise it.
+TOOL_DENIAL_MARKER = "User Denied Execution."
+
+
+def is_tool_error_output(output: Any) -> bool:
+    """Classify a tool handler's return value for ``is_error`` reporting.
+
+    Handlers signal failure without raising in three ways: an ``Error:`` prefixed string, the
+    HITL denial string, or an error-shaped mapping. Exceptions are flagged by the callers.
+    """
+    if isinstance(output, str):
+        return output.startswith("Error:") or output.startswith(TOOL_DENIAL_MARKER)
+    if isinstance(output, Mapping):
+        return output.get("status") == "error" or "error" in output
+    return False
+
+
 def _format_location(location: tuple[Any, ...]) -> str:
     if not location:
         return "$"

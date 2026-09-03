@@ -122,6 +122,7 @@ from utils.tool_validation import (
     ToolArgumentsModel,
     ToolArgumentValidationError,
     build_tool_definitions,
+    is_tool_error_output,
     merge_tool_model_registries,
     parse_tool_arguments,
     validate_builtin_tool_arguments,
@@ -615,6 +616,7 @@ async def _agent_loop_with_client(
                     cmd = arguments.get("command", "")
                     if is_plan_mode_command_allowed(cmd):
                         output = await _run_tool_handler(handler, arguments)
+                        tool_error = is_tool_error_output(output)
                     else:
                         tool_error = True
                         output = (
@@ -623,7 +625,7 @@ async def _agent_loop_with_client(
                         )
                 elif not tool_error:
                     output = await _run_tool_handler(handler, arguments)
-                    tool_error = isinstance(output, str) and output.startswith("Error:")
+                    tool_error = is_tool_error_output(output)
             except ToolArgumentValidationError as exc:
                 tool_error = True
                 output = str(exc)
