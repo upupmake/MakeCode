@@ -811,11 +811,13 @@ async def test_choice_modal_long_title_keeps_options_reachable_by_scrolling():
         choice_list = modal.query_one("#choice-list")
 
         assert dialog.max_scroll_y > 0
-        dialog.scroll_end(animate=False)
+        dialog.scroll_end(animate=False, immediate=True)
         await pilot.pause()
         assert dialog.scroll_y == dialog.max_scroll_y
-        assert choice_list.region.y < dialog.region.bottom
-        assert choice_list.region.bottom > dialog.region.y
+        viewport_top = dialog.scroll_y
+        viewport_bottom = viewport_top + dialog.scrollable_content_region.height
+        assert choice_list.virtual_region.y < viewport_bottom
+        assert choice_list.virtual_region.bottom > viewport_top
 
 
 @pytest.mark.anyio
