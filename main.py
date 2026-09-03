@@ -1154,7 +1154,11 @@ if __name__ == "__main__":
         GLOBAL_MCP_MANAGER.stop()
 
     if CONVERSATION_STORE.active_id:
-        executable = "MakeCode" if getattr(sys, "frozen", False) else "python main.py"
+        executable = (
+            "MakeCode"
+            if getattr(sys, "frozen", False)
+            else f'python "{Path(__file__).resolve()}"'
+        )
         print(f"{executable} --load {CONVERSATION_STORE.active_id}")
 
     if _PENDING_UPDATE_EXE_PATH is not None:
