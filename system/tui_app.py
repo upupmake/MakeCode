@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
@@ -27,6 +28,7 @@ from textual.widgets import Button, Collapsible, Footer, Input, Label, RichLog, 
 from system.clipboard import copy_to_system_clipboard
 from utils.vision import (
     IMAGE_PLACEHOLDER_PATTERN,
+    image_placeholder_text,
     image_reference_marker,
 )
 from system.tui_types import (
@@ -59,6 +61,19 @@ from system.tui_modals import (
 )
 from utils import paths
 from utils.terminal import set_terminal_title
+
+
+_IMAGE_DISPLAY_PLACEHOLDER_PATTERN = re.compile(r"\[图片：[^\]\n]+\]")
+
+
+def _input_image_placeholder_matches(text: str):
+    return sorted(
+        [
+            *IMAGE_PLACEHOLDER_PATTERN.finditer(text),
+            *_IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text),
+        ],
+        key=lambda match: match.start(),
+    )
 
 
 class TuiBridge:
@@ -515,7 +530,7 @@ class MakeCodeInput(TextArea):
             return False
         row, column = self.cursor_location
         cursor_index = self.document.get_index_from_location((row, column))
-        for match in IMAGE_PLACEHOLDER_PATTERN.finditer(self.text):
+        for match in _input_image_placeholder_matches(self.text):
             if event.key == "left" and match.start() < cursor_index <= match.end():
                 target_index = match.start()
             elif event.key == "right" and match.start() <= cursor_index < match.end():
@@ -531,15 +546,17 @@ class MakeCodeInput(TextArea):
     def _delete_image_placeholder(self, event: Key) -> bool:
         if event.key not in {"backspace", "delete"}:
             return False
+        app = self.app
+        if not isinstance(app, MakeCodeTuiApp):
+            return False
         row, column = self.cursor_location
         cursor_index = self.document.get_index_from_location((row, column))
         text = self.text
-        match = None
         if event.key == "backspace":
             match = next(
                 (
                     candidate
-                    for candidate in IMAGE_PLACEHOLDER_PATTERN.finditer(text)
+                    for candidate in _input_image_placeholder_matches(text)
                     if candidate.start() < cursor_index <= candidate.end()
                 ),
                 None,
@@ -548,13 +565,15 @@ class MakeCodeInput(TextArea):
             match = next(
                 (
                     candidate
-                    for candidate in IMAGE_PLACEHOLDER_PATTERN.finditer(text)
+                    for candidate in _input_image_placeholder_matches(text)
                     if candidate.start() <= cursor_index < candidate.end()
                 ),
                 None,
             )
         if match is None:
             return False
+        if match.re is _IMAGE_DISPLAY_PLACEHOLDER_PATTERN:
+            app.remove_input_image_marker(text, match.start(), match.group(0))
         start = self.document.get_location_from_index(match.start())
         end = self.document.get_location_from_index(match.end())
         self.document.replace_range(start, end, "")
@@ -581,6 +600,7 @@ class MakeCodeInput(TextArea):
         if not isinstance(app, MakeCodeTuiApp):
             return
         app.update_input_height()
+        app.reconcile_input_image_markers(self.text)
 
     def _on_key(self, event: Key) -> None:
         app = self.app
@@ -1237,6 +1257,7 @@ class MakeCodeTuiApp(App[None]):
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
         self._input_history_draft = ""
+        self._input_image_markers: list[tuple[str, str]] = []
         self._modal_active = False
         self._right_column_visible = True
         self._compact_show_runtime = False
@@ -1765,8 +1786,8 @@ class MakeCodeTuiApp(App[None]):
         if isinstance(self.screen, TemporaryQueryModal):
             query = self.screen.current_text()
         if query is not None:
+            self._load_input_text(query)
             input_box = self.query_one("#input-box", MakeCodeInput)
-            input_box.load_text(query)
             input_box.cursor_location = input_box.document.end
 
     def clear_temporary_query(self) -> None:
@@ -2049,20 +2070,89 @@ class MakeCodeTuiApp(App[None]):
             return False
         if not marker:
             return False
-        self.query_one("#input-box", MakeCodeInput).insert(marker)
+        input_box = self.query_one("#input-box", MakeCodeInput)
+        cursor_index = input_box.document.get_index_from_location(input_box.cursor_location)
+        display_text = self._display_input_text(marker)
+        image_index = sum(
+            1 for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(
+                input_box.text[:cursor_index]
+            )
+        )
+        if display_text != marker:
+            self._input_image_markers.insert(image_index, (display_text, marker))
+        input_box.insert(display_text)
         return True
 
+    def _display_input_with_image_markers(
+        self,
+        text: str,
+    ) -> tuple[str, list[tuple[str, str]]]:
+        if self._image_placeholder_handler is None:
+            return text, []
+        try:
+            display_text, parts = self._image_placeholder_handler(text)
+        except ValueError:
+            return text, []
+        entries = [
+            (image_placeholder_text(part), image_reference_marker(part))
+            for part in parts
+            if part.get("type") == "image"
+        ]
+        return display_text, entries
+
+    def _load_input_text(self, text: str) -> None:
+        display_text, entries = self._display_input_with_image_markers(text)
+        self._input_image_markers = entries
+        input_box = self.query_one("#input-box", MakeCodeInput)
+        input_box.load_text(display_text)
+
+    def remove_input_image_marker(self, text: str, start: int, display_text: str) -> None:
+        if _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.fullmatch(display_text) is None:
+            return
+        image_index = sum(
+            1 for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text[:start])
+        )
+        if (
+            image_index < len(self._input_image_markers)
+            and self._input_image_markers[image_index][0] == display_text
+        ):
+            del self._input_image_markers[image_index]
+
+    def reconcile_input_image_markers(self, text: str) -> None:
+        remaining = list(self._input_image_markers)
+        reconciled = []
+        for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text):
+            for index, entry in enumerate(remaining):
+                if entry[0] == match.group(0):
+                    reconciled.append(entry)
+                    del remaining[index]
+                    break
+        self._input_image_markers = reconciled
+
     def _serialize_input_text(self, text: str) -> str:
-        return text
+        self.reconcile_input_image_markers(text)
+        if not self._input_image_markers:
+            return text
+        serialized = []
+        position = 0
+        image_index = 0
+        for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text):
+            serialized.append(text[position:match.start()])
+            if (
+                image_index < len(self._input_image_markers)
+                and self._input_image_markers[image_index][0] == match.group(0)
+            ):
+                serialized.append(self._input_image_markers[image_index][1])
+                image_index += 1
+            else:
+                serialized.append(match.group(0))
+            position = match.end()
+        serialized.append(text[position:])
+        return "".join(serialized)
 
     def _display_input_text(self, text: str) -> str:
-        if self._image_placeholder_handler is None:
-            return text
-        try:
-            display_text, _ = self._image_placeholder_handler(text)
-            return display_text
-        except ValueError:
-            return text
+        display_text, _ = self._display_input_with_image_markers(text)
+        return display_text
 
     def _record_input_history(self, text: str) -> None:
         if not self._input_history or self._input_history[-1] != text:
@@ -2082,7 +2172,7 @@ class MakeCodeTuiApp(App[None]):
             return
         input_box = self.query_one("#input-box", MakeCodeInput)
         if self._input_history_index is None:
-            self._input_history_draft = input_box.text
+            self._input_history_draft = self._serialize_input_text(input_box.text)
             if direction < 0:
                 self._input_history_index = len(self._input_history) - 1
             else:
@@ -2093,13 +2183,13 @@ class MakeCodeTuiApp(App[None]):
                 next_index = 0
             if next_index >= len(self._input_history):
                 self._input_history_index = None
-                input_box.load_text(self._input_history_draft)
+                self._load_input_text(self._input_history_draft)
                 input_box.cursor_location = input_box.document.end
                 self.update_slash_hint()
                 return
             self._input_history_index = next_index
 
-        input_box.load_text(self._input_history[self._input_history_index])
+        self._load_input_text(self._input_history[self._input_history_index])
         input_box.cursor_location = input_box.document.end
         self.update_slash_hint()
 
@@ -2186,7 +2276,8 @@ class MakeCodeTuiApp(App[None]):
         if self._submit_handler is None or not self._submit_lock.acquire(blocking=False):
             return
         try:
-            self._record_input_history(text)
+            self._record_input_history(serialized_text)
+            self._input_image_markers = []
             input_box.load_text("")
             self.update_input_height()
             self._slash_matches = []

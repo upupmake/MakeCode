@@ -1909,6 +1909,18 @@ async def test_finished_agent_response_preserves_non_bottom_content_view():
         await pilot.pause()
 
         content_scroller = app.query_one("#content-log")
+        # 先排空 30 个底部事件各自排队的“刷新后滚到底部”回调，避免它们在断言前把视图拉回底部
+        previous_scroll_y = None
+        stable_frames = 0
+        for _ in range(60):
+            await pilot.pause()
+            if content_scroller.scroll_y == previous_scroll_y:
+                stable_frames += 1
+                if stable_frames >= 5:
+                    break
+            else:
+                stable_frames = 0
+            previous_scroll_y = content_scroller.scroll_y
         content_scroller.scroll_to(y=0, animate=False, immediate=True)
         await pilot.pause()
         assert content_scroller.scroll_y == 0

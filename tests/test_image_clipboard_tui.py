@@ -5,21 +5,68 @@ from system.tui_app import MakeCodeTuiApp
 
 
 @pytest.mark.anyio
-async def test_system_image_paste_inserts_text_placeholder_and_deletes_atomically():
+@pytest.mark.parametrize("filename", ["photo.png", "clipboard.png"])
+async def test_system_image_paste_displays_filename_and_deletes_atomically(filename):
     marker = "[[image:id=img_00000000000000000000000000000000]]"
-    app = MakeCodeTuiApp(image_clipboard_handler=lambda: marker)
+    block = {
+        "type": "image",
+        "attachment_id": "img_00000000000000000000000000000000",
+        "filename": filename,
+        "media_type": "image/png",
+    }
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=lambda value: (f"[图片：{filename}]", [block]),
+        image_clipboard_handler=lambda: marker,
+    )
 
     async with app.run_test(size=(180, 40)) as pilot:
         await pilot.pause()
         input_box = app.query_one("#input-box")
 
         assert app.paste_image_from_system_clipboard() is True
-        assert input_box.text == marker
+        assert input_box.text == f"[图片：{filename}]"
+        assert app._serialize_input_text(input_box.text) == marker
         assert input_box.cursor_location == input_box.document.end
 
         await pilot.press("backspace")
 
         assert input_box.text == ""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("filename", ["photo.png", "clipboard.png"])
+async def test_image_display_serializes_to_marker_before_submit(filename):
+    marker = "[[image:id=img_66666666666666666666666666666666]]"
+    block = {
+        "type": "image",
+        "attachment_id": "img_66666666666666666666666666666666",
+        "filename": filename,
+        "media_type": "image/png",
+    }
+    submitted = []
+
+    async def submit(text):
+        submitted.append(text)
+
+    app = MakeCodeTuiApp(
+        submit_handler=submit,
+        image_placeholder_handler=lambda value: (f"[图片：{filename}]", [block]),
+        image_clipboard_handler=lambda: marker,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        assert app.paste_image_from_system_clipboard() is True
+        assert app.query_one("#input-box").text == f"[图片：{filename}]"
+
+        app.submit_current_input()
+        for _ in range(20):
+            await pilot.pause()
+            if submitted:
+                break
+
+        assert submitted == [marker]
+        assert app._input_history == [marker]
 
 
 @pytest.mark.anyio
