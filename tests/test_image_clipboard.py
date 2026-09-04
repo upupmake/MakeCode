@@ -361,6 +361,37 @@ def test_clipboard_file_routes_reject_non_image_files(tmp_path):
             assert read_image_file_from_system_clipboard() is None
 
 
+def test_macos_text_clipboard_path_probe_ignores_too_long_text():
+    text = "curl " + ("x" * 2000)
+    with (
+        patch("system.clipboard.sys.platform", "darwin"),
+        patch("system.clipboard.shutil.which", return_value="/usr/bin/osascript"),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["osascript"], 0, stdout=(text + "\n").encode("utf-8"),
+        )),
+    ):
+        assert read_image_file_from_system_clipboard() is None
+
+
+def test_macos_text_file_source_skips_image_fallback(tmp_path):
+    source = tmp_path / "curl.txt"
+    source.write_text("curl --url https://example.com", encoding="utf-8")
+
+    def which(command):
+        return "/usr/bin/osascript" if command == "osascript" else None
+
+    with (
+        patch("system.clipboard.sys.platform", "darwin"),
+        patch("system.clipboard.shutil.which", side_effect=which),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["osascript"], 0, stdout=(str(source) + "\n").encode("utf-8"),
+        )) as run,
+    ):
+        assert read_image_from_system_clipboard(skip_if_file_source=True) is None
+
+    run.assert_called_once()
+
+
 def test_clipboard_text_is_not_an_image():
     with (
         patch("system.clipboard.sys.platform", "linux"),
@@ -404,10 +435,11 @@ def test_main_clipboard_callback_stores_screenshot_without_file_source(tmp_path)
     with (
         patch.object(main, "CONVERSATION_STORE", store),
         patch.object(main, "read_image_file_from_system_clipboard", return_value=None),
-        patch.object(main, "read_image_from_system_clipboard", return_value=(image, "image/png")),
+        patch.object(main, "read_image_from_system_clipboard", return_value=(image, "image/png")) as image_fallback,
     ):
         marker = main._paste_image_from_system_clipboard()
 
+    image_fallback.assert_called_once_with(skip_if_file_source=True)
     assert marker.startswith("[[image:id=img_")
     attachment = next((store.active_root / "attachments").iterdir())
     assert attachment.name.endswith("_clipboard.png")

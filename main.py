@@ -868,7 +868,7 @@ def _paste_image_from_system_clipboard() -> str | None:
     if file_image is not None:
         data, filename, media_type = file_image
     else:
-        image = read_image_from_system_clipboard()
+        image = read_image_from_system_clipboard(skip_if_file_source=True)
         if image is None:
             return None
         data, media_type = image

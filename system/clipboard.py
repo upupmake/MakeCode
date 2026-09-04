@@ -185,8 +185,11 @@ def _png_from_tiff(data: bytes) -> bytes | None:
 
 
 def _read_image_file(path_text: str) -> tuple[bytes, str, str] | None:
-    path = Path(path_text).expanduser()
-    if path.is_symlink() or not path.is_file():
+    try:
+        path = Path(path_text).expanduser()
+        if path.is_symlink() or not path.is_file():
+            return None
+    except OSError:
         return None
     expected_type, _ = mimetypes.guess_type(path.name)
     if expected_type not in _SUPPORTED_IMAGE_TYPES:
@@ -302,15 +305,18 @@ def _read_file_path_from_linux_clipboard() -> str | None:
     return None
 
 
-def read_image_file_from_system_clipboard() -> tuple[bytes, str, str] | None:
+def _read_system_clipboard_file_path() -> str | None:
     if sys.platform == "darwin":
-        path = _read_file_path_from_macos_clipboard()
-    elif sys.platform == "win32":
-        path = _read_file_path_from_windows_clipboard()
-    elif sys.platform.startswith("linux"):
-        path = _read_file_path_from_linux_clipboard()
-    else:
-        path = None
+        return _read_file_path_from_macos_clipboard()
+    if sys.platform == "win32":
+        return _read_file_path_from_windows_clipboard()
+    if sys.platform.startswith("linux"):
+        return _read_file_path_from_linux_clipboard()
+    return None
+
+
+def read_image_file_from_system_clipboard() -> tuple[bytes, str, str] | None:
+    path = _read_system_clipboard_file_path()
     return _read_image_file(path) if path else None
 
 
@@ -375,7 +381,22 @@ def _read_image_from_linux_clipboard() -> tuple[bytes, str] | None:
     return None
 
 
-def read_image_from_system_clipboard() -> tuple[bytes, str] | None:
+def _clipboard_has_existing_file_source() -> bool:
+    path_text = _read_system_clipboard_file_path()
+    if not path_text:
+        return False
+    try:
+        return Path(path_text).expanduser().is_file()
+    except OSError:
+        return False
+
+
+def read_image_from_system_clipboard(
+    *,
+    skip_if_file_source: bool = False,
+) -> tuple[bytes, str] | None:
+    if skip_if_file_source and _clipboard_has_existing_file_source():
+        return None
     if sys.platform == "darwin":
         return _read_image_from_macos_clipboard()
     if sys.platform == "win32":

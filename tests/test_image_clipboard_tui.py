@@ -63,6 +63,22 @@ async def test_normal_text_paste_stays_text():
 
 
 @pytest.mark.anyio
+async def test_multiline_text_paste_stays_text_when_image_clipboard_is_empty():
+    text = "curl --url 'https://example.com/api' \\\n" + "  -H '" + ("x" * 300) + "'"
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=lambda value: (value, []),
+        image_clipboard_handler=lambda: None,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.on_paste(Paste(text))
+
+        assert input_box.text == text
+
+
+@pytest.mark.anyio
 async def test_left_and_right_skip_image_placeholder_atomically():
     marker = "[[image:id=img_33333333333333333333333333333333]]"
     text = f"before {marker} after"
