@@ -26,6 +26,12 @@ def normalize_message_format(value: object) -> str:
     return value if isinstance(value, str) and value in MESSAGE_FORMATS else DEFAULT_MESSAGE_FORMAT
 
 
+def normalize_model_alias(value: object) -> str:
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
+
+
 @dataclass
 class ModelConfig:
     """模型配置"""
@@ -35,6 +41,7 @@ class ModelConfig:
     is_favorite: bool = False
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
     message_format: str = DEFAULT_MESSAGE_FORMAT
+    alias: str = ""
 
     @property
     def key(self) -> ModelKey:
@@ -57,6 +64,8 @@ class ModelConfig:
     def get_display_text(self) -> str:
         """获取在面板中显示的文本: model_id (域名)"""
         domain = self.get_display_name()
+        if self.alias:
+            return f"{self.alias} · {self.model_id} ({domain})"
         return f"{self.model_id} ({domain})"
 
     def to_dict(self) -> dict:
@@ -92,6 +101,7 @@ class ModelConfig:
             is_favorite=data.get("is_favorite", False),
             reasoning_effort=normalize_reasoning_effort(data.get("reasoning_effort")),
             message_format=normalize_message_format(data.get("message_format")),
+            alias=normalize_model_alias(data.get("alias")),
         )
 
 
@@ -301,6 +311,46 @@ class ModelManager:
         self.last_selected_key = model.key
         return self._save_config()
 
+    def update_model_by_key(
+        self,
+        key: ModelKey,
+        base_url: str,
+        api_key: str,
+        model_id: str,
+        message_format: str,
+        alias: str,
+    ) -> Optional[ModelConfig]:
+        if not self._reload_from_disk():
+            return None
+        model = self._get_model_by_key(key)
+        if model is None or message_format not in MESSAGE_FORMATS:
+            return None
+
+        new_key: ModelKey = (
+            base_url.rstrip("/"),
+            api_key,
+            model_id.strip(),
+            message_format,
+        )
+        duplicate = any(other.key == new_key for other in self.models if other is not model)
+        if duplicate:
+            return None
+
+        model.base_url = new_key[0]
+        model.api_key = new_key[1]
+        model.model_id = new_key[2]
+        model.message_format = new_key[3]
+        model.alias = normalize_model_alias(alias)
+
+        if self.current_model_key == key:
+            self._set_current_model(model)
+        if self.last_selected_key == key:
+            self.last_selected_key = model.key
+        if self.memory_recall_model_key == key:
+            self.memory_recall_model_key = model.key
+
+        return model if self._save_config() else None
+
     def set_reasoning_effort(self, key: ModelKey, reasoning_effort: str) -> bool:
         if not self._reload_from_disk():
             return False
@@ -318,19 +368,22 @@ class ModelManager:
         api_key: str,
         model_ids: list[str],
         message_format: str = DEFAULT_MESSAGE_FORMAT,
+        aliases: list[str] | None = None,
     ) -> list[ModelConfig]:
         self._reload_from_disk()
         if self.load_error is not None or message_format not in MESSAGE_FORMATS:
             return []
 
         new_models = []
-        for model_id in model_ids:
+        for index, model_id in enumerate(model_ids):
+            alias = normalize_model_alias(aliases[index]) if index < len(aliases or []) else ""
             model = ModelConfig(
                 base_url=base_url.rstrip("/"),
                 api_key=api_key,
                 model_id=model_id.strip(),
                 is_favorite=False,
                 message_format=message_format,
+                alias=alias,
             )
             existing = any(existing_model.key == model.key for existing_model in self.models)
             if not existing:

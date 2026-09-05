@@ -15,7 +15,7 @@ from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, TaskPanelModal
+from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
@@ -75,6 +75,108 @@ class FakeRecallClient:
                 assistant_message={"role": "assistant", "content": ""},
             ),
         }
+
+
+def test_model_manager_persists_and_updates_model_alias(tmp_path):
+    manager = ModelManager(tmp_path)
+    models = manager.add_model(
+        "https://example.com",
+        "key",
+        ["main", "recall"],
+        aliases=["日常模型", "记忆模型"],
+    )
+
+    assert [model.alias for model in models] == ["日常模型", "记忆模型"]
+    assert models[0].get_display_text() == "日常模型 · main (example.com)"
+
+    assert manager.update_model_by_key(
+        models[0].key,
+        "https://example.com",
+        "key",
+        "main",
+        "openai_chat",
+        "  新   名称  ",
+    )
+    saved = json.loads((tmp_path / "model_config.json").read_text(encoding="utf-8"))
+    assert saved["models"][0]["alias"] == "新 名称"
+
+    reloaded = ModelManager(tmp_path)
+    assert reloaded.models[0].alias == "新 名称"
+
+    assert manager.get_current_model().alias == "新 名称"
+
+    assert reloaded.update_model_by_key(
+        reloaded.models[0].key,
+        "https://example.com",
+        "key",
+        "main",
+        "openai_chat",
+        "",
+    )
+    assert ModelManager(tmp_path).models[0].alias == ""
+
+
+def test_model_manager_updates_model_config_and_references(tmp_path):
+    manager = ModelManager(tmp_path)
+    models = manager.add_model("https://example.com/", "key", ["main", "other"])
+    manager.toggle_favorite_by_index(0)
+    manager.set_reasoning_effort(models[0].key, "high")
+    manager.set_memory_recall_model_by_key(models[0].key)
+
+    updated = manager.update_model_by_key(
+        models[0].key,
+        "https://updated.example.com/v1/",
+        "new-key",
+        "updated-model",
+        "anthropic",
+        "  新   名称  ",
+    )
+
+    assert updated is not None
+    assert updated.base_url == "https://updated.example.com/v1"
+    assert updated.api_key == "new-key"
+    assert updated.model_id == "updated-model"
+    assert updated.message_format == "anthropic"
+    assert updated.alias == "新 名称"
+    assert updated.is_favorite is True
+    assert updated.reasoning_effort == "high"
+    assert manager.current_model_key == updated.key
+    assert manager.last_selected_key == updated.key
+    assert manager.memory_recall_model_key == updated.key
+
+    saved = json.loads((tmp_path / "model_config.json").read_text(encoding="utf-8"))
+    assert saved["last_selected"]["model_id"] == "updated-model"
+    assert saved["memory_recall_model"]["model_id"] == "updated-model"
+
+
+def test_model_manager_rejects_edit_that_duplicates_existing_model(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main", "other"])
+    original = manager.models[0].to_dict()
+
+    updated = manager.update_model_by_key(
+        manager.models[0].key,
+        "https://example.com",
+        "key",
+        "other",
+        "openai_chat",
+        "",
+    )
+
+    assert updated is None
+    assert manager.models[0].to_dict() == original
+
+
+def test_model_manager_add_model_alias_list_stays_positional(tmp_path):
+    manager = ModelManager(tmp_path)
+    models = manager.add_model(
+        "https://example.com",
+        "key",
+        ["main", "recall", "deep"],
+        aliases=["日常模型", "", "深度模型"],
+    )
+
+    assert [model.alias for model in models] == ["日常模型", "", "深度模型"]
 
 
 def test_model_manager_persists_and_clears_memory_recall_model(tmp_path):
@@ -578,7 +680,7 @@ def test_ts_validator_does_not_load_uncached_language(monkeypatch):
 
 
 def test_tui_modals_use_q_not_escape_for_cancel():
-    for modal in [ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, LayoutModal]:
+    for modal in [ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, EditModelModal, LayoutModal]:
         keys = {binding.key for binding in modal.BINDINGS}
         assert "q" in keys
         assert "escape" not in keys
@@ -1925,6 +2027,51 @@ async def test_model_manager_modal_selects_displayed_model_and_refreshes_runtime
 
 
 @pytest.mark.anyio
+async def test_model_manager_modal_edits_model_config(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"])
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        assert isinstance(app.screen, EditModelModal)
+        edit_modal = app.screen
+        assert edit_modal.query_one("#edit-model-base-url", Input).value == "https://example.com"
+        assert edit_modal.query_one("#edit-model-api-key", Input).value == "key"
+        assert edit_modal.query_one("#edit-model-id", Input).value == "main"
+
+        edit_modal.query_one("#edit-model-base-url", Input).value = "https://updated.example.com/v1"
+        edit_modal.query_one("#edit-model-api-key", Input).value = "new-key"
+        edit_modal.query_one("#edit-model-id", Input).value = "updated-model"
+        edit_modal.query_one("#edit-model-alias", Input).value = "新名称"
+        edit_modal.query_one("#edit-model-message-format", Select).value = "anthropic"
+        edit_modal.action_submit()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert manager.models[0].model_id == "updated-model"
+        assert manager.models[0].base_url == "https://updated.example.com/v1"
+        assert manager.models[0].api_key == "new-key"
+        assert manager.models[0].message_format == "anthropic"
+        assert manager.models[0].alias == "新名称"
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_displays_model_alias(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"], aliases=["日常模型"])
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        assert "日常模型 (main)" in str(model_list.children[0].query_one(Label).render())
+
+@pytest.mark.anyio
 async def test_model_manager_modal_scrolls_cards_while_actions_stay_visible(tmp_path):
     manager = ModelManager(tmp_path)
     manager.add_model(
@@ -2248,7 +2395,7 @@ async def test_memory_panel_scrolls_cards_while_actions_stay_visible():
 
 
 @pytest.mark.anyio
-async def test_add_model_modal_returns_explicit_message_format():
+async def test_add_model_modal_returns_optional_alias_and_explicit_message_format():
     results = []
     modal = AddModelModal()
     app = ChoiceModalHost(modal, results.append)
@@ -2257,6 +2404,7 @@ async def test_add_model_modal_returns_explicit_message_format():
         modal.query_one("#model-base-url", Input).value = "https://api.anthropic.com"
         modal.query_one("#model-api-key", Input).value = "key"
         modal.query_one("#model-ids", Input).value = "claude-test"
+        modal.query_one("#model-alias", Input).value = "  日常模型  "
         modal.query_one("#model-message-format", Select).value = "anthropic"
         modal.action_submit()
         await pilot.pause()
@@ -2265,6 +2413,7 @@ async def test_add_model_modal_returns_explicit_message_format():
         "base_url": "https://api.anthropic.com",
         "api_key": "key",
         "model_input": "claude-test",
+        "alias_input": "日常模型",
         "message_format": "anthropic",
     }]
 

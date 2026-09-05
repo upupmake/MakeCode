@@ -87,7 +87,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal,
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, EditModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal,
     TokenUsageModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
         align: center middle;
     }
@@ -3705,13 +3705,14 @@ class ModelManagerModal(ClosableModalScreen[str]):
             yield Label(self._summary_text(), id="model-manager-summary", markup=False)
             yield ListView(id="model-manager-list")
             yield Label(
-                "↑↓ 选择模型 · Enter 切换并关闭 · ←/→ 调整 effort · f 常用 · a 添加 · d 删除 · q 关闭",
+                "↑↓ 选择模型 · Enter 切换并关闭 · ←/→ 调整 effort · f 常用 · a 添加 · e 修改配置 · d 删除 · q 关闭",
                 id="model-manager-help",
                 markup=False,
             )
             with Horizontal(id="model-manager-actions"):
                 yield Button("添加模型", id="model-manager-add", variant="primary", classes="model-manager-action")
                 yield Button("设为当前", id="model-manager-select", variant="success", classes="model-manager-action")
+                yield Button("修改配置", id="model-manager-edit", variant="primary", classes="model-manager-action")
                 yield Button("关闭", id="model-manager-close", variant="warning", classes="model-manager-action")
 
     @staticmethod
@@ -3740,7 +3741,11 @@ class ModelManagerModal(ClosableModalScreen[str]):
         is_current = model.key == current_key
         label = Text()
         label.append("● " if is_current else "○ ", style="bold green" if is_current else "#64748b")
-        label.append(model.model_id, style="bold #e2e8f0")
+        if model.alias:
+            label.append(model.alias, style="bold #e2e8f0")
+            label.append(f" ({model.model_id})", style="#94a3b8")
+        else:
+            label.append(model.model_id, style="bold #e2e8f0")
         if model.is_favorite:
             label.append("  ♥ 常用", style="bold #f472b6")
         label.append(f"\n   服务：{model.get_display_name()}", style="#94a3b8")
@@ -3846,7 +3851,8 @@ class ModelManagerModal(ClosableModalScreen[str]):
             "enter": self.action_select,
             "f": self.action_favorite,
             "d": self.action_delete,
-            "left": self.action_decrease_effort,
+            "e": self.action_edit,
+           "left": self.action_decrease_effort,
             "right": self.action_increase_effort,
         }
         action = key_actions.get(event.key)
@@ -3979,12 +3985,58 @@ class ModelManagerModal(ClosableModalScreen[str]):
             self.action_add()
         elif event.button.id == "model-manager-select":
             self.action_select()
+        elif event.button.id == "model-manager-edit":
+            self.action_edit()
         elif event.button.id == "model-manager-close":
             self.action_close()
 
     def action_add(self) -> None:
         if self._pending_delete_key is None:
             self._add_model(self._selected_index())
+
+    def action_edit(self) -> None:
+        if self._pending_delete_key is not None:
+            return
+        index = self._selected_index()
+        if index >= len(self._model_keys):
+            return
+        model_key = self._model_keys[index]
+        if model_key is None:
+            return
+        target_index = self._target_index(model_key)
+        if target_index is None:
+            self._reload_rows(index)
+            return
+        model = self._model_manager.models[target_index]
+        self.app.push_screen(
+            EditModelModal(model),
+            lambda model_config: self._finish_edit_model(model_config, model_key, index),
+        )
+
+    def _finish_edit_model(
+        self,
+        model_config: dict[str, str] | None,
+        model_key: ModelKey,
+        selected_index: int,
+    ) -> None:
+        if model_config is None:
+            self._reload_rows(selected_index)
+            return
+        current_model = self._model_manager.get_current_model()
+        previous_runtime_key = current_model.runtime_key if current_model else None
+        updated_model = self._model_manager.update_model_by_key(
+            model_key,
+            model_config["base_url"],
+            model_config["api_key"],
+            model_config["model_id"],
+            model_config["message_format"],
+            model_config["alias"],
+        )
+        selected_key = updated_model.key if updated_model else model_key
+        self._reload_rows(selected_index, selected_key=selected_key)
+        current_model = self._model_manager.get_current_model()
+        if current_model and current_model.runtime_key != previous_runtime_key:
+            self.app.refresh_status()
 
     def action_close(self) -> None:
         self.dismiss("exit")
@@ -4003,11 +4055,20 @@ class ModelManagerModal(ClosableModalScreen[str]):
             for item in model_config["model_input"].replace("，", ",").split(",")
             if item.strip()
         ]
+        alias_input = model_config.get("alias_input", "").strip()
+        if len(model_ids) == 1:
+            aliases = [alias_input]
+        else:
+            aliases = [
+                item.strip()
+                for item in alias_input.replace("，", ",").split(",")
+            ]
         new_models = self._model_manager.add_model(
             model_config["base_url"],
             model_config["api_key"],
             model_ids,
             message_format=model_config["message_format"],
+            aliases=aliases,
         )
         selected_key = new_models[0].key if new_models else None
         self._reload_rows(selected_index, selected_key=selected_key)
@@ -4592,6 +4653,108 @@ class RecallModelPickerModal(ClosableModalScreen[str]):
         self.dismiss("<cancelled>")
 
 
+class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "cancel", "Cancel", priority=True),
+        Binding("enter", "submit", "Submit", priority=True),
+    ]
+
+    def __init__(self, model: Any) -> None:
+        super().__init__()
+        self._model = model
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="model-form-dialog"):
+            yield ModalHeader("✏️ 修改模型配置", title_id="choice-title")
+            yield Label("Base URL", classes="model-form-label")
+            yield Input(
+                value=self._model.base_url,
+                placeholder="https://api.example.com/v1",
+                id="edit-model-base-url",
+                classes="model-form-input",
+            )
+            yield Label("API Key", classes="model-form-label")
+            yield Input(
+                value=self._model.api_key,
+                placeholder="API Key",
+                password=True,
+                id="edit-model-api-key",
+                classes="model-form-input",
+            )
+            yield Label("Model ID", classes="model-form-label")
+            yield Input(
+                value=self._model.model_id,
+                placeholder="model-a",
+                id="edit-model-id",
+                classes="model-form-input",
+            )
+            yield Label("别名（可选）", classes="model-form-label")
+            yield Input(
+                value=self._model.alias,
+                placeholder="日常模型",
+                id="edit-model-alias",
+                classes="model-form-input",
+            )
+            yield Label("消息格式", classes="model-form-label")
+            yield Select(
+                [(message_format, message_format) for message_format in MESSAGE_FORMATS],
+                value=self._model.message_format,
+                allow_blank=False,
+                id="edit-model-message-format",
+                classes="model-form-input",
+            )
+            yield Label("确认后立即写入模型配置。按 Enter 保存，按 q 取消。", id="model-form-hint")
+            with Horizontal(id="custom-actions"):
+                yield Button("保存", id="model-confirm", variant="success")
+                yield Button("取消", id="custom-cancel", variant="warning")
+
+    def on_mount(self) -> None:
+        self.query_one("#edit-model-base-url", Input).focus()
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "enter" and isinstance(self.focused, Select):
+            return
+        if event.key == "enter":
+            self.action_submit()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "q" and not isinstance(self.focused, (Input, Select)):
+            self.action_cancel()
+            event.stop()
+            event.prevent_default()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "model-confirm":
+            self.action_submit()
+        if event.button.id == "custom-cancel":
+            self.action_cancel()
+
+    def action_submit(self) -> None:
+        base_url = self.query_one("#edit-model-base-url", Input).value.strip()
+        api_key = self.query_one("#edit-model-api-key", Input).value.strip()
+        model_id = self.query_one("#edit-model-id", Input).value.strip()
+        alias = self.query_one("#edit-model-alias", Input).value.strip()
+        message_format = self.query_one("#edit-model-message-format", Select).value
+        if not base_url or not api_key or not model_id or message_format not in MESSAGE_FORMATS:
+            return
+        self.dismiss({
+            "base_url": base_url,
+            "api_key": api_key,
+            "model_id": model_id,
+            "alias": alias,
+            "message_format": message_format,
+        })
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
     CSS = ChoiceModal.CSS
 
@@ -4609,6 +4772,8 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
             yield Input(placeholder="API Key", password=True, id="model-api-key", classes="model-form-input")
             yield Label("Model ID(s)（多个用逗号分隔）", classes="model-form-label")
             yield Input(placeholder="model-a, model-b", id="model-ids", classes="model-form-input")
+            yield Label("别名（可选；多个模型时用逗号分隔，顺序对应 Model ID）", classes="model-form-label")
+            yield Input(placeholder="日常模型, 深度思考模型", id="model-alias", classes="model-form-input")
             yield Label("消息格式", classes="model-form-label")
             yield Select(
                 [(message_format, message_format) for message_format in MESSAGE_FORMATS],
@@ -4652,6 +4817,7 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
         base_url = self.query_one("#model-base-url", Input).value.strip()
         api_key = self.query_one("#model-api-key", Input).value.strip()
         model_input = self.query_one("#model-ids", Input).value.strip()
+        alias_input = self.query_one("#model-alias", Input).value.strip()
         message_format = self.query_one("#model-message-format", Select).value
         if not base_url or not api_key or not model_input or message_format not in MESSAGE_FORMATS:
             return
@@ -4659,6 +4825,7 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
             "base_url": base_url,
             "api_key": api_key,
             "model_input": model_input,
+            "alias_input": alias_input,
             "message_format": message_format,
         })
 
