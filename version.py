@@ -1,4 +1,4 @@
-CURRENT_VERSION = "6.7.5"
+CURRENT_VERSION = "6.7.6"
 
 GITHUB_RELEASE_BASE_URL = "https://github.com/upupmake/MakeCode/releases/latest/download"
 VERSION_CHECK_URL = f"{GITHUB_RELEASE_BASE_URL}/version.json"
