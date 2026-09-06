@@ -829,6 +829,13 @@ class ChoiceModal(ClosableModalScreen[str]):
         color: #94a3b8;
     }
 
+    #model-manager-error {
+        display: none;
+        height: auto;
+        margin-top: 1;
+        color: #f87171;
+    }
+
     #model-manager-list {
         height: 1fr;
         min-height: 5;
@@ -874,7 +881,9 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #model-form-dialog {
         width: 72;
+        max-width: 92%;
         height: auto;
+        max-height: 90%;
         border: round #f59e0b;
         background: $surface;
         padding: 1 2;
@@ -887,6 +896,24 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     .model-form-input {
         margin-top: 0;
+    }
+
+    .model-password-row {
+        height: auto;
+        width: 1fr;
+        align: left middle;
+    }
+
+    .model-password-row > Input {
+        width: 1fr;
+    }
+
+    .model-password-toggle {
+        width: 8;
+        min-width: 8;
+        height: 3;
+        margin: 0 0 0 1;
+        padding: 0;
     }
 
     #model-form-hint {
@@ -3703,6 +3730,7 @@ class ModelManagerModal(ClosableModalScreen[str]):
         with Vertical(id="model-manager-dialog"):
             yield ModalHeader(self._title_text(), title_id="model-manager-title", markup=False)
             yield Label(self._summary_text(), id="model-manager-summary", markup=False)
+            yield Label("", id="model-manager-error", markup=False)
             yield ListView(id="model-manager-list")
             yield Label(
                 "↑↓ 选择模型 · Enter 切换并关闭 · ←/→ 调整 effort · f 常用 · a 添加 · e 修改配置 · d 删除 · q 关闭",
@@ -3979,6 +4007,14 @@ class ModelManagerModal(ClosableModalScreen[str]):
     def _reset_header(self) -> None:
         self.query_one("#model-manager-title", Label).update(self._title_text())
         self.query_one("#model-manager-summary", Label).update(self._summary_text())
+        error_label = self.query_one("#model-manager-error", Label)
+        error_label.update("")
+        error_label.display = False
+
+    def _show_error(self, message: str) -> None:
+        error_label = self.query_one("#model-manager-error", Label)
+        error_label.update(f"❌ {message}")
+        error_label.display = True
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "model-manager-add":
@@ -4034,6 +4070,9 @@ class ModelManagerModal(ClosableModalScreen[str]):
         )
         selected_key = updated_model.key if updated_model else model_key
         self._reload_rows(selected_index, selected_key=selected_key)
+        if updated_model is None:
+            self._show_error("修改未保存：配置可能与已有模型重复，或配置文件写入失败。")
+            return
         current_model = self._model_manager.get_current_model()
         if current_model and current_model.runtime_key != previous_runtime_key:
             self.app.refresh_status()
@@ -4653,12 +4692,48 @@ class RecallModelPickerModal(ClosableModalScreen[str]):
         self.dismiss("<cancelled>")
 
 
+class ModelPasswordInput(Horizontal):
+    def __init__(
+        self,
+        *,
+        value: str = "",
+        placeholder: str = "API Key",
+        input_id: str,
+    ) -> None:
+        super().__init__(classes="model-password-row")
+        self._value = value
+        self._placeholder = placeholder
+        self._input_id = input_id
+
+    def compose(self) -> ComposeResult:
+        yield Input(
+            value=self._value,
+            placeholder=self._placeholder,
+            password=True,
+            id=self._input_id,
+            classes="model-form-input",
+        )
+        toggle = Button("显示", classes="model-password-toggle")
+        toggle.can_focus = False
+        toggle.tooltip = "显示 API Key"
+        yield toggle
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if "model-password-toggle" not in event.button.classes:
+            return
+        event.stop()
+        api_key_input = self.query_one(Input)
+        api_key_input.password = not api_key_input.password
+        revealed = not api_key_input.password
+        event.button.label = "隐藏" if revealed else "显示"
+        event.button.tooltip = "隐藏 API Key" if revealed else "显示 API Key"
+
+
 class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
     CSS = ChoiceModal.CSS
 
     BINDINGS = [
         Binding("q", "cancel", "Cancel", priority=True),
-        Binding("enter", "submit", "Submit", priority=True),
     ]
 
     def __init__(self, model: Any) -> None:
@@ -4666,7 +4741,7 @@ class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
         self._model = model
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="model-form-dialog"):
+        with VerticalScroll(id="model-form-dialog"):
             yield ModalHeader("✏️ 修改模型配置", title_id="choice-title")
             yield Label("Base URL", classes="model-form-label")
             yield Input(
@@ -4676,12 +4751,10 @@ class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
                 classes="model-form-input",
             )
             yield Label("API Key", classes="model-form-label")
-            yield Input(
+            yield ModelPasswordInput(
                 value=self._model.api_key,
                 placeholder="API Key",
-                password=True,
-                id="edit-model-api-key",
-                classes="model-form-input",
+                input_id="edit-model-api-key",
             )
             yield Label("Model ID", classes="model-form-label")
             yield Input(
@@ -4760,16 +4833,15 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
 
     BINDINGS = [
         Binding("q", "cancel", "Cancel", priority=True),
-        Binding("enter", "submit", "Submit", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="model-form-dialog"):
+        with VerticalScroll(id="model-form-dialog"):
             yield ModalHeader("➕ 添加模型", title_id="choice-title")
             yield Label("Base URL", classes="model-form-label")
             yield Input(placeholder="https://api.example.com/v1", id="model-base-url", classes="model-form-input")
             yield Label("API Key", classes="model-form-label")
-            yield Input(placeholder="API Key", password=True, id="model-api-key", classes="model-form-input")
+            yield ModelPasswordInput(placeholder="API Key", input_id="model-api-key")
             yield Label("Model ID(s)（多个用逗号分隔）", classes="model-form-label")
             yield Input(placeholder="model-a, model-b", id="model-ids", classes="model-form-input")
             yield Label("别名（可选；多个模型时用逗号分隔，顺序对应 Model ID）", classes="model-form-label")

@@ -167,6 +167,28 @@ def test_model_manager_rejects_edit_that_duplicates_existing_model(tmp_path):
     assert manager.models[0].to_dict() == original
 
 
+def test_model_manager_edit_rolls_back_when_save_fails(tmp_path, monkeypatch):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"])
+    model_key = manager.models[0].key
+    original = manager.models[0].to_dict()
+    monkeypatch.setattr(manager, "_save_config", Mock(return_value=False))
+
+    updated = manager.update_model_by_key(
+        model_key,
+        "https://updated.example.com/v1",
+        "new-key",
+        "updated-model",
+        "anthropic",
+        "新名称",
+    )
+
+    assert updated is None
+    assert manager.models[0].to_dict() == original
+    assert manager.current_model_key == model_key
+    assert manager.get_current_model().key == model_key
+
+
 def test_model_manager_add_model_alias_list_stays_positional(tmp_path):
     manager = ModelManager(tmp_path)
     models = manager.add_model(
@@ -2060,6 +2082,94 @@ async def test_model_manager_modal_edits_model_config(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_edit_model_modal_toggles_api_key_visibility(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "secret-key", ["main"])
+    modal = EditModelModal(manager.models[0])
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        api_key = modal.query_one("#edit-model-api-key", Input)
+        toggle = modal.query_one(".model-password-toggle", Button)
+        assert api_key.password is True
+        assert api_key.value == "secret-key"
+        assert str(toggle.label) == "显示"
+
+        toggle.press()
+        await pilot.pause()
+        assert api_key.password is False
+        assert api_key.value == "secret-key"
+        assert str(toggle.label) == "隐藏"
+
+        toggle.press()
+        await pilot.pause()
+        assert api_key.password is True
+        assert str(toggle.label) == "显示"
+
+
+@pytest.mark.anyio
+async def test_edit_model_modal_scrolls_on_short_terminal(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"])
+    modal = EditModelModal(manager.models[0])
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(62, 25)) as pilot:
+        await pilot.pause()
+        dialog = modal.query_one("#model-form-dialog", VerticalScroll)
+        assert dialog.region.width <= app.size.width
+        assert dialog.region.height <= app.size.height
+        assert dialog.max_scroll_y > 0
+
+        dialog.scroll_end(animate=False, immediate=True)
+        await pilot.pause()
+        assert modal.query_one("#model-confirm", Button).region.bottom <= app.size.height
+
+
+@pytest.mark.anyio
+async def test_edit_model_modal_enter_on_select_does_not_submit(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"])
+    modal = EditModelModal(manager.models[0])
+    results = []
+    app = ChoiceModalHost(modal, results.append)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        modal.query_one("#edit-model-message-format", Select).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert results == []
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_reports_duplicate_edit(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main", "other"])
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        edit_modal = app.screen
+        edit_modal.query_one("#edit-model-id", Input).value = "other"
+        edit_modal.action_submit()
+        await pilot.pause()
+        await pilot.pause()
+
+        error = modal.query_one("#model-manager-error", Label)
+        assert app.screen is modal
+        assert error.display
+        assert "修改未保存" in str(error.render())
+        assert [model.model_id for model in manager.models] == ["main", "other"]
+
+
+@pytest.mark.anyio
 async def test_model_manager_modal_displays_model_alias(tmp_path):
     manager = ModelManager(tmp_path)
     manager.add_model("https://example.com", "key", ["main"], aliases=["日常模型"])
@@ -2416,6 +2526,31 @@ async def test_add_model_modal_returns_optional_alias_and_explicit_message_forma
         "alias_input": "日常模型",
         "message_format": "anthropic",
     }]
+
+
+@pytest.mark.anyio
+async def test_add_model_modal_toggles_api_key_visibility():
+    modal = AddModelModal()
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        api_key = modal.query_one("#model-api-key", Input)
+        toggle = modal.query_one(".model-password-toggle", Button)
+        api_key.value = "secret-key"
+        assert api_key.password is True
+        assert str(toggle.label) == "显示"
+
+        toggle.press()
+        await pilot.pause()
+        assert api_key.password is False
+        assert api_key.value == "secret-key"
+        assert str(toggle.label) == "隐藏"
+
+        toggle.press()
+        await pilot.pause()
+        assert api_key.password is True
+        assert str(toggle.label) == "显示"
 
 
 def test_handle_models_does_not_refresh_status_after_modal_closes(tmp_path):

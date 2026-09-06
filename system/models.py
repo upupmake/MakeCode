@@ -326,6 +326,17 @@ class ModelManager:
         if model is None or message_format not in MESSAGE_FORMATS:
             return None
 
+        previous_values = (
+            model.base_url,
+            model.api_key,
+            model.model_id,
+            model.message_format,
+            model.alias,
+        )
+        previous_current_model = self.current_model
+        previous_current_model_key = self.current_model_key
+        previous_last_selected_key = self.last_selected_key
+        previous_memory_recall_model_key = self.memory_recall_model_key
         new_key: ModelKey = (
             base_url.rstrip("/"),
             api_key,
@@ -349,7 +360,21 @@ class ModelManager:
         if self.memory_recall_model_key == key:
             self.memory_recall_model_key = model.key
 
-        return model if self._save_config() else None
+        if self._save_config():
+            return model
+
+        (
+            model.base_url,
+            model.api_key,
+            model.model_id,
+            model.message_format,
+            model.alias,
+        ) = previous_values
+        self.current_model = previous_current_model
+        self.current_model_key = previous_current_model_key
+        self.last_selected_key = previous_last_selected_key
+        self.memory_recall_model_key = previous_memory_recall_model_key
+        return None
 
     def set_reasoning_effort(self, key: ModelKey, reasoning_effort: str) -> bool:
         if not self._reload_from_disk():
