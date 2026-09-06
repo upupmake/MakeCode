@@ -1532,7 +1532,8 @@ FILE_NAMESPACE = {
         "Primary file operation tools. Always prefer this namespace for file reads, "
         "writes, edits, text searches and file searches instead of shell commands. "
         "IMPORTANT: Use FileCreate only to create/write new or completely empty files. "
-        "Use FileEdit for single-file changes and FilePatch for complete multi-file patches."
+        "Use FileEdit for simple single-file search-and-replace edits; use FilePatch for "
+        "complete unified-diff patches affecting one file or multiple files."
     ),
     "tools": FILE_TOOLS,
 }

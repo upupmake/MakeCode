@@ -1,4 +1,4 @@
-"""Strict, multi-file patch application for agent file operations."""
+"""Strict unified-diff patch application for agent file operations."""
 
 from __future__ import annotations
 
@@ -30,10 +30,11 @@ _HUNK_HEADER = re.compile(
 
 
 class FilePatch(ToolArgumentsModel):
-    """Apply a strict multi-file patch with independent per-file transactions.
+    """Apply a strict unified-diff patch with independent per-file transactions.
 
-    Update hunks use standard unified-diff context lines (one leading space), plus
-    ``-`` removed and ``+`` added lines. Added-file content must use one ``+`` prefix per line.
+    A patch may update, add, or delete one or more files. Update hunks use standard
+    unified-diff context lines (one leading space), plus ``-`` removed and ``+`` added
+    lines. Added-file content must use one ``+`` prefix per line.
     """
 
     patch: str = Field(
@@ -41,12 +42,12 @@ class FilePatch(ToolArgumentsModel):
         min_length=1,
         description=(
             "Complete FilePatch text beginning with '*** Begin Patch' and ending with "
-            "'*** End Patch'. Update hunks use one-space-prefixed context lines, '-' removals, "
+            "'*** End Patch'. The patch may update, add, or delete one or more files. "
+            "Update hunks use one-space-prefixed context lines, '-' removals, "
             "and '+' additions. Pure insertions use a zero-old-line hunk such as "
             "'@@ -0,0 +1,1 @@'; a bare '@@' pure insertion is allowed only for an empty file. "
             "Add File content uses one '+' prefix per line. "
-            "Supports Update File, Add File, and Delete File. Each actual file may appear only once; "
-            "each file is committed independently."
+            "Each actual file may appear only once; each file is committed independently."
         ),
     )
 

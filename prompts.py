@@ -123,9 +123,10 @@ def _tool_priority_section(terminal_label: str, terminal_source: str) -> str:
 Do NOT use RunTerminalCommand when a dedicated tool exists:
  - To READ files: use FileRead (not cat, head, tail, type)
  - To EDIT a single existing file: use FileEdit (not sed, awk, or terminal editors)
- - To APPLY a complete multi-file patch: use FilePatch (not terminal patch commands)
-   FilePatch uses standard unified-diff hunks: after `@@`, every unchanged context line starts with exactly one space, removed lines with `-`, and added lines with `+`; pure insertions use a zero-old-line header such as `@@ -0,0 +1,1 @@` (bare `@@` only for an empty file). Include each actual file only once per patch; each file is committed independently.
-   `Add File` content uses one `+` prefix per line. If the result says `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
+ - To APPLY a complete unified-diff patch: use FilePatch (not terminal patch commands)
+   Do not treat FilePatch as a multi-file-only tool; it applies complete patches affecting one file or multiple files.
+   Prefer FileEdit for a simple single-file search-and-replace; do not use the number of affected files as the sole criterion for choosing between them.
+   If the result says `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
  - To CREATE files: use FileCreate (not echo >>, cat heredoc)
  - To SEARCH file content: use ContentSearch (not grep, rg, findstr)
  - To SEARCH files by path regex: use FileSearch (not find, ls, dir)
