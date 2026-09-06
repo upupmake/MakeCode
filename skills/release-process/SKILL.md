@@ -56,7 +56,7 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 1. 读取 `https://github.com/upupmake/MakeCode/releases/latest/download/version.json`，确认远程当前稳定版本。
 2. 对比 `version.py` 中的 `CURRENT_VERSION`，按语义化版本规则更新版本号。
-3. 运行相关测试和发布前检查。
+3. 发布前测试：若当前上下文中已存在待发布代码的全量测试结果（覆盖全部待发布变更，且测试后未再修改代码），直接复用、跳过重复测试；否则运行全量测试并确认通过。
 4. 检查所有待发布变更，包括 `version.py`。
 5. 提交并推送发布提交，确保 tag 和 Actions 构建都基于已提交代码。
 6. 准备临时 `RELEASE_LOG.md`，再运行 `python github_release.py` 创建非 latest 的 Release/tag。创建 tag 后由 Actions 自动完成构建、资产上传和收尾（见 2.3），无需人工干预。
