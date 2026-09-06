@@ -19,7 +19,6 @@ class PromptPolicyTests(unittest.TestCase):
             return get_orchestrator_system_prompt(
                 "/workspace",
                 "zsh",
-                "test",
                 plan_mode=plan_mode,
             )
 
@@ -29,7 +28,6 @@ class PromptPolicyTests(unittest.TestCase):
                 "Tester",
                 "/workspace",
                 "zsh",
-                "test",
             )
 
     def test_sub_agent_prompt_does_not_expose_delegation_concepts(self):

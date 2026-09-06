@@ -26,7 +26,6 @@ from init import (
     resolve_startup_workdir,
     set_workdir,
     should_prompt_for_workdir,
-    STARTUP_TERMINAL_SOURCE,
     STARTUP_TERMINAL_TYPE,
 )
 from prompts import get_orchestrator_system_prompt, get_title_generation_system_prompt
@@ -168,7 +167,6 @@ def get_dynamic_system_prompt() -> str:
     return get_orchestrator_system_prompt(
         str(_current_workdir()),
         STARTUP_TERMINAL_LABEL,
-        STARTUP_TERMINAL_SOURCE,
         plan_mode=is_plan_mode(),
     )
 

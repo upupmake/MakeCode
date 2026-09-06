@@ -161,12 +161,6 @@ class RunTerminalCommand(ToolArgumentsModel):
     - Commands that may be destructive, require elevated privileges, or perform network diagnostics go through HITL confirmation.
     - Interactive and full-screen commands are unsupported by the non-interactive terminal and may time out.
 
-    PREFERRED APPROACH:
-    - For file read/write/edit/patch: Use File tools (FileRead/FileCreate/FileEdit/FilePatch)
-    - For file content search: Use ContentSearch (not grep, rg, findstr)
-    - For file path regex search: Use FileSearch (not find, ls, dir)
-    - Use this tool ONLY for: builds, tests, git, package management, system info
-
     TIMEOUT: 120 seconds hard limit. Running commands can be cancelled from the TUI.
     Results always include a status and exit code.
     """
@@ -178,8 +172,7 @@ class RunTerminalCommand(ToolArgumentsModel):
             f"Runtime terminal is fixed at startup: '{_STARTUP_TERMINAL_LABEL}' "
             f"(source={STARTUP_TERMINAL_SOURCE}). "
             "This tool only accepts command; terminal type is not configurable per call. "
-            "Execution is bound to the workspace root directory and has a hard timeout of 120 seconds. "
-            "Do not use this tool for normal workspace file read/write/edit operations."
+            "Execution is bound to the workspace root directory and has a hard timeout of 120 seconds."
         ),
     )
 
@@ -1530,7 +1523,7 @@ FILE_NAMESPACE = {
     "name": "File",
     "description": (
         "Primary file operation tools. Always prefer this namespace for file reads, "
-        "writes, edits, text searches and file searches instead of shell commands. "
+        "writes, and edits instead of shell commands. "
         "IMPORTANT: Use FileCreate only to create/write new or completely empty files. "
         "Use FileEdit for simple single-file search-and-replace edits; use FilePatch for "
         "complete unified-diff patches affecting one file or multiple files."

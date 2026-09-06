@@ -116,9 +116,9 @@ If a lock file exists, investigate what process holds it rather than deleting it
 Measure twice, cut once."""
 
 
-def _tool_priority_section(terminal_label: str, terminal_source: str) -> str:
+def _tool_priority_section() -> str:
     """Guide tool selection to prefer dedicated tools over shell commands."""
-    return f"""# Tool Usage Priority
+    return """# Tool Usage Priority
 
 Do NOT use RunTerminalCommand when a dedicated tool exists:
  - To READ files: use FileRead (not cat, head, tail, type)
@@ -128,12 +128,10 @@ Do NOT use RunTerminalCommand when a dedicated tool exists:
    Prefer FileEdit for a simple single-file search-and-replace; do not use the number of affected files as the sole criterion for choosing between them.
    If the result says `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
  - To CREATE files: use FileCreate (not echo >>, cat heredoc)
- - To SEARCH file content: use ContentSearch (not grep, rg, findstr)
- - To SEARCH files by path regex: use FileSearch (not find, ls, dir)
- - Reserve RunTerminalCommand EXCLUSIVELY for: builds, tests, git, package management, system info
-
-Runtime terminal is fixed at startup: {terminal_label} (source={terminal_source}).
-File operations are restricted to the workspace root directory by default. Accessing paths outside the workspace will trigger a permission prompt for user approval. Terminal execution has a hard timeout of 120 seconds.
+ - To SEARCH file content: prefer ContentSearch when you only need to locate and view matches
+ - To SEARCH files by path regex: prefer FileSearch when you only need to list matching paths
+   Do not treat them as the only way to search: they return plain matched lines/paths without post-processing. When results need counting, aggregation, sorting, pipelines, or chaining into follow-up commands, use RunTerminalCommand instead (e.g., grep/rg/find with pipes).
+ - Reserve RunTerminalCommand for: builds, tests, git, package management, system info, and searches that need pipelines or aggregation
 
 You can call multiple tools in a single response. If calls are independent,
 make them all in parallel to maximize efficiency. If some depend on previous
@@ -248,7 +246,6 @@ def _memory_action_section(*, plan_mode: bool) -> str:
 def get_orchestrator_system_prompt(
     workdir: str,
     startup_terminal_label: str,
-    startup_terminal_source: str,
     plan_mode: bool = False,
 ) -> str:
     """Prompt 1: Orchestrator (Super-Agent) system prompt.
@@ -333,7 +330,7 @@ For simple answers or focused reviews, respond directly without forcing this str
         _code_style_section(),
         _verification_section(is_orchestrator=True),
         _cautious_actions_section(),
-        _tool_priority_section(startup_terminal_label, startup_terminal_source),
+        _tool_priority_section(),
         _output_efficiency_section(),
         _security_section(),
         _communication_style_section(),
@@ -351,7 +348,6 @@ def get_sub_agent_system_prompt(
     role: str,
     workdir: str,
     startup_terminal_label: str,
-    startup_terminal_source: str,
 ) -> str:
     """Prompt 2: Sub-Agent system prompt."""
     skills_prompt_block = SKILL_LOADER.render_prompt_block()
@@ -383,7 +379,7 @@ FEEDBACK MECHANISM (Auto-Triggered):
 
 FILE OPERATIONS PRIORITY:
 1. ALWAYS prefer File tools (FileRead/FileCreate/FileEdit/FilePatch/ContentSearch/FileSearch) for file operations
-2. Use RunTerminalCommand ONLY for: builds, tests, git, package management, system info
+2. Use RunTerminalCommand for: builds, tests, git, package management, system info, and searches that need pipelines or aggregation
 3. NEVER use terminal for simple file reads/writes/edits
 
 CONFLICT AVOIDANCE:
@@ -412,7 +408,7 @@ Note: The system will automatically generate a detailed report based on your wor
         _code_style_section(),
         _verification_section(is_orchestrator=False),
         _cautious_actions_section(is_orchestrator=False),
-        _tool_priority_section(startup_terminal_label, startup_terminal_source),
+        _tool_priority_section(),
         _output_efficiency_section(),
         _security_section(),
         _communication_style_section(),

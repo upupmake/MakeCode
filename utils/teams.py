@@ -38,7 +38,6 @@ from utils.common import (
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
     COMMON_TOOL_MODELS,
-    STARTUP_TERMINAL_SOURCE,
     STARTUP_TERMINAL_TYPE,
 )
 from utils.hitl import current_agent_role
@@ -520,7 +519,6 @@ class TeammateManager:
             role,
             str(_workdir()),
             STARTUP_TERMINAL_LABEL,
-            STARTUP_TERMINAL_SOURCE,
         )
 
         # 记录初始启动状态

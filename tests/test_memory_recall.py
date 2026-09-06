@@ -721,8 +721,8 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
     def test_system_prompts_do_not_embed_full_user_memory(self):
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS):
-            orchestrator_prompt = get_orchestrator_system_prompt("D:/workspace", "pwsh", "test", plan_mode=False)
-            sub_agent_prompt = get_sub_agent_system_prompt("Tester", "D:/workspace", "pwsh", "test")
+            orchestrator_prompt = get_orchestrator_system_prompt("D:/workspace", "pwsh", plan_mode=False)
+            sub_agent_prompt = get_sub_agent_system_prompt("Tester", "D:/workspace", "pwsh")
 
         self.assertNotIn("# User Memory", orchestrator_prompt)
         self.assertNotIn("old insight should not be in candidates", orchestrator_prompt)
