@@ -59,7 +59,7 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 3. 运行相关测试和发布前检查。
 4. 检查所有待发布变更，包括 `version.py`。
 5. 提交并推送发布提交，确保 tag 和 Actions 构建都基于已提交代码。
-6. 准备临时 `RELEASE_LOG.md`，再运行 `python github_release.py` 创建非 latest 的 Release/tag。
+6. 准备临时 `RELEASE_LOG.md`，再运行 `python github_release.py` 创建非 latest 的 Release/tag。创建 tag 后由 Actions 自动完成构建、资产上传和收尾（见 2.3），无需人工干预。
 
 ### 2.2 Actions 构建职责
 
@@ -71,17 +71,16 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 三个平台的构建任务负责执行测试和静态检查，包括 TOC、目录结构、警告日志、入口文件，以及 Linux ELF/GLIBC 要求。工作流禁止启动 `dist/` 下的程序。
 
-### 2.3 Actions 发布资产
+### 2.3 发布资产与自动收尾
 
 Release 汇总任务只接收各平台 Actions artifacts，并完成：
 
-1. 下载 Windows、macOS 和 Linux 发布资产。
-2. 检查三个平台 ZIP 均存在。
-3. 计算每个平台 ZIP 的大小和 SHA-256。
-4. 生成包含 `platforms` 字段的 `version.json`。
-5. 将三个 ZIP 和 `version.json` 上传到 GitHub Release。
-6. 再次确认四个资产齐全，将新 Release 设为 latest。
-7. 最后清理同一 `MAJOR.MINOR` 版本线内更早的 patch Releases 和 tags。
+1. 校验三平台 ZIP 均存在，分别计算大小和 SHA-256。
+2. 从 Release body 的日志标记中提取发布日志，生成 `version.json`（顶层字段描述 Windows 资产，`platforms` 字段包含全部平台）。
+3. 将三个 ZIP 和 `version.json` 上传到 GitHub Release。
+4. 通过 `python github_release.py --finalize-release` 收尾：再次确认四个资产齐全后才将新 Release 设为 latest，`latest/download` 链接随之自动指向新版本资产；随后删除同一 `MAJOR.MINOR` 版本线内更早的 Release 和对应 tags。
+
+自动收尾的前提：任何一步失败（某平台构建失败、version.json 生成失败、资产上传失败、finalize 资产校验不齐全），旧 Release/tag 一律保持不变，新版本不会成为 latest——因此本地无需手动设置 latest，也无需人工干预失败场景。
 
 本地只负责版本、代码、测试、发布日志和创建 Release/tag；发布包的编译、压缩、校验、上传和 latest 切换均由 GitHub Actions 完成。
 
@@ -114,31 +113,19 @@ python github_release.py
 2. 新 Release 创建时显式保持为非 latest，避免构建期间 `latest/download` 指向尚无资产的版本
 3. 不删除任何已有 Release/tag，也不上传本地产物；创建 tag 后由 GitHub Actions 统一生成发布资产
 
-GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务读取 Release body 中的日志，为三个平台 ZIP 分别计算大小和 SHA-256，生成向后兼容的 `version.json`（顶层字段继续描述 Windows 资产，`platforms` 字段包含所有平台），并将四个资产统一附加到 Release：`MakeCode-Windows-X64.zip`、`MakeCode-macOS-ARM64.zip`、`MakeCode-Linux-X64.zip`、`version.json`。四个资产全部上传成功后，汇总任务再次通过 GitHub API 校验资产完整性，将新 Release 设为 latest，最后删除同一 `MAJOR.MINOR` 版本线内更早的 Releases 和对应 tags。
-
 **GitHub 配置**：
 - 仓库：`upupmake/MakeCode`
 - Token：存储在 `.github_token` 文件中（已加入 `.gitignore`）
-- Token 需要 `repo` 权限
-
-**注意事项**：
-- 旧版本清理只能发生在新 Release 的 Windows、macOS、Linux ZIP 和 `version.json` 全部上传成功之后
-- 每次只清除当前 `MAJOR.MINOR` 版本线内更早的 patch Releases；例如发布 `6.1.8` 时清理旧 `6.1.x`，保留 `6.0.x`、`5.x.x`
-- 若构建、manifest 生成或资产上传失败，旧 Release/tag 必须保持不变
-- Token 权限不足会导致 404 错误，需确保勾选 `repo` 权限
+- Token 需要 `repo` 权限（权限不足会导致 404 错误）
 
 ### 3.3 发布检查清单
 
 - [ ] 版本号已确认（`version.py`）
 - [ ] **所有变更已提交**（`version.py` + 代码变更）— 构建前完成
 - [ ] `RELEASE_LOG.md` 已准备并包含本次日志
-- [ ] GitHub Release/tag 已创建且指向本次发布提交
-- [ ] 标签触发的 Windows/macOS/Linux Actions 构建成功
-- [ ] Release 汇总任务已为三个平台 ZIP 生成带 `platforms` 字段的 `version.json`
-- [ ] Release 包含 Windows ZIP、macOS ZIP、Linux ZIP 和 `version.json`
-- [ ] 新 Release 已在四个资产齐全后设为 latest，构建期间旧 latest 保持可用
-- [ ] 资产上传成功后，同一 `MAJOR.MINOR` 版本线内更早的 Release/tag 已清理，其他版本线稳定版本仍保留
-- [ ] GitHub latest Release 的 `version.json` 可访问，顶层哈希、大小与 Windows ZIP 匹配，各 `platforms` 条目与对应 ZIP 匹配
+- [ ] GitHub Release/tag 已创建且指向本次发布提交（创建时为非 latest）
+- [ ] 标签触发的 Windows/macOS/Linux Actions 构建成功，四资产（三平台 ZIP + `version.json`）上传后新 Release 已自动设为 latest，`latest/download/version.json` 可访问且版本号为新版本
+- [ ] 同一 `MAJOR.MINOR` 版本线内更早的 Release/tag 已自动清理，其他版本线稳定版本仍保留（发布 6.1.8 只清理旧 6.1.x，保留 6.0.x、5.x.x）
 - [ ] **确认工作区干净**：运行 `git status` 确认无未提交的文件
 
 ---
@@ -154,7 +141,7 @@ GitHub Actions 自动构建 Windows、macOS 和 Linux ZIP。Release 汇总任务
 
 冻结版 Windows/Linux 同时支持 TUI `/update` 与外部 `--update`。外部命令必须在工作区、模型客户端、MCP 和 TUI 初始化前执行，展示版本与发布日志后默认通过 `[y/N]` 确认；仅显式传入 `-y`/`--yes` 时可跳过确认，非交互终端未传免确认参数时必须拒绝下载。源码运行与 macOS 不支持外部自动安装。`--check-update` 继续保持只读，不下载或安装。
 
-下载必须使用 HTTPS 和系统证书验证。客户端要求 manifest 提供有效 `sha256` 与正整数 `size`，下载后同时校验大小和 SHA-256。Linux 不得回退使用兼容旧客户端的 Windows 顶层字段。
+下载强制 HTTPS 并同时校验 `sha256` 与 `size`；Linux 客户端不得回退使用兼容旧客户端的 Windows 顶层字段。
 
 ### 4.2 Windows/Linux 更新执行流程
 
@@ -178,7 +165,7 @@ Linux 更新包可保留 PyInstaller 相对符号链接，但链接目标必须�
 - macOS 暂不做应用内自动更新；发布包使用 `MakeCode.command + MakeCode/ onedir`，用户从 GitHub Release 手动下载并替换。
 - 从旧 onefile 版本迁移到首个 onedir 版本应手动完成。安装 onedir 版本后，后续 Windows/Linux 版本才能使用完整目录自动更新。
 - 从 5.3.1 或更早版本升级到 5.3.2 时仍由旧 updater 自动启动新版并等待 `MAKECODE_UPDATE_READY_FILE`；5.3.2 主程序必须保留该一次性兼容信号。5.3.2 内置的新 updater 不设置此变量，也不自动启动后续版本。
-- Windows/Linux 的 `.makecode` 位于安装目录内，目录更新时必须保留；macOS 打包版配置位于 `~/Library/Application Support/MakeCode`。
+- macOS 打包版配置位于 `~/Library/Application Support/MakeCode`（Windows/Linux 的 `.makecode` 位于安装目录内，更新时保留，见 4.2）。
 - 不得只替换 onedir 中的 `MakeCode.exe`，否则会造成 EXE 与 `_internal` 依赖版本混合。
 
 ---
@@ -220,7 +207,7 @@ git add -A && git commit -m "release: vX.Y.Z"
 # 3. 创建临时发布日志 RELEASE_LOG.md，写入 markdown 格式发布内容
 # 4. 推送发布提交后创建 GitHub Release/tag
 python github_release.py
-# 5. 等待 GitHub Actions 构建三平台 ZIP 并生成 version.json
+# 5. 等待 Actions 构建三平台 ZIP、上传四资产并自动设为 latest（见 2.3）
 # 6. 确认工作区干净
 git status  # 应输出 "nothing to commit, working tree clean"
 ```
