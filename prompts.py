@@ -122,7 +122,10 @@ def _tool_priority_section(terminal_label: str, terminal_source: str) -> str:
 
 Do NOT use RunTerminalCommand when a dedicated tool exists:
  - To READ files: use FileRead (not cat, head, tail, type)
- - To EDIT files: use FileEdit (not sed, awk, or terminal editors)
+ - To EDIT a single existing file: use FileEdit (not sed, awk, or terminal editors)
+ - To APPLY a complete multi-file patch: use FilePatch (not terminal patch commands)
+   FilePatch uses standard unified-diff hunks: after `@@`, every unchanged context line starts with exactly one space, removed lines with `-`, and added lines with `+`; pure insertions use a zero-old-line header such as `@@ -0,0 +1,1 @@` (bare `@@` only for an empty file). Include each actual file only once per patch; each file is committed independently.
+   `Add File` content uses one `+` prefix per line. If the result says `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
  - To CREATE files: use FileCreate (not echo >>, cat heredoc)
  - To SEARCH file content: use ContentSearch (not grep, rg, findstr)
  - To SEARCH files by path regex: use FileSearch (not find, ls, dir)
@@ -206,7 +209,7 @@ def _hitl_section(is_orchestrator: bool = True) -> str:
     """Human-in-the-Loop guidance."""
     if is_orchestrator:
         return (
-            "Human-in-the-Loop (HITL): Certain actions (like FileEdit, FileCreate, "
+            "Human-in-the-Loop (HITL): Certain actions (like FileEdit, FilePatch, FileCreate, "
             "RunTerminalCommand, or DeleteAllTasks) may require human confirmation. "
             "If a tool returns \"User Denied Execution\", DO NOT retry the exact same action. "
             "Read the user's feedback reason, adjust your approach, or ask the user for clarification. "
@@ -216,7 +219,7 @@ def _hitl_section(is_orchestrator: bool = True) -> str:
             "delegate nor execute that batch automatically and must return control to the user."
         )
     return (
-        "Human-in-the-Loop (HITL): Certain actions (like FileEdit, FileCreate, or "
+        "Human-in-the-Loop (HITL): Certain actions (like FileEdit, FilePatch, FileCreate, or "
         "RunTerminalCommand) may require human confirmation. If a tool returns "
         "\"User Denied Execution\", DO NOT retry the exact same action. Read the user's "
         "feedback reason, adjust your approach, or report the blocker clearly."
@@ -261,7 +264,7 @@ def get_orchestrator_system_prompt(
 Work only on analysis and task planning. Do not modify files, execute modification commands, or delegate tasks.
 
 Blocked tools:
- - FileCreate, FileEdit — file create/edit operations
+ - FileCreate, FileEdit, FilePatch — file create/edit/patch operations
  - ManageLongTermMemory — long-term memory changes
  - DelegateTasks — sub-agent delegation
 
@@ -378,7 +381,7 @@ FEEDBACK MECHANISM (Auto-Triggered):
  - Your feedback will be included in the auto-generated report that the Orchestrator receives.
 
 FILE OPERATIONS PRIORITY:
-1. ALWAYS prefer File tools (FileRead/FileCreate/FileEdit/ContentSearch/FileSearch) for file operations
+1. ALWAYS prefer File tools (FileRead/FileCreate/FileEdit/FilePatch/ContentSearch/FileSearch) for file operations
 2. Use RunTerminalCommand ONLY for: builds, tests, git, package management, system info
 3. NEVER use terminal for simple file reads/writes/edits
 

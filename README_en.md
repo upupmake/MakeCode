@@ -79,13 +79,14 @@ Provides the following execution primitives:
 - `FileRead`: read file contents, optionally by line range. Output follows the `grep -n` convention: `<line number>:<verbatim line>` with **no space after the colon**, so everything after the first colon is the exact line content (indentation included) and can be fed straight into `FileEdit`. Non-adjacent regions are separated by an `@@ a-b skipped @@` marker so lines are never concatenated across a gap.
 - `FileCreate`: only for creating and writing a NEW file (when target file does not exist or is empty). Tree-sitter syntax validation runs after writing; detected syntax errors are appended as a warning with line numbers and do not roll back the write.
 - `FileEdit`: modify an existing file. **Uses whole-line search-and-replace (search_content → replace_content) instead of line number ranges**. No prior `FileRead` call is required. **Staged matching**: every block is first matched against the file as it was read; a block that cannot be placed yet is deferred and retried against the text the applied blocks produced, so **chaining one block onto another block's output still works** regardless of the order the blocks are written in. Matching is whole-line: exact first, then tolerating trailing whitespace and a uniform indentation shift (the replacement is re-indented by the same amount). Each block must match exactly one location; if any block never resolves, the **whole batch is rejected and every problem is reported at once** (candidate line numbers, a unified diff against the closest region, plus targeted hints for "an earlier block rewrote those lines" and for copied line-number prefixes). Applying splices bottom-up, and the commit uses a same-directory temp file plus an atomic replace that preserves the original line endings, trailing-newline state, BOM and file mode. Non-UTF-8 and binary files are refused outright.
+- `FilePatch`: apply a complete multi-file `*** Begin Patch` / `*** End Patch` patch with `*** Update File: path`, `*** Add File: path`, and `*** Delete File: path` operations. Update hunks follow standard unified diff syntax: every unchanged context line after `@@` starts with exactly one space, removed lines start with `-`, and added lines start with `+`; pure insertions use a zero-old-line header such as `@@ -0,0 +1,1 @@` (a bare `@@` is also allowed for an empty file); `Add File` content uses one `+` prefix per line. Each actual file may appear only once in a patch, including paths that differ only by case but resolve to the same inode. Each file is parsed, validated, matched, and committed independently; one file failing does not block the others, while any hunk failure leaves that file untouched. Existing files preserve their original line endings, BOM, and mode during per-file atomic replacement. Paths resolve `.`, `..`, and symlinks first; paths outside the workspace trigger one approval for the whole patch.
 - `ContentSearch`: recursively search text file contents under `root_dir` with `content_regex`, optionally filtering files by absolute path with `path_regex`; supports `context_size` to include that many lines before and after each match (default: 1); regex uses Python syntax. Output follows the same `grep -n` convention: matched lines as `<line number>:<verbatim line>`, context lines as `<line number>-<verbatim line>`, both without a separator space, and non-adjacent ranges separated by `@@ a-b skipped @@`. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
 - `FileSearch`: recursively search files and directories under `root_dir`, matching `path_regex` against absolute paths; supports type filtering (`file`/`dir`/`all`). Automatically excludes hidden and build/dependency directories and returns up to 500 items. Ideal for quickly exploring project structure.
 - `RunTerminalCommand`: run a non-interactive terminal command
 
 #### 📋 Tree-sitter Syntax Validation (`system/ts_validator.py`)
 
-`FileCreate` and `FileEdit` automatically invoke Tree-sitter for syntax checking after writing files:
+`FileCreate`, `FileEdit`, and `FilePatch` automatically invoke Tree-sitter for syntax checking after writing files:
 
 - **Multi-language Support**: Automatically detects Python, JavaScript, TypeScript, Go, Rust, and more
 - **Smart Exclusion**: Automatically skips plain text and documentation files (`.md`, `.txt`, `.rst`, `.log`, etc.) to avoid false positives
@@ -113,7 +114,7 @@ Implementation details:
 To guarantee agent execution safety in real engineering environments, the system introduces a Human-In-The-Loop (HITL)
 interception mechanism:
 
-- **Sensitive Operation Blocks**: By default, file modification actions (`FileEdit`, `FileCreate`) and critical terminal
+- **Sensitive Operation Blocks**: By default, file modification actions (`FileEdit`, `FilePatch`, `FileCreate`) and critical terminal
   commands (e.g. `npm`, `git`, `rm`, gated by an exclusion whitelist) are intercepted.
 - **TUI Interactive Panel**: A terminal visual intercept panel built with `Textual`, allowing the user to use
   arrow keys to choose either "Allow" or "Reject with feedback".
@@ -414,7 +415,7 @@ MakeCode supports Plan/Act mode switching, ensuring the agent focuses on analysi
 #### Restricted Tools in Plan Mode
 
 The following tools are blocked in Plan Mode:
-- `FileCreate` / `FileEdit` — File write/edit
+- `FileCreate` / `FileEdit` / `FilePatch` — File write/edit/patch application
 - `DelegateTasks` — Task delegation
 
 #### Restricted Terminal Commands in Plan Mode
@@ -942,8 +943,7 @@ If model calls fail, use the `/models` command to check:
 
 ### 9.2 Path escapes workspace
 
-`FileRead`, `FileCreate`, `FileEdit`, `ContentSearch`, and `FileSearch` all enforce workspace boundaries. Paths outside the workspace are
-rejected.
+`FileRead`, `FileCreate`, `FileEdit`, `FilePatch`, `ContentSearch`, and `FileSearch` enforce workspace boundaries by default. Resolved paths outside the workspace require unified approval.
 
 ### 9.3 Terminal command failures
 

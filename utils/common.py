@@ -17,6 +17,7 @@ from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SO
 from system.ts_validator import validate_code
 from utils import paths
 from utils.file_access import GLOBAL_FILE_CONTROLLER
+from utils.file_patch import FilePatch, file_patch
 from utils.hitl import check_permission, check_path_permission
 from utils.text_tokens import truncate_text_by_tokens
 from utils.tool_validation import ToolArgumentsModel, build_tool_definitions, merge_tool_model_registries
@@ -161,7 +162,7 @@ class RunTerminalCommand(ToolArgumentsModel):
     - Interactive and full-screen commands are unsupported by the non-interactive terminal and may time out.
 
     PREFERRED APPROACH:
-    - For file read/write/edit: Use File tools (FileRead/FileCreate/FileEdit)
+    - For file read/write/edit/patch: Use File tools (FileRead/FileCreate/FileEdit/FilePatch)
     - For file content search: Use ContentSearch (not grep, rg, findstr)
     - For file path regex search: Use FileSearch (not find, ls, dir)
     - Use this tool ONLY for: builds, tests, git, package management, system info
@@ -1511,6 +1512,7 @@ FILE_TOOLS, FILE_TOOL_MODELS = build_tool_definitions(
     FileRead,
     FileCreate,
     FileEdit,
+    FilePatch,
     ContentSearch,
     FileSearch,
 )
@@ -1530,7 +1532,7 @@ FILE_NAMESPACE = {
         "Primary file operation tools. Always prefer this namespace for file reads, "
         "writes, edits, text searches and file searches instead of shell commands. "
         "IMPORTANT: Use FileCreate only to create/write new or completely empty files. "
-        "Use FileEdit for existing-file changes; edit blocks are matched against the current file contents."
+        "Use FileEdit for single-file changes and FilePatch for complete multi-file patches."
     ),
     "tools": FILE_TOOLS,
 }
@@ -1555,5 +1557,6 @@ COMMON_TOOLS_HANDLERS = {
     "ContentSearch": content_search,
     "FileSearch": file_search,
     "FileEdit": file_edit,
+    "FilePatch": file_patch,
     "GetSystemTime": get_system_time,
 }

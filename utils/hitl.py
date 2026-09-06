@@ -148,3 +148,49 @@ def check_path_permission(resolved_path: Path, tool_name: str) -> tuple[bool, st
             return False, "用户取消了操作。"
 
     return False, "未知错误"
+
+
+def check_paths_permission(resolved_paths: list[Path], tool_name: str) -> tuple[bool, str]:
+    """Approve a group of workspace-external paths with one HITL prompt."""
+    unique_paths = sorted({path.resolve() for path in resolved_paths}, key=lambda path: path.as_posix())
+    if not unique_paths or not HITL_ENABLED:
+        return True, ""
+
+    pending = [path for path in unique_paths if not _is_path_whitelisted(path)]
+    if not pending:
+        return True, ""
+
+    with console_lock:
+        pending = [path for path in pending if not _is_path_whitelisted(path)]
+        if not pending:
+            return True, ""
+
+        path_lines = "\n".join(f"- {path.as_posix()}" for path in pending)
+        options = [
+            "允许本次批量访问",
+            "允许这些路径所在目录在本次会话访问",
+            "拒绝",
+        ]
+        title = (
+            "⚠️ 工作区外路径访问拦截\n"
+            f"🤖 Agent: {current_agent_role.get()}\n"
+            f"🛠️ Tool: {tool_name}\n"
+            f"📁 Paths:\n{path_lines}"
+        )
+        choice = choose_tui(title, options, allow_custom=False)
+
+        if choice == options[0]:
+            return True, ""
+        if choice == options[1]:
+            for path in pending:
+                PATH_WHITELIST.add(path.as_posix() if path.is_dir() else path.parent.as_posix())
+            return True, ""
+        if choice == options[2]:
+            reason = choose_tui("请输入拒绝原因（反馈给 Agent）", [], allow_custom=True)
+            if reason == "<cancelled>":
+                reason = "用户取消了操作。"
+            return False, reason or "用户拒绝执行，未提供具体原因。"
+        if choice == "<cancelled>":
+            return False, "用户取消了操作。"
+
+    return False, "未知错误"

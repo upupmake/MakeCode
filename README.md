@@ -77,13 +77,14 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 - `FileRead`：读取文件，可指定行号范围。输出采用 `grep -n` 约定：`行号:原文`（冒号后**无空格**），冒号之后即为逐字节一致的行内容（含缩进），便于直接用于 `FileEdit`；不连续的 region 之间插入 `@@ a-b skipped @@` 断点标记，避免跨空洞拼接。
 - `FileCreate`：仅用于新建并写入文件（目标文件不存在或为空时）。写入后自动触发 Tree-sitter 语法验证，若检测到语法错误会附加详细报错行号作为告警（不回滚写入）。
 - `FileEdit`：用于修改已存在文件。**使用整行搜索替换机制（search_content → replace_content），而非行号范围**。无需先调用 `FileRead`。**分阶定位**：每个块先针对读取时的文件内容定位；暂时无法落位的块会被推迟，再针对已应用块产生的文本重试，因此**链式编辑（块 N 针对块 M 的产物）仍然可用**，且不依赖块的书写顺序。匹配为整行匹配，先精确匹配，再允许忽略行尾空白与整块统一缩进偏移（替换内容按同一偏移自动重排）。每个块必须唯一命中；只要有任何块始终无法落位，就**整批拒绝并一次性报出全部问题**（含候选行号、最接近区域的 unified diff、“被前一个块改掉”与行号前缀误抄的定向提示）。应用时按行号倒序 splice，写入采用同目录临时文件 + 原子替换，保留原换行风格、末尾有无换行、BOM 与文件权限位；非 UTF-8 与二进制文件直接拒绝编辑。
+- `FilePatch`：用于应用完整的多文件 `*** Begin Patch` / `*** End Patch` 补丁，支持 `*** Update File: path`、`*** Add File: path` 和 `*** Delete File: path`。Update hunk 遵循标准 unified diff：`@@` 之后的未修改上下文行必须以一个空格开头，删除行以 `-` 开头，新增行以 `+` 开头；纯新增使用零旧行范围（如 `@@ -0,0 +1,1 @@`），空文件也允许使用裸 `@@`；Add File 的内容每行以一个 `+` 开头。每个实际文件在一个补丁中只能出现一次（包括大小写不同但指向同一 inode 的路径）。每个文件会独立解析、校验、匹配和提交；单个文件失败不会阻塞其他文件，同一文件内任意 hunk 失败则该文件不写入。已有文件通过临时文件替换，保留原始行尾、BOM 与权限位。路径会先解析 `.`、`..` 和符号链接，解析结果超出 workspace 时对本次补丁统一请求批准。
 - `ContentSearch`：通过 `content_regex` 在 `root_dir` 下递归搜索文本文件内容，并可用 `path_regex` 按文件绝对路径正则过滤；支持 `context_size` 指定每个匹配行前后包含的上下文行数（默认为 1）；正则使用 Python 语法。输出同样对齐 `grep -n`：命中行 `行号:原文`、上下文行 `行号-原文`，均无分隔空格，不连续区间之间插入 `@@ a-b skipped @@`。自动排除常见构建/依赖目录（`build`、`dist`、`__pycache__`、`node_modules`、`target`、`venv`、`site-packages`、`htmlcov`）和 `.` 开头的隐藏目录，减少无关匹配。
 - `FileSearch`：在 `root_dir` 下递归搜索文件和目录，通过 `path_regex` 按绝对路径正则匹配，支持类型过滤（`file`/`dir`/`all`）。自动排除隐藏目录和构建/依赖目录，最多返回 500 条结果。适合快速探索项目结构。
 - `RunTerminalCommand`：执行非交互式终端命令。
 
 #### 📋 Tree-sitter 语法验证（`system/ts_validator.py`）
 
-`FileCreate` 和 `FileEdit` 在写入文件后会自动调用 Tree-sitter 进行语法校验：
+`FileCreate`、`FileEdit` 和 `FilePatch` 在写入文件后会自动调用 Tree-sitter 进行语法校验：
 
 - **多语言支持**：自动检测 Python、JavaScript、TypeScript、Go、Rust 等多种编程语言
 - **智能排除**：自动跳过纯文本和文档文件（`.md`、`.txt`、`.rst`、`.log` 等），避免误报
@@ -104,7 +105,7 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 
 为保障 Agent 在真实工程环境下的执行安全，系统引入了 Human-In-The-Loop (HITL) 拦截机制：
 
-- **敏感操作拦截**：默认拦截修改类文件操作（`FileEdit`、`FileCreate`）与关键基础终端命令（如 `npm`, `git`、`rm` 等，通过白名单外放行策略）。
+- **敏感操作拦截**：默认拦截修改类文件操作（`FileEdit`、`FilePatch`、`FileCreate`）与关键基础终端命令（如 `npm`, `git`、`rm` 等，通过白名单外放行策略）。
 - **TUI 交互面板**：基于 `Textual` 实现的终端可视化拦截面板，支持使用方向键选择“允许执行”或“拒绝并附加反馈”。
 - **并发安全排队**：在多子智能体并发执行时，底层通过 `ContextVar` 跨协程/线程边界追踪触发拦截的智能体身份（如
   `0:Orchestrator` 或 `1:Frontend Developer`），并利用全局 `threading.Lock` 实现请求的安全排队渲染，防止 UI 错乱。
@@ -392,7 +393,7 @@ MakeCode 支持 Plan/Act 模式切换，确保智能体在规划阶段专注于�
 #### Plan Mode 限制工具
 
 以下工具在 Plan Mode 下被拦截：
-- `FileCreate` / `FileEdit` — 文件写入/编辑
+- `FileCreate` / `FileEdit` / `FilePatch` — 文件写入/编辑/补丁应用
 - `DelegateTasks` — 任务委派
 
 #### Plan Mode 受限终端命令
@@ -910,7 +911,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 
 ### 9.2 路径越界
 
-`FileRead` / `FileCreate` / `FileEdit` / `ContentSearch` / `FileSearch` 都以工作区为边界，超出工作区的路径会被拒绝。
+`FileRead` / `FileCreate` / `FileEdit` / `FilePatch` / `ContentSearch` / `FileSearch` 默认以工作区为边界；解析后超出工作区的路径需要经过统一批准。
 
 ### 9.3 终端命令失败
 
