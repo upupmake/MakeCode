@@ -3662,6 +3662,61 @@ async def test_async_chat_stream_does_not_replay_after_partial_output():
 
 
 @pytest.mark.anyio
+async def test_tolerant_sse_decoder_skips_gateway_empty_data_frames():
+    frames = [
+        b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+        b'id: evt-7\ndata: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+        b"\n\n",               # id 字段之后多出的空行
+        b"event: ping\n\n",    # 只有 event 没有 data 的心跳
+        b"data:\n\n",          # data 值为空
+        b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def aiter_bytes():
+        for frame in frames:
+            yield frame
+
+    decoder = llm_client_module._TolerantSSEDecoder()
+    payloads = [
+        sse.json()
+        async for sse in decoder.aiter_bytes(aiter_bytes())
+        if not sse.data.startswith("[DONE]")
+    ]
+
+    assert [payload["choices"][0]["delta"]["content"] for payload in payloads] == [
+        "Hel",
+        "lo",
+        " world",
+    ]
+
+
+@pytest.mark.anyio
+async def test_tolerant_sse_decoder_still_raises_on_corrupted_json():
+    async def aiter_bytes():
+        yield b'data: {"choices":[{"delta":{"cont\n\n'
+
+    decoder = llm_client_module._TolerantSSEDecoder()
+
+    with pytest.raises(json.JSONDecodeError):
+        [sse.json() async for sse in decoder.aiter_bytes(aiter_bytes())]
+
+
+@pytest.mark.anyio
+async def test_async_chat_client_registers_tolerant_sse_decoder():
+    model = ModelConfig("https://example.com", "key", "main")
+
+    client = llm_client_module._create_async_chat_client(model)
+    try:
+        assert isinstance(
+            client.client._make_sse_decoder(),
+            llm_client_module._TolerantSSEDecoder,
+        )
+    finally:
+        await client.client.close()
+
+
+@pytest.mark.anyio
 async def test_async_chat_stream_builds_unified_result_and_usage():
     chunks = [
         SimpleNamespace(

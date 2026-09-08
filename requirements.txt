@@ -1,5 +1,6 @@
 fastmcp
-openai
+# 锁定版本：_TolerantSSEDecoder 依赖私有 API openai._streaming.SSEDecoder / ServerSentEvent
+openai==2.54.0
 anthropic==0.125.0
 pydantic
 python_frontmatter

@@ -207,9 +207,9 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get -o Acquire::Check-Valid-Until=false update
-          apt-get install -y --no-install-recommends ca-certificates curl binutils git zip
-          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-          apt-get install -y --no-install-recommends nodejs
+          apt-get install -y --no-install-recommends ca-certificates curl binutils git zip xz-utils
+          curl -fsSL https://nodejs.org/dist/v20.19.5/node-v20.19.5-linux-x64.tar.xz \
+            | tar -xJ -C /usr/local --strip-components=1
 
       - name: Checkout repository
         uses: actions/checkout@v4

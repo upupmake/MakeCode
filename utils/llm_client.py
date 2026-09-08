@@ -17,6 +17,7 @@ from typing import Any, Literal, TypedDict
 import httpx
 from anthropic import AsyncAnthropic
 from openai import APIError, AsyncOpenAI
+from openai._streaming import ServerSentEvent, SSEDecoder
 
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
 from utils.vision import image_data_uri, resolve_image_attachment
@@ -218,7 +219,26 @@ def _raise_if_response_cancelled() -> None:
         raise _LLMRequestCancelled()
 
 
+class _TolerantSSEDecoder(SSEDecoder):
+    """跳过中转网关发出的空 data 帧。
+
+    网关的心跳帧（只有 event 没有 data、data 值为空）以及发过 id 字段后多出的空行，
+    都会被 SDK 解析成 data 为空串的事件，随后在 sse.json() 处抛 JSONDecodeError；
+    SDK 会在异常传播时关闭整条响应，已生成的正文和 tool_calls 全部丢弃。
+    这类帧不可能携带 choices 或 usage，直接丢弃不损失信息。
+    """
+
+    def decode(self, line: str) -> ServerSentEvent | None:
+        sse = super().decode(line)
+        if sse is not None and not sse.data.strip():
+            return None
+        return sse
+
+
 class _TrackedAsyncOpenAI(AsyncOpenAI):
+    def _make_sse_decoder(self) -> SSEDecoder:
+        return _TolerantSSEDecoder()
+
     def _should_retry(self, response: httpx.Response) -> bool:
         # 中转场景下 404 多为上游瞬时路由失败（部分渠道缺模型），计入重试
         if response.status_code == 404 and response.headers.get("x-should-retry") is None:
