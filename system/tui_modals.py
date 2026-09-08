@@ -3759,7 +3759,7 @@ class ModelManagerModal(ClosableModalScreen[str]):
         return f"共 {len(self._model_manager.models)} 个模型 · 常用 {favorite_count} 个 · 当前：{current_text}"
 
     def on_mount(self) -> None:
-        self._reload_rows(0)
+        self._reload_rows()
 
     def _selected_index(self) -> int:
         choice_list = self.query_one("#model-manager-list", ListView)
@@ -3794,6 +3794,8 @@ class ModelManagerModal(ClosableModalScreen[str]):
         current_key = current_model.key if current_model else None
         labels = [self._model_label(model, current_key) for model in self._model_manager.models]
         self._model_keys = [model.key for model in self._model_manager.models]
+        if selected_key is None and selected_index is None:
+            selected_key = current_key
         if selected_key is not None:
             selected_index = next(
                 (index for index, key in enumerate(self._model_keys) if key == selected_key),

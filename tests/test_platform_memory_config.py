@@ -1972,6 +1972,26 @@ def test_model_config_save_is_atomic(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_model_manager_modal_highlights_current_model_on_open(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["alpha", "beta"])
+    beta_key = next(model.key for model in manager.models if model.model_id == "beta")
+    assert manager.select_model(beta_key, "medium")
+    assert manager.get_current_model().key == beta_key
+
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        current_index = next(index for index, key in enumerate(modal._model_keys) if key == beta_key)
+        assert current_index != 0
+        assert_list_selection(model_list, current_index)
+        assert "● beta" in str(model_list.children[current_index].query_one(Label).render())
+
+
+@pytest.mark.anyio
 async def test_model_manager_modal_shows_efforts_and_changes_current_model_with_arrow_keys(tmp_path):
     manager = ModelManager(tmp_path)
     manager.add_model("https://example.com", "key", ["main"])
