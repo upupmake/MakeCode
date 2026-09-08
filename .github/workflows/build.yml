@@ -207,7 +207,9 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get -o Acquire::Check-Valid-Until=false update
-          apt-get install -y --no-install-recommends ca-certificates curl binutils git zip xz-utils
+          apt-get install -y --no-install-recommends --no-upgrade zip xz-utils
+          command -v curl
+          command -v git
           curl -fsSL https://nodejs.org/dist/v20.19.5/node-v20.19.5-linux-x64.tar.xz \
             | tar -xJ -C /usr/local --strip-components=1
 
