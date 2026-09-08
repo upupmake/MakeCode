@@ -206,7 +206,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          apt-get update
+          apt-get -o Acquire::Check-Valid-Until=false update
           apt-get install -y --no-install-recommends ca-certificates curl binutils git zip
           curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
           apt-get install -y --no-install-recommends nodejs
