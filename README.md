@@ -358,7 +358,7 @@ MakeCode 采用 **Textual** 构建的多面板 TUI，将智能体输出路由到
 - **Task**：任务看板专用面板，实时展示 TaskManager 状态、Runnable Frontier 与执行进度。
 - **Background**：后台活动区，用于展示长期记忆召回/写入、后台检查等不需打断主对话的事件。
 - **Sub-Agent**：子智能体控制台输出，默认关闭，可通过 `/sub-agent-console` 切换。
-- **Status / RuntimeInfo**：顶部状态栏，展示当前模式（Plan/Act）、模型、Token 使用量等运行时指标；任一 LLM 请求进行中时显示 `Client: REQUESTING`，实际发生 SDK 重试时追加 `RETRY n/5`，全部请求结束后自动清除。运行栏不再显示 `Agent: RUNNING`，智能体活动状态仍用于输入区显隐等交互控制。
+- **Status / RuntimeInfo**：顶部状态栏，展示当前模式（Plan/Act）、模型、Token 使用量等运行时指标；任一 LLM 请求进行中时显示 `Client: REQUESTING · xx s`，实际发生 SDK 重试时追加 `RETRY n/5` 并将耗时重置为当前这次请求，全部请求结束后自动清除耗时与标识。运行栏不再显示 `Agent: RUNNING`，智能体活动状态仍用于输入区显隐等交互控制。
 
 面板布局比例可通过 `/layout` 命令定制，配置保存到安装目录下的 `.makecode/layout_config.json`。为延续旧配置设计上保留 `reasoning` 键名的兼容读取，迁移后统一使用 `task` 键。
 
@@ -519,7 +519,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 - **统一异步流式接口**：主智能体、子智能体、标题、摘要、长期记忆管理和记忆召回均通过 `generate_stream()` 返回统一事件与 `LLMResult`；OpenAI Chat 使用官方 `AsyncOpenAI`，Anthropic Messages 使用官方 `AsyncAnthropic`。
 - **双协议历史重建**：conversation 保存 OpenAI 风格的规范化消息超集，而不是 provider 请求体；任务计划、Sub-Agent history 和 trace 均不进入 provider messages。发起请求时按模型的 `message_format` 重建 OpenAI Chat 消息或 Anthropic content blocks，并仅在来源格式和模型兼容时回放原生 blocks。
 - **Anthropic 前缀缓存**：Anthropic 请求同时设置顶层和 system text block 的 ephemeral `cache_control`。工具定义按名称确定性排序，并在单次主/子智能体运行开始时固定 MCP 工具与 handler 原子快照，使 `tools → system → messages` 前缀保持稳定。
-- **超时与重试**：请求总超时为 120 秒，连接超时为 10 秒；SDK 最多重试 5 次。实际发生重试时，运行栏显示 `Client: REQUESTING · RETRY n/5`。
+- **超时与重试**：请求总超时为 120 秒，连接超时为 10 秒；SDK 最多重试 5 次。请求进行中时运行栏显示 `Client: REQUESTING · xx s`，实际发生重试时追加 `RETRY n/5` 并将耗时重置为当前这次请求。
 - **请求状态生命周期**：所有 LLM 请求在实际网络调用前增加线程安全计数；成功、异常、超时或流式取消均在 `finally` 中清理，最后一个并发请求结束后取消标识。并发请求的重试状态按请求独立追踪。
 - **取消与 `pause_turn`**：取消会丢弃部分 assistant 输出，不执行工具，也不会为首次请求保存 conversation 或生成标题；主循环和标题、摘要、记忆、召回、子智能体报告等二级路径按各自上限有界续接 `pause_turn`。
 - **请求隔离与资源释放**：长期记忆预召回和标题生成使用独立临时 client 并在完成后关闭；模型运行配置变化时关闭旧缓存 client，每次 Textual 提交结束后也关闭本次事件循环使用的缓存 client，避免跨 `asyncio.run()` 复用连接池。

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -800,11 +801,15 @@ async def test_runtime_info_displays_client_request_state():
         app.set_client_request_active(True)
         await pilot.pause()
         runtime_info = app.query_one("#runtime-info-bar")
-        assert "Client: REQUESTING" in str(runtime_info.render())
+        rendered = str(runtime_info.render())
+        assert "Client: REQUESTING · 0 s" in rendered
+        assert "RETRY" not in rendered
 
         app.set_client_request_active(False)
         await pilot.pause()
-        assert "Client: REQUESTING" not in str(runtime_info.render())
+        rendered = str(runtime_info.render())
+        assert "Client: REQUESTING" not in rendered
+        assert " s" not in rendered
 
 
 @pytest.mark.anyio
@@ -831,8 +836,49 @@ async def test_runtime_info_displays_retry_count_without_agent_running():
         await pilot.pause()
 
         rendered = str(app.query_one("#runtime-info-bar").render())
-        assert "Client: REQUESTING · RETRY 2/2" in rendered
+        assert "Client: REQUESTING · 0 s · RETRY 2/2" in rendered
         assert "Agent: RUNNING" not in rendered
+
+
+@pytest.mark.anyio
+async def test_runtime_info_updates_request_elapsed_time_until_request_ends():
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "runtime")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.set_client_request_active(True)
+        app._client_request_started_at = time.monotonic() - 3
+        app._update_clock()
+        await pilot.pause()
+
+        rendered = str(app.query_one("#runtime-info-bar").render())
+        assert "Client: REQUESTING · 3 s" in rendered
+        assert "RETRY" not in rendered
+
+        app.set_client_request_active(False)
+        await pilot.pause()
+        rendered = str(app.query_one("#runtime-info-bar").render())
+        assert "Client: REQUESTING" not in rendered
+        assert "3 s" not in rendered
+
+
+@pytest.mark.anyio
+async def test_runtime_info_resets_elapsed_time_when_retry_starts():
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "runtime")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.set_client_request_active(True)
+        app._client_request_started_at = time.monotonic() - 3
+        app._update_runtime_info()
+        await pilot.pause()
+        assert "Client: REQUESTING · 3 s" in str(app.query_one("#runtime-info-bar").render())
+
+        app.set_client_request_active(True, retry_count=1, max_retries=5)
+        await pilot.pause()
+        rendered = str(app.query_one("#runtime-info-bar").render())
+        assert "Client: REQUESTING · 0 s · RETRY 1/5" in rendered
+        assert "3 s" not in rendered
 
 
 def test_tui_bridge_keeps_request_active_until_all_requests_finish():

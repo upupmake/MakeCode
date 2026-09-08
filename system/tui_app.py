@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from datetime import datetime
@@ -1250,6 +1251,7 @@ class MakeCodeTuiApp(App[None]):
         self._client_request_active = False
         self._client_retry_count = 0
         self._client_max_retries = 0
+        self._client_request_started_at: float | None = None
         self._slash_matches: list[tuple[str, str]] = []
         self._slash_match_index = 0
         self._slash_hint_visible = False
@@ -2343,9 +2345,15 @@ class MakeCodeTuiApp(App[None]):
     def set_client_request_active(
         self, active: bool, retry_count: int = 0, max_retries: int = 0
     ) -> None:
+        was_active = self._client_request_active
+        previous_retry_count = self._client_retry_count
         self._client_request_active = active
         self._client_retry_count = retry_count
         self._client_max_retries = max_retries
+        if not active:
+            self._client_request_started_at = None
+        elif not was_active or retry_count != previous_retry_count:
+            self._client_request_started_at = time.monotonic()
         self._update_runtime_info()
 
     def _update_input_visibility(self) -> None:
@@ -2399,6 +2407,8 @@ class MakeCodeTuiApp(App[None]):
             self.query_one("#top-clock", Static).update(datetime.now().strftime("%H:%M:%S"))
         except Exception:
             pass
+        if self._client_request_active:
+            self._update_runtime_info()
 
     def _update_input_title(self) -> None:
         self.query_one("#input-box", MakeCodeInput).border_title = f"MakeCode · {self._mode_label} · Enter 发送/选择 · Ctrl+C 取消回复 · Ctrl+N 换行 · Ctrl+P 切换 · Ctrl+G 运行时介入 · ↑↓ 选择命令"
@@ -2531,14 +2541,15 @@ class MakeCodeTuiApp(App[None]):
             token_usage.update(Text("📈 Tokens", style="bold #bfdbfe"))
             token_usage.tooltip = None
         if self._client_request_active:
+            elapsed = 0
+            if self._client_request_started_at is not None:
+                elapsed = int(time.monotonic() - self._client_request_started_at)
+            client_parts = ["🌐 Client: REQUESTING", f"{elapsed} s"]
             if self._client_retry_count:
-                client_state = (
-                    "🌐 Client: REQUESTING · "
+                client_parts.append(
                     f"RETRY {self._client_retry_count}/{self._client_max_retries}"
                 )
-            else:
-                client_state = "🌐 Client: REQUESTING"
-            value = f"{client_state}  | {value}"
+            value = f"{' · '.join(client_parts)}  | {value}"
         runtime_info.update(value)
 
     def _get_slash_matches(self, text: str) -> list[tuple[str, str]]:
