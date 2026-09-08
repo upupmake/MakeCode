@@ -79,6 +79,59 @@ def test_stream_committed_blocks_carry_raw_text_for_content_only():
     assert all(not hasattr(payload, "copy_text") for payload in reasoning_payloads)
 
 
+def test_stream_keeps_fenced_code_block_with_surrounding_text():
+    renderer = StreamRenderer()
+    events = []
+    chunks = [
+        "现在\n\n",
+        "```python\n",
+        "def label_query():\n\n",
+        "    return 1\n",
+        "```\n\n",
+        "法务会变成：\n\n",
+        "```text\n当需要处理法务时使用。\n```\n\n",
+        "后记",
+    ]
+    full = ""
+    buf = ""
+
+    with patch(
+        "system.stream_render.post_tui",
+        side_effect=lambda region, payload=None, **kwargs: events.append((payload, kwargs)),
+    ):
+        for chunk in chunks:
+            full += chunk
+            buf += chunk
+            buf, _ = renderer._process_block_commit(full, buf, region=TuiRegion.CONTENT)
+
+    committed = [
+        payload.copy_text
+        for payload, kwargs in events
+        if getattr(payload, "copy_text", None) and not kwargs.get("tail")
+    ]
+    assert committed == [
+        "现在\n\n```python\ndef label_query():\n\n    return 1\n```\n\n",
+        "法务会变成：\n\n```text\n当需要处理法务时使用。\n```\n\n",
+    ]
+    assert buf == "后记"
+
+
+def test_stream_does_not_split_inside_unclosed_fence():
+    renderer = StreamRenderer()
+    events = []
+    text = "前言\n\n```python\nprint(1)\n\nprint(2)\n"
+
+    with patch(
+        "system.stream_render.post_tui",
+        side_effect=lambda region, payload=None, **kwargs: events.append((payload, kwargs)),
+    ):
+        remaining, emitted = renderer._process_block_commit(text, text, region=TuiRegion.CONTENT)
+
+    assert emitted == ""
+    assert remaining == text
+    assert all(kwargs.get("tail") or payload in ("", None) for payload, kwargs in events)
+
+
 @pytest.mark.anyio
 async def test_double_click_on_streamed_block_copies_complete_response_from_transparent_parent():
     app = MakeCodeTuiApp()

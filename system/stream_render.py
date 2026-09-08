@@ -247,22 +247,40 @@ class StreamRenderer:
         """
         增量渲染逻辑：
         如果段落结束，将完整段落输出为 Markdown，并保留未完成的尾部 buffer。
+        围栏代码块在闭合前不切开；闭合后连同前后说明一起提交。
         返回值为 (剩余 buffer, 本次已输出的原始文本片段)。
         """
-        in_code_block = full_text.count("```") % 2 != 0
+        if full_text.count("```") % 2 != 0 or "\n\n" not in current_buffer:
+            return current_buffer, ""
 
-        if not in_code_block and "\n\n" in current_buffer:
-            parts = current_buffer.rsplit("\n\n", 1)
-            if len(parts) == 2:
-                complete_blocks, remaining_buffer = parts
-                self._clear_tail(region)
-                post_tui(
-                    region,
-                    self._region_markdown(region, complete_blocks, copy_text=f"{complete_blocks}\n\n"),
-                )
-                return remaining_buffer, f"{complete_blocks}\n\n"
+        complete_blocks, remaining_buffer = self._split_committable_markdown(current_buffer)
+        if complete_blocks is None:
+            return current_buffer, ""
 
-        return current_buffer, ""
+        self._clear_tail(region)
+        post_tui(
+            region,
+            self._region_markdown(region, complete_blocks, copy_text=f"{complete_blocks}\n\n"),
+        )
+        return remaining_buffer, f"{complete_blocks}\n\n"
+
+    @staticmethod
+    def _split_committable_markdown(current_buffer: str) -> tuple[str, str] | tuple[None, None]:
+        search_from = len(current_buffer)
+        while True:
+            split_at = current_buffer.rfind("\n\n", 0, search_from)
+            if split_at == -1:
+                return None, None
+            complete_blocks = current_buffer[:split_at]
+            remaining_buffer = current_buffer[split_at + 2:]
+            remaining = remaining_buffer.lstrip()
+            if (
+                complete_blocks.count("```") % 2 == 0
+                and remaining
+                and not remaining.startswith("```")
+            ):
+                return complete_blocks, remaining_buffer
+            search_from = split_at
 
     def _update_tail(self, buffer: str, region: TuiRegion = TuiRegion.CONTENT, force: bool = False):
         if not force:
