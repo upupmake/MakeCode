@@ -768,6 +768,16 @@ def assert_list_selection(list_view: ListView, index: int) -> None:
     assert list_view.children[index].has_class("-highlight")
 
 
+async def pump_until(pilot, predicate, attempts: int = 25) -> None:
+    """驱动消息循环直到 predicate() 成立：push_screen 后的新屏 mount/on_mount 不在
+    pause() 的旧屏快照计数内，固定次数的 pause 是竞态；按可观测状态等待才是确定性的。"""
+    for _ in range(attempts):
+        await pilot.pause()
+        if predicate():
+            return
+    raise AssertionError("pumping the message loop never reached the expected UI state")
+
+
 @pytest.mark.anyio
 async def test_choice_modal_options_only_renders_list_no_custom():
     """ChoiceModal 有选项且 allow_custom=False 时，不渲染自定义输入和提示。"""
@@ -1263,8 +1273,11 @@ async def test_mcp_switch_modal_opens_tool_management_and_restores_service_selec
 
         await pilot.press("space")
         await pilot.click("#mcp-tools-apply")
-        await pilot.pause()
-        await pilot.pause()
+        await pump_until(
+            pilot,
+            lambda: app.screen is modal
+            and "工具开关已保存" in str(modal.query_one("#mcp-title", Label).render()),
+        )
 
         assert app.screen is modal
         assert_list_selection(modal.query_one("#mcp-list", ListView), 0)
@@ -1314,8 +1327,16 @@ async def test_mcp_switch_modal_opens_identical_overview_from_header_button():
         assert overview_button.region.y > modal.query_one("#mcp-title", Label).region.y
         assert overview_button.region.y < service_list.region.y
 
+        def overview_table_populated() -> bool:
+            screen = app.screen
+            if not isinstance(screen, McpViewModal):
+                return False
+            if len(screen.query("#mcp-view-tools-table")) != 1:
+                return False
+            return screen.query_one("#mcp-view-tools-table", DataTable).row_count == 1
+
         overview_button.press()
-        await pilot.pause()
+        await pump_until(pilot, overview_table_populated)
         assert isinstance(app.screen, McpViewModal)
         manager.get_status_info.assert_called_once_with()
         assert str(app.screen.query_one("#mcp-view-title", Label).render()) == "🔌 MCP 状态与工具"
