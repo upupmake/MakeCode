@@ -456,7 +456,24 @@ def read_clipboard_file_items(paste_text: str | None = None) -> list[dict[str, o
                 matched.append(item)
                 del remaining[index]
                 break
+    if _is_truncated_file_list_paste(paste_text, matched, items):
+        return items
     return matched
+
+
+def _is_truncated_file_list_paste(
+    paste_text: str,
+    matched: list[dict[str, object]],
+    items: list[dict[str, object]],
+) -> bool:
+    # 终端（如 Windows Terminal）把多文件剪贴板转成粘贴文本时只保留第一个路径。
+    # 因此当粘贴文本是路径形式、且恰好只匹配到剪贴板列表的第一项而列表不止一项时，
+    # 判定为终端截断了整列表粘贴，回退为返回系统剪贴板中的完整文件列表。
+    if len(matched) != 1 or len(items) <= 1:
+        return False
+    if matched[0] is not items[0]:
+        return False
+    return "\\" in paste_text or "/" in paste_text
 
 
 def clipboard_paste_text_matches_file_items(paste_text: str | None) -> bool:

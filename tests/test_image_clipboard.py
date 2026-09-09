@@ -528,11 +528,17 @@ def test_read_clipboard_file_items_matches_windows_and_linux_paste_text(tmp_path
             ["powershell.exe"], 0, stdout=windows_payload,
         )),
     ):
-        windows_first = read_clipboard_file_items(str(first_source).replace("/", "\\"))
+        windows_truncated = read_clipboard_file_items(str(first_source).replace("/", "\\"))
+        windows_second = read_clipboard_file_items(str(second_source).replace("/", "\\"))
         windows_folder = read_clipboard_file_items("assets")
 
-    assert windows_first == [
+    assert windows_truncated == [
         {"kind": "image", "image": (first, "提示文案.png", "image/png")},
+        {"kind": "image", "image": (second, "没有开关切换.png", "image/png")},
+        {"kind": "path", "path": str(folder)},
+    ]
+    assert windows_second == [
+        {"kind": "image", "image": (second, "没有开关切换.png", "image/png")},
     ]
     assert windows_folder == [
         {"kind": "path", "path": str(folder)},
@@ -555,6 +561,61 @@ def test_read_clipboard_file_items_matches_windows_and_linux_paste_text(tmp_path
         assert linux_folder == [
             {"kind": "path", "path": str(folder)},
         ]
+
+
+def test_main_clipboard_callback_expands_truncated_windows_paste(tmp_path):
+    first, _, _, _ = _random_png(50)
+    second, _, _, _ = _random_png(51)
+    first_source = tmp_path / "提示文案.png"
+    second_source = tmp_path / "没有开关切换.png"
+    first_source.write_bytes(first)
+    second_source.write_bytes(second)
+    store = ConversationStore(tmp_path / "conversations")
+    windows_payload = f"{first_source}\n{second_source}\n".encode("utf-8")
+
+    with (
+        patch.object(main, "CONVERSATION_STORE", store),
+        patch("system.clipboard.sys.platform", "win32"),
+        patch("system.clipboard.shutil.which", side_effect=lambda command: "powershell.exe" if command == "powershell.exe" else None),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["powershell.exe"], 0, stdout=windows_payload,
+        )),
+        patch.object(main, "read_image_from_system_clipboard", return_value=None),
+    ):
+        marker = main._paste_image_from_system_clipboard(str(first_source).replace("/", "\\"))
+
+    assert marker.count("[[image:id=img_") == 2
+    attachments = list((store.active_root / "attachments").iterdir())
+    names = {path.name.split("_", 2)[-1] for path in attachments}
+    assert names == {"提示文案.png", "没有开关切换.png"}
+
+
+def test_read_clipboard_file_items_keeps_macos_multi_file_paste(tmp_path):
+    first, _, _, _ = _random_png(52)
+    second, _, _, _ = _random_png(53)
+    first_source = tmp_path / "提示文案.png"
+    second_source = tmp_path / "没有开关切换.png"
+    first_source.write_bytes(first)
+    second_source.write_bytes(second)
+    payload = f"{first_source}\n{second_source}\n".encode()
+
+    with (
+        patch("system.clipboard.sys.platform", "darwin"),
+        patch("system.clipboard.shutil.which", return_value="/usr/bin/osascript"),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["/usr/bin/osascript"], 0, stdout=payload,
+        )),
+    ):
+        multiline_paste = read_clipboard_file_items(f"{first_source}\n{second_source}\n")
+        second_only = read_clipboard_file_items(str(second_source))
+
+    assert multiline_paste == [
+        {"kind": "image", "image": (first, "提示文案.png", "image/png")},
+        {"kind": "image", "image": (second, "没有开关切换.png", "image/png")},
+    ]
+    assert second_only == [
+        {"kind": "image", "image": (second, "没有开关切换.png", "image/png")},
+    ]
 
 
 def test_main_clipboard_callback_keeps_non_image_paths_in_order(tmp_path):
