@@ -15,7 +15,7 @@ from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal
+from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
@@ -702,7 +702,7 @@ def test_ts_validator_does_not_load_uncached_language(monkeypatch):
 
 
 def test_tui_modals_use_q_not_escape_for_cancel():
-    for modal in [ChoiceModal, MemoryConfigModal, RecallModelPickerModal, AddModelModal, EditModelModal, LayoutModal]:
+    for modal in [ChoiceModal, MemoryConfigModal, ExtraToolsModal, RecallModelPickerModal, ImageUnderstandingModelPickerModal, AddModelModal, EditModelModal, LayoutModal]:
         keys = {binding.key for binding in modal.BINDINGS}
         assert "q" in keys
         assert "escape" not in keys
@@ -1277,6 +1277,57 @@ async def test_mcp_switch_modal_opens_tool_management_and_restores_service_selec
 
 
 @pytest.mark.anyio
+async def test_mcp_switch_modal_opens_identical_overview_from_header_button():
+    manager = Mock()
+    manager.get_status_info.return_value = {
+        "config_path": "/project/.makecode/mcp_config.json",
+        "is_running": True,
+        "tool_count": 1,
+        "config_servers": ["filesystem"],
+        "enabled_config_servers": ["filesystem"],
+        "disabled_servers": [],
+        "loaded_servers": ["filesystem"],
+        "tools": [{
+            "provider": "filesystem",
+            "name": "filesystem_read_file",
+            "description": "Read a file",
+            "disabled": False,
+        }],
+    }
+    modal = McpSwitchModal(
+        [{
+            "name": "filesystem",
+            "disabled": False,
+            "loaded": True,
+            "transport": "stdio",
+            "target": "npx",
+            "tool_count": 1,
+        }],
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        overview_button = modal.query_one("#mcp-overview", Button)
+        service_list = modal.query_one("#mcp-list", ListView)
+        assert overview_button.region.y > modal.query_one("#mcp-title", Label).region.y
+        assert overview_button.region.y < service_list.region.y
+
+        overview_button.press()
+        await pilot.pause()
+        assert isinstance(app.screen, McpViewModal)
+        manager.get_status_info.assert_called_once_with()
+        assert str(app.screen.query_one("#mcp-view-title", Label).render()) == "🔌 MCP 状态与工具"
+        assert app.screen.query_one("#mcp-view-tools-table", DataTable).row_count == 1
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert app.screen is modal
+        assert_list_selection(modal.query_one("#mcp-list", ListView), 0)
+
+
+@pytest.mark.anyio
 async def test_mcp_switch_modal_separates_services_from_actions_and_shows_details():
     modal = McpSwitchModal(
         [
@@ -1310,6 +1361,10 @@ async def test_mcp_switch_modal_separates_services_from_actions_and_shows_detail
         assert "确认应用" not in str(service_list.children[-1].query_one(Label).render())
         assert modal.query_one("#mcp-apply", Button).region.height > 0
         assert modal.query_one("#mcp-cancel", Button).region.height > 0
+        overview_button = modal.query_one("#mcp-overview", Button)
+        assert overview_button.region.y > modal.query_one("#mcp-title", Label).region.y
+        assert overview_button.region.y < service_list.region.y
+        assert str(overview_button.label) == "查看总览"
         first_label = str(service_list.children[0].query_one(Label).render())
         assert "filesystem" in first_label
         assert "草稿：启用 · 运行：已加载 · 协议：stdio · 工具：4" in first_label

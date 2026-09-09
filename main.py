@@ -35,7 +35,8 @@ from system.commands import (
     CommandAction,
 )
 from system.clipboard import (
-    read_image_file_from_system_clipboard,
+    clipboard_paste_text_matches_file_items,
+    read_clipboard_file_items,
     read_image_from_system_clipboard,
 )
 from system.console_render import (
@@ -117,6 +118,8 @@ import utils.teams as _teams_module
 from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS, TASK_MANAGER_TOOL_MODELS
 from utils.teams import TEAM_TOOLS, TEAM_TOOLS_HANDLERS, TEAM_TOOL_MODELS
 from tools.ask_user import ASK_USER_TOOLS, ASK_USER_TOOLS_HANDLERS, ASK_USER_TOOL_MODELS
+from tools.understand_image import UNDERSTAND_IMAGE_TOOLS, UNDERSTAND_IMAGE_TOOLS_HANDLERS, UNDERSTAND_IMAGE_TOOL_MODELS
+from tools.extra_tools import is_understand_image_enabled
 from utils.tool_validation import (
     ToolArgumentsModel,
     ToolArgumentValidationError,
@@ -186,6 +189,12 @@ def get_current_tools_definition(mcp_tools: list | None = None, llm_client=None)
     return all_tools
 
 
+def _image_understanding_tools():
+    if not is_understand_image_enabled():
+        return []
+    return UNDERSTAND_IMAGE_TOOLS
+
+
 def _get_all_tools_definition(mcp_tools: list | None = None, llm_client=None):
     """获取全部工具定义（不考虑 Plan Mode 过滤）"""
     tools = (
@@ -196,6 +205,7 @@ def _get_all_tools_definition(mcp_tools: list | None = None, llm_client=None):
         + TASK_MANAGER_TOOLS
         + TEAM_TOOLS
         + ASK_USER_TOOLS
+        + _image_understanding_tools()
         + (GLOBAL_MCP_MANAGER.get_tools() if mcp_tools is None else mcp_tools)
     )
     try:
@@ -217,6 +227,7 @@ BASE_SUPER_TOOL_MODELS = merge_tool_model_registries(
     TASK_MANAGER_TOOL_MODELS,
     TEAM_TOOL_MODELS,
     ASK_USER_TOOL_MODELS,
+    UNDERSTAND_IMAGE_TOOL_MODELS,
 )
 
 BASE_SUPER_TOOLS_HANDLERS = {
@@ -226,6 +237,7 @@ BASE_SUPER_TOOLS_HANDLERS = {
     **TASK_MANAGER_TOOLS_HANDLERS,
     **TEAM_TOOLS_HANDLERS,
     **ASK_USER_TOOLS_HANDLERS,
+    **UNDERSTAND_IMAGE_TOOLS_HANDLERS,
 }
 
 
@@ -861,17 +873,7 @@ def _parse_input_images(text: str) -> tuple[str, list[dict[str, str]]]:
     return parse_image_placeholders(text, CONVERSATION_STORE.active_root)
 
 
-def _paste_image_from_system_clipboard() -> str | None:
-    file_image = read_image_file_from_system_clipboard()
-    if file_image is not None:
-        data, filename, media_type = file_image
-    else:
-        image = read_image_from_system_clipboard(skip_if_file_source=True)
-        if image is None:
-            return None
-        data, media_type = image
-        extension = media_type.removeprefix("image/")
-        filename = f"clipboard.{('jpg' if extension == 'jpeg' else extension)}"
+def _store_clipboard_image(data: bytes, filename: str, media_type: str) -> str:
     _ensure_active_conversation()
     block = store_image_bytes_attachment(
         CONVERSATION_STORE.active_root,
@@ -880,6 +882,28 @@ def _paste_image_from_system_clipboard() -> str | None:
         media_type,
     )
     return image_reference_marker(block)
+
+
+def _paste_image_from_system_clipboard(paste_text: str | None = None) -> str | None:
+    file_items = read_clipboard_file_items(paste_text)
+    if file_items:
+        pieces = []
+        for item in file_items:
+            if item["kind"] == "image":
+                data, filename, media_type = item["image"]
+                pieces.append(_store_clipboard_image(data, filename, media_type))
+            else:
+                pieces.append(item["path"])
+        return "".join(pieces)
+    if paste_text:
+        return "" if clipboard_paste_text_matches_file_items(paste_text) else None
+    image = read_image_from_system_clipboard(skip_if_file_source=True)
+    if image is None:
+        return None
+    data, media_type = image
+    extension = media_type.removeprefix("image/")
+    filename = f"clipboard.{('jpg' if extension == 'jpeg' else extension)}"
+    return _store_clipboard_image(data, filename, media_type)
 
 
 def _message_from_user_query(user_query: str) -> tuple[dict, str]:

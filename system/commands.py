@@ -20,8 +20,14 @@ from init import log_error_traceback
 from system.cli import COMMAND_DESCRIPTIONS
 from system.console_render import render_content_assistant_message, render_current_task_plan, render_current_workdir, render_preview_user_message, toggle_sub_agent_console
 from system.models import get_model_manager
+from tools.extra_tools import (
+    get_understand_image_model_display_text,
+    get_understand_image_model_key,
+    is_understand_image_enabled,
+    set_understand_image_config,
+)
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -204,6 +210,139 @@ def interactive_switch_mcp_servers(server_switches: list, mcp_manager: Any) -> s
     return choose_mcp_switch_tui(server_switches, mcp_manager)
 
 
+def build_mcp_view_payload(mcp_manager: Any) -> tuple[Group, Group, list[dict[str, Any]]]:
+    status = mcp_manager.get_status_info()
+    config_servers = status.get("config_servers", [])
+    enabled_config_servers = status.get("enabled_config_servers", [])
+    disabled_servers = status.get("disabled_servers", [])
+    loaded_servers = status.get("loaded_servers", [])
+    tools = list(status.get("tools", []))
+
+    tool_counts_by_server = {}
+    for tool in tools:
+        provider = tool.get("provider", "Unknown")
+        counts = tool_counts_by_server.setdefault(
+            provider,
+            {"enabled": 0, "disabled": 0},
+        )
+        state = "disabled" if tool.get("disabled", False) else "enabled"
+        counts[state] += 1
+
+    summary_table = Table(
+        title="[bold cyan]🔌 MCP 状态总览[/bold cyan]",
+        box=box.ROUNDED,
+        border_style="#52525b",
+        expand=True,
+        show_header=False,
+        padding=(0, 1),
+    )
+    summary_table.add_column("状态项", style="bold #d4d4d8", justify="left", no_wrap=True)
+    summary_table.add_column("详情", overflow="fold", ratio=3)
+
+    config_display = Text()
+    if config_servers:
+        config_display.append(f"{len(config_servers)} 个", style="bold cyan")
+        config_display.append("  ")
+        config_display.append(" · ".join(config_servers), style="white")
+    else:
+        config_display.append("0 个  未配置", style="#a1a1aa")
+
+    enabled_display = Text()
+    if enabled_config_servers:
+        enabled_display.append(f"● {len(enabled_config_servers)} 个", style="bold green")
+        enabled_display.append("  ")
+        enabled_display.append(" · ".join(enabled_config_servers), style="white")
+    else:
+        enabled_display.append("○ 0 个", style="#a1a1aa")
+
+    disabled_display = Text()
+    if disabled_servers:
+        disabled_display.append(f"○ {len(disabled_servers)} 个", style="bold yellow")
+        disabled_display.append("  ")
+        disabled_display.append(" · ".join(disabled_servers), style="white")
+    else:
+        disabled_display.append("○ 0 个", style="#a1a1aa")
+
+    loaded_display = Text()
+    if loaded_servers:
+        loaded_display.append(f"● {len(loaded_servers)} 个", style="bold green")
+        loaded_display.append("  ")
+        for index, name in enumerate(loaded_servers):
+            if index:
+                loaded_display.append(" · ", style="#71717a")
+            loaded_display.append(name, style="bold magenta")
+            counts = tool_counts_by_server.get(
+                name,
+                {"enabled": 0, "disabled": 0},
+            )
+            loaded_display.append(
+                f" (工具：启用 {counts['enabled']} 个 · 停用 {counts['disabled']} 个)",
+                style="#a1a1aa",
+            )
+    else:
+        loaded_display.append("○ 0 个  当前未加载", style="#a1a1aa")
+
+    summary_table.add_row(
+        "配置文件",
+        Text(str(status.get("config_path", "Not configured")), style="#a1a1aa"),
+    )
+    summary_table.add_row(
+        "后台状态",
+        Text("● 运行中", style="bold green")
+        if status.get("is_running")
+        else Text("○ 未运行", style="bold yellow"),
+    )
+    summary_table.add_row("服务配置", config_display)
+    summary_table.add_row("已启用", enabled_display)
+    summary_table.add_row("已禁用", disabled_display)
+    summary_table.add_row("已加载", loaded_display)
+
+    table = Table(
+        title=(
+            "[bold cyan]🛠️ MCP 工具明细[/bold cyan] "
+            f"[#a1a1aa]· {status.get('total_tool_count', status['tool_count'])} 个[/#a1a1aa]"
+        ),
+        box=box.ROUNDED,
+        border_style="#52525b",
+        header_style="bold #d4d4d8",
+        expand=True,
+        show_lines=True,
+        padding=(0, 1),
+    )
+    table.add_column("服务节点", style="bold magenta", overflow="fold", ratio=2)
+    table.add_column("工具名称", style="bold green", overflow="fold", ratio=3)
+    table.add_column("描述", style="white", overflow="fold", ratio=5)
+
+    for tool in tools:
+        disabled = bool(tool.get("disabled", False))
+        tool_name = Text()
+        tool_name.append("○ " if disabled else "● ", style="#71717a" if disabled else "green")
+        tool_name.append(tool["name"], style="#a1a1aa" if disabled else "bold green")
+        table.add_row(
+            tool.get("provider", "Unknown"),
+            tool_name,
+            tool["description"],
+        )
+    if not tools:
+        table.add_row(
+            Text("—", style="#71717a"),
+            Text("暂无可用工具", style="yellow"),
+            Text("当前没有已加载的 MCP 工具。", style="#a1a1aa"),
+        )
+
+    summary_items = [summary_table]
+    panel_items = [summary_table, Text(""), table]
+    if not status.get("is_running"):
+        notice = Text("○ MCP 后台管理器未运行", style="bold yellow")
+        notice.append(
+            f"\n  配置文件: {status.get('config_path', '未配置')}",
+            style="#a1a1aa",
+        )
+        summary_items.extend([Text(""), notice])
+        panel_items.extend([Text(""), notice])
+    return Group(*summary_items), Group(*panel_items), tools
+
+
 # ============================================================================
 # 命令处理器
 # ============================================================================
@@ -234,138 +373,8 @@ class CommandHandler:
 
     def handle_mcp_view(self) -> bool:
         """处理 /mcp-view 命令"""
-        status = self.mcp_manager.get_status_info()
-        config_servers = status.get("config_servers", [])
-        enabled_config_servers = status.get("enabled_config_servers", [])
-        disabled_servers = status.get("disabled_servers", [])
-        loaded_servers = status.get("loaded_servers", [])
-
-        # 统计每个已加载服务的启用/停用工具数量
-        tool_counts_by_server = {}
-        for tool in status.get("tools", []):
-            provider = tool.get("provider", "Unknown")
-            counts = tool_counts_by_server.setdefault(
-                provider,
-                {"enabled": 0, "disabled": 0},
-            )
-            state = "disabled" if tool.get("disabled", False) else "enabled"
-            counts[state] += 1
-
-        summary_table = Table(
-            title="[bold cyan]🔌 MCP 状态总览[/bold cyan]",
-            box=box.ROUNDED,
-            border_style="#52525b",
-            expand=True,
-            show_header=False,
-            padding=(0, 1),
-        )
-        summary_table.add_column("状态项", style="bold #d4d4d8", justify="left", no_wrap=True)
-        summary_table.add_column("详情", overflow="fold", ratio=3)
-
-        config_display = Text()
-        if config_servers:
-            config_display.append(f"{len(config_servers)} 个", style="bold cyan")
-            config_display.append("  ")
-            config_display.append(" · ".join(config_servers), style="white")
-        else:
-            config_display.append("0 个  未配置", style="#a1a1aa")
-
-        enabled_display = Text()
-        if enabled_config_servers:
-            enabled_display.append(f"● {len(enabled_config_servers)} 个", style="bold green")
-            enabled_display.append("  ")
-            enabled_display.append(" · ".join(enabled_config_servers), style="white")
-        else:
-            enabled_display.append("○ 0 个", style="#a1a1aa")
-
-        disabled_display = Text()
-        if disabled_servers:
-            disabled_display.append(f"○ {len(disabled_servers)} 个", style="bold yellow")
-            disabled_display.append("  ")
-            disabled_display.append(" · ".join(disabled_servers), style="white")
-        else:
-            disabled_display.append("○ 0 个", style="#a1a1aa")
-
-        loaded_display = Text()
-        if loaded_servers:
-            loaded_display.append(f"● {len(loaded_servers)} 个", style="bold green")
-            loaded_display.append("  ")
-            for index, name in enumerate(loaded_servers):
-                if index:
-                    loaded_display.append(" · ", style="#71717a")
-                loaded_display.append(name, style="bold magenta")
-                counts = tool_counts_by_server.get(
-                    name,
-                    {"enabled": 0, "disabled": 0},
-                )
-                loaded_display.append(
-                    f" (工具：启用 {counts['enabled']} 个 · 停用 {counts['disabled']} 个)",
-                    style="#a1a1aa",
-                )
-        else:
-            loaded_display.append("○ 0 个  当前未加载", style="#a1a1aa")
-
-        summary_table.add_row(
-            "配置文件",
-            Text(str(status.get("config_path", "Not configured")), style="#a1a1aa"),
-        )
-        summary_table.add_row(
-            "后台状态",
-            Text("● 运行中", style="bold green")
-            if status.get("is_running")
-            else Text("○ 未运行", style="bold yellow"),
-        )
-        summary_table.add_row("服务配置", config_display)
-        summary_table.add_row("已启用", enabled_display)
-        summary_table.add_row("已禁用", disabled_display)
-        summary_table.add_row("已加载", loaded_display)
-
-        table = Table(
-            title=(
-                "[bold cyan]🛠️ MCP 工具明细[/bold cyan] "
-                f"[#a1a1aa]· {status.get('total_tool_count', status['tool_count'])} 个[/#a1a1aa]"
-            ),
-            box=box.ROUNDED,
-            border_style="#52525b",
-            header_style="bold #d4d4d8",
-            expand=True,
-            show_lines=True,
-            padding=(0, 1),
-        )
-        table.add_column("服务节点", style="bold magenta", overflow="fold", ratio=2)
-        table.add_column("工具名称", style="bold green", overflow="fold", ratio=3)
-        table.add_column("描述", style="white", overflow="fold", ratio=5)
-
-        for tool in status["tools"]:
-            disabled = bool(tool.get("disabled", False))
-            tool_name = Text()
-            tool_name.append("○ " if disabled else "● ", style="#71717a" if disabled else "green")
-            tool_name.append(tool["name"], style="#a1a1aa" if disabled else "bold green")
-            table.add_row(
-                tool.get("provider", "Unknown"),
-                tool_name,
-                tool["description"],
-            )
-        if not status["tools"]:
-            table.add_row(
-                Text("—", style="#71717a"),
-                Text("暂无可用工具", style="yellow"),
-                Text("当前没有已加载的 MCP 工具。", style="#a1a1aa"),
-            )
-
-        summary_items = [summary_table]
-        panel_items = [summary_table, Text(""), table]
-        if not status.get("is_running"):
-            notice = Text("○ MCP 后台管理器未运行", style="bold yellow")
-            notice.append(
-                f"\n  配置文件: {status.get('config_path', '未配置')}",
-                style="#a1a1aa",
-            )
-            summary_items.extend([Text(""), notice])
-            panel_items.extend([Text(""), notice])
-        summary_content = Group(*summary_items)
-        content = Group(*panel_items)
-        if show_mcp_view_tui(summary_content, status.get("tools", [])) == "<cancelled>":
+        summary_content, content, tools = build_mcp_view_payload(self.mcp_manager)
+        if show_mcp_view_tui(summary_content, tools) == "<cancelled>":
             self.console.print(content, tui_region=TuiRegion.BACKGROUND)
         return True
 
@@ -888,6 +897,64 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             else "未选择"
         )
         self.console.print(f"\n[bold cyan]已退出模型面板，当前模型：[/bold cyan][bold green]{current_text}[/bold green]", tui_region=TuiRegion.BACKGROUND)
+        return True
+
+    def handle_extra_tools(self, query: str) -> bool:
+        """处理 /extra-tools 命令"""
+        if query.strip() != "/extra-tools":
+            self.console.print("\n[bold yellow]用法：/extra-tools[/bold yellow]", tui_region=TuiRegion.BACKGROUND)
+            return True
+
+        model_manager = get_model_manager()
+        current_values = {
+            "enabled": is_understand_image_enabled(),
+            "model_key": get_understand_image_model_key(),
+            "model_display": get_understand_image_model_display_text(),
+        }
+        while True:
+            result = manage_extra_tools_tui(current_values)
+            if result == "<cancelled>" or result == "<closed>":
+                self.console.print(
+                    "\n[#aaaaaa]已关闭额外工具面板。[/#aaaaaa]",
+                    tui_region=TuiRegion.BACKGROUND,
+                )
+                return True
+            if not isinstance(result, dict):
+                return True
+            action = result.pop("__action", None)
+            current_values.update(result)
+            current_values.pop("__action", None)
+            if action != "choose_model":
+                continue
+            if model_manager is None:
+                self.console.print("\n[bold red]❌ 模型管理器未初始化，无法选择处理模型。[/bold red]", tui_region=TuiRegion.BACKGROUND)
+                continue
+            model_manager._reload_from_disk()
+            options = ["使用主模型（同主模型）"] + [model.get_display_text() for model in model_manager.models]
+            keys = [None] + [model.key for model in model_manager.models]
+            picker_result = choose_image_understanding_model_tui(options)
+            if not picker_result.startswith("select:"):
+                continue
+            try:
+                selected_index = int(picker_result.removeprefix("select:"))
+            except ValueError:
+                continue
+            if not (0 <= selected_index < len(keys)):
+                continue
+            current_values["model_key"] = keys[selected_index]
+            current_values["model_display"] = (
+                "同主模型" if selected_index == 0 else options[selected_index]
+            )
+            if not set_understand_image_config(
+                bool(current_values.get("enabled", False)),
+                current_values.get("model_key"),
+            ):
+                self.console.print(
+                    "\n[bold red]❌ 额外工具配置未保存。[/bold red]",
+                    tui_region=TuiRegion.BACKGROUND,
+                )
+                continue
+            refresh_status()
         return True
 
     def handle_layout(self) -> bool:
@@ -1462,6 +1529,11 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         # /memory-config - 查看或设置记忆配置
         if query == "/memory-config" or query.startswith("/memory-config "):
             self.handle_memory_config(query)
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        # /extra-tools - 配置额外工具开关和处理模型
+        if query == "/extra-tools" or query.startswith("/extra-tools "):
+            self.handle_extra_tools(query)
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /memory-update [prompt] - 主动管理长期记忆

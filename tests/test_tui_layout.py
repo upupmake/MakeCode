@@ -745,7 +745,36 @@ async def test_quick_panel_tool_history_button_routes_to_history_command():
         await pilot.click("#quick-tool-history")
         await pilot.pause()
 
+        extra_tools = app.query_one("#quick-extra-tools")
+        assert "额外工具" in str(extra_tools.label)
+
         app._run_quick_command.assert_called_once_with("/tool-history")
+
+
+@pytest.mark.anyio
+async def test_quick_panel_extra_tools_and_mcp_config_buttons_route_to_commands():
+    app = MakeCodeTuiApp()
+    app._run_quick_command = Mock()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        await pilot.click("#quick-panel-toggle")
+        await pilot.pause()
+
+        extra_tools = app.query_one("#quick-extra-tools")
+        mcp_config = app.query_one("#quick-mcp-config")
+        assert "额外工具" in str(extra_tools.label)
+        assert "MCP配置" in str(mcp_config.label)
+        assert not app.query("#quick-mcp")
+
+        extra_tools.press()
+        mcp_config.press()
+        await pilot.pause()
+
+        assert [item.args[0] for item in app._run_quick_command.call_args_list] == [
+            "/extra-tools",
+            "/mcp-switch",
+        ]
 
 
 @pytest.mark.anyio

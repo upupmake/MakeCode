@@ -20,7 +20,7 @@ from openai import APIError, AsyncOpenAI
 from openai._streaming import ServerSentEvent, SSEDecoder
 
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
-from utils.vision import image_data_uri, resolve_image_attachment
+from utils.vision import SUPPORTED_IMAGE_TYPES, image_data_uri, resolve_image_attachment
 
 
 _LLM_TIMEOUT = (10.0, 120.0, 120.0, 120.0)
@@ -575,6 +575,58 @@ def _text_from_content_blocks(message: dict[str, Any]) -> str:
     )
 
 
+def _inline_image_payload(block: dict[str, Any]) -> tuple[str, bytes] | None:
+    data = block.get("data")
+    media_type = block.get("media_type")
+    if not isinstance(data, bytes) or not data:
+        return None
+    if media_type not in SUPPORTED_IMAGE_TYPES:
+        return None
+    return media_type, data
+
+
+def _openai_image_block(block: dict[str, Any], conversation_root: Path | None) -> dict[str, Any] | None:
+    inline = _inline_image_payload(block)
+    if inline is not None:
+        media_type, data = inline
+        encoded = base64.b64encode(data).decode("ascii")
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{encoded}"},
+        }
+    if conversation_root is None:
+        return None
+    return {
+        "type": "image_url",
+        "image_url": {"url": image_data_uri(conversation_root, block)},
+    }
+
+
+def _anthropic_image_block(block: dict[str, Any], conversation_root: Path | None) -> dict[str, Any] | None:
+    inline = _inline_image_payload(block)
+    if inline is not None:
+        media_type, data = inline
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64.b64encode(data).decode("ascii"),
+            },
+        }
+    if conversation_root is None:
+        return None
+    record, data = resolve_image_attachment(conversation_root, block)
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": record["media_type"],
+            "data": base64.b64encode(data).decode("ascii"),
+        },
+    }
+
+
 def _openai_content(content: Any, conversation_root: Path | None) -> Any:
     if not isinstance(content, list):
         return content
@@ -583,12 +635,9 @@ def _openai_content(content: Any, conversation_root: Path | None) -> Any:
         if not isinstance(block, dict) or block.get("type") != "image":
             result.append(copy.deepcopy(block))
             continue
-        if conversation_root is None:
-            continue
-        result.append({
-            "type": "image_url",
-            "image_url": {"url": image_data_uri(conversation_root, block)},
-        })
+        converted = _openai_image_block(block, conversation_root)
+        if converted is not None:
+            result.append(converted)
     return result
 
 
@@ -601,9 +650,11 @@ def sanitize_openai_messages(
         role = message.get("role")
         clean_message: dict[str, Any] = {"role": role}
         if "content" in message:
-            content = copy.deepcopy(message.get("content"))
-            if role == "user":
+            content = message.get("content")
+            if role == "user" and isinstance(content, list):
                 content = _openai_content(content, conversation_root)
+            else:
+                content = copy.deepcopy(content)
             if role == "assistant" and content is None:
                 content = _text_from_content_blocks(message) or None
             clean_message["content"] = content
@@ -900,17 +951,9 @@ def _anthropic_user_content(
         if isinstance(block, str):
             blocks.append({"type": "text", "text": block})
         elif isinstance(block, dict) and block.get("type") == "image":
-            if conversation_root is None:
-                continue
-            record, data = resolve_image_attachment(conversation_root, block)
-            blocks.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": record["media_type"],
-                    "data": base64.b64encode(data).decode("ascii"),
-                },
-            })
+            converted = _anthropic_image_block(block, conversation_root)
+            if converted is not None:
+                blocks.append(converted)
         elif isinstance(block, dict):
             blocks.append(copy.deepcopy(block))
     return blocks
@@ -1153,6 +1196,7 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
 
 
 from system.models import get_current_model_config, get_model_manager
+from tools.extra_tools import get_understand_image_model
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -1240,3 +1284,16 @@ def create_memory_recall_llm_client():
             return None
         return _create_async_chat_client(current_model)
     return _create_async_chat_client(recall_model)
+
+
+def create_image_understanding_llm_client(conversation_root: Path | None = None):
+    manager = get_model_manager()
+    if manager is None:
+        return None
+    vision_model = get_understand_image_model()
+    if vision_model is None:
+        current_model = manager.get_current_model()
+        if current_model is None:
+            return None
+        return _create_async_chat_client(current_model, conversation_root=conversation_root)
+    return _create_async_chat_client(vision_model, conversation_root=conversation_root)

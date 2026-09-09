@@ -18,7 +18,7 @@ from textual.geometry import Region
 from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, Static, TextArea, DataTable
+from textual.widgets import Button, Collapsible, Input, Label, ListItem, ListView, RichLog, Select, Static, TextArea, DataTable
 from textual.widgets.text_area import Selection
 
 from system.models import MESSAGE_FORMATS, ModelKey, REASONING_EFFORTS
@@ -87,7 +87,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, EditModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, RecallModelPickerModal, InfoPanelModal,
+    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, EditModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, ExtraToolsModal, RecallModelPickerModal, ImageUnderstandingModelPickerModal, InfoPanelModal,
     TokenUsageModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
         align: center middle;
     }
@@ -721,7 +721,7 @@ class ChoiceModal(ClosableModalScreen[str]):
         margin: 0 1;
     }
 
-    #memory-config-dialog {
+    #memory-config-dialog, #extra-tools-dialog {
         width: 76;
         height: 90%;
         max-height: 90%;
@@ -735,6 +735,12 @@ class ChoiceModal(ClosableModalScreen[str]):
         margin-top: 1;
     }
 
+    #extra-tools-understand-image-hint {
+        height: auto;
+        margin-top: 1;
+        color: #94a3b8;
+    }
+
     .memory-config-input {
         margin-top: 0;
     }
@@ -744,7 +750,7 @@ class ChoiceModal(ClosableModalScreen[str]):
         margin-top: 1;
     }
 
-    .memory-config-button {
+    .memory-config-button, .extra-tools-button {
         width: 1fr;
         margin: 0 1;
     }
@@ -943,6 +949,16 @@ class ChoiceModal(ClosableModalScreen[str]):
     #mcp-summary {
         height: auto;
         margin-top: 1;
+    }
+
+    #mcp-overview {
+        width: auto;
+        min-width: 14;
+        height: 1;
+        min-height: 1;
+        margin-top: 1;
+        padding: 0 1;
+        border: none;
     }
 
     #mcp-help {
@@ -3376,6 +3392,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
     def compose(self) -> ComposeResult:
         with Vertical(id="mcp-dialog"):
             yield ModalHeader(self._title_text(), title_id="mcp-title", markup=False)
+            yield Button("查看总览", id="mcp-overview", variant="primary")
             yield Label(self._summary_text(), id="mcp-summary", markup=False)
             with SelectBeforeActivateListView(id="mcp-list"):
                 for index, item in enumerate(self._server_switches):
@@ -3503,6 +3520,35 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
                 self.action_manage_tools()
             elif focused.id == "mcp-add":
                 self.action_add()
+            elif focused.id == "mcp-overview":
+                self.action_view_overview()
+
+    def action_view_overview(self) -> None:
+        if self._pending_delete_name is not None:
+            return
+        from system.commands import build_mcp_view_payload
+
+        try:
+            summary, _content, tools = build_mcp_view_payload(self._mcp_manager)
+        except Exception as exc:
+            self.query_one("#mcp-title", Label).update(
+                "❌ 读取 MCP 总览失败\n"
+                f"{exc}"
+            )
+            return
+        selected_index = self._selected_index() if self._server_switches else None
+        self.app.push_screen(
+            McpViewModal(summary, tools),
+            lambda _result: self._finish_view_overview(selected_index),
+        )
+
+    def _finish_view_overview(self, selected_index: int | None) -> None:
+        choice_list = self.query_one("#mcp-list", ListView)
+        if self._server_switches and selected_index is not None:
+            choice_list.index = min(selected_index, len(self._server_switches) - 1)
+            choice_list.focus()
+        else:
+            self.query_one("#mcp-overview", Button).focus()
 
     def action_manage_tools(self) -> None:
         if self._pending_delete_name is not None or not self._server_switches:
@@ -3637,6 +3683,8 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
             self.action_add()
         elif event.button.id == "mcp-tools":
             self.action_manage_tools()
+        elif event.button.id == "mcp-overview":
+            self.action_view_overview()
         elif event.button.id == "mcp-cancel":
             self.action_cancel()
 
@@ -4646,6 +4694,107 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
         )
 
 
+class ExtraToolsModal(ClosableModalScreen[dict[str, Any] | str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "cancel", "Cancel", priority=True),
+    ]
+
+    def __init__(self, values: dict[str, Any]) -> None:
+        super().__init__()
+        self._values = dict(values)
+
+    def compose(self) -> ComposeResult:
+        enabled = bool(self._values.get("enabled", False))
+        with VerticalScroll(id="extra-tools-dialog"):
+            yield ModalHeader(
+                "额外工具\n折叠项显示名称和开关；展开后配置处理模型。变更立即生效。",
+                title_id="choice-title",
+            )
+            with Collapsible(
+                title=f"UnderstandImage · {'已启用' if enabled else '已关闭'}",
+                collapsed=True,
+                id="extra-tools-understand-image",
+            ):
+                yield Button(
+                    "关闭工具" if enabled else "启用工具",
+                    id="extra-tools-toggle",
+                    classes="extra-tools-button",
+                )
+                yield Label(
+                    "需指定支持图片输入模型",
+                    id="extra-tools-understand-image-hint",
+                    markup=False,
+                )
+                yield Label(
+                    f"处理模型：{self._values.get('model_display', '同主模型')}",
+                    id="extra-tools-understand-image-model",
+                    classes="memory-config-label",
+                )
+                yield Button(
+                    "选择处理模型",
+                    id="extra-tools-choose-model",
+                    classes="extra-tools-button",
+                )
+
+    def on_mount(self) -> None:
+        self.query_one("#extra-tools-understand-image", Collapsible).focus()
+
+    def _collect_values(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self._values.get("enabled", False)),
+            "model_key": self._values.get("model_key"),
+            "model_display": self._values.get("model_display", "同主模型"),
+        }
+
+    def _dismiss_values(self, action: str) -> None:
+        values = self._collect_values()
+        values["__action"] = action
+        self.dismiss(values)
+
+    def _refresh_enabled_ui(self) -> None:
+        enabled = bool(self._values.get("enabled", False))
+        self.query_one("#extra-tools-understand-image", Collapsible).title = (
+            f"UnderstandImage · {'已启用' if enabled else '已关闭'}"
+        )
+        self.query_one("#extra-tools-toggle", Button).label = (
+            "关闭工具" if enabled else "启用工具"
+        )
+
+    def _toggle_enabled(self) -> None:
+        from tools.extra_tools import set_understand_image_enabled
+        from system.tui_app import refresh_status
+
+        enabled = not bool(self._values.get("enabled", False))
+        if not set_understand_image_enabled(enabled):
+            return
+        self._values["enabled"] = enabled
+        self._refresh_enabled_ui()
+        refresh_status()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "extra-tools-toggle":
+            self._toggle_enabled()
+            return
+        if event.button.id == "extra-tools-choose-model":
+            self._dismiss_values("choose_model")
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "enter" and getattr(self.focused, "id", None) == "extra-tools-choose-model":
+            self._dismiss_values("choose_model")
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "q":
+            self.action_cancel()
+            event.stop()
+            event.prevent_default()
+
+    def action_cancel(self) -> None:
+        self.dismiss("<closed>")
+
+
 class RecallModelPickerModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
@@ -4653,6 +4802,7 @@ class RecallModelPickerModal(ClosableModalScreen[str]):
         Binding("enter", "select", "Select", priority=True),
         Binding("q", "cancel", "Cancel", priority=True),
     ]
+    _header_title = "🧠 选择记忆召回模型\nEnter 选择；q 取消。"
 
     def __init__(self, options: list[str]) -> None:
         super().__init__()
@@ -4660,7 +4810,7 @@ class RecallModelPickerModal(ClosableModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
-            yield ModalHeader("🧠 选择记忆召回模型\nEnter 选择；q 取消。", title_id="choice-title")
+            yield ModalHeader(self._header_title, title_id="choice-title")
 
             yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
 
@@ -4692,6 +4842,10 @@ class RecallModelPickerModal(ClosableModalScreen[str]):
 
     def action_cancel(self) -> None:
         self.dismiss("<cancelled>")
+
+
+class ImageUnderstandingModelPickerModal(RecallModelPickerModal):
+    _header_title = "🖼 选择图片理解模型\nEnter 选择；q 取消。"
 
 
 class ModelPasswordInput(Horizontal):

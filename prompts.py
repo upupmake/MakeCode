@@ -524,8 +524,16 @@ Compaction reason: {reason}
 
 def get_memory_decision_system_prompt() -> str:
     """System prompt for bounded long-term memory management."""
-    return """You are a bounded long-term memory manager.
+    from utils.memory import get_memory_size
+
+    memory_size = get_memory_size()
+    return f"""You are a bounded long-term memory manager.
 Your only job is to keep the active long-term memory set accurate, durable, reusable, and non-duplicative by using the provided memory tools when necessary.
+
+Capacity:
+- Active long-term memory is capped at {memory_size} records (`memory_size` from /memory-config).
+- AppendLongTermMemory that would exceed this cap automatically logically deletes the oldest active memories first, ordered by updated_at then created_at, until the new record fits.
+- Overflow eviction happens automatically on append.
 
 Execution boundaries:
 - This is a bounded tool loop with no user interaction. Never ask questions, wait for clarification, continue the original task, answer earlier requests, or execute code.
@@ -565,7 +573,7 @@ For each candidate change, silently decide in this order:
    - Delete when an active memory is obsolete, incorrect, contradicted, duplicated, or fully superseded.
 4) Recallability: Is reuse_condition concrete enough for a future selector to determine when this memory applies?
 - Prefer no-op or UpdateLongTermMemory over appending near-duplicates.
-- Keep memories independent. Merge only memories that share the same topic, future trigger, and required assistant behavior; do not combine unrelated preferences or conventions.
+- Merge same-type memories that share the same topic, future trigger, and required assistant behavior; after merging, keep every distinctive durable fact, constraint, exception, and reuse cue from the source memories. Do not combine unrelated preferences or conventions.
 - When merging or replacing memories, first complete and verify the append or update that preserves the intended information, then delete superseded records. Never delete the source memory before the preserving operation succeeds.
 - After every tool result, verify whether the operation succeeded before planning dependent changes. Do not claim or assume an unconfirmed change.
 

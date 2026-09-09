@@ -2,6 +2,7 @@ import pytest
 from textual.events import Paste
 
 from system.tui_app import MakeCodeTuiApp
+from utils.vision import IMAGE_PLACEHOLDER_PATTERN
 
 
 @pytest.mark.anyio
@@ -72,14 +73,216 @@ async def test_image_display_serializes_to_marker_before_submit(filename):
 @pytest.mark.anyio
 async def test_nonempty_finder_paste_prefers_image_bytes_over_filename_text():
     marker = "[[image:id=img_22222222222222222222222222222222]]"
-    app = MakeCodeTuiApp(image_clipboard_handler=lambda: marker)
+    block = {
+        "type": "image",
+        "attachment_id": "img_22222222222222222222222222222222",
+        "filename": "photo.png",
+        "media_type": "image/png",
+    }
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=lambda value: ("[图片：photo.png]", [block]),
+        image_clipboard_handler=lambda: marker,
+    )
 
     async with app.run_test(size=(180, 40)) as pilot:
         await pilot.pause()
         input_box = app.query_one("#input-box")
         input_box.on_paste(Paste("img_01_045feb8c.png"))
 
-        assert input_box.text == marker
+        assert input_box.text == "[图片：photo.png]"
+        assert app._serialize_input_text(input_box.text) == marker
+
+
+@pytest.mark.anyio
+async def test_ctrl_v_does_not_read_image_clipboard():
+    calls = {"count": 0}
+
+    def clipboard_handler():
+        calls["count"] += 1
+        return "[[image:id=img_77777777777777777777777777777777]]"
+
+    app = MakeCodeTuiApp(image_clipboard_handler=clipboard_handler)
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.focus()
+
+        await pilot.press("ctrl+v")
+
+        assert calls["count"] == 0
+        assert input_box.text == ""
+
+
+@pytest.mark.anyio
+async def test_system_image_paste_displays_multiple_filenames():
+    first = "[[image:id=img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]]"
+    second = "[[image:id=img_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb]]"
+    blocks = {
+        first: {
+            "type": "image",
+            "attachment_id": "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "filename": "提示文案.jpg",
+            "media_type": "image/jpeg",
+        },
+        second: {
+            "type": "image",
+            "attachment_id": "img_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "filename": "没有开关切换.jpg",
+            "media_type": "image/jpeg",
+        },
+    }
+
+    def placeholder_handler(value):
+        parts = [blocks[marker] for marker in (first, second) if marker in value]
+        display = "".join(f"[图片：{part['filename']}]" for part in parts)
+        return display, parts
+
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=placeholder_handler,
+        image_clipboard_handler=lambda: first + second,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+
+        assert app.paste_image_from_system_clipboard() is True
+        assert input_box.text == "[图片：提示文案.jpg][图片：没有开关切换.jpg]"
+        assert app._serialize_input_text(input_box.text) == first + second
+
+
+@pytest.mark.anyio
+async def test_split_paste_events_insert_each_clipboard_item_once():
+    first = "[[image:id=img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]]"
+    second = "[[image:id=img_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb]]"
+    folder = "/tmp/assets"
+    mapping = {
+        "提示文案.jpg": first,
+        "没有开关切换.jpg": second,
+        "assets": folder,
+    }
+    blocks = {
+        first: {
+            "type": "image",
+            "attachment_id": "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "filename": "提示文案.jpg",
+            "media_type": "image/jpeg",
+        },
+        second: {
+            "type": "image",
+            "attachment_id": "img_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "filename": "没有开关切换.jpg",
+            "media_type": "image/jpeg",
+        },
+    }
+
+    def placeholder_handler(value):
+        parts = []
+        display = []
+        position = 0
+        for match in IMAGE_PLACEHOLDER_PATTERN.finditer(value):
+            if match.start() > position:
+                display.append(value[position:match.start()])
+            marker = match.group(0)
+            part = blocks[marker]
+            parts.append(part)
+            display.append(f"[图片：{part['filename']}]")
+            position = match.end()
+        if position < len(value):
+            display.append(value[position:])
+        return "".join(display), parts
+
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=placeholder_handler,
+        image_clipboard_handler=lambda paste_text: mapping.get(paste_text or "", None),
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.on_paste(Paste("提示文案.jpg"))
+        input_box.on_paste(Paste("没有开关切换.jpg"))
+        input_box.on_paste(Paste("assets"))
+
+        assert input_box.text == f"[图片：提示文案.jpg][图片：没有开关切换.jpg]{folder}"
+        assert app._serialize_input_text(input_box.text) == first + second + folder
+
+
+@pytest.mark.anyio
+async def test_unmatched_clipboard_filename_is_not_inserted_as_text():
+    mapping = {
+        "提示文案.jpg": "[[image:id=img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]]",
+        "没有开关切换.jpg": "",
+    }
+    block = {
+        "type": "image",
+        "attachment_id": "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "filename": "提示文案.jpg",
+        "media_type": "image/jpeg",
+    }
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=lambda value: ("[图片：提示文案.jpg]", [block]),
+        image_clipboard_handler=lambda paste_text: mapping.get(paste_text, None),
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.on_paste(Paste("提示文案.jpg"))
+        input_box.on_paste(Paste("没有开关切换.jpg"))
+
+        assert input_box.text == "[图片：提示文案.jpg]"
+
+
+@pytest.mark.anyio
+async def test_system_paste_keeps_non_image_paths_between_images():
+    first = "[[image:id=img_cccccccccccccccccccccccccccccccc]]"
+    second = "[[image:id=img_dddddddddddddddddddddddddddddddd]]"
+    notes = "/tmp/notes.txt"
+    blocks = {
+        first: {
+            "type": "image",
+            "attachment_id": "img_cccccccccccccccccccccccccccccccc",
+            "filename": "photo.png",
+            "media_type": "image/png",
+        },
+        second: {
+            "type": "image",
+            "attachment_id": "img_dddddddddddddddddddddddddddddddd",
+            "filename": "switch.jpg",
+            "media_type": "image/jpeg",
+        },
+    }
+
+    def placeholder_handler(value):
+        parts = []
+        display = []
+        position = 0
+        for match in IMAGE_PLACEHOLDER_PATTERN.finditer(value):
+            if match.start() > position:
+                display.append(value[position:match.start()])
+            marker = match.group(0)
+            part = blocks[marker]
+            parts.append(part)
+            display.append(f"[图片：{part['filename']}]")
+            position = match.end()
+        if position < len(value):
+            display.append(value[position:])
+        return "".join(display), parts
+
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=placeholder_handler,
+        image_clipboard_handler=lambda: first + notes + second,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+
+        assert app.paste_image_from_system_clipboard() is True
+        assert input_box.text == f"[图片：photo.png]{notes}[图片：switch.jpg]"
+        assert app._serialize_input_text(input_box.text) == first + notes + second
 
 
 @pytest.mark.anyio
@@ -201,7 +404,6 @@ async def test_left_and_right_keep_normal_text_navigation():
         await pilot.pause()
         input_box = app.query_one("#input-box")
         input_box.focus()
-
-        await pilot.press("ctrl+v")
+        input_box.on_paste(Paste("photo.png"))
 
         assert input_box.text == marker

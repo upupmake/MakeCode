@@ -517,21 +517,21 @@ async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypa
     assert actions["/help"] == actions["/cmds"] == CommandAction.CONTINUE
 
 
-def test_mcp_quick_buttons_keep_audit_and_management_entries_separate():
+def test_mcp_quick_button_routes_to_management_panel():
     app = MakeCodeTuiApp.__new__(MakeCodeTuiApp)
     app._run_quick_command = Mock()
-
-    audit_event = Mock()
-    audit_event.button.id = "quick-mcp"
-    app.on_button_pressed(audit_event)
 
     management_event = Mock()
     management_event.button.id = "quick-mcp-config"
     app.on_button_pressed(management_event)
 
+    extra_tools_event = Mock()
+    extra_tools_event.button.id = "quick-extra-tools"
+    app.on_button_pressed(extra_tools_event)
+
     assert [item.args[0] for item in app._run_quick_command.call_args_list] == [
-        "/mcp-view",
         "/mcp-switch",
+        "/extra-tools",
     ]
 
 

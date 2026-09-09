@@ -4,7 +4,7 @@ import pytest
 from pydantic import Field
 
 import main as main_module
-from tools import ask_user, todo
+from tools import ask_user, todo, understand_image
 from utils import common, memory, skills, tasks, teams
 from utils.common import ContentSearch, FileEdit, FileRead, RunTerminalCommand
 from utils.tool_validation import (
@@ -226,6 +226,7 @@ def test_builtin_tool_registries_match_handler_boundaries():
         (tasks.TASK_MANAGER_TOOL_MODELS, tasks.TASK_MANAGER_TOOLS_HANDLERS),
         (teams.TEAM_TOOL_MODELS, teams.TEAM_TOOLS_HANDLERS),
         (ask_user.ASK_USER_TOOL_MODELS, ask_user.ASK_USER_TOOLS_HANDLERS),
+        (understand_image.UNDERSTAND_IMAGE_TOOL_MODELS, understand_image.UNDERSTAND_IMAGE_TOOLS_HANDLERS),
         (memory.LONG_TERM_MEMORY_TOOL_MODELS, memory.LONG_TERM_MEMORY_TOOL_HANDLERS),
         (memory.MEMORY_RECALL_TOOL_MODELS, memory.MEMORY_RECALL_TOOLS_HANDLERS),
     )

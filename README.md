@@ -54,6 +54,7 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
     - Memory 工具
     - TaskManager 工具
     - Team 工具
+    - AskUser / UnderstandImage 等 `tools/` 可插拔工具
 - 支持 Rich / tqdm / 纯终端三种输出降级显示。
 - 启动时展示终端环境，并在上下文过长时触发压缩。
 
@@ -305,7 +306,7 @@ MakeCode 支持通过 **Model Context Protocol (MCP)** 集成外部工具和服�
 - `/mcp-add` 默认将新服务写为 `disabled=True`，避免未验证的服务被意外启动；后续可通过 `/mcp-switch` 启用。
 - `/mcp-delete <name>`：二次确认后删除指定 MCP 服务配置，并安全停用运行中的实例。
 - `/mcp-help`：在 Tools 区展示 MCP 相关命令介绍与使用示例。
-- `/mcp-switch` 面板支持服务与工具两级管理：选中服务后可按 `t` 或点击“管理工具”逐个启用/禁用已连接服务的工具；服务列表仍可按 `d` 进入删除确认，`y` 立即删除（与 `/mcp-delete` 行为一致），`n` 取消并保留面板状态与选中项。
+- `/mcp-switch` 面板支持服务与工具两级管理：标题下可点击“查看总览”打开与 `/mcp-view` 相同的状态与工具明细；选中服务后可按 `t` 或点击“管理工具”逐个启用/禁用已连接服务的工具；服务列表仍可按 `d` 进入删除确认，`y` 立即删除（与 `/mcp-delete` 行为一致），`n` 取消并保留面板状态与选中项。
 
 #### 相关组件
 
@@ -434,7 +435,24 @@ MakeCode 支持智能体在不确定时主动向用户提问，而非盲目猜�
 - 存在多种技术方案时让用户选择
 - 需要用户偏好或领域知识才能继续的决策
 
-### 2.19 自动更新机制（`system/updater.py` + `updater.py`）
+### 2.19 UnderstandImage 图片理解工具（`tools/understand_image.py`）
+
+MakeCode 支持主智能体主动读取本地图片或网络图片，并额外发起一次独立的多模态请求。该工具不把图片写回主对话历史，只把文本理解结果作为工具输出返回。
+
+#### 核心功能
+
+- **可插拔注册**：工具定义、参数模型和 handler 都放在 `tools/understand_image.py`，由 `main.py` 显式接入主 Agent 工具集；子智能体默认不继承该工具
+- **两个参数**：`prompt`（分析指令）和 `image_url`（工作区相对/绝对本地路径，或 `http(s)` URL）
+- **独立配置**：通过 `/extra-tools` 打开额外工具面板，可开关 UnderstandImage 并指定处理模型；关闭时不暴露给主 Agent。未指定模型时回退到当前主模型
+- **双协议请求**：额外调用走现有 OpenAI Chat Completions / Anthropic Messages 适配器，图片以内联 bytes 重建为 `image_url` 或 `image` 块
+- **类型限制**：仅接受 gif / jpg/jpeg / png / webp；按文件内容识别类型，扩展名不符时以内容为准
+
+#### 使用场景
+
+- 需要看截图、图表、设计稿或本地图片文件
+- `FileRead` 无法读取二进制图片内容时，改用视觉模型理解图片
+
+### 2.20 自动更新机制（`system/updater.py` + `updater.py`）
 
 MakeCode 内置了完整的自动更新系统，支持版本检查、完整目录下载与事务升级。
 
@@ -543,7 +561,9 @@ Agent/
 │  └─ MakeCode.command       # macOS 打包版 Terminal 启动脚本
 ├─ tools/
 │  ├─ todo.py               # 子智能体内部 Todo 管理工具
-│  └─ ask_user.py            # Agent 主动向用户提问工具
+│  ├─ ask_user.py            # Agent 主动向用户提问工具
+│  ├─ extra_tools.py         # 额外工具开关与处理模型配置
+│  └─ understand_image.py    # 主 Agent 图片理解工具
 ├─ utils/
 │  ├─ llm_client.py         # LLM 标准适配器 (Chat vs Response) 
 │  ├─ hitl.py               # 高危操作人工拦截与可视化 UI
@@ -687,6 +707,7 @@ flowchart TD
 - `system/models.py` 提供模型配置管理，支持多模型配置持久化、收藏与 `reasoning_effort` 设置。
 - `tools/todo.py` 供子智能体在多步骤任务中维护内部待办。
 - `tools/ask_user.py` 允许智能体在不确定时主动向用户提问，支持选项列表与自定义输入，基于 TUI 交互面板实现。
+- `tools/understand_image.py` 允许主智能体对本地路径或网络图片发起一次独立的多模态理解请求；通过 `/extra-tools` 配置开关和处理模型。
 - `system/updater.py` 实现 Windows/Linux 应用内自动更新逻辑：平台资产选择、版本检查、带进度下载、大小与 SHA256 校验，并启动独立更新器；macOS 仅提示手动下载。
 - `updater.py` 是 Windows/Linux 独立事务更新器，在主程序退出后替换完整 onedir 应用，替换失败时回滚，成功后提示用户手动重新启动。
 - `version.py` 管理版本号与更新服务器地址配置。
@@ -808,6 +829,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 |----------------------|----------------------------------------------------------------|
 | `/cmds`              | 列出所有的可用命令和功能描述                                                 |
 | `/models`            | 管理模型配置（添加、编辑、删除、切换、收藏）                                       |
+| `/extra-tools`       | 打开额外工具面板，开关 UnderstandImage 并指定处理模型                             |
 | `/mcp-view`          | 查看 MCP 状态总览，以及当前已加载的 MCP 工具列表                                  |
 | `/mcp-restart`       | 重新启动 MCP 后台管理器并重新加载配置                                          |
 | `/mcp-switch`        | 管理 MCP 服务启停、配置增删，并按服务启用或禁用工具；配置保存到 `.makecode/mcp_config.json` |
@@ -840,7 +862,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 > 💡 **提示：MCP 相关命令说明**
 > - `/mcp-view`：先展示 MCP 状态总览，包括“配置中的服务 / 配置中已启用 / 配置中已禁用 / 当前已加载服务”，再展示当前已加载工具明细。
 > - `/mcp-restart`：强制重启 MCP 后台管理器，重新读取 `.makecode/mcp_config.json` 并初始化服务。
-> - `/mcp-switch`：打开交互式管理面板，使用 `↑/↓` 选择服务，`Space` 切换服务草稿状态，按 `t` 或点击“管理工具”可管理已连接服务提供的单个工具。工具开关在工具面板确认时立即保存；服务开关仍在外层面板确认后写回配置文件并尝试增量启停。
+> - `/mcp-switch`：打开交互式管理面板，标题下可点击“查看总览”打开与 `/mcp-view` 相同的状态与工具明细。使用 `↑/↓` 选择服务，`Space` 切换服务草稿状态，按 `t` 或点击“管理工具”可管理已连接服务提供的单个工具。工具开关在工具面板确认时立即保存；服务开关仍在外层面板确认后写回配置文件并尝试增量启停。
 ---
 
 ## 7. 使用约束

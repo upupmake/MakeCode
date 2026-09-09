@@ -19,6 +19,21 @@ SUPPORTED_IMAGE_TYPES = {
     "image/png",
     "image/webp",
 }
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def image_media_type_from_bytes(data: bytes) -> str | None:
+    if not isinstance(data, bytes) or not data:
+        return None
+    if data.startswith(_PNG_SIGNATURE):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")) and data.endswith(b";"):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP" and len(data) >= 12:
+        return "image/webp"
+    return None
 
 
 def _attachment_root(conversation_root: Path) -> Path:

@@ -216,15 +216,45 @@ def _read_text_command(command: list[str]) -> str | None:
     return data.decode("utf-8", "replace").strip() or None
 
 
-def _read_file_path_from_macos_clipboard() -> str | None:
+def _split_clipboard_path_payload(payload: str | None) -> list[str]:
+    if not payload:
+        return []
+    paths = []
+    seen = set()
+    for line in payload.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        path = line.strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def _read_file_paths_from_macos_clipboard() -> list[str]:
     osascript = shutil.which("osascript")
     if not osascript:
-        return None
-    return _read_text_command([
+        return []
+    script = '''
+use framework "AppKit"
+set thePasteboard to current application's NSPasteboard's generalPasteboard()
+set theFiles to (thePasteboard's propertyListForType:(current application's NSFilenamesPboardType))
+if theFiles is missing value then return ""
+set AppleScript's text item delimiters to linefeed
+return (theFiles as list) as text
+'''
+    paths = _split_clipboard_path_payload(_read_text_command([osascript, "-e", script]))
+    if paths:
+        return paths
+    return _split_clipboard_path_payload(_read_text_command([
         osascript,
         "-e",
         "POSIX path of (the clipboard as «class furl»)",
-    ])
+    ]))
+
+
+def _read_file_path_from_macos_clipboard() -> str | None:
+    paths = _read_file_paths_from_macos_clipboard()
+    return paths[0] if paths else None
 
 
 def _read_file_path_from_windows_clipboard() -> str | None:
@@ -236,7 +266,7 @@ def _read_file_path_from_windows_clipboard() -> str | None:
         "Add-Type -AssemblyName System.Windows.Forms; "
         "$files = [System.Windows.Forms.Clipboard]::GetFileDropList(); "
         "if ($files.Count -eq 0) { exit 1 }; "
-        "[Console]::Out.Write($files[0])"
+        "[Console]::Out.Write(($files | ForEach-Object { $_ }) -join [Environment]::NewLine)"
     )
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     path_data = _run_binary_command([
@@ -250,21 +280,29 @@ def _read_file_path_from_windows_clipboard() -> str | None:
     if not path_data:
         return None
     try:
-        raw_path = path_data.decode("utf-8", "replace").strip()
+        raw_payload = path_data.decode("utf-8", "replace").strip()
     except UnicodeDecodeError:
-        raw_path = ""
+        raw_payload = ""
     try:
-        legacy_path = base64.b64decode(path_data.strip(), validate=True).decode("utf-16le")
+        legacy_payload = base64.b64decode(path_data.strip(), validate=True).decode("utf-16le")
     except (ValueError, UnicodeDecodeError):
-        legacy_path = ""
-    if legacy_path and Path(legacy_path).is_file():
-        return legacy_path
-    return raw_path or None
+        legacy_payload = ""
+    raw_paths = _split_clipboard_path_payload(raw_payload)
+    if any(Path(path).is_file() for path in _split_clipboard_path_payload(legacy_payload)):
+        return "\n".join(_split_clipboard_path_payload(legacy_payload))
+    return "\n".join(raw_paths) if raw_paths else None
 
 
 def _file_path_from_uri_list(data: bytes | None) -> str | None:
+    paths = _file_paths_from_uri_list(data)
+    return paths[0] if paths else None
+
+
+def _file_paths_from_uri_list(data: bytes | None) -> list[str]:
     if not data:
-        return None
+        return []
+    paths = []
+    seen = set()
     for line in data.decode("utf-8", "replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -277,24 +315,27 @@ def _file_path_from_uri_list(data: bytes | None) -> str | None:
             path = f"//{parsed.netloc}{path}"
         if sys.platform == "win32" and path.startswith("/") and len(path) > 2 and path[2] == ":":
             path = path[1:]
-        return path
-    return None
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
 
 
 def _read_file_path_from_linux_clipboard() -> str | None:
     wl_paste = shutil.which("wl-paste")
     if wl_paste:
-        path = _file_path_from_uri_list(_run_binary_command([
+        path = _file_paths_from_uri_list(_run_binary_command([
             wl_paste,
             "--no-newline",
             "--type",
             "text/uri-list",
         ]))
         if path:
-            return path
+            return "\n".join(path)
     xclip = shutil.which("xclip")
     if xclip:
-        return _file_path_from_uri_list(_run_binary_command([
+        path = _file_paths_from_uri_list(_run_binary_command([
             xclip,
             "-selection",
             "clipboard",
@@ -302,22 +343,130 @@ def _read_file_path_from_linux_clipboard() -> str | None:
             "text/uri-list",
             "-out",
         ]))
+        if path:
+            return "\n".join(path)
     return None
 
 
 def _read_system_clipboard_file_path() -> str | None:
+    paths = _read_system_clipboard_file_paths()
+    return paths[0] if paths else None
+
+
+def _read_system_clipboard_file_paths() -> list[str]:
     if sys.platform == "darwin":
-        return _read_file_path_from_macos_clipboard()
+        return _read_file_paths_from_macos_clipboard()
     if sys.platform == "win32":
-        return _read_file_path_from_windows_clipboard()
+        return _split_clipboard_path_payload(_read_file_path_from_windows_clipboard())
     if sys.platform.startswith("linux"):
-        return _read_file_path_from_linux_clipboard()
-    return None
+        return _split_clipboard_path_payload(_read_file_path_from_linux_clipboard())
+    return []
 
 
 def read_image_file_from_system_clipboard() -> tuple[bytes, str, str] | None:
-    path = _read_system_clipboard_file_path()
-    return _read_image_file(path) if path else None
+    images = read_image_files_from_system_clipboard()
+    return images[0] if images else None
+
+
+def read_image_files_from_system_clipboard() -> list[tuple[bytes, str, str]]:
+    return [
+        item["image"]
+        for item in read_clipboard_file_items()
+        if item["kind"] == "image"
+    ]
+
+
+def _clipboard_item_from_path(path_text: str) -> dict[str, object] | None:
+    image = _read_image_file(path_text)
+    if image is not None:
+        return {"kind": "image", "image": image}
+    try:
+        path = Path(path_text).expanduser()
+        if path.is_symlink() or not path.exists():
+            return None
+    except OSError:
+        return None
+    return {"kind": "path", "path": str(path)}
+
+
+def _path_name_candidates(value: str) -> list[str]:
+    raw = value.strip().strip("\"'")
+    if not raw:
+        return []
+    parsed = urlparse(raw)
+    if parsed.scheme == "file":
+        path = unquote(parsed.path)
+        if parsed.netloc:
+            path = f"//{parsed.netloc}{path}"
+        if path.startswith("/") and len(path) > 2 and path[2] == ":":
+            path = path[1:]
+        raw = path or raw
+    normalized = raw.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    candidates = [raw, normalized, name, stem]
+    names = []
+    seen = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            names.append(candidate)
+    return names
+
+
+def _clipboard_item_names(item: dict[str, object]) -> set[str]:
+    names = set()
+    if item.get("kind") == "image":
+        image = item.get("image")
+        if isinstance(image, tuple) and len(image) >= 2 and isinstance(image[1], str):
+            names.update(_path_name_candidates(image[1]))
+    path = item.get("path")
+    if isinstance(path, str) and path:
+        names.update(_path_name_candidates(path))
+    return names
+
+
+def _paste_text_names(paste_text: str | None) -> list[str]:
+    if not paste_text:
+        return []
+    names = []
+    seen = set()
+    for line in paste_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        for name in _path_name_candidates(line):
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
+
+
+def read_clipboard_file_items(paste_text: str | None = None) -> list[dict[str, object]]:
+    items = []
+    for path_text in _read_system_clipboard_file_paths():
+        item = _clipboard_item_from_path(path_text)
+        if item is not None:
+            items.append(item)
+    names = _paste_text_names(paste_text)
+    if not names:
+        return items
+    matched = []
+    remaining = list(items)
+    for name in names:
+        for index, item in enumerate(remaining):
+            if name in _clipboard_item_names(item):
+                matched.append(item)
+                del remaining[index]
+                break
+    return matched
+
+
+def clipboard_paste_text_matches_file_items(paste_text: str | None) -> bool:
+    names = set(_paste_text_names(paste_text))
+    if not names:
+        return False
+    for item in read_clipboard_file_items():
+        if names & _clipboard_item_names(item):
+            return True
+    return False
 
 
 def _read_image_from_macos_clipboard() -> tuple[bytes, str] | None:
@@ -382,13 +531,13 @@ def _read_image_from_linux_clipboard() -> tuple[bytes, str] | None:
 
 
 def _clipboard_has_existing_file_source() -> bool:
-    path_text = _read_system_clipboard_file_path()
-    if not path_text:
-        return False
-    try:
-        return Path(path_text).expanduser().is_file()
-    except OSError:
-        return False
+    for path_text in _read_system_clipboard_file_paths():
+        try:
+            if Path(path_text).expanduser().is_file():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def read_image_from_system_clipboard(

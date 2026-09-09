@@ -326,7 +326,7 @@ Create `.makecode/mcp_config.json` in your workspace:
 - `/mcp-add` always writes new services with `disabled=True` by default, so unverified services are never started accidentally; enable them later via `/mcp-switch`.
 - `/mcp-delete <name>`: delete a MCP service configuration after a confirmation step, safely shutting down any running instance first.
 - `/mcp-help`: render an MCP command introduction with usage examples in the Tools pane.
-- The `/mcp-switch` panel adds a delete shortcut: with a service selected, press `d` to enter delete confirmation, `y` to delete immediately (same behavior as `/mcp-delete`), and `n` to cancel while preserving panel state and selection.
+- The `/mcp-switch` panel includes a header “查看总览” button that opens the same overview as `/mcp-view`. It also adds a delete shortcut: with a service selected, press `d` to enter delete confirmation, `y` to delete immediately (same behavior as `/mcp-delete`), and `n` to cancel while preserving panel state and selection.
 
 #### Related Components
 
@@ -456,7 +456,24 @@ MakeCode allows agents to proactively ask users questions when uncertain, rather
 - Letting users choose among multiple technical approaches
 - Decisions requiring user preferences or domain knowledge
 
-### 2.19 Auto-Update Mechanism (`system/updater.py` + `updater.py`)
+### 2.19 UnderstandImage Vision Tool (`tools/understand_image.py`)
+
+The orchestrator can analyze a local image file or a public image URL by making one extra multimodal request. The image is not written back into the main conversation history; only the text answer is returned as the tool result.
+
+#### Core Features
+
+- **Pluggable registration**: tool schema, argument model, and handler live in `tools/understand_image.py` and are wired into the main Agent tool set from `main.py`; sub-agents do not inherit this tool by default
+- **Two arguments**: `prompt` (the analysis instruction) and `image_url` (a workspace-relative/absolute local path, or an `http(s)` URL)
+- **Dedicated config**: `/extra-tools` opens the extra-tools panel to enable/disable UnderstandImage and choose its processing model; when disabled it is not exposed to the main agent. If no model is chosen, it falls back to the current main model
+- **Dual-protocol request**: the extra call uses the existing OpenAI Chat Completions / Anthropic Messages adapters, rebuilding inline image bytes into `image_url` or `image` blocks
+- **Type limits**: gif / jpg/jpeg / png / webp only; content type wins over file extension
+
+#### Typical Uses
+
+- Inspect screenshots, charts, design comps, or local image files
+- Analyze images that `FileRead` cannot treat as text
+
+### 2.20 Auto-Update Mechanism (`system/updater.py` + `updater.py`)
 
 MakeCode includes a complete built-in auto-update system supporting version checks, complete directory downloads, and transactional upgrades.
 
@@ -565,7 +582,9 @@ Agent/
 │  └─ MakeCode.command       # Terminal launcher for the packaged macOS release
 ├─ tools/
 │  ├─ todo.py               # internal todo manager for sub-agents
-│  └─ ask_user.py            # agent proactive questioning tool
+│  ├─ ask_user.py            # agent proactive questioning tool
+│  ├─ extra_tools.py         # extra-tool enable switch and processing-model config
+│  └─ understand_image.py    # main-agent image understanding tool
 ├─ utils/
 │  ├─ llm_client.py         # Async LLM adapters (OpenAI Chat / Anthropic Messages)
 │  ├─ hitl.py               # Human-In-The-Loop interceptor and UI
@@ -711,6 +730,7 @@ flowchart TD
 - `system/models.py` provides model configuration management with multi-model persistence, favorites, and `reasoning_effort` settings.
 - `tools/todo.py` allows sub-agents to maintain internal todos for multi-step task tracking.
 - `tools/ask_user.py` allows agents to proactively ask users questions when uncertain, supporting option lists and custom input via a TUI interactive panel.
+- `tools/understand_image.py` lets the main agent analyze a local path or image URL with one extra multimodal request; `/extra-tools` configures the enable switch and processing model.
 - `system/updater.py` implements Windows/Linux in-app updates: platform asset selection, version checking, progress downloads, file-size and SHA256 verification, and standalone updater launch; macOS only prompts for a manual download.
 - `updater.py` is the Windows/Linux standalone transactional updater that replaces the complete onedir application, rolls back replacement failures, and prompts the user to restart manually after success.
 - `version.py` manages version number and update server URL configuration.
@@ -834,6 +854,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 |----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
 | `/cmds`              | List all available commands and their descriptions                                                                                               |
 | `/models`            | Manage model configurations (add, edit, delete, switch, favorite)                                                                                  |
+| `/extra-tools`       | Open the extra-tools panel to enable/disable UnderstandImage and choose its processing model                                                     |
 | `/mcp-view`          | View the MCP status overview and the currently loaded MCP tool list                                                                              |
 | `/mcp-restart`       | Restart the MCP background manager and reload configuration                                                                                      |
 | `/mcp-switch`        | Interactively toggle MCP services on/off, save changes to `.makecode/mcp_config.json` after confirmation, and attempt incremental enable/disable |
@@ -868,10 +889,10 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
     config / currently loaded services, then displays the detailed loaded tool table.
 > - `/mcp-restart`: Force restarts the MCP background manager, re-reads `.makecode/mcp_config.json`, and reinitializes
     services.
-> - `/mcp-switch`: Opens an interactive switch panel. Use `↑/↓` to select a service, `Space` to toggle the draft state,
-    and the bottom actions to either confirm or cancel. On confirm, the updated `disabled` values are written back to
-    the config file first, then the system attempts incremental enable/disable for the affected services. On cancel,
-    nothing is saved and runtime state remains unchanged.
+> - `/mcp-switch`: Opens an interactive switch panel. The header “查看总览” button opens the same overview as `/mcp-view`.
+    Use `↑/↓` to select a service, `Space` to toggle the draft state, and the bottom actions to either confirm or cancel.
+    On confirm, the updated `disabled` values are written back to the config file first, then the system attempts
+    incremental enable/disable for the affected services. On cancel, nothing is saved and runtime state remains unchanged.
 ---
 
 ## 7. Operational Constraints

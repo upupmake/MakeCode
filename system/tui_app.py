@@ -52,7 +52,9 @@ from system.tui_modals import (
     MemoryPanelModal,
     ModelManagerModal,
     ModelPanelModal,
+    ExtraToolsModal,
     RecallModelPickerModal,
+    ImageUnderstandingModelPickerModal,
     SkillsConfigModal,
     StartupWorkdirModal,
     TaskPanelModal,
@@ -353,6 +355,30 @@ class TuiBridge:
             app.call_from_thread(app.open_recall_model_picker_modal, options, future)
         return future.result()
 
+    def manage_extra_tools(self, values: dict[str, Any]) -> str | dict[str, Any]:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str | dict[str, Any]] = Future()
+        if self._is_app_thread():
+            app.open_extra_tools_modal(values, future)
+        else:
+            app.call_from_thread(app.open_extra_tools_modal, values, future)
+        return future.result()
+
+    def choose_image_understanding_model(self, options: list[str]) -> str:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_image_understanding_model_picker_modal(options, future)
+        else:
+            app.call_from_thread(app.open_image_understanding_model_picker_modal, options, future)
+        return future.result()
+
     def clear_temporary_query(self) -> None:
         with self._app_lock:
             app = self._app
@@ -587,7 +613,7 @@ class MakeCodeInput(TextArea):
         app = self.app
         if not isinstance(app, MakeCodeTuiApp):
             return
-        if app.paste_image_from_system_clipboard():
+        if app.paste_image_from_system_clipboard(event.text):
             event.stop()
             event.prevent_default()
             return
@@ -610,10 +636,6 @@ class MakeCodeInput(TextArea):
         if self._delete_image_placeholder(event):
             return
         if self._navigate_image_placeholder(event):
-            return
-        if event.key in {"ctrl+v", "ctrl+shift+v"} and app.paste_image_from_system_clipboard():
-            event.stop()
-            event.prevent_default()
             return
         if event.key == "enter":
             app.submit_current_input()
@@ -1216,7 +1238,7 @@ class MakeCodeTuiApp(App[None]):
         startup_workdir_handler: Callable[[str], None] | None = None,
         startup_load_handler: Callable[[], None] | None = None,
         image_placeholder_handler: Callable[[str], tuple[str, list[dict[str, str]]]] | None = None,
-        image_clipboard_handler: Callable[[], str | None] | None = None,
+        image_clipboard_handler: Callable[[str | None], str | None] | None = None,
         token_usage_provider: Callable[[], tuple[dict[str, int], int]] | None = None,
     ) -> None:
         super().__init__()
@@ -1286,12 +1308,12 @@ class MakeCodeTuiApp(App[None]):
                 yield Button("🧰 工具历史", id="quick-tool-history", classes="quick-panel-button")
                 yield Button("🧠 记忆", id="quick-memory", classes="quick-panel-button")
                 yield Button("📚 技能", id="quick-skills", classes="quick-panel-button")
-                yield Button("🔌 MCP", id="quick-mcp", classes="quick-panel-button")
                 yield Button("🛠️ 命令", id="quick-commands", classes="quick-panel-button")
                 yield Button("🤖 模型", id="quick-models", classes="quick-panel-button")
                 yield Button("⚙️ 记忆配置", id="quick-memory-config", classes="quick-panel-button")
                 yield Button("🧩 布局", id="quick-layout", classes="quick-panel-button")
                 yield Button("🔀 MCP配置", id="quick-mcp-config", classes="quick-panel-button")
+                yield Button("🔧 额外工具", id="quick-extra-tools", classes="quick-panel-button")
                 yield Button("📝 复制", id="quick-copy", classes="quick-panel-button")
         with Horizontal(id="main-grid"):
             with Vertical(id="left-column"):
@@ -2028,6 +2050,24 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(RecallModelPickerModal(options), _done)
 
+    def open_extra_tools_modal(self, values: dict[str, Any], future: Future[str | dict[str, Any]]) -> None:
+        def _done(value: str | dict[str, Any] | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "<cancelled>")
+
+        self._modal_active = True
+        self.push_screen(ExtraToolsModal(values), _done)
+
+    def open_image_understanding_model_picker_modal(self, options: list[str], future: Future[str]) -> None:
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "<cancelled>")
+
+        self._modal_active = True
+        self.push_screen(ImageUnderstandingModelPickerModal(options), _done)
+
     def action_toggle_plan_mode(self) -> None:
         from utils.plan_mode import toggle_plan_mode
 
@@ -2062,16 +2102,20 @@ class MakeCodeTuiApp(App[None]):
             for part in parts
         )
 
-    def paste_image_from_system_clipboard(self) -> bool:
+    def paste_image_from_system_clipboard(self, paste_text: str | None = None) -> bool:
         if self._image_clipboard_handler is None:
             return False
         try:
+            marker = self._image_clipboard_handler(paste_text)
+        except TypeError:
             marker = self._image_clipboard_handler()
         except ValueError as exc:
             post_tui(TuiRegion.BACKGROUND, f"[bold red]⚠️ 粘贴图片失败：{escape(str(exc))}[/bold red]")
             return False
-        if not marker:
+        if marker is None:
             return False
+        if marker == "":
+            return True
         input_box = self.query_one("#input-box", MakeCodeInput)
         cursor_index = input_box.document.get_index_from_location(input_box.cursor_location)
         display_text = self._display_input_text(marker)
@@ -2080,8 +2124,9 @@ class MakeCodeTuiApp(App[None]):
                 input_box.text[:cursor_index]
             )
         )
-        if display_text != marker:
-            self._input_image_markers.insert(image_index, (display_text, marker))
+        for placeholder, reference in self._display_input_with_image_markers(marker)[1]:
+            self._input_image_markers.insert(image_index, (placeholder, reference))
+            image_index += 1
         input_box.insert(display_text)
         return True
 
@@ -2494,12 +2539,12 @@ class MakeCodeTuiApp(App[None]):
             "quick-tool-history": "/tool-history",
             "quick-memory": "/memory-panel",
             "quick-skills": "/skills-list",
-            "quick-mcp": "/mcp-view",
             "quick-commands": "/cmds",
             "quick-models": "/models",
             "quick-memory-config": "/memory-config",
             "quick-layout": "/layout",
             "quick-mcp-config": "/mcp-switch",
+            "quick-extra-tools": "/extra-tools",
             "quick-copy": "/copy",
         }
         command = quick_commands.get(button_id or "")
@@ -2892,6 +2937,14 @@ def manage_memory_config_tui(values: dict[str, Any]) -> str | dict[str, Any]:
 
 def choose_recall_model_tui(options: list[str]) -> str:
     return TUI_BRIDGE.choose_recall_model(options)
+
+
+def manage_extra_tools_tui(values: dict[str, Any]) -> str | dict[str, Any]:
+    return TUI_BRIDGE.manage_extra_tools(values)
+
+
+def choose_image_understanding_model_tui(options: list[str]) -> str:
+    return TUI_BRIDGE.choose_image_understanding_model(options)
 
 
 def choose_mcp_switch_tui(server_switches: list[dict[str, Any]], mcp_manager: Any) -> str | dict:

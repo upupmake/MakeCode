@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from prompts import (
+    get_memory_decision_system_prompt,
     get_orchestrator_system_prompt,
     get_report_assistant_system_prompt,
     get_sub_agent_summary_prompt,
@@ -86,6 +87,19 @@ class PromptPolicyTests(unittest.TestCase):
         self.assertIn("Call `ManageLongTermMemory`", act_prompt)
         self.assertNotIn("RememberLongTermMemory", plan_prompt)
         self.assertNotIn("RememberLongTermMemory", act_prompt)
+
+    def test_memory_decision_prompt_injects_configured_capacity_and_overflow(self):
+        with patch("utils.memory.get_memory_size", return_value=12):
+            prompt = get_memory_decision_system_prompt()
+
+        self.assertIn("capped at 12 records", prompt)
+        self.assertIn("`memory_size` from /memory-config", prompt)
+        self.assertIn("automatically logically deletes the oldest active memories first", prompt)
+        self.assertIn("ordered by updated_at then created_at", prompt)
+        self.assertIn("Overflow eviction happens automatically on append.", prompt)
+        self.assertIn("Merge same-type memories that share the same topic, future trigger, and required assistant behavior", prompt)
+        self.assertIn("keep every distinctive durable fact, constraint, exception, and reuse cue", prompt)
+        self.assertNotIn("Prefer UpdateLongTermMemory or no-op over appending when the set is already at capacity", prompt)
 
     def test_prompts_follow_the_users_language(self):
         expected = "Respond in the user's language"

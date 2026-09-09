@@ -132,6 +132,9 @@ class ModelManager:
                 return model
         return None
 
+    def get_model_by_key(self, key: Optional[ModelKey]) -> Optional[ModelConfig]:
+        return self._get_model_by_key(key)
+
     def _get_default_model(self) -> Optional[ModelConfig]:
         if not self.models:
             return None
@@ -218,6 +221,8 @@ class ModelManager:
         payload["version"] = payload.get("version", 2)
         payload["last_selected"] = self._get_last_selected_payload()
         payload["memory_recall_model"] = self._get_memory_recall_model_payload()
+        payload.pop("image_understanding", None)
+        payload.pop("image_understanding_model", None)
         payload["models"] = [model.to_dict() for model in self.models]
         return payload
 

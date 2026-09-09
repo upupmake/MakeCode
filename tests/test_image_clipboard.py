@@ -10,7 +10,9 @@ import pytest
 
 import main
 from system.clipboard import (
+    read_clipboard_file_items,
     read_image_file_from_system_clipboard,
+    read_image_files_from_system_clipboard,
     read_image_from_system_clipboard,
 )
 from utils.conversations import ConversationStore
@@ -182,6 +184,7 @@ def test_windows_file_clipboard_script_forces_utf8_output(tmp_path):
     import base64
     script = base64.b64decode(encoded).decode("utf-16le")
     assert script.startswith("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;")
+    assert "$files[0]" not in script
 
 
 def test_read_image_file_accepts_mismatched_extension_using_content_type(tmp_path):
@@ -404,6 +407,32 @@ def test_clipboard_text_is_not_an_image():
 
 
 
+def test_read_image_files_from_macos_file_clipboard(tmp_path):
+    first, _, _, _ = _random_png(40)
+    second, _, _, _ = _random_png(41)
+    first_source = tmp_path / "提示文案.png"
+    second_source = tmp_path / "没有开关切换.png"
+    first_source.write_bytes(first)
+    second_source.write_bytes(second)
+    payload = f"{first_source}\n{second_source}\n".encode()
+
+    with (
+        patch("system.clipboard.sys.platform", "darwin"),
+        patch("system.clipboard.shutil.which", return_value="/usr/bin/osascript"),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["/usr/bin/osascript"], 0, stdout=payload,
+        )),
+    ):
+        result = read_image_files_from_system_clipboard()
+        first_only = read_image_file_from_system_clipboard()
+
+    assert result == [
+        (first, "提示文案.png", "image/png"),
+        (second, "没有开关切换.png", "image/png"),
+    ]
+    assert first_only == (first, "提示文案.png", "image/png")
+
+
 def test_main_clipboard_callback_stores_original_filename_and_bytes(tmp_path):
     image, scanlines, width, height = _random_png(30)
     source = tmp_path / "original.png"
@@ -412,11 +441,9 @@ def test_main_clipboard_callback_stores_original_filename_and_bytes(tmp_path):
 
     with (
         patch.object(main, "CONVERSATION_STORE", store),
-        patch.object(main, "read_image_file_from_system_clipboard", return_value=(
-            image,
-            source.name,
-            "image/png",
-        )),
+        patch.object(main, "read_clipboard_file_items", return_value=[
+            {"kind": "image", "image": (image, source.name, "image/png")},
+        ]),
         patch.object(main, "read_image_from_system_clipboard", return_value=None),
     ):
         marker = main._paste_image_from_system_clipboard()
@@ -428,13 +455,183 @@ def test_main_clipboard_callback_stores_original_filename_and_bytes(tmp_path):
     _assert_image_content(attachment.read_bytes(), scanlines, width, height)
 
 
+def test_main_clipboard_callback_stores_multiple_original_files(tmp_path):
+    first, _, _, _ = _random_png(42)
+    second, _, _, _ = _random_png(43)
+    store = ConversationStore(tmp_path / "conversations")
+
+    with (
+        patch.object(main, "CONVERSATION_STORE", store),
+        patch.object(main, "read_clipboard_file_items", return_value=[
+            {"kind": "image", "image": (first, "提示文案.png", "image/png")},
+            {"kind": "image", "image": (second, "没有开关切换.png", "image/png")},
+        ]),
+        patch.object(main, "read_image_from_system_clipboard", return_value=None),
+    ):
+        marker = main._paste_image_from_system_clipboard()
+
+    assert marker.count("[[image:id=img_") == 2
+    attachments = list((store.active_root / "attachments").iterdir())
+    names = {path.name.split("_", 2)[-1] for path in attachments}
+    assert names == {"提示文案.png", "没有开关切换.png"}
+    assert {path.read_bytes() for path in attachments} == {first, second}
+
+
+def test_read_clipboard_file_items_keeps_non_image_paths(tmp_path):
+    image, _, _, _ = _random_png(44)
+    image_source = tmp_path / "photo.png"
+    notes = tmp_path / "notes.txt"
+    image_source.write_bytes(image)
+    notes.write_text("hello", encoding="utf-8")
+    payload = f"{image_source}\n{notes}\n".encode()
+
+    with (
+        patch("system.clipboard.sys.platform", "darwin"),
+        patch("system.clipboard.shutil.which", return_value="/usr/bin/osascript"),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["/usr/bin/osascript"], 0, stdout=payload,
+        )),
+    ):
+        items = read_clipboard_file_items()
+        photo_only = read_clipboard_file_items("photo.png")
+        notes_only = read_clipboard_file_items(str(notes))
+
+    assert items == [
+        {"kind": "image", "image": (image, "photo.png", "image/png")},
+        {"kind": "path", "path": str(notes)},
+    ]
+    assert photo_only == [
+        {"kind": "image", "image": (image, "photo.png", "image/png")},
+    ]
+    assert notes_only == [
+        {"kind": "path", "path": str(notes)},
+    ]
+
+
+def test_read_clipboard_file_items_matches_windows_and_linux_paste_text(tmp_path):
+    first, _, _, _ = _random_png(48)
+    second, _, _, _ = _random_png(49)
+    first_source = tmp_path / "提示文案.png"
+    second_source = tmp_path / "没有开关切换.png"
+    folder = tmp_path / "assets"
+    first_source.write_bytes(first)
+    second_source.write_bytes(second)
+    folder.mkdir()
+
+    windows_payload = f"{first_source}\n{second_source}\n{folder}".encode("utf-8")
+    linux_payload = f"{first_source.as_uri()}\n{second_source.as_uri()}\n{folder.as_uri()}\n".encode()
+
+    with (
+        patch("system.clipboard.sys.platform", "win32"),
+        patch("system.clipboard.shutil.which", side_effect=lambda command: "powershell.exe" if command == "powershell.exe" else None),
+        patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+            ["powershell.exe"], 0, stdout=windows_payload,
+        )),
+    ):
+        windows_first = read_clipboard_file_items(str(first_source).replace("/", "\\"))
+        windows_folder = read_clipboard_file_items("assets")
+
+    assert windows_first == [
+        {"kind": "image", "image": (first, "提示文案.png", "image/png")},
+    ]
+    assert windows_folder == [
+        {"kind": "path", "path": str(folder)},
+    ]
+
+    if sys.platform != "win32":
+        with (
+            patch("system.clipboard.sys.platform", "linux"),
+            patch("system.clipboard.shutil.which", side_effect=lambda command: "/usr/bin/wl-paste" if command == "wl-paste" else None),
+            patch("system.clipboard.subprocess.run", return_value=subprocess.CompletedProcess(
+                ["wl-paste"], 0, stdout=linux_payload,
+            )),
+        ):
+            linux_second = read_clipboard_file_items(second_source.as_uri())
+            linux_folder = read_clipboard_file_items(folder.name)
+
+        assert linux_second == [
+            {"kind": "image", "image": (second, "没有开关切换.png", "image/png")},
+        ]
+        assert linux_folder == [
+            {"kind": "path", "path": str(folder)},
+        ]
+
+
+def test_main_clipboard_callback_keeps_non_image_paths_in_order(tmp_path):
+    image, _, _, _ = _random_png(45)
+    notes = tmp_path / "notes.txt"
+    store = ConversationStore(tmp_path / "conversations")
+
+    with (
+        patch.object(main, "CONVERSATION_STORE", store),
+        patch.object(main, "read_clipboard_file_items", return_value=[
+            {"kind": "image", "image": (image, "photo.png", "image/png")},
+            {"kind": "path", "path": str(notes)},
+        ]),
+        patch.object(main, "read_image_from_system_clipboard", return_value=None),
+    ):
+        pasted = main._paste_image_from_system_clipboard()
+
+    assert pasted.endswith(str(notes))
+    assert pasted.startswith("[[image:id=img_")
+    attachment = next((store.active_root / "attachments").iterdir())
+    assert attachment.name.endswith("_photo.png")
+
+
+def test_main_clipboard_callback_matches_single_filename_from_paste_text(tmp_path):
+    first, _, _, _ = _random_png(46)
+    second, _, _, _ = _random_png(47)
+    notes = tmp_path / "assets"
+    store = ConversationStore(tmp_path / "conversations")
+    items = [
+        {"kind": "image", "image": (first, "提示文案.jpg", "image/jpeg")},
+        {"kind": "image", "image": (second, "没有开关切换.jpg", "image/jpeg")},
+        {"kind": "path", "path": str(notes)},
+    ]
+
+    def read_items(paste_text=None):
+        if paste_text == "提示文案.jpg":
+            return [items[0]]
+        if paste_text == "没有开关切换.jpg":
+            return [items[1]]
+        if paste_text == str(notes) or paste_text == notes.name:
+            return [items[2]]
+        return items
+
+    with (
+        patch.object(main, "CONVERSATION_STORE", store),
+        patch.object(main, "read_clipboard_file_items", side_effect=read_items),
+        patch.object(main, "read_image_from_system_clipboard", return_value=None),
+    ):
+        first_marker = main._paste_image_from_system_clipboard("提示文案.jpg")
+        second_marker = main._paste_image_from_system_clipboard("没有开关切换.jpg")
+        folder = main._paste_image_from_system_clipboard(notes.name)
+
+    assert first_marker.startswith("[[image:id=img_")
+    assert second_marker.startswith("[[image:id=img_")
+    assert first_marker != second_marker
+    assert folder == str(notes)
+
+
+def test_main_clipboard_callback_swallows_unmatched_clipboard_filename(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+
+    with (
+        patch.object(main, "CONVERSATION_STORE", store),
+        patch.object(main, "read_clipboard_file_items", return_value=[]),
+        patch.object(main, "clipboard_paste_text_matches_file_items", return_value=True),
+        patch.object(main, "read_image_from_system_clipboard", return_value=None),
+    ):
+        assert main._paste_image_from_system_clipboard("提示文案.jpg") == ""
+
+
 def test_main_clipboard_callback_stores_screenshot_without_file_source(tmp_path):
     image, scanlines, width, height = _random_png(31)
     store = ConversationStore(tmp_path / "conversations")
 
     with (
         patch.object(main, "CONVERSATION_STORE", store),
-        patch.object(main, "read_image_file_from_system_clipboard", return_value=None),
+        patch.object(main, "read_clipboard_file_items", return_value=[]),
         patch.object(main, "read_image_from_system_clipboard", return_value=(image, "image/png")) as image_fallback,
     ):
         marker = main._paste_image_from_system_clipboard()
