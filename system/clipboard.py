@@ -466,9 +466,10 @@ def _is_truncated_file_list_paste(
     matched: list[dict[str, object]],
     items: list[dict[str, object]],
 ) -> bool:
-    # 终端（如 Windows Terminal）把多文件剪贴板转成粘贴文本时只保留第一个路径。
-    # 因此当粘贴文本是路径形式、且恰好只匹配到剪贴板列表的第一项而列表不止一项时，
-    # 判定为终端截断了整列表粘贴，回退为返回系统剪贴板中的完整文件列表。
+    # Windows Terminal 把多文件剪贴板转成粘贴文本时只保留第一个路径。
+    # macOS/Linux 终端会按文件拆成多次 Paste，第一次匹配第一项不能展开成整组。
+    if sys.platform != "win32":
+        return False
     if len(matched) != 1 or len(items) <= 1:
         return False
     if matched[0] is not items[0]:
