@@ -3142,8 +3142,8 @@ def test_estimate_token_breakdown_uses_explicit_role_tags():
     ]
     tools = [{"name": "Read", "description": "read a file"}]
 
-    sections = memory._build_token_estimation_sections(messages, tools)
-    breakdown = memory.estimate_token_breakdown(messages, tools)
+    sections = memory._build_token_estimation_sections(messages, tools, message_format="openai_chat")
+    breakdown = memory.estimate_token_breakdown(messages, tools, message_format="openai_chat")
 
     assert "<system>system text</system>" in sections["system"]
     assert "<system>name: Read" in sections["system"]
@@ -3157,7 +3157,65 @@ def test_estimate_token_breakdown_uses_explicit_role_tags():
         key: memory.estimate_text_tokens(value)
         for key, value in sections.items()
     }
-    assert memory.estimate_tokens(messages, tools) == sum(breakdown.values())
+    assert memory.estimate_tokens(messages, tools, message_format="openai_chat") == sum(breakdown.values())
+
+
+def test_estimate_tokens_skips_foreign_reasoning_for_anthropic_requests():
+    openai_sourced = {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "openai reasoning",
+        "message_metadata": {"source_format": "openai_chat", "source_model": "gpt-test"},
+    }
+    anthropic_sourced = {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "anthropic thinking",
+        "message_metadata": {"source_format": "anthropic", "source_model": "claude-test"},
+    }
+    messages = [
+        {"role": "user", "content": "question"},
+        openai_sourced,
+        anthropic_sourced,
+    ]
+
+    openai_total = memory.estimate_tokens(messages, message_format="openai_chat")
+    anthropic_total = memory.estimate_tokens(messages, message_format="anthropic")
+
+    assert anthropic_total < openai_total
+    assert anthropic_total == memory.estimate_tokens(
+        [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+            anthropic_sourced,
+        ],
+        message_format="anthropic",
+    )
+
+
+def test_estimate_tokens_resolves_message_format_from_current_model(monkeypatch):
+    messages = [{
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "reasoning",
+        "message_metadata": {"source_format": "openai_chat", "source_model": "gpt-test"},
+    }]
+
+    anthropic_model = ModelConfig(
+        base_url="https://example.com",
+        api_key="key",
+        model_id="claude-test",
+        message_format="anthropic",
+    )
+    monkeypatch.setattr(memory, "get_current_model_config", lambda: anthropic_model)
+    assert memory.estimate_tokens(messages) == memory.estimate_tokens(
+        messages, message_format="anthropic"
+    )
+
+    monkeypatch.setattr(memory, "get_current_model_config", lambda: None)
+    assert memory.estimate_tokens(messages) == memory.estimate_tokens(
+        messages, message_format="openai_chat"
+    )
 
 
 @pytest.mark.anyio

@@ -17,6 +17,7 @@ from system.console_render import (
     _render_agent_response_message,
     console as _compact_console,
 )
+from system.models import get_current_model_config
 from system.stream_render import StreamRenderer
 from system.tool_history import TOOL_EXECUTION_HISTORY, tool_result_status
 from system.tui_app import TuiRegion, post_tui
@@ -1094,7 +1095,12 @@ def _token_value_text(value: object) -> str:
     return str(value)
 
 
-def _token_reasoning_text(message: dict) -> str:
+def _token_reasoning_text(message: dict, anthropic_request: bool = False) -> str:
+    if anthropic_request:
+        metadata = message.get("message_metadata")
+        # Anthropic 请求只回放本协议产出的 thinking 块，外来 reasoning 不会被发送（见 _anthropic_assistant_content）。
+        if not isinstance(metadata, dict) or metadata.get("source_format") != "anthropic":
+            return ""
     reasoning = message.get("reasoning_content")
     if isinstance(reasoning, str) and reasoning:
         return reasoning
@@ -1112,7 +1118,16 @@ def _token_tool_call_text(name: str, arguments: object) -> str:
     ))
 
 
-def _build_token_estimation_sections(messages: list, tools_definition: list = None) -> dict[str, str]:
+def _build_token_estimation_sections(
+    messages: list,
+    tools_definition: list = None,
+    message_format: str | None = None,
+) -> dict[str, str]:
+    if message_format is None:
+        # 未显式指定时按当前模型协议估算，保证与实际请求内容一致。
+        current_model = get_current_model_config()
+        message_format = current_model.message_format if current_model is not None else None
+    anthropic_request = message_format == "anthropic"
     projected_messages = text_only_messages(
         strip_native_message_payloads(messages)
     )
@@ -1136,7 +1151,7 @@ def _build_token_estimation_sections(messages: list, tools_definition: list = No
                 sections["user"].append(f"<user>{text}</user>")
             continue
         if role == "assistant":
-            reasoning = _token_reasoning_text(message)
+            reasoning = _token_reasoning_text(message, anthropic_request)
             if reasoning:
                 sections["reasoning"].append(f"<reasoning>{reasoning}</reasoning>")
             text = _compaction_message_text(message)
@@ -1173,15 +1188,23 @@ def _build_token_estimation_sections(messages: list, tools_definition: list = No
     return {key: "\n\n".join(value) for key, value in sections.items()}
 
 
-def estimate_token_breakdown(messages: list, tools_definition: list = None) -> dict[str, int]:
+def estimate_token_breakdown(
+    messages: list,
+    tools_definition: list = None,
+    message_format: str | None = None,
+) -> dict[str, int]:
     return {
         key: estimate_text_tokens(value)
-        for key, value in _build_token_estimation_sections(messages, tools_definition).items()
+        for key, value in _build_token_estimation_sections(
+            messages, tools_definition, message_format
+        ).items()
     }
 
 
-def estimate_tokens(messages: list, tools_definition: list = None):
-    return sum(estimate_token_breakdown(messages, tools_definition).values())
+def estimate_tokens(messages: list, tools_definition: list = None, message_format: str | None = None):
+    return sum(
+        estimate_token_breakdown(messages, tools_definition, message_format).values()
+    )
 
 
 def _conversation_groups(messages: list[dict]) -> list[tuple[int, int, bool]]:
