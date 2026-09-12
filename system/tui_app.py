@@ -22,11 +22,11 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import Click, Key, Paste, Resize
+from textual.events import Click, Event, Key, Paste, Resize
 from textual.widget import Widget
 from textual.widgets import Button, Collapsible, Footer, Input, Label, RichLog, Static, TextArea
 
-from system.clipboard import copy_to_system_clipboard
+from system.clipboard import copy_to_system_clipboard, strip_invisible_characters
 from utils.vision import (
     IMAGE_PLACEHOLDER_PATTERN,
     image_placeholder_text,
@@ -1224,6 +1224,12 @@ class MakeCodeTuiApp(App[None]):
         Binding("f7", "open_tool_history", "工具历史", priority=True, show=False),
         Binding("ctrl+g", "open_temporary_query", "追加临时指令", priority=True, show=False),
     ]
+
+    async def on_event(self, event: Event) -> None:
+        # 事件转发给控件之前清洗，覆盖主输入框和所有弹窗里的输入控件。
+        if isinstance(event, Paste) and not event.is_forwarded:
+            event.text = strip_invisible_characters(event.text)
+        await super().on_event(event)
 
     def __init__(
         self,

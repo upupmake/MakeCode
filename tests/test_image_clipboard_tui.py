@@ -407,3 +407,51 @@ async def test_left_and_right_keep_normal_text_navigation():
         input_box.on_paste(Paste("photo.png"))
 
         assert input_box.text == marker
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "pasted, expected",
+    [
+        ("https://api.chat.csu.edu.cn/v1\u200b\u200b", "https://api.chat.csu.edu.cn/v1"),
+        ("\ufeffhttps://api.example.com/v1\u2060", "https://api.example.com/v1"),
+        ("a\u200db", "a\u200db"),
+    ],
+)
+async def test_paste_event_strips_invisible_characters(pasted, expected):
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.focus()
+        await pilot.pause()
+
+        app.post_message(Paste(pasted))
+        await pilot.pause()
+
+        assert input_box.text == expected
+
+
+@pytest.mark.anyio
+async def test_paste_event_strips_invisible_characters_before_image_handling():
+    marker = "[[image:id=img_88888888888888888888888888888888]]"
+    seen: list[str] = []
+
+    def clipboard_handler(paste_text):
+        seen.append(paste_text)
+        return marker if paste_text == "photo.png" else None
+
+    app = MakeCodeTuiApp(image_clipboard_handler=clipboard_handler)
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.focus()
+        await pilot.pause()
+
+        app.post_message(Paste("photo.png\u200b\ufeff"))
+        await pilot.pause()
+
+        assert seen == ["photo.png"]
+        assert input_box.text == marker
