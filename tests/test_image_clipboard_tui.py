@@ -1,5 +1,8 @@
+from concurrent.futures import Future
+
 import pytest
 from textual.events import Paste
+from textual.widgets import Input
 
 from system.tui_app import MakeCodeTuiApp
 from utils.vision import IMAGE_PLACEHOLDER_PATTERN
@@ -415,7 +418,10 @@ async def test_left_and_right_keep_normal_text_navigation():
     [
         ("https://api.chat.csu.edu.cn/v1\u200b\u200b", "https://api.chat.csu.edu.cn/v1"),
         ("\ufeffhttps://api.example.com/v1\u2060", "https://api.example.com/v1"),
+        ("https://api.example.com/v1\u200e\u200f", "https://api.example.com/v1"),
+        ("f(x)\u2061=\u20621", "f(x)=1"),
         ("a\u200db", "a\u200db"),
+        ("hello\u00a0world", "hello\u00a0world"),
     ],
 )
 async def test_paste_event_strips_invisible_characters(pasted, expected):
@@ -455,3 +461,40 @@ async def test_paste_event_strips_invisible_characters_before_image_handling():
 
         assert seen == ["photo.png"]
         assert input_box.text == marker
+
+
+@pytest.mark.anyio
+async def test_add_model_modal_paste_strips_invisible_characters():
+    app = MakeCodeTuiApp()
+    future: Future[dict[str, str] | None] = Future()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.open_add_model_modal(future)
+        await pilot.pause()
+
+        base_url = app.screen.query_one("#model-base-url", Input)
+        assert base_url.has_focus
+
+        app.post_message(Paste("https://api.example.com/v1\u200b\ufeff\u200e"))
+        await pilot.pause()
+
+        assert base_url.value == "https://api.example.com/v1"
+
+
+@pytest.mark.anyio
+async def test_copy_to_clipboard_strips_invisible_characters_before_internal_paste():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.focus()
+        await pilot.pause()
+
+        app.copy_to_clipboard("https://api.example.com/v1\u200b\u2060\ufeff")
+        input_box.action_paste()
+        await pilot.pause()
+
+        assert app.clipboard == "https://api.example.com/v1"
+        assert input_box.text == "https://api.example.com/v1"

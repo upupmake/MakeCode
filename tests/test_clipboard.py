@@ -6,7 +6,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Label
 from textual.widgets.text_area import Selection
 
-from system.clipboard import copy_to_system_clipboard
+from system.clipboard import copy_to_system_clipboard, strip_invisible_characters
 from system.tui_modals import CopyContentModal
 
 
@@ -149,6 +149,23 @@ def test_copy_to_system_clipboard_returns_false_when_command_fails():
         ),
     ):
         assert copy_to_system_clipboard("hello") is False
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("https://api.chat.csu.edu.cn/v1\u200b\u200b", "https://api.chat.csu.edu.cn/v1"),
+        ("\ufeffhttps://api.example.com/v1\u2060", "https://api.example.com/v1"),
+        ("https://api.example.com/v1\u200e\u200f", "https://api.example.com/v1"),
+        ("f(x)\u2061=\u20621\u2063+\u20642", "f(x)=1+2"),
+        ("a\u200cb\u200dc", "a\u200cb\u200dc"),
+        ("hello\u00a0world", "hello\u00a0world"),
+        ("plain text", "plain text"),
+        ("", ""),
+    ],
+)
+def test_strip_invisible_characters(text, expected):
+    assert strip_invisible_characters(text) == expected
 
 
 class CopyModalHost(App):

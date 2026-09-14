@@ -19,11 +19,16 @@ _SUPPORTED_IMAGE_TYPES = {
     "image/webp",
 }
 # 不含 U+200C/U+200D：ZWJ/ZWNJ 是 emoji 组合与阿拉伯、印度语系连写的必需字符。
-_INVISIBLE_CHARACTERS = str.maketrans("", "", "\u200b\ufeff\u2060")
+# 不含 U+00A0：不间断空格有可见宽度，删除会改变空格语义。
+_INVISIBLE_CHARACTERS = str.maketrans(
+    "",
+    "",
+    "\u200b\u200e\u200f\u2060\u2061\u2062\u2063\u2064\ufeff",
+)
 
 
 def strip_invisible_characters(text: str) -> str:
-    """剥离粘带进来的零宽字符，避免 URL、密钥等被不可见字符污染。"""
+    """剥离粘带进来的零宽/格式控制符，避免 URL、密钥等被不可见字符污染。"""
     return text.translate(_INVISIBLE_CHARACTERS)
 
 

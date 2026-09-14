@@ -1225,12 +1225,6 @@ class MakeCodeTuiApp(App[None]):
         Binding("ctrl+g", "open_temporary_query", "追加临时指令", priority=True, show=False),
     ]
 
-    async def on_event(self, event: Event) -> None:
-        # 事件转发给控件之前清洗，覆盖主输入框和所有弹窗里的输入控件。
-        if isinstance(event, Paste) and not event.is_forwarded:
-            event.text = strip_invisible_characters(event.text)
-        await super().on_event(event)
-
     def __init__(
         self,
         submit_handler: Callable[[str], Awaitable[str | None]] | None = None,
@@ -1344,6 +1338,15 @@ class MakeCodeTuiApp(App[None]):
             yield TokenUsageBar("📈 Tokens", id="token-usage-bar")
             yield Button("🛡️ HITL", id="hitl-toggle")
         yield Footer()
+
+    async def on_event(self, event: Event) -> None:
+        # 事件转发给控件之前清洗，覆盖主输入框和所有弹窗里的输入控件。
+        if isinstance(event, Paste) and not event.is_forwarded:
+            event.text = strip_invisible_characters(event.text)
+        await super().on_event(event)
+
+    def copy_to_clipboard(self, text: str) -> None:
+        super().copy_to_clipboard(strip_invisible_characters(text))
 
     def on_mount(self) -> None:
         self._panes = {
