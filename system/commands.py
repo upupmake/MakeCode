@@ -40,6 +40,7 @@ from utils.memory import (
     get_compaction_thresholds,
     get_context_length,
     get_memory_recall_window_size,
+    get_memory_pre_recall,
     get_partial_compact_percentages,
     get_tool_output_compact_tokens,
     get_memory_size,
@@ -49,6 +50,7 @@ from utils.memory import (
     set_compaction_thresholds,
     set_context_length,
     set_memory_recall_window_size,
+    set_memory_pre_recall,
     set_partial_compact_percentages,
     set_tool_output_compact_tokens,
     set_memory_size,
@@ -1158,6 +1160,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             "partial_compact_min_percent": partial_min_percent,
             "partial_compact_max_percent": partial_max_percent,
             "memory_recall_window_size": get_memory_recall_window_size(),
+            "memory_pre_recall": get_memory_pre_recall(),
             "memory_recall_model_key": model_manager.memory_recall_model_key if model_manager else None,
             "memory_recall_model_display": model_manager.get_memory_recall_model_display_text() if model_manager else "同主模型",
         }
@@ -1201,6 +1204,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             result["partial_compact_max_percent"],
         )
         set_memory_recall_window_size(result["memory_recall_window_size"])
+        set_memory_pre_recall(result["memory_pre_recall"])
         if model_manager is not None:
             model_manager.set_memory_recall_model_by_key(result.get("memory_recall_model_key"))
         refresh_status()
@@ -1215,6 +1219,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             f"  tool_output_compact_tokens: {result['tool_output_compact_tokens']}\n"
             f"  partial_compact_range: {result['partial_compact_min_percent']}%-{result['partial_compact_max_percent']}%\n"
             f"  memory_recall_window_size: {result['memory_recall_window_size']}\n"
+            f"  memory_pre_recall: {'开启' if result['memory_pre_recall'] else '关闭'}\n"
             f"  memory_recall_model: {recall_model_text}",
             tui_region=TuiRegion.BACKGROUND,
         )

@@ -105,6 +105,7 @@ from utils.memory import (
     estimate_token_breakdown,
     get_active_memory_count,
     get_compaction_thresholds,
+    get_memory_pre_recall,
     get_context_token_limit,
     manual_memory_update,
     partial_compact,
@@ -955,7 +956,8 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
         try:
             set_agent_loop_active(True)
             _ensure_active_conversation()
-            if command_result.skip_memory_recall:
+            skip_memory_recall = command_result.skip_memory_recall or not get_memory_pre_recall()
+            if skip_memory_recall:
                 post_tui(
                     TuiRegion.BACKGROUND,
                     "[#aaaaaa]🧠 已跳过本次请求的记忆预召回流程。[/#aaaaaa]",
@@ -973,7 +975,7 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                 }
             history.append(user_message_record)
 
-            if command_result.skip_memory_recall:
+            if skip_memory_recall:
                 await agent_loop(history)
             else:
                 await agent_loop(

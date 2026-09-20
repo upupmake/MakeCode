@@ -51,6 +51,7 @@ def print_formatted_text(value):
 DEFAULT_CONTEXT_LENGTH = 200  # 单位: k (千 tokens)
 DEFAULT_MEMORY_SIZE = 30
 DEFAULT_MEMORY_RECALL_WINDOW_SIZE = MEMORY_RECALL_WINDOW_SIZE
+DEFAULT_MEMORY_PRE_RECALL = True
 DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD = 70
 DEFAULT_PARTIAL_COMPACT_THRESHOLD = 90
 DEFAULT_TOOL_OUTPUT_COMPACT_TOKENS = 2000
@@ -294,6 +295,12 @@ def _validate_memory_recall_window_size(size) -> int:
     return size
 
 
+def _validate_memory_pre_recall(enabled) -> bool:
+    if not isinstance(enabled, bool):
+        raise ValueError("memory pre-recall must be a boolean")
+    return enabled
+
+
 def _validate_context_length(length) -> int:
     if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
         raise ValueError("context length must be a positive integer")
@@ -523,6 +530,20 @@ def set_memory_recall_window_size(size: int) -> int:
     size = _validate_memory_recall_window_size(size)
     _write_memory_config_field("memory_recall_window_size", size)
     return size
+
+
+def get_memory_pre_recall() -> bool:
+    return _get_memory_config_field(
+        "memory_pre_recall",
+        DEFAULT_MEMORY_PRE_RECALL,
+        _validate_memory_pre_recall,
+    )
+
+
+def set_memory_pre_recall(enabled: bool) -> bool:
+    enabled = _validate_memory_pre_recall(enabled)
+    _write_memory_config_field("memory_pre_recall", enabled)
+    return enabled
 
 
 def get_context_length() -> int:

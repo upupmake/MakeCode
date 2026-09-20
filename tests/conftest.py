@@ -12,6 +12,7 @@ def isolate_memory_config(tmp_path, monkeypatch):
         json.dumps({
             "memory_size": memory.DEFAULT_MEMORY_SIZE,
             "memory_recall_window_size": memory.DEFAULT_MEMORY_RECALL_WINDOW_SIZE,
+            "memory_pre_recall": memory.DEFAULT_MEMORY_PRE_RECALL,
             "context_length": memory.DEFAULT_CONTEXT_LENGTH,
             "tool_output_compact_threshold": memory.DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD,
             "partial_compact_threshold": memory.DEFAULT_PARTIAL_COMPACT_THRESHOLD,

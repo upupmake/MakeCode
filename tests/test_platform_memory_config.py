@@ -409,6 +409,7 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     config_file.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
 
     assert memory.get_memory_recall_window_size() == 3
+    assert memory.get_memory_pre_recall() is True
     assert memory.get_context_length() == 200
     assert memory.get_context_token_limit() == 200 * 1024
     assert memory.get_compaction_thresholds() == (70, 90)
@@ -422,6 +423,7 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert saved["memory_size"] == 9
     assert saved["memory_recall_window_size"] == 3
+    assert saved["memory_pre_recall"] is True
     assert saved["context_length"] == 300
     assert saved["tool_output_compact_threshold"] == 65
     assert saved["partial_compact_threshold"] == 85
@@ -432,6 +434,7 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     config_file.write_text(json.dumps({
         "memory_size": 11,
         "memory_recall_window_size": 4,
+        "memory_pre_recall": False,
         "context_length": 256,
         "tool_output_compact_threshold": 60,
         "partial_compact_threshold": 80,
@@ -442,17 +445,20 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
 
     assert memory.get_memory_size() == 11
     assert memory.get_memory_recall_window_size() == 4
+    assert memory.get_memory_pre_recall() is False
     assert memory.get_context_length() == 256
     assert memory.get_context_token_limit() == 256 * 1024
     assert memory.get_compaction_thresholds() == (60, 80)
     assert memory.get_tool_output_compact_tokens() == 3200
     assert memory.get_partial_compact_percentages() == (20, 40)
     assert memory.set_memory_recall_window_size(5) == 5
+    assert memory.set_memory_pre_recall(True) is True
 
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert saved["memory_size"] == 11
     assert saved["context_length"] == 256
     assert saved["memory_recall_window_size"] == 5
+    assert saved["memory_pre_recall"] is True
     assert saved["tool_output_compact_threshold"] == 60
     assert saved["partial_compact_threshold"] == 80
     assert saved["tool_output_compact_tokens"] == 3200
@@ -535,6 +541,21 @@ def test_partial_compact_percentages_require_ordered_integer_percentages(
     assert json.loads(config_file.read_text(encoding="utf-8")) == {"memory_size": 9}
 
 
+@pytest.mark.parametrize("enabled", [0, 1, "true", None])
+def test_memory_pre_recall_requires_boolean(tmp_path, monkeypatch, enabled):
+    config_file = tmp_path / "memory_config.json"
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", config_file)
+    config_file.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="boolean"):
+        memory.set_memory_pre_recall(enabled)
+
+    assert json.loads(config_file.read_text(encoding="utf-8")) == {"memory_size": 9}
+    assert memory.get_memory_pre_recall() is True
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["memory_pre_recall"] is True
+
+
 def test_memory_config_modal_includes_compaction_threshold_fields():
     fields = MemoryConfigModal._FIELDS
 
@@ -547,6 +568,7 @@ def test_memory_config_modal_includes_compaction_threshold_fields():
     assert fields["partial_compact_max_percent"]["input_id"] == "memory-config-partial-compact-max-percent"
     assert "keep_recent_tool_call" not in fields
     assert fields["memory_recall_window_size"]["input_id"] == "memory-config-memory-recall-window-size"
+    assert "memory_pre_recall" not in fields
 
 
 def test_memory_config_modal_requires_second_compaction_threshold_to_be_greater():
@@ -583,6 +605,7 @@ def _memory_config_modal_values(**overrides):
         "partial_compact_min_percent": 30,
         "partial_compact_max_percent": 50,
         "memory_recall_window_size": 3,
+        "memory_pre_recall": True,
     }
     values.update(overrides)
     return values
@@ -622,6 +645,18 @@ def test_memory_config_modal_requires_ordered_partial_compact_range():
         assert modal._collect_values() is None
 
     show_error.assert_called_once_with("第二层可压缩落点必须满足 0 < 下限 < 上限 < 100。")
+
+
+def test_memory_config_modal_collects_memory_pre_recall_toggle():
+    modal, inputs = _collect_memory_config_values(
+        _memory_config_modal_values(memory_pre_recall=False)
+    )
+
+    with patch.object(modal, "query_one", side_effect=lambda selector, *args: inputs[selector]):
+        values = modal._collect_values()
+
+    assert values["memory_pre_recall"] is False
+    assert values["memory_recall_window_size"] == 3
 
 
 def test_window_attention_is_noop_on_non_windows():
@@ -760,6 +795,31 @@ async def test_memory_config_modal_keeps_all_fields_reachable_on_short_terminal(
         assert child_ids.index("memory-config-choose-recall-model") < child_ids.index(
             "memory-config-partial-compact-max-percent"
         )
+        assert child_ids.index("memory-config-partial-compact-max-percent") < child_ids.index(
+            "memory-config-memory-pre-recall"
+        )
+        assert child_ids.index("memory-config-memory-pre-recall") < child_ids.index(
+            "memory-config-actions"
+        )
+        toggle = modal.query_one("#memory-config-memory-pre-recall", Button)
+        assert str(toggle.label) == "记忆预召回：已开启"
+
+
+@pytest.mark.anyio
+async def test_memory_config_modal_toggle_updates_collected_memory_pre_recall():
+    modal = MemoryConfigModal(_memory_config_modal_values())
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        toggle = modal.query_one("#memory-config-memory-pre-recall", Button)
+        assert str(toggle.label) == "记忆预召回：已开启"
+
+        toggle.press()
+        await pilot.pause()
+
+        assert str(toggle.label) == "记忆预召回：已关闭"
+        assert modal._collect_values()["memory_pre_recall"] is False
 
 
 def assert_list_selection(list_view: ListView, index: int) -> None:
@@ -4033,6 +4093,55 @@ async def test_user_request_passes_recall_query_to_agent_loop():
         await main_module._process_user_query("新的用户请求", history, command_handler)
 
     run_agent_loop.assert_awaited_once_with(history, recall_query="新的用户请求")
+
+
+@pytest.mark.anyio
+async def test_disabled_memory_pre_recall_skips_pre_recall_without_nm():
+    command_handler = Mock()
+    command_handler.process_command = AsyncMock(return_value=CommandResult(
+        action=CommandAction.RUN_AGENT,
+        payload="新的用户请求",
+    ))
+    history = [{"role": "system", "content": "system"}]
+
+    with patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "_ensure_active_conversation"), \
+            patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
+            patch.object(main_module, "get_memory_pre_recall", return_value=False), \
+            patch.object(main_module, "post_tui") as post_tui, \
+            patch.object(main_module, "refresh_status"):
+        await main_module._process_user_query("新的用户请求", history, command_handler)
+
+    run_agent_loop.assert_awaited_once_with(history)
+    post_tui.assert_any_call(
+        main_module.TuiRegion.BACKGROUND,
+        "[#aaaaaa]🧠 已跳过本次请求的记忆预召回流程。[/#aaaaaa]",
+    )
+
+
+@pytest.mark.anyio
+async def test_nm_skips_pre_recall_even_when_memory_pre_recall_is_enabled():
+    command_handler = Mock()
+    command_handler.process_command = AsyncMock(return_value=CommandResult(
+        action=CommandAction.RUN_AGENT,
+        payload="直接处理这个请求",
+        skip_memory_recall=True,
+    ))
+    history = [{"role": "system", "content": "system"}]
+
+    with patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "_ensure_active_conversation"), \
+            patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
+            patch.object(main_module, "get_memory_pre_recall", return_value=True), \
+            patch.object(main_module, "post_tui") as post_tui, \
+            patch.object(main_module, "refresh_status"):
+        await main_module._process_user_query("/nm 直接处理这个请求", history, command_handler)
+
+    run_agent_loop.assert_awaited_once_with(history)
+    post_tui.assert_any_call(
+        main_module.TuiRegion.BACKGROUND,
+        "[#aaaaaa]🧠 已跳过本次请求的记忆预召回流程。[/#aaaaaa]",
+    )
 
 
 @pytest.mark.anyio

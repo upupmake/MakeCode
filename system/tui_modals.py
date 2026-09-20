@@ -4566,7 +4566,7 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
 
     def __init__(self, values: dict[str, Any]) -> None:
         super().__init__()
-        self._values = values
+        self._values = dict(values)
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="memory-config-dialog"):
@@ -4606,6 +4606,13 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
                     id=meta["input_id"],
                     classes="memory-config-input",
                 )
+            enabled = bool(self._values.get("memory_pre_recall", True))
+            yield Label("记忆预召回 (memory_pre_recall)", classes="memory-config-label")
+            yield Button(
+                self._memory_pre_recall_label(enabled),
+                id="memory-config-memory-pre-recall",
+                classes="memory-config-button",
+            )
             with Horizontal(id="memory-config-actions"):
                 yield Button("确认应用", id="memory-config-apply", variant="success", classes="memory-config-button")
                 yield Button("取消", id="memory-config-cancel", variant="warning", classes="memory-config-button")
@@ -4615,8 +4622,11 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
 
     def _on_key(self, event: Key) -> None:
         if event.key == "enter":
-            if getattr(self.focused, "id", None) == "memory-config-choose-recall-model":
+            focused_id = getattr(self.focused, "id", None)
+            if focused_id == "memory-config-choose-recall-model":
                 self._dismiss_values("choose_recall_model")
+            elif focused_id == "memory-config-memory-pre-recall":
+                self._toggle_memory_pre_recall()
             else:
                 self.action_submit()
             event.stop()
@@ -4634,11 +4644,23 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
         if event.button.id == "memory-config-choose-recall-model":
             self._dismiss_values("choose_recall_model")
             return
+        if event.button.id == "memory-config-memory-pre-recall":
+            self._toggle_memory_pre_recall()
+            return
         if event.button.id == "memory-config-apply":
             self.action_submit()
             return
         if event.button.id == "memory-config-cancel":
             self.action_cancel()
+
+    @staticmethod
+    def _memory_pre_recall_label(enabled: bool) -> str:
+        return "记忆预召回：已开启" if enabled else "记忆预召回：已关闭"
+
+    def _toggle_memory_pre_recall(self) -> None:
+        enabled = not bool(self._values.get("memory_pre_recall", True))
+        self._values["memory_pre_recall"] = enabled
+        self.query_one("#memory-config-memory-pre-recall", Button).label = self._memory_pre_recall_label(enabled)
 
     def _collect_values(self) -> dict[str, Any] | None:
         values = {}
@@ -4666,6 +4688,7 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
         if not 0 < partial_min_percent < partial_max_percent < 100:
             self._show_error("第二层可压缩落点必须满足 0 < 下限 < 上限 < 100。")
             return None
+        values["memory_pre_recall"] = bool(self._values.get("memory_pre_recall", True))
         values["memory_recall_model_key"] = self._values.get("memory_recall_model_key")
         values["memory_recall_model_display"] = self._values.get("memory_recall_model_display", "同主模型")
         return values
