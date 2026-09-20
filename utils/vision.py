@@ -27,7 +27,7 @@ def image_media_type_from_bytes(data: bytes) -> str | None:
         return None
     if data.startswith(_PNG_SIGNATURE):
         return "image/png"
-    if data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+    if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     if data.startswith((b"GIF87a", b"GIF89a")) and data.endswith(b";"):
         return "image/gif"

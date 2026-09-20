@@ -77,7 +77,7 @@ def _valid_png(data: bytes) -> bool:
 def _image_format(data: bytes) -> str | None:
     if _valid_png(data):
         return "image/png"
-    if data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+    if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     if data.startswith((b"GIF87a", b"GIF89a")) and data.endswith(b";"):
         return "image/gif"

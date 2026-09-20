@@ -96,6 +96,15 @@ def test_image_media_type_from_bytes_detects_png():
     assert image_media_type_from_bytes(b"not-an-image") is None
 
 
+def test_image_media_type_from_bytes_detects_jpeg_without_eof_marker():
+    jpeg_with_eof = b"\xff\xd8\xff" + b"jpeg-body" + b"\xff\xd9"
+    jpeg_without_eof = b"\xff\xd8\xff" + b"jpeg-body" + b"\x00\x00"
+
+    assert image_media_type_from_bytes(jpeg_with_eof) == "image/jpeg"
+    assert image_media_type_from_bytes(jpeg_without_eof) == "image/jpeg"
+    assert image_media_type_from_bytes(b"\xff\xd8") is None
+
+
 @pytest.mark.anyio
 async def test_load_local_image_for_understanding(png_file):
     data, media_type = await load_image_for_understanding(str(png_file))
@@ -123,6 +132,19 @@ async def test_load_rejects_non_image_bytes(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="Unsupported image type"):
         await load_image_for_understanding(str(notes))
+
+
+@pytest.mark.anyio
+async def test_load_local_jpg_without_eof_marker(tmp_path, monkeypatch):
+    jpeg = b"\xff\xd8\xff" + b"jpeg-body" + b"\x00\x00"
+    path = tmp_path / "photo.jpg"
+    path.write_bytes(jpeg)
+    monkeypatch.setattr(understand_image, "safe_path", lambda p, tool_name="": Path(p).resolve())
+
+    data, media_type = await load_image_for_understanding(str(path))
+
+    assert data == jpeg
+    assert media_type == "image/jpeg"
 
 
 def test_inline_image_blocks_convert_for_openai_and_anthropic():
