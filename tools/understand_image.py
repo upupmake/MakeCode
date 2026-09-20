@@ -24,12 +24,17 @@ _HTTP_TIMEOUT_SECONDS = 30
 
 class UnderstandImage(ToolArgumentsModel):
     """
-    Analyze one image with a dedicated multimodal model and return a text description.
+    Analyze one image that is not already visible in the conversation, using a dedicated extra multimodal request.
+
+    SKIP — answer directly instead of calling this tool when:
+    - The image is already in the conversation context (user-pasted or attached in this or a prior user message)
+    - The current model can already see that image and can answer from it
+    Do not re-send an in-context image through this tool; that extra request is redundant.
 
     WHEN TO USE:
-    - The current task needs visual understanding of a local image file or a public image URL
+    - Inspect a local image file or a public image URL that the user did not or cannot paste into the chat
+    - The agent itself needs to look at an image that is not already in context
     - FileRead cannot inspect binary image content
-    - The image is not already pasted into the current user message
 
     BEHAVIOR:
     - Loads the image from a workspace-relative path, an absolute path, or an http(s) URL
@@ -45,7 +50,11 @@ class UnderstandImage(ToolArgumentsModel):
     image_url: str = Field(
         ...,
         min_length=1,
-        description="Local image path or http(s) URL. Supported types: gif, jpg/jpeg, png, webp.",
+        description=(
+            "Local image path or http(s) URL of an image that is not already in the conversation. "
+            "Supported types: gif, jpg/jpeg, png, webp. "
+            "Do not pass an image that is already visible in a user message."
+        ),
     )
 
 
