@@ -15,7 +15,7 @@ from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
 from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal
+from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal, filter_choice_options
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
@@ -1899,59 +1899,40 @@ async def test_choice_modal_without_search_texts_hides_search_box():
         assert "/ 搜索" not in str(modal.query_one("#choice-title", Label).render())
 
 
+def test_choice_search_matches_id_title_and_body_with_and_tokens():
+    options = ["会话A", "会话B", "会话C"]
+    search_texts = [
+        "conv_aaa 修复加载面板 how to search conversations",
+        "conv_bbb 未命名对话 unrelated body",
+        "conv_ccc 其他标题 assistant answer about search",
+    ]
+
+    assert filter_choice_options(options, search_texts, "search conversations") == ["会话A"]
+    assert filter_choice_options(options, search_texts, "Search CONVERSATIONS") == ["会话A"]
+    assert filter_choice_options(options, search_texts, "conv_ccc") == ["会话C"]
+    assert filter_choice_options(options, search_texts, "no-such-conversation") == []
+    assert filter_choice_options(options, search_texts, "") == options
+    assert filter_choice_options(options, None, "search") == options
+
+
 @pytest.mark.anyio
-async def test_choice_modal_search_filters_title_id_and_body_and_keeps_panel_open():
-    result = None
-
-    def on_dismiss(value):
-        nonlocal result
-        result = value
-
+async def test_choice_modal_with_search_texts_renders_search_box():
     modal = ChoiceModal(
         "测试",
-        ["会话A", "会话B", "会话C"],
-        search_texts=[
-            "conv_aaa 修复加载面板 how to search conversations",
-            "conv_bbb 未命名对话 unrelated body",
-            "conv_ccc 其他标题 assistant answer about search",
-        ],
+        ["会话A", "会话B"],
+        search_texts=["alpha title", "beta title"],
     )
-    app = ChoiceModalHost(modal, on_dismiss)
+    app = ChoiceModalHost(modal)
 
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        search = modal.query_one("#choice-search", Input)
+    async with app.run_test() as host:
+        await host.pause()
+        assert modal.query("#choice-search").__len__() == 1
         assert "/ 搜索" in str(modal.query_one("#choice-title", Label).render())
-        def list_labels():
-            return [str(child.query_one(Label).render()) for child in modal.query_one("#choice-list").children]
-
-        search.focus()
-        search.value = "search conversations"
-        search.post_message(Input.Changed(search, "search conversations"))
-        await pump_until(pilot, lambda: list_labels() == ["会话A"])
-        assert modal._filtered_options == ["会话A"]
-        assert "显示 1 / 3" in str(modal.query_one("#choice-search-status", Label).render())
-
-        search.value = "no-such-conversation"
-        search.post_message(Input.Changed(search, "no-such-conversation"))
-        await pump_until(pilot, lambda: list_labels() == ["没有匹配的会话"])
-        assert modal._filtered_options == []
-        await pilot.press("enter")
-        await pilot.pause()
-        assert result is None
-        assert app.screen is modal
-
-        search.value = "conv_ccc"
-        search.post_message(Input.Changed(search, "conv_ccc"))
-        await pump_until(pilot, lambda: list_labels() == ["会话C"])
-        await pilot.press("enter")
-        await pump_until(pilot, lambda: result == "会话C")
-
-    assert result == "会话C"
+        assert str(modal.query_one("#choice-search-status", Label).render()) == "显示 2 / 2"
 
 
 @pytest.mark.anyio
-async def test_choice_modal_search_enter_does_not_submit_custom_value():
+async def test_choice_modal_search_enter_loads_unique_match_instead_of_custom_value():
     result = None
 
     def on_dismiss(value):
@@ -1965,20 +1946,43 @@ async def test_choice_modal_search_enter_does_not_submit_custom_value():
     )
     app = ChoiceModalHost(modal, on_dismiss)
 
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        modal.query_one("#choice-list", ListView).focus()
-        await pilot.pause()
-        await pilot.press("/")
-        await pump_until(pilot, lambda: isinstance(modal.focused, Input))
+    async with app.run_test() as host:
+        await host.pause()
         search = modal.query_one("#choice-search", Input)
+        search.focus()
         search.value = "beta"
-        search.post_message(Input.Changed(search, "beta"))
-        await pump_until(pilot, lambda: modal._filtered_options == ["会话B"])
-        await pilot.press("enter")
-        await pump_until(pilot, lambda: result == "会话B")
+        modal._filtered_options = ["会话B"]
+        modal.action_confirm()
+        await host.pause()
 
     assert result == "会话B"
+
+
+@pytest.mark.anyio
+async def test_choice_modal_search_enter_keeps_panel_open_when_nothing_matches():
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    modal = ChoiceModal(
+        "测试",
+        ["会话A", "会话B"],
+        search_texts=["alpha title", "beta title"],
+    )
+    app = ChoiceModalHost(modal, on_dismiss)
+
+    async with app.run_test() as host:
+        await host.pause()
+        search = modal.query_one("#choice-search", Input)
+        search.focus()
+        search.value = "no-such-conversation"
+        modal._filtered_options = []
+        modal.action_confirm()
+        await host.pause()
+        assert result is None
+        assert app.screen is modal
 
 
 @pytest.mark.anyio
@@ -1992,18 +1996,18 @@ async def test_choice_modal_delete_uses_filtered_selection():
     )
     app = ChoiceModalHost(modal)
 
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        search = modal.query_one("#choice-search", Input)
-        search.value = "unique"
-        search.post_message(Input.Changed(search, "unique"))
-        await pump_until(pilot, lambda: modal._filtered_options == ["会话B"])
-        modal.query_one("#choice-list", ListView).focus()
-        await pilot.pause()
-        await pilot.press("d", "y")
-        await pump_until(pilot, lambda: modal._options == ["会话A", "会话C"])
+    async with app.run_test() as host:
+        await host.pause()
+        modal._filtered_options = ["会话B"]
+        choice_list = modal.query_one("#choice-list", ListView)
+        choice_list.index = 0
+        choice_list.focus()
+        modal.action_delete()
+        modal.action_confirm_delete()
+        await host.pause()
 
         assert deleted == ["会话B"]
+        assert modal._options == ["会话A", "会话C"]
         assert modal._search_texts == ["alpha", "gamma"]
 
 

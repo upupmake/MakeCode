@@ -47,6 +47,19 @@ from utils import paths
 ModalResult = TypeVar("ModalResult")
 
 
+def filter_choice_options(options: list[str], search_texts: list[str] | None, query: str) -> list[str]:
+    if search_texts is None:
+        return list(options)
+    tokens = query.strip().casefold().split()
+    if not tokens:
+        return list(options)
+    return [
+        option
+        for option, haystack in zip(options, search_texts)
+        if all(token in haystack.casefold() for token in tokens)
+    ]
+
+
 class ClosableModalScreen(ModalScreen[ModalResult]):
     def action_close_modal(self) -> None:
         close_action = getattr(self, "action_cancel", None) or getattr(self, "action_close", None)
@@ -1254,16 +1267,7 @@ class ChoiceModal(ClosableModalScreen[str]):
         return self.query_one("#choice-search", Input).value.strip()
 
     def _filter_options(self) -> list[str]:
-        if self._search_texts is None:
-            return list(self._options)
-        tokens = self._search_query().casefold().split()
-        if not tokens:
-            return list(self._options)
-        return [
-            option
-            for option, haystack in zip(self._options, self._search_texts)
-            if all(token in haystack.casefold() for token in tokens)
-        ]
+        return filter_choice_options(self._options, self._search_texts, self._search_query())
 
     def _visible_options(self) -> list[str]:
         if self._search_enabled():
