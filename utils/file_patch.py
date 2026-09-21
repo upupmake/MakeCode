@@ -21,9 +21,9 @@ from utils.tool_validation import ToolArgumentsModel
 
 
 _UTF8_BOM = b"\xef\xbb\xbf"
-_PATCH_BEGIN = "*** Begin Patch"
-_PATCH_END = "*** End Patch"
-_FILE_HEADER = re.compile(r"^\*\*\* (Update|Add|Delete) File: (.*)$")
+_FILE_HEADER = re.compile(
+    r"^\*\*\* (Update|Add|Delete) File: (.*?)(?:[ \t]+\*\*\*)?[ \t]*$"
+)
 _HUNK_HEADER = re.compile(
     r"^@@(?: -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*)?$"
 )
@@ -32,21 +32,24 @@ _HUNK_HEADER = re.compile(
 class FilePatch(ToolArgumentsModel):
     """Apply a strict unified-diff patch with independent per-file transactions.
 
-    A patch may update, add, or delete one or more files. Update hunks use standard
+    Start directly with ``*** Update File: path``, ``*** Add File: path``, or
+    ``*** Delete File: path``; no outer wrapper. The input ends after the last
+    file operation. A patch may affect one or more files. Update hunks use standard
     unified-diff context lines (one leading space), plus ``-`` removed and ``+`` added
-    lines. Added-file content must use one ``+`` prefix per line.
+    lines. Added-file content must use one ``+`` prefix per line. Delete File has no body.
     """
 
     patch: str = Field(
         ...,
         min_length=1,
         description=(
-            "Complete FilePatch text beginning with '*** Begin Patch' and ending with "
-            "'*** End Patch'. The patch may update, add, or delete one or more files. "
-            "Update hunks use one-space-prefixed context lines, '-' removals, "
+            "Complete FilePatch text starting directly with '*** Update File: path', "
+            "'*** Add File: path', or '*** Delete File: path', with no outer wrapper. "
+            "The string ends after the last file operation. Update hunks use "
+            "one-space-prefixed context lines, '-' removals, "
             "and '+' additions. Pure insertions use a zero-old-line hunk such as "
             "'@@ -0,0 +1,1 @@'; a bare '@@' pure insertion is allowed only for an empty file. "
-            "Add File content uses one '+' prefix per line. "
+            "Add File content uses one '+' prefix per line; Delete File has no body. "
             "Each actual file may appear only once; each file is committed independently."
         ),
     )
@@ -84,7 +87,7 @@ def _patch_error(message: str) -> ValueError:
 
 
 def _is_file_boundary(line: str) -> bool:
-    return line == _PATCH_END or _FILE_HEADER.match(line) is not None
+    return _FILE_HEADER.match(line) is not None
 
 
 def _is_hunk_header(line: str) -> bool:
@@ -113,14 +116,9 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
     lines = normalized.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
-    if not lines or lines[0] != _PATCH_BEGIN:
-        raise _patch_error(f"patch must start with '{_PATCH_BEGIN}'")
-    if len(lines) < 2 or lines[-1] != _PATCH_END:
-        raise _patch_error(f"patch must end with '{_PATCH_END}'")
-
     result: list[_PatchFile] = []
-    index = 1
-    end = len(lines) - 1
+    index = 0
+    end = len(lines)
     while index < end:
         match = _FILE_HEADER.match(lines[index])
         if not match:

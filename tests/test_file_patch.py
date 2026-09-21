@@ -16,20 +16,23 @@ def _workspace(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_file_patch_updates_an_existing_file(monkeypatch, tmp_path):
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("final_newline", [False, True])
+def test_file_patch_updates_an_existing_file(monkeypatch, tmp_path, line_ending, final_newline):
     _workspace(monkeypatch, tmp_path)
     target = tmp_path / "app.py"
     target.write_text("def run():\n    return 1\n", encoding="utf-8")
 
-    result = common.file_patch(
-        "*** Begin Patch\n"
+    patch = (
         "*** Update File: app.py\n"
         "@@\n"
         " def run():\n"
         "-    return 1\n"
-        "+    return 2\n"
-        "*** End Patch"
+        "+    return 2"
     )
+    if final_newline:
+        patch += "\n"
+    result = common.file_patch(patch.replace("\n", line_ending))
 
     assert result.startswith("Patched 1 file(s) atomically.")
     assert "M app.py (1 hunk(s))" in result
@@ -42,7 +45,6 @@ def test_file_patch_applies_multiple_non_overlapping_hunks_bottom_up(monkeypatch
     target.write_text("a\nb\nc\nd\n", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: sample.txt\n"
         "@@\n"
         " a\n"
@@ -52,7 +54,6 @@ def test_file_patch_applies_multiple_non_overlapping_hunks_bottom_up(monkeypatch
         " c\n"
         "-d\n"
         "+D\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -65,12 +66,10 @@ def test_file_patch_adds_and_deletes_files_in_one_call(monkeypatch, tmp_path):
     old.write_text("old\n", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Add File: new.txt\n"
         "+new\n"
         "+content\n"
         "*** Delete File: old.txt\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 2 file(s) atomically.")
@@ -85,7 +84,7 @@ def test_file_patch_supports_absolute_and_parent_paths_inside_workspace(monkeypa
     target.write_text("before\n", encoding="utf-8")
 
     result = common.file_patch(
-        f"*** Begin Patch\n*** Update File: {target.parent / '..' / target.parent.name / target.name}\n@@\n-before\n+after\n*** End Patch"
+        f"*** Update File: {target.parent / '..' / target.parent.name / target.name}\n@@\n-before\n+after"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -99,13 +98,11 @@ def test_file_patch_rejects_ambiguous_hunk_without_writing(monkeypatch, tmp_path
     target.write_text(original, encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: sample.txt\n"
         "@@\n"
         " same\n"
         "-value\n"
         "+changed\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Error: FilePatch completed partially: 0 file(s) patched, 1 file(s) failed.")
@@ -119,11 +116,9 @@ def test_file_patch_updates_an_existing_empty_file_with_pure_addition(monkeypatc
     target.write_text("", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: empty.txt\n"
         "@@\n"
         "+content\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -136,11 +131,9 @@ def test_file_patch_uses_coordinates_for_pure_addition_in_non_empty_file(monkeyp
     target.write_text("first\nsecond\n", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: sample.txt\n"
         "@@ -1,0 +2,1 @@\n"
         "+inserted\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -155,11 +148,9 @@ def test_file_patch_pure_addition_at_eof_preserves_line_boundaries_without_final
     target.write_text("first", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: sample.txt\n"
         "@@ -1,0 +2,1 @@\n"
         "+second\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -172,7 +163,6 @@ def test_file_patch_commits_valid_file_when_another_fails(monkeypatch, tmp_path)
     first.write_text("before\n", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: first.txt\n"
         "@@\n"
         "-before\n"
@@ -181,7 +171,6 @@ def test_file_patch_commits_valid_file_when_another_fails(monkeypatch, tmp_path)
         "@@\n"
         "-before\n"
         "+after\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Error: FilePatch completed partially:")
@@ -198,7 +187,6 @@ def test_file_patch_rejects_case_aliases_of_the_same_file(monkeypatch, tmp_path)
         pytest.skip("test filesystem is case-sensitive")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: Case.txt\n"
         "@@\n"
         "-before\n"
@@ -207,7 +195,6 @@ def test_file_patch_rejects_case_aliases_of_the_same_file(monkeypatch, tmp_path)
         "@@\n"
         "-before\n"
         "+second change\n"
-        "*** End Patch"
     )
 
     assert result.startswith(
@@ -223,13 +210,11 @@ def test_file_patch_preserves_bom_and_crlf(monkeypatch, tmp_path):
     target.write_bytes(b"\xef\xbb\xbfa = 1\r\nb = 2\r\n")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: sample.txt\n"
         "@@\n"
         " a = 1\n"
         "-b = 2\n"
         "+b = 3\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -242,14 +227,12 @@ def test_file_patch_preserves_mixed_line_endings_outside_the_hunk(monkeypatch, t
     target.write_bytes(b"a\r\nb\nc\r")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: mixed.txt\n"
         "@@\n"
         " a\r\n"
         "-b\n"
         "+B\n"
         " c\r\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -262,7 +245,6 @@ def test_file_patch_supports_control_prefixes_in_context(monkeypatch, tmp_path):
     target.write_text("+keep\n@@keep\n*** keep\nvalue\n", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: prefixes.txt\n"
         "@@\n"
         " +keep\n"
@@ -270,7 +252,6 @@ def test_file_patch_supports_control_prefixes_in_context(monkeypatch, tmp_path):
         " *** keep\n"
         "-value\n"
         "+changed\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -283,13 +264,11 @@ def test_file_patch_supports_a_literal_backslash_in_context(monkeypatch, tmp_pat
     target.write_text("\\+keep\nvalue\n", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: prefixes.txt\n"
         "@@\n"
         " \\+keep\n"
         "-value\n"
         "+changed\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -302,14 +281,12 @@ def test_file_patch_keeps_valid_files_when_another_file_section_is_malformed(mon
     good.write_text("before\n", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: good.txt\n"
         "@@\n"
         "-before\n"
         "+after\n"
         "*** Update File: bad.txt\n"
         "not a hunk\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Error: FilePatch completed partially: 1 file(s) patched, 1 file(s) failed.")
@@ -321,10 +298,8 @@ def test_file_patch_requires_plus_lines_for_added_files(monkeypatch, tmp_path):
     _workspace(monkeypatch, tmp_path)
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Add File: new.txt\n"
         "not prefixed\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Error: FilePatch completed partially: 0 file(s) patched, 1 file(s) failed.")
@@ -346,10 +321,8 @@ def test_file_patch_requests_one_approval_for_all_external_paths(monkeypatch, tm
     )
 
     result = common.file_patch(
-        f"*** Begin Patch\n"
         f"*** Update File: {outside_a}\n@@\n-a\n+A\n"
         f"*** Update File: {outside_b}\n@@\n-b\n+B\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 2 file(s) atomically.")
@@ -377,10 +350,8 @@ def test_file_patch_rolls_back_when_commit_fails(monkeypatch, tmp_path):
 
     monkeypatch.setattr(patch_impl.os, "replace", fail_once)
     result = common.file_patch(
-        f"*** Begin Patch\n"
         f"*** Update File: {first.name}\n@@\n-one\n+ONE\n"
         f"*** Update File: {second.name}\n@@\n-two\n+TWO\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Error: FilePatch completed partially:")
@@ -402,7 +373,6 @@ def test_file_patch_keeps_other_files_when_one_path_cannot_be_resolved(monkeypat
 
     monkeypatch.setattr(patch_impl, "_resolve_patch_path", fail_for_one_path)
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: good.txt\n"
         "@@\n"
         "-before\n"
@@ -411,7 +381,6 @@ def test_file_patch_keeps_other_files_when_one_path_cannot_be_resolved(monkeypat
         "@@\n"
         "-before\n"
         "+after\n"
-        "*** End Patch"
     )
 
     assert result.startswith(
@@ -437,12 +406,10 @@ def test_file_patch_retains_backup_when_rollback_restore_fails(monkeypatch, tmp_
 
     monkeypatch.setattr(patch_impl.os, "replace", fail_commit_and_restore)
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: sample.txt\n"
         "@@\n"
         "-before\n"
         "+after\n"
-        "*** End Patch"
     )
 
     backups = list(tmp_path.glob(".sample.txt.makecode-backup-*"))
@@ -465,12 +432,10 @@ def test_file_patch_does_not_turn_validation_exception_into_commit_failure(monke
     )
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: sample.py\n"
         "@@\n"
         "-value = 1\n"
         "+value = 2\n"
-        "*** End Patch"
     )
 
     assert result.startswith("Patched 1 file(s) atomically.")
@@ -484,7 +449,6 @@ def test_file_patch_keeps_valid_files_when_another_file_path_is_invalid(monkeypa
     good.write_text("before\n", encoding="utf-8")
 
     result = common.file_patch(
-        "*** Begin Patch\n"
         "*** Update File: \x00bad.txt\n"
         "@@\n"
         "-before\n"
@@ -493,7 +457,6 @@ def test_file_patch_keeps_valid_files_when_another_file_path_is_invalid(monkeypa
         "@@\n"
         "-before\n"
         "+after\n"
-        "*** End Patch"
     )
 
     assert result.startswith(
@@ -501,3 +464,109 @@ def test_file_patch_keeps_valid_files_when_another_file_path_is_invalid(monkeypa
     )
     assert "<invalid path>: invalid file path" in result
     assert good.read_text(encoding="utf-8") == "after\n"
+
+
+@pytest.mark.parametrize("suffix", ["", " ***", " ***  ", "\t***\t"])
+def test_file_patch_accepts_trailing_stars_on_file_headers(monkeypatch, tmp_path, suffix):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample name.txt"
+    target.write_text("before\n", encoding="utf-8")
+    old = tmp_path / "old.txt"
+    old.write_text("old\n", encoding="utf-8")
+
+    result = common.file_patch(
+        f"*** Update File: sample name.txt{suffix}\n@@\n-before\n+after\n"
+        f"*** Delete File: old.txt{suffix}\n"
+        f"*** Add File: new.txt{suffix}\n"
+        "+*** Update File: literal.txt ***"
+    )
+
+    assert result.startswith("Patched 3 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert not old.exists()
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "*** Update File: literal.txt ***\n"
+    assert not (tmp_path / "new.txt ***").exists()
+
+
+@pytest.mark.parametrize("final_newline", ["", "\n"])
+def test_file_patch_adds_an_empty_file_at_end_of_input(monkeypatch, tmp_path, final_newline):
+    _workspace(monkeypatch, tmp_path)
+
+    result = common.file_patch("*** Add File: empty.txt" + final_newline)
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert (tmp_path / "empty.txt").read_bytes() == b""
+
+
+@pytest.mark.parametrize("final_newline", ["", "\n"])
+def test_file_patch_deletes_a_file_at_end_of_input(monkeypatch, tmp_path, final_newline):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "old.txt"
+    target.write_text("old\n", encoding="utf-8")
+
+    result = common.file_patch("*** Delete File: old.txt" + final_newline)
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("patch", [
+    "",
+    "\n",
+    "not a file header",
+    "*** Begin Patch\n*** Add File: new.txt\n+content\n*** End Patch",
+    "*** Add File: new.txt\n+content\n*** End Patch",
+])
+def test_file_patch_rejects_empty_malformed_or_wrapped_input(monkeypatch, tmp_path, patch):
+    _workspace(monkeypatch, tmp_path)
+
+    result = common.file_patch(patch)
+
+    assert result.startswith("Error:")
+    assert not (tmp_path / "new.txt").exists()
+
+
+@pytest.mark.parametrize("body", ["", "\n@@"])
+def test_file_patch_rejects_incomplete_update_at_end_of_input(monkeypatch, tmp_path, body):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    result = common.file_patch("*** Update File: sample.txt" + body)
+
+    assert result.startswith("Error:")
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
+def test_file_patch_detects_duplicate_paths_with_trailing_stars(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n@@\n-before\n+after\n"
+        "*** Delete File: sample.txt ***"
+    )
+
+    assert "0 file(s) patched, 2 file(s) failed" in result
+    assert "used by multiple patch entries" in result
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
+def test_file_patch_schema_describes_only_the_canonical_unwrapped_format():
+    tool = next(tool["function"] for tool in common.FILE_TOOLS if tool["function"]["name"] == "FilePatch")
+    model_schema = common.FilePatch.model_json_schema()
+    parameters = tool["parameters"]
+    patch_schema = parameters["properties"]["patch"]
+
+    assert parameters["required"] == ["patch"]
+    assert parameters["additionalProperties"] is False
+    assert patch_schema["minLength"] == 1
+    assert patch_schema["description"] == model_schema["properties"]["patch"]["description"]
+    for description in (tool["description"], patch_schema["description"]):
+        for operation in ("Update", "Add", "Delete"):
+            assert f"*** {operation} File: path" in description
+            assert f"*** {operation} File: path ***" not in description
+        assert "outer wrapper" in description
+        assert "*** Begin Patch" not in description
+        assert "*** End Patch" not in description
