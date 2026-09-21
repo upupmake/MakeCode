@@ -25,6 +25,62 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
 
 
+def _copy_user_content(message: dict[str, Any]) -> Any:
+    metadata = message.get("message_metadata")
+    display_content = metadata.get("display_content") if isinstance(metadata, dict) else None
+    if isinstance(display_content, str):
+        return display_content
+
+    content = message.get("content")
+    memory_prefix = "# Potentially Relevant Memories\n\n"
+    request_marker = "# Current User Request\n\n"
+    if isinstance(content, str) and content.startswith(memory_prefix) and request_marker in content:
+        return content.split(request_marker, 1)[1]
+    return content
+
+
+def _assistant_search_text(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    if isinstance(content, list):
+        content = "\n\n".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and block.get("text")
+        )
+    if isinstance(content, str) and content:
+        return content
+    return "\n\n".join(
+        block.get("text", "")
+        for block in message.get("content_blocks") or []
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and block.get("text")
+    )
+
+
+def _conversation_search_text(
+    conversation_id: str,
+    title: str | None,
+    messages: list,
+) -> str:
+    parts = [conversation_id]
+    if title:
+        parts.append(title)
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            content = _copy_user_content(message)
+        elif role == "assistant":
+            content = _assistant_search_text(message)
+        else:
+            continue
+        if isinstance(content, str) and content:
+            parts.append(content)
+    return "\n".join(parts)
+
+
 def _read_object(path: Path) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as file:
         data = json.load(file)
@@ -54,6 +110,14 @@ class ConversationSnapshot:
     messages: list
     task_plan: dict[str, Any] | None
     sub_agent_history: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ConversationListItem:
+    path: Path
+    conversation_id: str
+    title: str | None
+    searchable_text: str
 
 
 class ConversationStore:
@@ -138,18 +202,30 @@ class ConversationStore:
         _write_object(self._active_path, data)
         self._active_title = safe_title
 
-    def list_conversations(self) -> list[Path]:
+    def list_conversations(self) -> list[ConversationListItem]:
         if not self.root.exists():
             return []
-        files = []
+        items = []
         for path in self.root.glob(f"conv_*/{CONVERSATION_FILE}"):
             try:
-                self._validate_manifest(path)
+                manifest = self._validate_manifest(path)
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
-            files.append(path)
-        files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-        return files
+            title = manifest.get("title")
+            items.append(
+                ConversationListItem(
+                    path=path,
+                    conversation_id=manifest["conversation_id"],
+                    title=title if isinstance(title, str) else None,
+                    searchable_text=_conversation_search_text(
+                        manifest["conversation_id"],
+                        title if isinstance(title, str) else None,
+                        manifest["messages"],
+                    ),
+                )
+            )
+        items.sort(key=lambda item: item.path.stat().st_mtime, reverse=True)
+        return items
 
     def get_title(self, path: Path) -> str | None:
         return self._validate_manifest(path).get("title")

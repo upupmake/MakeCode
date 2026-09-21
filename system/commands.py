@@ -29,7 +29,7 @@ from tools.extra_tools import (
 from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
-from utils.conversations import ConversationStore
+from utils.conversations import ConversationListItem, ConversationStore
 from utils.llm_client import strip_native_message_payloads
 from utils.mcp_config import parse_mcp_add_query
 from utils.memory_catalog import sort_memory_records
@@ -81,32 +81,31 @@ class CommandResult:
 # ============================================================================
 
 def interactive_choose_conversation(
-        conversations: list,
+        conversations: list[ConversationListItem],
         title: str = "\n📌 Select a Conversation to Load (Use ⬆ / ⬇ arrows, Enter to confirm, Q to cancel):\n",
         delete_handler: Callable[[Path], None] | None = None,
         preview_handler: Callable[[Path], tuple[str, Any]] | None = None,
-        title_handler: Callable[[Path], str | None] | None = None,
 ) -> str:
     """交互式选择 6.0 conversation。"""
     if not conversations:
         return "abort"
 
     options = []
-    for conversation in conversations:
-        conversation_id = conversation.parent.name
-        mtime = conversation.stat().st_mtime
+    for item in conversations:
+        mtime = item.path.stat().st_mtime
         date_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
-        conversation_title = title_handler(conversation) if title_handler is not None else None
-        if conversation_title:
-            desc = f"{conversation_id} - {conversation_title} (最近一次更新时间：{date_str})"
+        if item.title:
+            desc = f"{item.conversation_id} - {item.title} (最近一次更新时间：{date_str})"
         else:
-            desc = f"{conversation_id} - 未命名对话 (最近一次更新时间：{date_str})"
-        options.append((str(conversation), desc))
+            desc = f"{item.conversation_id} - 未命名对话 (最近一次更新时间：{date_str})"
+        options.append((str(item.path), desc, item.searchable_text))
 
     choices = []
+    search_texts = []
     lookup = {}
-    for path_value, desc in options:
+    for path_value, desc, searchable_text in options:
         choices.append(desc)
+        search_texts.append(searchable_text)
         lookup[desc] = path_value
 
     def _delete_choice(label: str) -> None:
@@ -123,6 +122,7 @@ def interactive_choose_conversation(
         choices,
         delete_handler=_delete_choice if delete_handler is not None else None,
         preview_handler=_preview_choice if preview_handler is not None else None,
+        search_texts=search_texts,
     )
     return lookup.get(selected, "abort")
 
@@ -1271,9 +1271,9 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             if conversation_id is not None:
                 selected_path = next(
                     (
-                        path
-                        for path in conversations
-                        if path.parent.name == conversation_id
+                        item.path
+                        for item in conversations
+                        if item.conversation_id == conversation_id
                     ),
                     None,
                 )
@@ -1284,7 +1284,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
                     conversations,
                     delete_handler=_delete_conversation,
                     preview_handler=_preview_conversation,
-                    title_handler=self.conversation_store.get_title,
                 )
         except Exception as exc:
             log_error_traceback("commands handle_load conversation", exc)

@@ -158,6 +158,7 @@ class TuiBridge:
         allow_custom: bool = False,
         delete_handler: Callable[[str], None] | None = None,
         preview_handler: Callable[[str], tuple[str, RenderableType]] | None = None,
+        search_texts: list[str] | None = None,
     ) -> str:
         with self._app_lock:
             app = self._app
@@ -165,7 +166,15 @@ class TuiBridge:
             return "<cancelled>"
         future: Future[str] = Future()
         if self._is_app_thread():
-            app.open_choice_modal(title, options, allow_custom, delete_handler, preview_handler, future)
+            app.open_choice_modal(
+                title,
+                options,
+                allow_custom,
+                delete_handler,
+                preview_handler,
+                search_texts,
+                future,
+            )
         else:
             app.call_from_thread(
                 app.open_choice_modal,
@@ -174,6 +183,7 @@ class TuiBridge:
                 allow_custom,
                 delete_handler,
                 preview_handler,
+                search_texts,
                 future,
             )
         return future.result()
@@ -1771,6 +1781,7 @@ class MakeCodeTuiApp(App[None]):
         allow_custom: bool,
         delete_handler: Callable[[str], None] | None,
         preview_handler: Callable[[str], tuple[str, RenderableType]] | None,
+        search_texts: list[str] | None,
         future: Future[str],
     ) -> None:
         def _done(value: str | None) -> None:
@@ -1780,7 +1791,15 @@ class MakeCodeTuiApp(App[None]):
 
         self._modal_active = True
         self.push_screen(
-            ChoiceModal(title, options, allow_custom, delete_handler, preview_handler), _done
+            ChoiceModal(
+                title,
+                options,
+                allow_custom,
+                delete_handler,
+                preview_handler,
+                search_texts,
+            ),
+            _done,
         )
 
     def open_temporary_query_modal(self) -> None:
@@ -2994,6 +3013,7 @@ def choose_tui(
     allow_custom: bool = False,
     delete_handler: Callable[[str], None] | None = None,
     preview_handler: Callable[[str], tuple[str, RenderableType]] | None = None,
+    search_texts: list[str] | None = None,
 ) -> str:
     return TUI_BRIDGE.choose(
         title,
@@ -3001,4 +3021,5 @@ def choose_tui(
         allow_custom=allow_custom,
         delete_handler=delete_handler,
         preview_handler=preview_handler,
+        search_texts=search_texts,
     )

@@ -1524,8 +1524,14 @@ async def _summarize_messages(
         *,
         clear_tool_history: bool,
         require_memory_success: bool = False,
+        memory_messages: list[dict] | None = None,
 ) -> str:
     conversation_text = format_clean_conversation_context(messages)
+    memory_conversation_text = (
+        format_clean_conversation_context(memory_messages)
+        if memory_messages is not None
+        else conversation_text
+    )
 
     _compact_console.print(
         f"\n[bold yellow]⚡️ 正在压缩上下文...[/bold yellow]  "
@@ -1562,7 +1568,7 @@ async def _summarize_messages(
     if clear_tool_history:
         TOOL_EXECUTION_HISTORY.clear()
     await memory_agent_loop(
-        conversation_text=conversation_text,
+        conversation_text=memory_conversation_text,
         summary=summary,
         reason="Automatic memory extraction during context compaction. Extract durable, cross-session memories from the conversation if any valuable ones are found; skip if none.",
         current_memory_content=render_long_term_memory_markdown(),
@@ -1606,6 +1612,7 @@ async def partial_compact(
         reason,
         clear_tool_history=False,
         require_memory_success=True,
+        memory_messages=messages,
     )
     candidate = copy.deepcopy(messages)
     candidate[start:end] = _summary_messages(summary, reason)

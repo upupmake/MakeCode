@@ -251,7 +251,7 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - `conversation.json`, `task_plan.json`, and `sub_agents/history.json` remain physically separate and are strictly bound by an immutable `conversation_id`; Sub-Agent traces live under `sub_agents/runs/`.
 - **Full UI Re-rendering**: After loading, MakeCode re-renders User inputs, AI text, Tool calls, the task plan, and Sub-Agent history using the current terminal UI.
 - **Configuration Anti-Pollution**: The saved System Prompt is replaced with the current one so stale date, MCP, or Skills configuration cannot override current settings.
-- The picker supports pressing `d` and confirming deletion; the active conversation cannot be deleted.
+- The picker supports `/` search over conversation IDs, titles, and user/assistant text; system, tool, and reasoning content are excluded. Press `d` and confirm to delete; the active conversation cannot be deleted.
 - Version 6.0 does not read or migrate legacy checkpoint, task, or team history formats.
 
 ### 2.12 Auto Session Title Generation
@@ -861,7 +861,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/mcp-add`           | Add an MCP service using `<name> [options] -- <cmd> [args...]` syntax; remote services use `--url`; written as disabled by default               |
 | `/mcp-delete`        | Delete a specific MCP service configuration and safely shut down the running instance (requires confirmation)                                    |
 | `/mcp-help`          | Show an introduction to MCP-related commands                                                                                                     |
-| `/load`              | List 6.0 conversations; one selection restores messages, task plan, and Sub-Agent history, with confirmation before deleting an inactive conversation |
+| `/load`              | List 6.0 conversations and search by ID, title, or visible text; one selection restores messages, task plan, and Sub-Agent history, with confirmation before deleting an inactive conversation |
 | `/skills-switch`     | Toggle skills catalog injection status (On/Off)                                                                                                  |
 | `/skills-list`       | Open the project-level Skills panel with search, status filtering, and confirm-to-apply enable/disable drafts                                  |
 | `/compact [prompt]`  | Compact the current conversation context; prompt is optional                                                                                     |

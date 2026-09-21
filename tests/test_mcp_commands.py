@@ -1052,7 +1052,7 @@ def test_load_by_invalid_id_falls_back_to_picker(tmp_path, monkeypatch):
         conversation_id="conv_ffffffffffffffffffffffffffffffff",
     )
 
-    assert picked == [[conversation]]
+    assert [item.path for item in picked[0]] == [conversation]
     assert loaded_conversation == conversation
 
 
@@ -1063,10 +1063,10 @@ def test_load_cannot_delete_current_conversation(tmp_path, monkeypatch):
     handler.console = Mock()
 
     def choose_conversation(conversations, **kwargs):
-        assert conversations == [conversation]
+        assert [item.path for item in conversations] == [conversation]
         assert kwargs["delete_handler"] is not None
         assert kwargs["preview_handler"] is not None
-        assert kwargs["title_handler"] is not None
+        assert "title_handler" not in kwargs
         with pytest.raises(ValueError, match="当前对话正在使用"):
             kwargs["delete_handler"](conversation)
         return "abort"

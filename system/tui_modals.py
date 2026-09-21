@@ -779,6 +779,16 @@ class ChoiceModal(ClosableModalScreen[str]):
         margin-bottom: 0;
     }
 
+    #choice-search {
+        margin-top: 1;
+    }
+
+    #choice-search-status {
+        height: auto;
+        margin-top: 1;
+        color: #aaaaaa;
+    }
+
     #choice-list {
         height: auto;
         max-height: 16;
@@ -1183,6 +1193,7 @@ class ChoiceModal(ClosableModalScreen[str]):
         allow_custom: bool = False,
         delete_handler: Callable[[str], None] | None = None,
         preview_handler: Callable[[str], tuple[str, RenderableType]] | None = None,
+        search_texts: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._title = title
@@ -1190,11 +1201,19 @@ class ChoiceModal(ClosableModalScreen[str]):
         self._allow_custom = allow_custom
         self._delete_handler = delete_handler
         self._preview_handler = preview_handler
+        self._search_texts = list(search_texts) if search_texts is not None else None
+        self._filtered_options = list(options)
         self._pending_delete_index: int | None = None
         self._reload_generation = 0
+        self._empty_match_label = "没有匹配的会话"
+
+    def _search_enabled(self) -> bool:
+        return self._search_texts is not None
 
     def _title_text(self) -> str:
         hints = []
+        if self._search_enabled():
+            hints.append("/ 搜索")
         if self._preview_handler is not None:
             hints.append("v 预览选中项")
         if self._delete_handler is not None:
@@ -1204,8 +1223,14 @@ class ChoiceModal(ClosableModalScreen[str]):
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="choice-dialog"):
             yield ModalHeader(self._title_text(), title_id="choice-title", markup=False)
-            if self._options:
-                yield ListView(*[ListItem(Label(option, markup=False)) for option in self._options], id="choice-list")
+            if self._search_enabled():
+                yield Input(placeholder="搜索标题、会话 ID 或对话内容…", id="choice-search")
+                yield Label("", id="choice-search-status")
+            if self._options or self._search_enabled():
+                yield ListView(
+                    *[ListItem(Label(option, markup=False)) for option in self._options],
+                    id="choice-list",
+                )
             if self._allow_custom:
                 yield Label("自定义输入（Enter 提交，q 取消）", id="custom-hint")
                 yield Input(placeholder="输入自定义选项", id="custom-input")
@@ -1213,19 +1238,111 @@ class ChoiceModal(ClosableModalScreen[str]):
                     yield Button("取消", id="custom-cancel", variant="warning")
 
     def on_mount(self) -> None:
+        if self._search_enabled():
+            self._reload_filtered_rows(preserve_selection=False)
         if self._options:
             choice_list = self.query_one("#choice-list", ListView)
-            choice_list.index = 0
+            if not self._search_enabled():
+                choice_list.index = 0
             choice_list.focus()
         elif self._allow_custom:
             self.query_one("#custom-input", Input).focus()
 
+    def _search_query(self) -> str:
+        if not self._search_enabled():
+            return ""
+        return self.query_one("#choice-search", Input).value.strip()
+
+    def _filter_options(self) -> list[str]:
+        if self._search_texts is None:
+            return list(self._options)
+        tokens = self._search_query().casefold().split()
+        if not tokens:
+            return list(self._options)
+        return [
+            option
+            for option, haystack in zip(self._options, self._search_texts)
+            if all(token in haystack.casefold() for token in tokens)
+        ]
+
+    def _visible_options(self) -> list[str]:
+        if self._search_enabled():
+            return self._filtered_options
+        return self._options
+
+    def _selected_option(self) -> str | None:
+        options = self._visible_options()
+        if not options:
+            return None
+        choice_list = self.query_one("#choice-list", ListView)
+        index = choice_list.index if choice_list.index is not None else 0
+        if index < 0 or index >= len(options):
+            return None
+        return options[index]
+
+    def _search_status_text(self) -> str:
+        return f"显示 {len(self._filtered_options)} / {len(self._options)}"
+
+    def _reload_filtered_rows(
+        self,
+        preserve_selection: bool = True,
+        preferred_index: int | None = None,
+        focus_list: bool = False,
+    ) -> None:
+        selected = self._selected_option() if preserve_selection else None
+        self._filtered_options = self._filter_options()
+        labels = self._filtered_options or [self._empty_match_label]
+        if selected in self._filtered_options:
+            next_index = self._filtered_options.index(selected)
+        elif preferred_index is not None and self._filtered_options:
+            next_index = min(preferred_index, len(self._filtered_options) - 1)
+        else:
+            next_index = 0
+
+        choice_list = self.query_one("#choice-list", ListView)
+        self._reload_generation += 1
+        reload_generation = self._reload_generation
+
+        async def _mount_rows() -> None:
+            if reload_generation != self._reload_generation:
+                return
+            await choice_list.clear()
+            if reload_generation != self._reload_generation:
+                return
+            await choice_list.extend(ListItem(Label(label, markup=False)) for label in labels)
+            if reload_generation != self._reload_generation:
+                return
+            if self._filtered_options:
+                choice_list.index = next_index
+            self.query_one("#choice-search-status", Label).update(self._search_status_text())
+            self.query_one("#choice-title", Label).update(self._title_text())
+            if focus_list:
+                choice_list.focus()
+
+        self.call_after_refresh(_mount_rows)
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        if self._pending_delete_index is not None:
+        if self._pending_delete_index is not None or not self._visible_options():
             return
-        self.dismiss(self._options[event.list_view.index or 0])
+        self.dismiss(self._visible_options()[event.list_view.index or 0])
 
     def _on_key(self, event: Key) -> None:
+        if self._search_enabled() and event.key in {"/", "slash"} and not isinstance(self.focused, Input):
+            self.query_one("#choice-search", Input).focus()
+            event.stop()
+            event.prevent_default()
+            return
+        if (
+            self._search_enabled()
+            and event.key == "down"
+            and isinstance(self.focused, Input)
+            and self.focused.id == "choice-search"
+            and self._filtered_options
+        ):
+            self.query_one("#choice-list", ListView).focus()
+            event.stop()
+            event.prevent_default()
+            return
         if self._preview_handler is not None and not isinstance(self.focused, Input):
             if event.key == "v":
                 self.action_preview()
@@ -1255,7 +1372,17 @@ class ChoiceModal(ClosableModalScreen[str]):
             event.prevent_default()
             return
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "choice-search":
+            self._reload_filtered_rows()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "choice-search":
+            if len(self._filtered_options) == 1:
+                self.dismiss(self._filtered_options[0])
+            elif self._filtered_options:
+                self.query_one("#choice-list", ListView).focus()
+            return
         value = event.value.strip()
         self.dismiss(value if value else "<empty_input>")
 
@@ -1269,46 +1396,52 @@ class ChoiceModal(ClosableModalScreen[str]):
             return
         focused = self.focused
         if isinstance(focused, Input):
+            if focused.id == "choice-search":
+                if len(self._filtered_options) == 1:
+                    self.dismiss(self._filtered_options[0])
+                elif self._filtered_options:
+                    self.query_one("#choice-list", ListView).focus()
+                return
             value = focused.value.strip()
             self.dismiss(value if value else "<empty_input>")
             return
-        if self._options:
-            choice_list = self.query_one("#choice-list", ListView)
-            index = choice_list.index if choice_list.index is not None else 0
-            self.dismiss(self._options[index])
-        elif self._allow_custom:
+        option = self._selected_option()
+        if option is not None:
+            self.dismiss(option)
+            return
+        if self._allow_custom:
             value = self.query_one("#custom-input", Input).value.strip()
             self.dismiss(value if value else "<empty_input>")
 
     def action_preview(self) -> None:
-        if self._preview_handler is None or not self._options or self._pending_delete_index is not None:
+        option = self._selected_option()
+        if self._preview_handler is None or option is None or self._pending_delete_index is not None:
             return
-        choice_list = self.query_one("#choice-list", ListView)
-        index = choice_list.index if choice_list.index is not None else 0
         try:
-            title, content = self._preview_handler(self._options[index])
+            title, content = self._preview_handler(option)
         except Exception as exc:
             title = "预览失败"
             content = Text(f"无法读取选中项：{exc}", style="bold red")
         self.app.push_screen(InfoPanelModal(title, content))
 
     def action_delete(self) -> None:
-        if self._delete_handler is None or not self._options:
+        option = self._selected_option()
+        if self._delete_handler is None or option is None:
             return
-        choice_list = self.query_one("#choice-list", ListView)
-        index = choice_list.index if choice_list.index is not None else 0
+        index = self._visible_options().index(option)
         self._pending_delete_index = index
         self.query_one("#choice-title", Label).update(
             "⚠️ 确认删除选中项？\n"
-            f"{self._options[index]}\n"
+            f"{option}\n"
             "该操作不可撤销。按 y 确认删除，按 n 取消。"
         )
 
     def action_confirm_delete(self) -> None:
         if self._delete_handler is None or self._pending_delete_index is None:
             return
+        options = self._visible_options()
         index = self._pending_delete_index
-        option = self._options[index]
+        option = options[index]
         try:
             self._delete_handler(option)
         except Exception as exc:
@@ -1317,10 +1450,21 @@ class ChoiceModal(ClosableModalScreen[str]):
             )
             return
 
-        self._options.pop(index)
+        source_index = self._options.index(option)
+        self._options.pop(source_index)
+        if self._search_texts is not None:
+            self._search_texts.pop(source_index)
         self._pending_delete_index = None
         if not self._options:
             self.dismiss("<empty>")
+            return
+
+        if self._search_enabled():
+            self._reload_filtered_rows(
+                preserve_selection=False,
+                preferred_index=index,
+                focus_list=True,
+            )
             return
 
         choice_list = self.query_one("#choice-list", ListView)
@@ -1334,7 +1478,7 @@ class ChoiceModal(ClosableModalScreen[str]):
             if reload_generation != self._reload_generation:
                 return
             await choice_list.extend(
-                ListItem(Label(option, markup=False)) for option in self._options
+                ListItem(Label(item, markup=False)) for item in self._options
             )
             if reload_generation != self._reload_generation:
                 return
@@ -1351,7 +1495,8 @@ class ChoiceModal(ClosableModalScreen[str]):
         self._pending_delete_index = None
         self.query_one("#choice-title", Label).update(self._title_text())
         choice_list = self.query_one("#choice-list", ListView)
-        choice_list.index = index
+        if self._visible_options():
+            choice_list.index = min(index, len(self._visible_options()) - 1)
         choice_list.focus()
 
     def action_cancel(self) -> None:

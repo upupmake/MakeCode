@@ -10,6 +10,7 @@ from utils.conversations import (
     SUB_AGENT_HISTORY_FILE,
     TASK_PLAN_FILE,
     ConversationStore,
+    _conversation_search_text,
 )
 from utils.llm_client import build_anthropic_request_messages, sanitize_openai_messages
 
@@ -221,7 +222,75 @@ def test_conversation_store_lists_only_new_format_conversations(tmp_path):
     invalid_path.parent.mkdir(parents=True)
     invalid_path.write_text("[]", encoding="utf-8")
 
-    assert store.list_conversations() == [new_path]
+    listed = store.list_conversations()
+    assert [item.path for item in listed] == [new_path]
+    assert listed[0].conversation_id == new_path.parent.name
+    assert listed[0].title is None
+    assert listed[0].searchable_text == new_path.parent.name
+
+
+def test_conversation_search_text_includes_id_title_and_visible_body_only():
+    haystack = _conversation_search_text(
+        "conv_0123456789abcdef0123456789abcdef",
+        "修复加载面板",
+        [
+            {"role": "system", "content": "secret system prompt"},
+            {
+                "role": "user",
+                "content": (
+                    "# Potentially Relevant Memories\n\n"
+                    "private recalled context\n\n"
+                    "# Current User Request\n\n"
+                    "how to search conversations"
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "visible assistant answer",
+                "reasoning_content": "private reasoning",
+                "content_blocks": [
+                    {"type": "reasoning", "text": "block reasoning"},
+                    {"type": "text", "text": "visible assistant answer"},
+                ],
+            },
+            {"role": "tool", "content": "tool result payload"},
+        ],
+    )
+
+    assert "conv_0123456789abcdef0123456789abcdef" in haystack
+    assert "修复加载面板" in haystack
+    assert "how to search conversations" in haystack
+    assert "visible assistant answer" in haystack
+    assert "secret system prompt" not in haystack
+    assert "private recalled context" not in haystack
+    assert "private reasoning" not in haystack
+    assert "block reasoning" not in haystack
+    assert "tool result payload" not in haystack
+
+
+def test_conversation_store_lists_searchable_title_and_body(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    path = store.save_messages([
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "search this user question"},
+        {
+            "role": "assistant",
+            "content": "search this assistant answer",
+            "reasoning_content": "do not index reasoning",
+        },
+        {"role": "tool", "content": "do not index tool output"},
+    ])
+    store.update_title("会话搜索标题")
+
+    listed = store.list_conversations()
+    assert listed[0].path == path
+    assert listed[0].title == "会话搜索标题"
+    assert "会话搜索标题" in listed[0].searchable_text
+    assert "search this user question" in listed[0].searchable_text
+    assert "search this assistant answer" in listed[0].searchable_text
+    assert "do not index reasoning" not in listed[0].searchable_text
+    assert "do not index tool output" not in listed[0].searchable_text
+    assert "system" not in listed[0].searchable_text.split("\n", 1)[-1]
 
 
 def test_conversation_store_rejects_manifest_outside_its_root(tmp_path):

@@ -236,7 +236,7 @@ Team 模块支持：
 - 会话目录内的 `conversation.json`、`task_plan.json` 与 `sub_agents/history.json` 物理分离，并由不可变 `conversation_id` 严格绑定；Sub-Agent trace 位于 `sub_agents/runs/`。
 - **全量 UI 重绘**：加载后按当前终端 UI 样式重新渲染 User 输入、AI 文本、Tool 调用、任务计划和 Sub-Agent 历史。
 - **配置防污染**：加载时用当前 System Prompt 替换历史中的 System Prompt，避免旧配置覆盖当前日期、MCP 或 Skills 状态。
-- 选择列表支持按 `d` 发起删除并二次确认；当前活动会话不能删除。
+- 选择列表支持按 `/` 搜索会话 ID、标题和 user/assistant 正文；不搜索 system、tool 或 reasoning。按 `d` 发起删除并二次确认；当前活动会话不能删除。
 - 6.0 不读取或迁移旧版 checkpoint、task 或 team 历史格式。
 
 ### 2.12 会话标题自动生成
@@ -836,7 +836,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 | `/mcp-add`           | 使用 `<name> [options] -- <cmd> [args...]` 语法添加 MCP 服务；远程服务使用 `--url`；默认 disabled |
 | `/mcp-delete`        | 删除指定 MCP 服务配置，并安全停用运行中的实例（需二次确认）                  |
 | `/mcp-help`          | 显示 MCP 相关命令的使用介绍                                                |
-| `/load`              | 列出 6.0 会话；一次选择自动恢复消息、任务计划和 Sub-Agent 历史，可二次确认删除非活动会话       |
+| `/load`              | 列出 6.0 会话，可按 ID/标题/正文搜索；一次选择自动恢复消息、任务计划和 Sub-Agent 历史，可二次确认删除非活动会话 |
 | `/skills-switch`     | 切换 skills 目录摘要注入状态 (开启/关闭)                                     |
 | `/skills-list`       | 打开项目级 Skills 配置面板，支持搜索、状态过滤和确认后批量应用启用/禁用草稿                 |
 | `/compact [prompt]`  | 压缩当前对话上下文，prompt 可选                                            |

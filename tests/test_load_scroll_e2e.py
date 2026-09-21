@@ -60,7 +60,7 @@ def _make_handler(store):
 @pytest.mark.anyio
 async def test_real_load_flow_scrolls_every_pane_to_bottom(tmp_path, monkeypatch):
     store, _ = _build_conversation(tmp_path)
-    conversation = store.list_conversations()[0]
+    conversation = store.list_conversations()[0].path
     monkeypatch.setattr(
         "system.commands.interactive_choose_conversation",
         lambda conversations, **kwargs: str(conversation),

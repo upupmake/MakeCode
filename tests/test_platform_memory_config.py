@@ -1888,6 +1888,126 @@ async def test_choice_modal_v_previews_selected_option_and_returns_to_same_selec
 
 
 @pytest.mark.anyio
+async def test_choice_modal_without_search_texts_hides_search_box():
+    modal = ChoiceModal("测试", ["选项A", "选项B"])
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert modal.query("#choice-search").__len__() == 0
+        assert modal.query("#choice-search-status").__len__() == 0
+        assert "/ 搜索" not in str(modal.query_one("#choice-title", Label).render())
+
+
+@pytest.mark.anyio
+async def test_choice_modal_search_filters_title_id_and_body_and_keeps_panel_open():
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    modal = ChoiceModal(
+        "测试",
+        ["会话A", "会话B", "会话C"],
+        search_texts=[
+            "conv_aaa 修复加载面板 how to search conversations",
+            "conv_bbb 未命名对话 unrelated body",
+            "conv_ccc 其他标题 assistant answer about search",
+        ],
+    )
+    app = ChoiceModalHost(modal, on_dismiss)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        search = modal.query_one("#choice-search", Input)
+        assert "/ 搜索" in str(modal.query_one("#choice-title", Label).render())
+        def list_labels():
+            return [str(child.query_one(Label).render()) for child in modal.query_one("#choice-list").children]
+
+        search.focus()
+        search.value = "search conversations"
+        search.post_message(Input.Changed(search, "search conversations"))
+        await pump_until(pilot, lambda: list_labels() == ["会话A"])
+        assert modal._filtered_options == ["会话A"]
+        assert "显示 1 / 3" in str(modal.query_one("#choice-search-status", Label).render())
+
+        search.value = "no-such-conversation"
+        search.post_message(Input.Changed(search, "no-such-conversation"))
+        await pump_until(pilot, lambda: list_labels() == ["没有匹配的会话"])
+        assert modal._filtered_options == []
+        await pilot.press("enter")
+        await pilot.pause()
+        assert result is None
+        assert app.screen is modal
+
+        search.value = "conv_ccc"
+        search.post_message(Input.Changed(search, "conv_ccc"))
+        await pump_until(pilot, lambda: list_labels() == ["会话C"])
+        await pilot.press("enter")
+        await pump_until(pilot, lambda: result == "会话C")
+
+    assert result == "会话C"
+
+
+@pytest.mark.anyio
+async def test_choice_modal_search_enter_does_not_submit_custom_value():
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    modal = ChoiceModal(
+        "测试",
+        ["会话A", "会话B"],
+        search_texts=["alpha title", "beta title"],
+    )
+    app = ChoiceModalHost(modal, on_dismiss)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal.query_one("#choice-list", ListView).focus()
+        await pilot.pause()
+        await pilot.press("/")
+        await pump_until(pilot, lambda: isinstance(modal.focused, Input))
+        search = modal.query_one("#choice-search", Input)
+        search.value = "beta"
+        search.post_message(Input.Changed(search, "beta"))
+        await pump_until(pilot, lambda: modal._filtered_options == ["会话B"])
+        await pilot.press("enter")
+        await pump_until(pilot, lambda: result == "会话B")
+
+    assert result == "会话B"
+
+
+@pytest.mark.anyio
+async def test_choice_modal_delete_uses_filtered_selection():
+    deleted = []
+    modal = ChoiceModal(
+        "测试",
+        ["会话A", "会话B", "会话C"],
+        delete_handler=deleted.append,
+        search_texts=["alpha", "beta unique", "gamma"],
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        search = modal.query_one("#choice-search", Input)
+        search.value = "unique"
+        search.post_message(Input.Changed(search, "unique"))
+        await pump_until(pilot, lambda: modal._filtered_options == ["会话B"])
+        modal.query_one("#choice-list", ListView).focus()
+        await pilot.pause()
+        await pilot.press("d", "y")
+        await pump_until(pilot, lambda: modal._options == ["会话A", "会话C"])
+
+        assert deleted == ["会话B"]
+        assert modal._search_texts == ["alpha", "gamma"]
+
+
+@pytest.mark.anyio
 async def test_task_panel_is_read_only():
     manager = Mock()
     manager.get_task_table.return_value = {
@@ -3126,7 +3246,8 @@ async def test_partial_compact_replaces_only_selected_groups_after_success():
         {"role": "assistant", "content": "latest answer"},
         {"role": "user", "content": "orphan"},
     ]
-    selected = messages[1:5]
+    original = json.loads(json.dumps(messages))
+    selected = original[1:5]
 
     with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 5)), \
             patch.object(memory, "_summarize_messages", new_callable=AsyncMock, return_value="summary") as summarize:
@@ -3134,6 +3255,7 @@ async def test_partial_compact_replaces_only_selected_groups_after_success():
 
     assert summarize.await_args.args[0] == selected
     assert summarize.await_args.kwargs["require_memory_success"] is True
+    assert summarize.await_args.kwargs["memory_messages"] is messages
     assert messages == [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "[Previous conversation compressed. Reason: reason] \n\nsummary"},
@@ -3161,6 +3283,58 @@ async def test_partial_compact_preserves_history_when_summary_or_memory_fails():
             await memory.partial_compact(messages, 100, 100, "reason")
 
     assert messages == original
+
+
+@pytest.mark.anyio
+async def test_partial_compact_memory_extraction_uses_full_conversation_context():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old one"},
+        {"role": "assistant", "content": "answer one"},
+        {"role": "user", "content": "old two"},
+        {"role": "assistant", "content": "answer two"},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "latest answer"},
+        {"role": "user", "content": "orphan"},
+    ]
+    fake_client = Mock()
+    fake_client.get_summary_stream_events.return_value = object()
+
+    with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 5)), \
+            patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+            patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
+            patch.object(memory, "_compact_console"), \
+            patch.object(
+                memory.StreamRenderer,
+                "render_text_stream_async",
+                new_callable=AsyncMock,
+                return_value=("summary", [], None),
+            ), \
+            patch.object(memory, "memory_agent_loop", new_callable=AsyncMock, return_value=[]) as memory_loop, \
+            patch.object(memory, "print_formatted_text"), \
+            patch.object(memory, "post_tui"):
+        assert await memory.partial_compact(messages, 100, 100, "reason") is True
+
+    summary_request = fake_client.get_summary_stream_events.call_args.args
+    assert summary_request[0] == (
+        "### user:\nold one\n\n"
+        "### assistant:\nanswer one\n\n"
+        "### user:\nold two\n\n"
+        "### assistant:\nanswer two"
+    )
+    assert "latest" not in summary_request[0]
+    assert "orphan" not in summary_request[0]
+
+    conversation_text = memory_loop.await_args.kwargs["conversation_text"]
+    assert conversation_text == (
+        "### user:\nold one\n\n"
+        "### assistant:\nanswer one\n\n"
+        "### user:\nold two\n\n"
+        "### assistant:\nanswer two\n\n"
+        "### user:\nlatest\n\n"
+        "### assistant:\nlatest answer\n\n"
+        "### user:\norphan"
+    )
 
 
 def test_estimate_tokens_ignores_private_native_payloads():
