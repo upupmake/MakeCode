@@ -11,7 +11,7 @@ from rich.markup import escape
 
 from system.tui_app import TuiRegion, post_tui, refresh_status
 from utils import paths
-from utils.mcp_config import add_mcp_server_config
+from utils.mcp_config import add_mcp_server_config, update_mcp_server_config
 
 
 def print_formatted_text(value):
@@ -37,6 +37,7 @@ class GlobalMCPManager:
         self._mcp_tools = []
         self._mcp_handlers = {}
         self._status_tools = []
+        self._pending_runtime = {}
 
         self._db_lock = threading.Lock()
         self._is_running = False
@@ -80,6 +81,7 @@ class GlobalMCPManager:
         result = []
         with self._db_lock:
             loaded_servers = set(self.clients.keys())
+            pending_runtime = dict(self._pending_runtime)
             tool_counts = {
                 name: len(self._server_status_tools.get(name, []))
                 for name in servers
@@ -90,12 +92,19 @@ class GlobalMCPManager:
             transport = cfg.get("transport") or cfg.get("type")
             if not transport:
                 transport = "sse" if url and "/sse" in str(url).lower() else "streamable-http" if url else "stdio"
+            if name in loaded_servers:
+                runtime_state = "loaded"
+            elif pending_runtime.get(name) == "restarting":
+                runtime_state = "restarting"
+            else:
+                runtime_state = "unloaded"
             result.append(
                 {
                     "name": name,
                     "disabled": disabled,
                     "enabled": not disabled,
-                    "loaded": name in loaded_servers,
+                    "loaded": runtime_state == "loaded",
+                    "runtime_state": runtime_state,
                     "transport": transport,
                     "target": self._display_target(cfg),
                     "tool_count": tool_counts[name],
@@ -480,6 +489,7 @@ class GlobalMCPManager:
                 self._mcp_tools = []
                 self._mcp_handlers = {}
                 self._status_tools = []
+                self._pending_runtime = {}
             refresh_status()
 
     def get_tools(self) -> list:
@@ -501,6 +511,7 @@ class GlobalMCPManager:
             self._status_tools = []
             self._server_tools = {}
             self._server_status_tools = {}
+            self._pending_runtime = {}
             # Do NOT clear self.clients here, let _async_lifecycle clean them up
             # so that _disconnect_server can gracefully close the connections.
 
@@ -553,6 +564,157 @@ class GlobalMCPManager:
             "failed": failed,
             "message": "MCP 服务配置已保存，并已尝试启用服务。" if enable_targets else "MCP 服务配置已保存，当前为禁用状态。",
         }
+
+    def get_server_config(self, server_name: str) -> dict:
+        config_dict = self.read_config()
+        servers = config_dict.get("mcpServers", {})
+        if server_name not in servers:
+            raise ValueError(f"MCP 服务不存在: {server_name}")
+        cfg = servers[server_name]
+        if not isinstance(cfg, dict):
+            raise ValueError(f"MCP 服务配置必须是对象: {server_name}")
+        return dict(cfg)
+
+    def _mark_runtime_pending(self, original_name: str, server_name: str) -> None:
+        with self._db_lock:
+            self._pending_runtime[original_name] = "restarting"
+            self._pending_runtime[server_name] = "restarting"
+
+    def _clear_runtime_pending(self, original_name: str, server_name: str) -> None:
+        with self._db_lock:
+            self._pending_runtime.pop(original_name, None)
+            self._pending_runtime.pop(server_name, None)
+
+    @staticmethod
+    def _normalized_server_config(cfg: dict) -> dict:
+        return json.loads(json.dumps(cfg, ensure_ascii=False, sort_keys=True))
+
+    def update_server_config(self, original_name: str, server_name: str, cfg: dict) -> dict:
+        existing = self.get_server_config(original_name)
+        updated_cfg = dict(cfg)
+        updated_cfg["disabled"] = bool(existing.get("disabled", False))
+        if "disabledTools" in existing:
+            updated_cfg["disabledTools"] = list(existing["disabledTools"])
+        else:
+            updated_cfg.pop("disabledTools", None)
+
+        config_changed = (
+            original_name != server_name
+            or self._normalized_server_config(existing) != self._normalized_server_config(updated_cfg)
+        )
+        with self._db_lock:
+            currently_loaded = original_name in self.clients or server_name in self.clients
+        enabled = not bool(updated_cfg.get("disabled", False))
+        needs_restart = enabled and (config_changed or not currently_loaded)
+
+        if not config_changed and not needs_restart:
+            return {
+                "saved": False,
+                "server": server_name,
+                "original_server": original_name,
+                "restarted": False,
+                "failed": [],
+                "message": "MCP 服务配置未变更，未重启服务。",
+            }
+
+        failed = []
+        restarted = False
+        if config_changed:
+            config_dict = update_mcp_server_config(
+                self.config_path,
+                original_name,
+                server_name,
+                updated_cfg,
+            )
+            servers = config_dict["mcpServers"]
+            self.server_configs = servers
+        else:
+            servers = self.read_config().get("mcpServers", {})
+            self.server_configs = servers
+
+        if needs_restart:
+            if not self._is_running:
+                self.start_background()
+                restarted = True
+            elif self.loop:
+                self._mark_runtime_pending(original_name, server_name)
+                future = asyncio.run_coroutine_threadsafe(
+                    self._restart_server(original_name, server_name, servers[server_name]),
+                    self.loop,
+                )
+                restarted = True
+                refresh_status()
+
+                def _finish_restart(done_future) -> None:
+                    try:
+                        restart_failed = list(done_future.result())
+                    except Exception as exc:
+                        restart_failed = [{
+                            "server": server_name,
+                            "action": "restart",
+                            "error": str(exc),
+                        }]
+                        log_error_traceback(f"MCP Update Restart Error [{server_name}]", exc)
+                    self._clear_runtime_pending(original_name, server_name)
+                    if restart_failed:
+                        failure_text = "; ".join(
+                            f"{item['server']} ({item['action']} 失败: {item['error']})"
+                            for item in restart_failed
+                        )
+                        if self.console:
+                            print_formatted_text(
+                                f"[bold red]⚠️ MCP 服务配置已保存，但重启失败: {escape(failure_text)}[/bold red]"
+                            )
+                    refresh_status()
+
+                future.add_done_callback(_finish_restart)
+            else:
+                failed.append({"server": server_name, "action": "restart", "error": "MCP event loop 未运行"})
+        elif config_changed:
+            with self._db_lock:
+                self._rebuild_global_registry_locked()
+            refresh_status()
+
+        if not config_changed and restarted:
+            message = "MCP 服务配置未变更，正在后台重启未加载的服务。"
+        elif failed:
+            message = "MCP 服务配置已保存，但重启运行中的服务失败。"
+        elif restarted:
+            message = "MCP 服务配置已保存，正在后台重启运行中的服务。"
+        else:
+            message = "MCP 服务配置已保存。"
+        return {
+            "saved": config_changed,
+            "server": server_name,
+            "original_server": original_name,
+            "restarted": restarted,
+            "failed": failed,
+            "message": message,
+        }
+
+    async def _restart_server(self, original_name: str, server_name: str, cfg: dict) -> list:
+        failed = []
+        for name in dict.fromkeys([original_name, server_name]):
+            try:
+                await self._disconnect_server(name)
+            except Exception as e:
+                failed.append({"server": name, "action": "disable", "error": str(e)})
+                log_error_traceback(f"MCP Restart Disable Error [{name}]", e)
+                return failed
+        try:
+            ok = await self._connect_server(server_name, cfg)
+        except Exception as e:
+            failed.append({"server": server_name, "action": "enable", "error": str(e)})
+            log_error_traceback(f"MCP Restart Enable Error [{server_name}]", e)
+            return failed
+        if not ok:
+            failed.append({"server": server_name, "action": "enable", "error": "连接失败"})
+            return failed
+        if self.console:
+            print_formatted_text(
+                f"[bold green]✅ 已重启 MCP 服务: '{escape(str(server_name))}'[/bold green]"
+            )
+        return failed
 
     def delete_server_config(self, server_name: str) -> dict:
         config_dict = self.read_config()

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shlex
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -1489,6 +1490,20 @@ async def test_mcp_switch_modal_separates_services_from_actions_and_shows_detail
         assert "确认应用" not in str(service_list.children[-1].query_one(Label).render())
         assert modal.query_one("#mcp-apply", Button).region.height > 0
         assert modal.query_one("#mcp-cancel", Button).region.height > 0
+        action_buttons = [
+            modal.query_one("#mcp-apply", Button),
+            modal.query_one("#mcp-tools", Button),
+            modal.query_one("#mcp-add", Button),
+            modal.query_one("#mcp-edit", Button),
+            modal.query_one("#mcp-cancel", Button),
+        ]
+        assert len({button.region.y for button in action_buttons}) == 1
+        dialog = modal.query_one("#mcp-dialog")
+        actions = modal.query_one("#mcp-actions")
+        assert actions.region.width == dialog.content_region.width
+        assert action_buttons[0].region.x == actions.region.x
+        assert action_buttons[-1].region.x + action_buttons[-1].region.width == actions.region.x + actions.region.width
+        assert all(button.region.height == actions.region.height for button in action_buttons)
         overview_button = modal.query_one("#mcp-overview", Button)
         assert overview_button.region.y > modal.query_one("#mcp-title", Label).region.y
         assert overview_button.region.y < service_list.region.y
@@ -1840,6 +1855,186 @@ async def test_mcp_manual_add_form_keeps_invalid_remote_config_open():
         assert app.screen is add_modal
         assert "KEY=VALUE" in str(add_modal.query_one("#mcp-add-error", Label).render())
         manager.add_server_config.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_preloads_existing_config_for_edit():
+    manager = Mock()
+    manager.get_server_config.return_value = {
+        "command": "npx",
+        "args": ["-y", "@scope/server", "/repo with spaces"],
+        "transport": "stdio",
+        "env": {"TOKEN": "secret", "MODE": "dev"},
+        "cwd": "/repo with spaces",
+        "keep_alive": True,
+        "disabled": False,
+        "disabledTools": ["read.file"],
+    }
+    manager.update_server_config.return_value = {
+        "saved": True,
+        "restarted": True,
+        "failed": [],
+        "message": "MCP 服务配置已保存，并已重启运行中的服务。",
+    }
+    manager.list_server_switches.return_value = [{
+        "name": "filesystem",
+        "disabled": False,
+        "loaded": True,
+        "transport": "stdio",
+        "target": "uvx",
+        "tool_count": 1,
+    }]
+    modal = McpSwitchModal(
+        [{
+            "name": "filesystem",
+            "disabled": False,
+            "loaded": True,
+            "transport": "stdio",
+            "target": "npx",
+            "tool_count": 1,
+        }],
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        edit_modal = app.screen
+
+        assert "编辑 MCP 服务" in str(edit_modal.query_one("#choice-title", Label).render())
+        assert edit_modal.query_one("#mcp-add-name", Input).value == "filesystem"
+        assert edit_modal.query_one("#mcp-add-command", Input).value == "npx"
+        assert shlex.split(edit_modal.query_one("#mcp-add-args", Input).value) == [
+            "-y",
+            "@scope/server",
+            "/repo with spaces",
+        ]
+        assert edit_modal.query_one("#mcp-add-env", TextArea).text == "TOKEN=secret\nMODE=dev"
+        assert edit_modal.query_one("#mcp-add-cwd", Input).value == "/repo with spaces"
+        assert edit_modal.query_one("#mcp-add-keep-alive", Select).value == "true"
+        assert str(edit_modal.query_one("#mcp-add-confirm", Button).label) == "保存修改"
+
+        edit_modal.query_one("#mcp-add-command", Input).value = "uvx"
+        edit_modal.action_submit()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert "MCP 服务配置已更新" in str(modal.query_one("#mcp-title", Label).render())
+
+    manager.get_server_config.assert_called_once_with("filesystem")
+    manager.update_server_config.assert_called_once()
+    original_name, server_name, cfg = manager.update_server_config.call_args.args
+    assert original_name == "filesystem"
+    assert server_name == "filesystem"
+    assert cfg["command"] == "uvx"
+    assert cfg["disabled"] is False
+    manager.add_server_config.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_runtime_status_updates_from_loaded_to_restarting():
+    live_state = [{
+        "name": "filesystem",
+        "disabled": False,
+        "loaded": True,
+        "runtime_state": "loaded",
+        "transport": "stdio",
+        "target": "npx",
+        "tool_count": 4,
+    }]
+    manager = Mock()
+    manager.list_server_switches.side_effect = lambda: list(live_state)
+    modal = McpSwitchModal(
+        [{
+            "name": "filesystem",
+            "disabled": False,
+            "loaded": True,
+            "runtime_state": "loaded",
+            "transport": "stdio",
+            "target": "npx",
+            "tool_count": 4,
+        }],
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        first_label = str(modal.query_one("#mcp-list", ListView).children[0].query_one(Label).render())
+        assert "运行：已加载" in first_label
+
+        live_state[:] = [{
+            "name": "filesystem",
+            "disabled": False,
+            "loaded": False,
+            "runtime_state": "restarting",
+            "transport": "stdio",
+            "target": "npx",
+            "tool_count": 0,
+        }]
+        modal.refresh_status()
+        await pilot.pause()
+        restarting_label = str(modal.query_one("#mcp-list", ListView).children[0].query_one(Label).render())
+        assert "运行：正在重启" in restarting_label
+        assert "正在重启 1 个" in str(modal.query_one("#mcp-summary", Label).render())
+
+        live_state[:] = [{
+            "name": "filesystem",
+            "disabled": False,
+            "loaded": True,
+            "runtime_state": "loaded",
+            "transport": "stdio",
+            "target": "npx",
+            "tool_count": 4,
+        }]
+        modal.refresh_status()
+        await pilot.pause()
+        loaded_label = str(modal.query_one("#mcp-list", ListView).children[0].query_one(Label).render())
+        assert "运行：已加载" in loaded_label
+
+
+@pytest.mark.anyio
+async def test_mcp_switch_modal_edit_button_opens_form_and_cancel_does_not_save():
+    manager = Mock()
+    manager.get_server_config.return_value = {
+        "url": "https://example.com/mcp",
+        "transport": "streamable-http",
+        "headers": {"Authorization": "Bearer secret"},
+        "disabled": True,
+    }
+    modal = McpSwitchModal(
+        [{
+            "name": "remote-api",
+            "disabled": True,
+            "loaded": False,
+            "transport": "streamable-http",
+            "target": "https://example.com/mcp",
+            "tool_count": 0,
+        }],
+        manager,
+    )
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause()
+        assert str(modal.query_one("#mcp-edit", Button).label) == "编辑配置"
+        modal.query_one("#mcp-edit", Button).press()
+        await pilot.pause()
+        edit_modal = app.screen
+
+        assert edit_modal.query_one("#mcp-add-url", Input).value == "https://example.com/mcp"
+        assert edit_modal.query_one("#mcp-add-headers", TextArea).text == "Authorization=Bearer secret"
+        assert edit_modal.query_one("#mcp-add-remote-core").display
+
+        edit_modal.action_cancel()
+        await pilot.pause()
+        assert app.screen is modal
+
+    manager.get_server_config.assert_called_once_with("remote-api")
+    manager.update_server_config.assert_not_called()
 
 
 @pytest.mark.anyio

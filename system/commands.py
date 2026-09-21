@@ -433,7 +433,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 删除指定 MCP 服务配置。该命令会二次确认；确认后写入配置文件，并尝试停用运行中的同名服务。
 
 #### `/mcp-switch`
-打开交互式 MCP 服务管理面板。可手动添加本地 stdio、远程 Streamable HTTP 或 SSE 服务，也可切换已有服务的启用/禁用状态；选中已连接服务后可进入工具管理，逐个启用或禁用其工具。新服务默认禁用，确认后保存开关修改并尝试增量启停服务。
+打开交互式 MCP 服务管理面板。可手动添加本地 stdio、远程 Streamable HTTP 或 SSE 服务，也可切换已有服务的启用/禁用状态；选中服务后可按 e 或点击“编辑配置”回显并修改现有配置，保存后若服务当前已加载会尝试重启。选中已连接服务后可进入工具管理，逐个启用或禁用其工具。新服务默认禁用，确认后保存开关修改并尝试增量启停服务。
 
 #### `/mcp-restart`
 重启 MCP 后台管理器，重新读取配置文件并重新连接所有启用的 MCP 服务。适合配置手动编辑后完整重载，或增量启停失败后恢复状态。
@@ -447,7 +447,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         """处理 /mcp-switch 命令"""
         self.console.print(
             "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
-            "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，Enter/Space 切换状态，按 t 管理所选服务的工具；也可通过底部按钮添加服务、管理工具、确认应用或取消。[/#aaaaaa]",
+            "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，Enter/Space 切换状态，按 t 管理所选服务的工具，按 e 编辑配置；也可通过底部按钮添加服务、编辑配置、管理工具、确认应用或取消。[/#aaaaaa]",
             tui_region=TuiRegion.BACKGROUND,
         )
         try:
@@ -471,6 +471,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         deleted_lines = self._format_mcp_panel_delete_lines(switch_result.get("deleted_results", []))
         added_lines = self._format_mcp_panel_add_lines(switch_result.get("added_results", []))
+        updated_lines = self._format_mcp_panel_update_lines(switch_result.get("updated_results", []))
         tool_lines = self._format_mcp_panel_tool_lines(switch_result.get("tool_results", []))
         if switch_result.get("action") == "cancel":
             lines = [
@@ -478,6 +479,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             ]
             lines.extend(tool_lines)
             lines.extend(added_lines)
+            lines.extend(updated_lines)
             lines.extend(deleted_lines)
             self.console.print("\n".join(lines), tui_region=TuiRegion.BACKGROUND)
             return True
@@ -491,6 +493,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             lines = [f"\n[bold red]❌ 应用 MCP 开关变更失败: {exc}[/bold red]"]
             lines.extend(tool_lines)
             lines.extend(added_lines)
+            lines.extend(updated_lines)
             lines.extend(deleted_lines)
             self.console.print("\n".join(lines), tui_region=TuiRegion.BACKGROUND)
             return True
@@ -499,6 +502,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             lines = [f"\n[bold yellow]ℹ️ {apply_result.get('message', '没有检测到变更。')}[/bold yellow]"]
             lines.extend(tool_lines)
             lines.extend(added_lines)
+            lines.extend(updated_lines)
             lines.extend(deleted_lines)
             self.console.print("\n".join(lines), tui_region=TuiRegion.BACKGROUND)
             return True
@@ -534,6 +538,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
         summary_lines.extend(tool_lines)
         summary_lines.extend(added_lines)
+        summary_lines.extend(updated_lines)
         summary_lines.extend(deleted_lines)
         self.console.print("\n".join(summary_lines), tui_region=TuiRegion.BACKGROUND)
         return True
@@ -574,6 +579,31 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         lines = []
         for item in added_results:
             lines.extend(self._format_mcp_add_lines(item.get("server", ""), item.get("result", {})))
+        return lines
+
+    def _format_mcp_update_lines(self, server_name: str, result: dict) -> list[str]:
+        failed = result.get("failed", [])
+        if result.get("saved"):
+            headline = f"\n[bold green]✅ 已更新 MCP 服务配置:[/bold green] {escape(str(server_name))}"
+        else:
+            headline = f"\n[bold green]✅ 正在重启 MCP 服务:[/bold green] {escape(str(server_name))}"
+        lines = [
+            headline,
+            f"[#aaaaaa]配置文件: {self.mcp_manager.get_status_info().get('config_path')}[/#aaaaaa]",
+            f"[#aaaaaa]{escape(result.get('message', ''))}[/#aaaaaa]",
+        ]
+        if failed:
+            failure_text = "; ".join(
+                f"{item['server']} ({item['action']} 失败: {item['error']})"
+                for item in failed
+            )
+            lines.append(f"[bold red]服务重启失败:[/bold red] {escape(failure_text)}")
+        return lines
+
+    def _format_mcp_panel_update_lines(self, updated_results: list[dict]) -> list[str]:
+        lines = []
+        for item in updated_results:
+            lines.extend(self._format_mcp_update_lines(item.get("server", ""), item.get("result", {})))
         return lines
 
     def _format_mcp_delete_lines(self, server_name: str, result: dict) -> list[str]:

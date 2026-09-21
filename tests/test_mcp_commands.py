@@ -2130,6 +2130,7 @@ def test_mcp_manager_lists_display_metadata_without_url_secrets(tmp_path):
         "disabled": False,
         "enabled": True,
         "loaded": True,
+        "runtime_state": "loaded",
         "transport": "streamable-http",
         "target": "https://example.com/mcp",
         "tool_count": 2,
@@ -2176,3 +2177,214 @@ def test_mcp_manager_add_and_delete_disabled_config(tmp_path):
     delete_result = manager.delete_server_config("disabled-api")
     assert delete_result["saved"] is True
     assert "disabled-api" not in manager.read_config()["mcpServers"]
+
+
+def test_mcp_manager_updates_config_and_preserves_disabled_state(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.add_server_config(
+        "api",
+        {
+            "url": "https://example.com/mcp",
+            "transport": "streamable-http",
+            "disabled": True,
+            "disabledTools": ["search"],
+        },
+    )
+
+    result = manager.update_server_config(
+        "api",
+        "docs",
+        {
+            "url": "https://example.com/docs",
+            "transport": "sse",
+            "headers": {"Authorization": "Bearer secret"},
+            "disabled": False,
+        },
+    )
+
+    saved = manager.read_config()["mcpServers"]
+    assert result["saved"] is True
+    assert result["restarted"] is False
+    assert result["failed"] == []
+    assert "api" not in saved
+    assert saved["docs"]["url"] == "https://example.com/docs"
+    assert saved["docs"]["transport"] == "sse"
+    assert saved["docs"]["disabled"] is True
+    assert saved["docs"]["disabledTools"] == ["search"]
+    assert saved["docs"]["headers"] == {"Authorization": "Bearer secret"}
+
+
+def test_mcp_manager_restarts_loaded_server_after_config_update(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "filesystem": {"command": "npx", "disabled": False}
+        }
+    }), encoding="utf-8")
+    manager.server_configs = manager.read_config()["mcpServers"]
+    manager.clients["filesystem"] = object()
+    manager._is_running = True
+    manager.loop = object()
+    future = Mock()
+    future.result.return_value = []
+    with patch(
+        "utils.mcp_manager.asyncio.run_coroutine_threadsafe",
+        return_value=future,
+    ) as run_coro:
+        result = manager.update_server_config(
+            "filesystem",
+            "filesystem",
+            {"command": "uvx", "args": ["mcp-server-git"], "disabled": True},
+        )
+
+    saved = manager.read_config()["mcpServers"]["filesystem"]
+    assert saved["command"] == "uvx"
+    assert saved["args"] == ["mcp-server-git"]
+    assert saved["disabled"] is False
+    assert result["saved"] is True
+    assert result["restarted"] is True
+    assert result["failed"] == []
+    assert "正在后台重启" in result["message"]
+    run_coro.assert_called_once()
+    coro, loop = run_coro.call_args.args
+    assert loop is manager.loop
+    future.add_done_callback.assert_called_once()
+    coro.close()
+    assert manager._pending_runtime["filesystem"] == "restarting"
+
+
+def test_mcp_manager_restart_callback_disconnects_and_reconnects_loaded_server(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "filesystem": {"command": "npx", "disabled": False}
+        }
+    }), encoding="utf-8")
+    manager.server_configs = manager.read_config()["mcpServers"]
+    manager.clients["filesystem"] = object()
+    manager._is_running = True
+    manager.loop = object()
+    manager.console = object()
+    disconnect = AsyncMock()
+    connect = AsyncMock(return_value=True)
+    captured = {}
+
+    class ImmediateFuture:
+        def __init__(self, result):
+            self._result = result
+            self._callback = None
+
+        def add_done_callback(self, callback):
+            self._callback = callback
+            callback(self)
+
+        def result(self, timeout=None):
+            return self._result
+
+    def run_coro(coro, loop):
+        captured["coro"] = coro
+        captured["loop"] = loop
+        result = asyncio.run(coro)
+        return ImmediateFuture(result)
+
+    with (
+        patch.object(manager, "_disconnect_server", disconnect),
+        patch.object(manager, "_connect_server", connect),
+        patch("utils.mcp_manager.asyncio.run_coroutine_threadsafe", side_effect=run_coro) as run_coro_mock,
+        patch("utils.mcp_manager.print_formatted_text") as print_text,
+        patch("utils.mcp_manager.refresh_status") as refresh,
+    ):
+        result = manager.update_server_config(
+            "filesystem",
+            "filesystem",
+            {"command": "uvx", "args": ["mcp-server-git"]},
+        )
+
+    saved = manager.read_config()["mcpServers"]["filesystem"]
+    assert result["saved"] is True
+    assert result["restarted"] is True
+    assert result["failed"] == []
+    run_coro_mock.assert_called_once()
+    assert captured["loop"] is manager.loop
+    disconnect.assert_awaited_once_with("filesystem")
+    connect.assert_awaited_once_with("filesystem", saved)
+    print_text.assert_called()
+    assert "已重启 MCP 服务" in print_text.call_args.args[0]
+    refresh.assert_called()
+
+
+def test_mcp_manager_skips_restart_when_config_is_unchanged(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "filesystem": {
+                "command": "npx",
+                "args": ["-y", "@scope/server"],
+                "disabled": False,
+                "disabledTools": ["read.file"],
+            }
+        }
+    }), encoding="utf-8")
+    manager.server_configs = manager.read_config()["mcpServers"]
+    manager.clients["filesystem"] = object()
+    manager._is_running = True
+    manager.loop = object()
+    original = json.loads(manager.config_path.read_text(encoding="utf-8"))
+
+    with patch("utils.mcp_manager.asyncio.run_coroutine_threadsafe") as run_coro:
+        result = manager.update_server_config(
+            "filesystem",
+            "filesystem",
+            {
+                "command": "npx",
+                "args": ["-y", "@scope/server"],
+                "disabled": True,
+            },
+        )
+
+    assert result["saved"] is False
+    assert result["restarted"] is False
+    assert result["failed"] == []
+    assert "未变更" in result["message"]
+    assert json.loads(manager.config_path.read_text(encoding="utf-8")) == original
+    run_coro.assert_not_called()
+
+
+def test_mcp_manager_retries_restart_when_config_unchanged_after_failed_restart(tmp_path):
+    manager = GlobalMCPManager()
+    manager.config_path = tmp_path / "mcp_config.json"
+    manager.config_path.write_text(json.dumps({
+        "mcpServers": {
+            "filesystem": {"command": "uvx", "args": ["mcp-server-git"], "disabled": False}
+        }
+    }), encoding="utf-8")
+    manager.server_configs = manager.read_config()["mcpServers"]
+    manager._is_running = True
+    manager.loop = object()
+    original = json.loads(manager.config_path.read_text(encoding="utf-8"))
+    future = Mock()
+    future.result.return_value = []
+
+    with patch(
+        "utils.mcp_manager.asyncio.run_coroutine_threadsafe",
+        return_value=future,
+    ) as run_coro:
+        result = manager.update_server_config(
+            "filesystem",
+            "filesystem",
+            {"command": "uvx", "args": ["mcp-server-git"]},
+        )
+
+    assert result["saved"] is False
+    assert result["restarted"] is True
+    assert "正在后台重启未加载的服务" in result["message"]
+    assert json.loads(manager.config_path.read_text(encoding="utf-8")) == original
+    run_coro.assert_called_once()
+    coro, loop = run_coro.call_args.args
+    assert loop is manager.loop
+    future.add_done_callback.assert_called_once()
+    coro.close()

@@ -157,3 +157,27 @@ def add_mcp_server_config(config_path: Path, server_name: str, cfg: dict) -> dic
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config_dict, ensure_ascii=False, indent=2), encoding="utf-8")
     return config_dict
+
+
+def update_mcp_server_config(
+    config_path: Path,
+    original_name: str,
+    server_name: str,
+    cfg: dict,
+) -> dict:
+    if not config_path.exists():
+        raise FileNotFoundError(f"MCP 配置文件不存在: {config_path}")
+    config_dict = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(config_dict, dict):
+        raise ValueError("MCP 配置必须是对象")
+    servers = config_dict.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise ValueError("mcpServers 字段必须是对象")
+    if original_name not in servers:
+        raise ValueError(f"MCP 服务不存在: {original_name}")
+    if server_name != original_name and server_name in servers:
+        raise ValueError(f"MCP 服务已存在: {server_name}")
+    servers.pop(original_name)
+    servers[server_name] = cfg
+    config_path.write_text(json.dumps(config_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+    return config_dict

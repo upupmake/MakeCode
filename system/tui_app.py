@@ -2593,6 +2593,13 @@ class MakeCodeTuiApp(App[None]):
         self._update_header_status()
         self._update_hitl_button()
         self._update_runtime_info()
+        self._refresh_mcp_switch_runtime()
+
+    def _refresh_mcp_switch_runtime(self) -> None:
+        screen = self.screen
+        refresh_runtime = getattr(screen, "refresh_status", None)
+        if callable(refresh_runtime) and screen is not self:
+            refresh_runtime()
 
     def _update_runtime_info(self) -> None:
         if self._runtime_info_provider is None:

@@ -1020,12 +1020,20 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #mcp-actions {
         height: 3;
+        width: 1fr;
         margin-top: 1;
+        align: left middle;
     }
 
     .mcp-action {
         width: 1fr;
-        margin: 0 1;
+        min-width: 0;
+        height: 3;
+        margin: 0 1 0 0;
+    }
+
+    .mcp-action:last-child {
+        margin-right: 0;
     }
 
     #mcp-tools-dialog {
@@ -2992,12 +3000,21 @@ class McpAddModal(ClosableModalScreen[dict[str, Any] | None]):
 
     _TRANSPORTS = {"stdio", "streamable-http", "sse"}
 
+    def __init__(
+        self,
+        initial: dict[str, Any] | None = None,
+        original_name: str | None = None,
+    ) -> None:
+        super().__init__()
+        self._initial = dict(initial or {})
+        self._original_name = original_name
+
     def compose(self) -> ComposeResult:
         with Vertical(id="mcp-add-dialog"):
-            yield ModalHeader("➕ 手动添加 MCP 服务", title_id="choice-title")
+            yield ModalHeader(self._header_text(), title_id="choice-title")
             with VerticalScroll(id="mcp-add-fields"):
                 yield Label("服务名称", classes="mcp-add-label")
-                yield Input(placeholder="例如 filesystem 或 remote-api", id="mcp-add-name", classes="mcp-add-input")
+                yield Input(self._initial_name(), placeholder="例如 filesystem 或 remote-api", id="mcp-add-name", classes="mcp-add-input")
                 yield Label("传输类型", classes="mcp-add-label")
                 yield Select(
                     [
@@ -3005,52 +3022,108 @@ class McpAddModal(ClosableModalScreen[dict[str, Any] | None]):
                         ("远程 Streamable HTTP", "streamable-http"),
                         ("远程 SSE", "sse"),
                     ],
-                    value="stdio",
+                    value=self._initial_transport(),
                     allow_blank=False,
                     id="mcp-add-transport",
                     classes="mcp-add-input",
                 )
                 with Vertical(id="mcp-add-stdio-core", classes="mcp-add-group"):
                     yield Label("启动命令", classes="mcp-add-label")
-                    yield Input(placeholder="例如 npx、uvx 或可执行文件路径", id="mcp-add-command", classes="mcp-add-input")
+                    yield Input(self._initial_text("command"), placeholder="例如 npx、uvx 或可执行文件路径", id="mcp-add-command", classes="mcp-add-input")
                     yield Label("命令参数（支持引号分组）", classes="mcp-add-label")
-                    yield Input(placeholder='例如 -y "@scope/server" "/path with spaces"', id="mcp-add-args", classes="mcp-add-input")
+                    yield Input(self._initial_args(), placeholder='例如 -y "@scope/server" "/path with spaces"', id="mcp-add-args", classes="mcp-add-input")
                 with Vertical(id="mcp-add-remote-core", classes="mcp-add-group"):
                     yield Label("服务 URL", classes="mcp-add-label")
-                    yield Input(placeholder="https://example.com/mcp", id="mcp-add-url", classes="mcp-add-input")
+                    yield Input(self._initial_text("url"), placeholder="https://example.com/mcp", id="mcp-add-url", classes="mcp-add-input")
                 yield Label("高级参数（可选）", id="mcp-add-advanced-title")
                 with Vertical(id="mcp-add-stdio-advanced", classes="mcp-add-group"):
                     yield Label("环境变量（每行 KEY=VALUE）", classes="mcp-add-label")
-                    yield TextArea("", id="mcp-add-env", classes="mcp-add-pairs")
+                    yield TextArea(self._initial_pairs("env"), id="mcp-add-env", classes="mcp-add-pairs")
                     yield Label("工作目录", classes="mcp-add-label")
-                    yield Input(placeholder="子进程工作目录", id="mcp-add-cwd", classes="mcp-add-input")
+                    yield Input(self._initial_text("cwd"), placeholder="子进程工作目录", id="mcp-add-cwd", classes="mcp-add-input")
                     yield Label("保持子进程存活", classes="mcp-add-label")
                     yield Select(
                         [("使用默认值", ""), ("是", "true"), ("否", "false")],
-                        value="",
+                        value=self._initial_keep_alive(),
                         allow_blank=False,
                         id="mcp-add-keep-alive",
                         classes="mcp-add-input",
                     )
                 with Vertical(id="mcp-add-remote-advanced", classes="mcp-add-group"):
                     yield Label("请求头（每行 KEY=VALUE）", classes="mcp-add-label")
-                    yield TextArea("", id="mcp-add-headers", classes="mcp-add-pairs")
+                    yield TextArea(self._initial_pairs("headers"), id="mcp-add-headers", classes="mcp-add-pairs")
                     yield Label("鉴权配置", classes="mcp-add-label")
-                    yield Input(placeholder="例如 oauth 或 token", id="mcp-add-auth", classes="mcp-add-input")
+                    yield Input(self._initial_text("auth"), placeholder="例如 oauth 或 token", id="mcp-add-auth", classes="mcp-add-input")
                 yield Label("响应超时（毫秒）", classes="mcp-add-label")
-                yield Input(placeholder="例如 30000", id="mcp-add-timeout", classes="mcp-add-input")
+                yield Input(self._initial_optional_value("timeout"), placeholder="例如 30000", id="mcp-add-timeout", classes="mcp-add-input")
                 with Vertical(id="mcp-add-sse-advanced", classes="mcp-add-group"):
                     yield Label("SSE 读取超时（秒）", classes="mcp-add-label")
-                    yield Input(placeholder="例如 60", id="mcp-add-sse-read-timeout", classes="mcp-add-input")
+                    yield Input(self._initial_optional_value("sse_read_timeout"), placeholder="例如 60", id="mcp-add-sse-read-timeout", classes="mcp-add-input")
                 yield Label("", id="mcp-add-error", markup=False)
-                yield Label("新服务保存后保持禁用；返回列表后可自行启用。", id="mcp-add-hint")
+                yield Label(self._hint_text(), id="mcp-add-hint")
             with Horizontal(id="mcp-add-actions"):
-                yield Button("保存服务", id="mcp-add-confirm", variant="success", classes="mcp-add-action")
+                yield Button(self._confirm_label(), id="mcp-add-confirm", variant="success", classes="mcp-add-action")
                 yield Button("取消", id="mcp-add-cancel", variant="warning", classes="mcp-add-action")
 
     def on_mount(self) -> None:
         self._sync_transport_fields()
         self.query_one("#mcp-add-name", Input).focus()
+
+    def _is_edit(self) -> bool:
+        return bool(self._original_name)
+
+    def _header_text(self) -> str:
+        if self._is_edit():
+            return f"✏️ 编辑 MCP 服务 · {self._original_name}"
+        return "➕ 手动添加 MCP 服务"
+
+    def _hint_text(self) -> str:
+        if self._is_edit():
+            return "保存后会写回配置；若该服务当前已加载，会尝试重启。"
+        return "新服务保存后保持禁用；返回列表后可自行启用。"
+
+    def _confirm_label(self) -> str:
+        return "保存修改" if self._is_edit() else "保存服务"
+
+    def _initial_name(self) -> str:
+        return self._original_name or ""
+
+    def _initial_transport(self) -> str:
+        transport = self._initial.get("transport") or self._initial.get("type")
+        url = self._initial.get("url")
+        if not transport:
+            transport = "sse" if url and "/sse" in str(url).lower() else "streamable-http" if url else "stdio"
+        if transport == "http":
+            transport = "streamable-http"
+        return transport if transport in self._TRANSPORTS else "stdio"
+
+    def _initial_text(self, key: str) -> str:
+        value = self._initial.get(key)
+        return "" if value is None else str(value)
+
+    def _initial_optional_value(self, key: str) -> str:
+        value = self._initial.get(key)
+        return "" if value is None else str(value)
+
+    def _initial_args(self) -> str:
+        args = self._initial.get("args") or []
+        if not isinstance(args, list):
+            return str(args)
+        return shlex.join(str(item) for item in args)
+
+    def _initial_pairs(self, key: str) -> str:
+        values = self._initial.get(key) or {}
+        if not isinstance(values, dict):
+            return ""
+        return "\n".join(f"{name}={value}" for name, value in values.items())
+
+    def _initial_keep_alive(self) -> str:
+        value = self._initial.get("keep_alive")
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        return ""
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "mcp-add-transport":
@@ -3149,12 +3222,18 @@ class McpAddModal(ClosableModalScreen[dict[str, Any] | None]):
                 sse_timeout = self.query_one("#mcp-add-sse-read-timeout", Input).value.strip()
                 if sse_timeout:
                     cfg["sse_read_timeout"] = float(sse_timeout)
-            cfg["disabled"] = True
+            if self._is_edit():
+                cfg["disabled"] = bool(self._initial.get("disabled", False))
+            else:
+                cfg["disabled"] = True
         except (ValueError, TypeError) as exc:
             self._show_error(str(exc))
             return
 
-        self.dismiss({"server_name": server_name, "cfg": cfg})
+        payload = {"server_name": server_name, "cfg": cfg}
+        if self._is_edit():
+            payload["original_name"] = self._original_name
+        self.dismiss(payload)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -3533,6 +3612,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         Binding("space", "toggle", "Toggle", priority=True),
         Binding("t", "manage_tools", "Manage Tools", priority=True),
         Binding("a", "add", "Add", priority=True),
+        Binding("e", "edit", "Edit", priority=True),
         Binding("d", "delete", "Delete", priority=True),
         Binding("y", "confirm_delete", "Confirm Delete", priority=True),
         Binding("n", "cancel_delete", "Cancel Delete", priority=True),
@@ -3547,6 +3627,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         self._pending_delete_index: int | None = None
         self._deleted_results: list[dict[str, Any]] = []
         self._added_results: list[dict[str, Any]] = []
+        self._updated_results: list[dict[str, Any]] = []
         self._tool_results: list[dict[str, Any]] = []
         self._row_reload_generation = 0
 
@@ -3559,7 +3640,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
                 for index, item in enumerate(self._server_switches):
                     yield self._server_item(index, item)
             yield Label(
-                "↑↓ 选择服务 · Enter/Space 切换 · t 管理工具 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 取消",
+                "↑↓ 选择服务 · Enter/Space 切换 · t 管理工具 · a 添加 · e 编辑配置 · d 删除 · Tab 切换到操作按钮 · q 取消",
                 id="mcp-help",
                 markup=False,
             )
@@ -3567,6 +3648,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
                 yield Button("确认应用", id="mcp-apply", variant="success", classes="mcp-action")
                 yield Button("管理工具", id="mcp-tools", variant="primary", classes="mcp-action")
                 yield Button("添加服务", id="mcp-add", variant="primary", classes="mcp-action")
+                yield Button("编辑配置", id="mcp-edit", variant="primary", classes="mcp-action")
                 yield Button("取消", id="mcp-cancel", variant="warning", classes="mcp-action")
 
     def on_mount(self) -> None:
@@ -3576,14 +3658,64 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
             choice_list.focus()
         else:
             self.query_one("#mcp-add", Button).focus()
+        self._sync_runtime_status()
+
+    def refresh_status(self) -> None:
+        self._sync_runtime_status()
+
+    def _sync_runtime_status(self) -> None:
+        if self._mcp_manager is None:
+            return
+        try:
+            latest = {
+                item["name"]: item
+                for item in self._mcp_manager.list_server_switches()
+            }
+        except Exception:
+            return
+        changed = False
+        for item in self._server_switches:
+            live = latest.get(item["name"])
+            if live is None:
+                continue
+            runtime_state = live.get("runtime_state") or ("loaded" if live.get("loaded") else "unloaded")
+            loaded = runtime_state == "loaded"
+            tool_count = live.get("tool_count", item.get("tool_count", 0))
+            if (
+                item.get("runtime_state") != runtime_state
+                or item.get("loaded") != loaded
+                or item.get("tool_count") != tool_count
+            ):
+                item["runtime_state"] = runtime_state
+                item["loaded"] = loaded
+                item["tool_count"] = tool_count
+                changed = True
+        if not changed:
+            return
+        try:
+            choice_list = self.query_one("#mcp-list", ListView)
+        except Exception:
+            return
+        selected_index = self._selected_index() if self._server_switches else None
+        for index, item in enumerate(self._server_switches):
+            if index >= len(choice_list.children):
+                break
+            choice_list.children[index].query_one(Label).update(self._server_label(item))
+        self.query_one("#mcp-summary", Label).update(self._summary_text())
+        if selected_index is not None and self._server_switches:
+            choice_list.index = min(selected_index, len(self._server_switches) - 1)
 
     def _title_text(self) -> str:
         return "🔌 MCP 服务管理"
 
     def _summary_text(self) -> str:
         enabled_count = sum(not disabled for disabled in self._draft_states.values())
-        loaded_count = sum(item.get("loaded", False) for item in self._server_switches)
-        return f"共 {len(self._server_switches)} 个服务 · 草稿启用 {enabled_count} 个 · 当前连接 {loaded_count} 个 · 可在应用前自由切换"
+        loaded_count = sum(item.get("runtime_state") == "loaded" or item.get("loaded", False) for item in self._server_switches)
+        restarting_count = sum(item.get("runtime_state") == "restarting" for item in self._server_switches)
+        summary = f"共 {len(self._server_switches)} 个服务 · 草稿启用 {enabled_count} 个 · 当前连接 {loaded_count} 个"
+        if restarting_count:
+            summary += f" · 正在重启 {restarting_count} 个"
+        return summary + " · 可在应用前自由切换"
 
     def _reset_header(self) -> None:
         self.query_one("#mcp-title", Label).update(self._title_text())
@@ -3592,12 +3724,26 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
     def _server_item(self, index: int, item: dict[str, Any]) -> ListItem:
         return ListItem(Label(self._server_label(item), markup=False), id=f"mcp-server-{index}")
 
+    def _runtime_state(self, item: dict[str, Any]) -> str:
+        state = item.get("runtime_state")
+        if state in {"loaded", "restarting", "unloaded"}:
+            return state
+        return "loaded" if item.get("loaded", False) else "unloaded"
+
     def _server_label(self, item: dict[str, Any]) -> Text:
         name = item["name"]
         enabled = not self._draft_states[name]
-        loaded = item.get("loaded", False)
+        runtime_state = self._runtime_state(item)
         status_txt = "启用" if enabled else "禁用"
-        runtime_txt = "已加载" if loaded else "未加载"
+        if runtime_state == "loaded":
+            runtime_txt = "已加载"
+            runtime_style = "green"
+        elif runtime_state == "restarting":
+            runtime_txt = "正在重启"
+            runtime_style = "yellow"
+        else:
+            runtime_txt = "未加载"
+            runtime_style = "yellow" if enabled else "#64748b"
         transport = item.get("transport", "未知协议")
         target = item.get("target", "未配置连接目标")
         tool_count = item.get("tool_count", 0)
@@ -3608,7 +3754,6 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         label.append("\n   草稿：")
         label.append(status_txt, style="green" if enabled else "#94a3b8")
         label.append(" · 运行：")
-        runtime_style = "green" if loaded else "yellow" if enabled else "#64748b"
         label.append(runtime_txt, style=runtime_style)
         label.append(f" · 协议：{transport} · 工具：{tool_count}")
         label.append(f"\n   目标：{target}")
@@ -3660,6 +3805,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
             "disabled_updates": dict(self._draft_states),
             "deleted_results": list(self._deleted_results),
             "added_results": list(self._added_results),
+            "updated_results": list(self._updated_results),
             "tool_results": list(self._tool_results),
         }
 
@@ -3681,6 +3827,8 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
                 self.action_manage_tools()
             elif focused.id == "mcp-add":
                 self.action_add()
+            elif focused.id == "mcp-edit":
+                self.action_edit()
             elif focused.id == "mcp-overview":
                 self.action_view_overview()
 
@@ -3786,6 +3934,98 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
         )
         self._reload_rows(selected_index)
 
+    def action_edit(self) -> None:
+        if self._pending_delete_name is not None or not self._server_switches:
+            return
+        selected_index = self._selected_index()
+        if selected_index >= len(self._server_switches):
+            return
+        server_name = self._server_switches[selected_index]["name"]
+        try:
+            cfg = self._mcp_manager.get_server_config(server_name)
+        except Exception as exc:
+            self.query_one("#mcp-title", Label).update(
+                "❌ 读取 MCP 服务配置失败\n"
+                f"{server_name}: {exc}"
+            )
+            return
+        self.app.push_screen(
+            McpAddModal(initial=cfg, original_name=server_name),
+            lambda result: self._finish_edit_server(selected_index, result),
+        )
+
+    def _finish_edit_server(
+        self,
+        selected_index: int,
+        form_result: dict[str, Any] | None,
+    ) -> None:
+        if form_result is None:
+            choice_list = self.query_one("#mcp-list", ListView)
+            if self._server_switches:
+                choice_list.index = min(selected_index, len(self._server_switches) - 1)
+                choice_list.focus()
+            return
+        original_name = form_result.get("original_name") or self._server_switches[selected_index]["name"]
+        server_name = form_result["server_name"]
+        cfg = form_result["cfg"]
+        try:
+            result = self._mcp_manager.update_server_config(original_name, server_name, cfg)
+        except Exception as exc:
+            self.query_one("#mcp-title", Label).update(
+                "❌ 更新 MCP 服务配置失败\n"
+                f"{original_name}: {exc}\n"
+                "请检查参数后重新保存。"
+            )
+            self.query_one("#mcp-edit", Button).focus()
+            return
+
+        if result.get("saved") or result.get("restarted"):
+            try:
+                server_switches = self._mcp_manager.list_server_switches()
+            except Exception as exc:
+                self.query_one("#mcp-title", Label).update(
+                    "❌ 更新 MCP 服务配置失败\n"
+                    f"{original_name}: {exc}\n"
+                    "请检查参数后重新保存。"
+                )
+                self.query_one("#mcp-edit", Button).focus()
+                return
+            draft_states = dict(self._draft_states)
+            if original_name in draft_states:
+                draft_states[server_name] = draft_states.pop(original_name)
+            self._server_switches = server_switches
+            self._draft_states = {
+                item["name"]: draft_states.get(item["name"], bool(item["disabled"]))
+                for item in server_switches
+            }
+            self._updated_results.append({"server": server_name, "result": result})
+            selected_index = next(
+                (index for index, item in enumerate(server_switches) if item["name"] == server_name),
+                selected_index,
+            )
+            self._reload_rows(selected_index)
+        else:
+            choice_list = self.query_one("#mcp-list", ListView)
+            if self._server_switches:
+                choice_list.index = min(selected_index, len(self._server_switches) - 1)
+                choice_list.focus()
+        if result.get("restarted") and not result.get("saved"):
+            icon = "✅"
+            title = "MCP 服务正在后台重启"
+        elif result.get("saved") and not result.get("failed"):
+            icon = "✅"
+            title = "MCP 服务配置已更新"
+        elif result.get("saved"):
+            icon = "ℹ️"
+            title = "MCP 服务配置已更新"
+        else:
+            icon = "ℹ️"
+            title = "MCP 服务配置未变更"
+        self.query_one("#mcp-title", Label).update(
+            f"{icon} {title}\n"
+            f"{server_name} · {result.get('message', '')}"
+        )
+
     def action_toggle(self) -> None:
         if self._pending_delete_name is not None or not isinstance(self.focused, ListView):
             return
@@ -3842,6 +4082,8 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
                 self.dismiss(self._dismiss_payload("confirm"))
         elif event.button.id == "mcp-add":
             self.action_add()
+        elif event.button.id == "mcp-edit":
+            self.action_edit()
         elif event.button.id == "mcp-tools":
             self.action_manage_tools()
         elif event.button.id == "mcp-overview":
