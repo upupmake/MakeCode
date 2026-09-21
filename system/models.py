@@ -404,6 +404,13 @@ class ModelManager:
         if self.load_error is not None or message_format not in MESSAGE_FORMATS:
             return []
 
+        previous_state = (
+            self.models.copy(),
+            self.current_model,
+            self.current_model_key,
+            self.last_selected_key,
+            self.memory_recall_model_key,
+        )
         new_models = []
         for index, model_id in enumerate(model_ids):
             alias = normalize_model_alias(aliases[index]) if index < len(aliases or []) else ""
@@ -423,9 +430,22 @@ class ModelManager:
         if new_models:
             if self.current_model is None:
                 self._set_initial_current_model()
-            self._save_config()
+            try:
+                saved = self._save_config()
+            except OSError:
+                saved = False
+            if saved:
+                return new_models
 
-        return new_models
+            (
+                self.models,
+                self.current_model,
+                self.current_model_key,
+                self.last_selected_key,
+                self.memory_recall_model_key,
+            ) = previous_state
+
+        return []
 
     def delete_model_by_index(self, index: int) -> bool:
         if not self._reload_from_disk():

@@ -189,6 +189,53 @@ def test_model_manager_edit_rolls_back_when_save_fails(tmp_path, monkeypatch):
     assert manager.get_current_model().key == model_key
 
 
+@pytest.mark.parametrize("existing", [False, True], ids=["first-model", "existing-models"])
+@pytest.mark.parametrize("failure", ["return_false", "tempfile", "fsync", "replace"])
+def test_model_manager_add_rolls_back_when_save_fails(tmp_path, existing, failure):
+    manager = ModelManager(tmp_path)
+    if existing:
+        models = manager.add_model("https://example.com", "key", ["main", "recall"])
+        assert manager.select_model(models[0].key, "high")
+        assert manager.set_memory_recall_model_by_key(models[1].key)
+    original_models = [model.to_dict() for model in manager.models]
+    original_current = manager.get_current_model()
+    original_references = (manager.current_model_key, manager.last_selected_key, manager.memory_recall_model_key)
+    original_payload = manager._raw_config
+    original_disk = manager.config_file.read_bytes() if manager.config_file.exists() else None
+    if failure == "return_false":
+        fail_save = patch.object(manager, "_save_config", return_value=False)
+    else:
+        target = {
+            "tempfile": "system.models.tempfile.NamedTemporaryFile",
+            "fsync": "system.models.os.fsync",
+            "replace": "system.models.os.replace",
+        }[failure]
+        fail_save = patch(target, side_effect=OSError("simulated config write failure"))
+
+    with fail_save:
+        result = manager.add_model(
+            "https://example.com", "key", ["copy-b", "copy-a"], message_format="openai_responses",
+        )
+
+    assert result == []
+    assert [model.to_dict() for model in manager.models] == original_models
+    assert manager.get_current_model() is original_current
+    assert (manager.current_model_key, manager.last_selected_key, manager.memory_recall_model_key) == original_references
+    assert manager._raw_config == original_payload
+    assert manager.load_error is None
+    if original_disk is None:
+        assert not manager.config_file.exists()
+    else:
+        assert manager.config_file.read_bytes() == original_disk
+    assert list(tmp_path.glob(".model_config.json.*.tmp")) == []
+
+    retried = manager.add_model(
+        "https://example.com", "key", ["copy-b", "copy-a"], message_format="openai_responses",
+    )
+    assert len(retried) == 2
+    assert {model.key for model in ModelManager(tmp_path).models} == {model.key for model in manager.models}
+
+
 def test_model_manager_add_model_alias_list_stays_positional(tmp_path):
     manager = ModelManager(tmp_path)
     models = manager.add_model(
@@ -2553,6 +2600,130 @@ async def test_model_manager_modal_add_shortcut_works_when_empty(tmp_path):
         await pilot.pause()
 
         assert isinstance(app.screen, AddModelModal)
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_copy_shortcut_prefills_selected_model(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model(
+        "https://example.com",
+        "key",
+        ["alpha", "beta"],
+        message_format="anthropic",
+        aliases=["主模型", "副本源"],
+    )
+    beta_key = next(model.key for model in manager.models if model.model_id == "beta")
+    assert manager.select_model(beta_key, "medium")
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        beta_index = next(index for index, key in enumerate(modal._model_keys) if key == beta_key)
+        model_list.index = beta_index
+        await pilot.pause()
+
+        await pilot.press("c")
+        await pilot.pause()
+
+        add_modal = app.screen
+        assert isinstance(add_modal, AddModelModal)
+        assert add_modal.query_one("#model-base-url", Input).value == "https://example.com"
+        assert add_modal.query_one("#model-api-key", Input).value == "key"
+        assert add_modal.query_one("#model-ids", Input).value == "beta"
+        assert add_modal.query_one("#model-alias", Input).value == "副本源"
+        assert add_modal.query_one("#model-message-format", Select).value == "anthropic"
+
+        add_modal.query_one("#model-ids", Input).value = "beta-copy"
+        add_modal.action_submit()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [model.model_id for model in manager.models] == ["alpha", "beta", "beta-copy"]
+        copied = next(model for model in manager.models if model.model_id == "beta-copy")
+        assert copied.base_url == "https://example.com"
+        assert copied.api_key == "key"
+        assert copied.message_format == "anthropic"
+        assert copied.alias == "副本源"
+        assert manager.get_current_model().key == beta_key
+        status = modal.query_one("#model-manager-error", Label)
+        assert status.display
+        assert status.has_class("-success")
+        assert "已添加" in str(status.render())
+        assert "beta-copy" in str(status.render())
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_copy_shortcut_does_not_save_unmodified_duplicate(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["main"])
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.pause()
+        add_modal = app.screen
+        assert isinstance(add_modal, AddModelModal)
+        add_modal.action_submit()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [model.model_id for model in manager.models] == ["main"]
+        assert app.screen is modal
+        error = modal.query_one("#model-manager-error", Label)
+        assert error.display
+        assert not error.has_class("-success")
+        assert "添加未保存" in str(error.render())
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("entry", ["empty", "add", "copy"])
+@pytest.mark.parametrize("failure", ["return_false", "replace"])
+async def test_model_manager_modal_reports_add_write_failure(tmp_path, entry, failure):
+    manager = ModelManager(tmp_path)
+    if entry != "empty":
+        manager.add_model("https://example.com", "key", ["main"])
+    original_models = [model.to_dict() for model in manager.models]
+    original_current = manager.get_current_model()
+    original_disk = manager.config_file.read_bytes() if manager.config_file.exists() else None
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        modal._show_status("previous success")
+        await pilot.press("c" if entry == "copy" else "a")
+        await pilot.pause()
+        add_modal = app.screen
+        assert isinstance(add_modal, AddModelModal)
+        add_modal.query_one("#model-base-url", Input).value = "https://example.com"
+        add_modal.query_one("#model-api-key", Input).value = "key"
+        add_modal.query_one("#model-ids", Input).value = "new-model"
+        if failure == "return_false":
+            fail_save = patch.object(manager, "_save_config", return_value=False)
+        else:
+            fail_save = patch("system.models.os.replace", side_effect=PermissionError("write denied"))
+
+        with fail_save:
+            add_modal.action_submit()
+            await pilot.pause()
+            await pilot.pause()
+
+        assert app.screen is modal
+        error = modal.query_one("#model-manager-error", Label)
+        assert error.display
+        assert not error.has_class("-success")
+        assert "添加未保存" in str(error.render())
+        assert [model.to_dict() for model in manager.models] == original_models
+        assert manager.get_current_model() is original_current
+        assert app.status_refreshes == 0
+        if original_disk is None:
+            assert not manager.config_file.exists()
+        else:
+            assert manager.config_file.read_bytes() == original_disk
 
 
 @pytest.mark.anyio

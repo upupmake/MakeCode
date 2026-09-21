@@ -1050,17 +1050,19 @@ def build_anthropic_request_messages(
 
 def format_openai_responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
-    for tool in format_openai_tools(tools):
-        function = tool.get("function", {})
-        formatted = {
-            "type": "function",
-            "name": function.get("name"),
-            "description": function.get("description", ""),
-            "parameters": function.get("parameters", {}),
-            "strict": False,
-        }
-        result.append(formatted)
-    return result
+    for tool in tools:
+        candidates = tool.get("tools", []) if tool.get("type") == "namespace" else [tool]
+        for candidate in candidates:
+            name, description, parameters = _extract_tool_info(candidate)
+            definition = candidate.get("function", candidate)
+            result.append({
+                "type": "function",
+                "name": name,
+                "description": description,
+                "parameters": _inline_schema_refs(parameters),
+                "strict": definition.get("strict", False),
+            })
+    return sorted(result, key=lambda item: item["name"] or "")
 
 
 def _openai_responses_image_block(

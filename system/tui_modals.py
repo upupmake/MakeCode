@@ -865,6 +865,10 @@ class ChoiceModal(ClosableModalScreen[str]):
         color: #f87171;
     }
 
+    #model-manager-error.-success {
+        color: #4ade80;
+    }
+
     #model-manager-list {
         height: 1fr;
         min-height: 5;
@@ -3938,7 +3942,7 @@ class ModelManagerModal(ClosableModalScreen[str]):
             yield Label("", id="model-manager-error", markup=False)
             yield ListView(id="model-manager-list")
             yield Label(
-                "↑↓ 选择模型 · Enter 切换并关闭 · ←/→ 调整 effort · f 常用 · a 添加 · e 修改配置 · d 删除 · q 关闭",
+                "↑↓ 选择模型 · Enter 切换并关闭 · ←/→ 调整 effort · f 常用 · a 添加 · c 复制当前项添加 · e 修改配置 · d 删除 · q 关闭",
                 id="model-manager-help",
                 markup=False,
             )
@@ -4080,6 +4084,11 @@ class ModelManagerModal(ClosableModalScreen[str]):
             event.stop()
             event.prevent_default()
             return
+        if event.key == "c":
+            self.action_copy_add()
+            event.stop()
+            event.prevent_default()
+            return
         if not isinstance(self.focused, ListView):
             return
         key_actions = {
@@ -4216,11 +4225,19 @@ class ModelManagerModal(ClosableModalScreen[str]):
         self.query_one("#model-manager-summary", Label).update(self._summary_text())
         error_label = self.query_one("#model-manager-error", Label)
         error_label.update("")
+        error_label.remove_class("-success")
         error_label.display = False
 
     def _show_error(self, message: str) -> None:
         error_label = self.query_one("#model-manager-error", Label)
+        error_label.remove_class("-success")
         error_label.update(f"❌ {message}")
+        error_label.display = True
+
+    def _show_status(self, message: str) -> None:
+        error_label = self.query_one("#model-manager-error", Label)
+        error_label.add_class("-success")
+        error_label.update(f"✅ {message}")
         error_label.display = True
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -4236,6 +4253,24 @@ class ModelManagerModal(ClosableModalScreen[str]):
     def action_add(self) -> None:
         if self._pending_delete_key is None:
             self._add_model(self._selected_index())
+
+    def action_copy_add(self) -> None:
+        if self._pending_delete_key is not None:
+            return
+        if not self._model_manager.models:
+            self.action_add()
+            return
+        index = self._selected_index()
+        if index >= len(self._model_keys):
+            return
+        model_key = self._model_keys[index]
+        if model_key is None:
+            return
+        target_index = self._target_index(model_key)
+        if target_index is None:
+            self._reload_rows(index)
+            return
+        self._add_model(index, source_model=self._model_manager.models[target_index])
 
     def action_edit(self) -> None:
         if self._pending_delete_key is not None:
@@ -4287,8 +4322,11 @@ class ModelManagerModal(ClosableModalScreen[str]):
     def action_close(self) -> None:
         self.dismiss("exit")
 
-    def _add_model(self, selected_index: int) -> None:
-        self.app.push_screen(AddModelModal(), lambda model_config: self._finish_add_model(model_config, selected_index))
+    def _add_model(self, selected_index: int, source_model: Any | None = None) -> None:
+        self.app.push_screen(
+            AddModelModal(source_model),
+            lambda model_config: self._finish_add_model(model_config, selected_index),
+        )
 
     def _finish_add_model(self, model_config: dict[str, str] | None, selected_index: int) -> None:
         if model_config is None:
@@ -4318,6 +4356,11 @@ class ModelManagerModal(ClosableModalScreen[str]):
         )
         selected_key = new_models[0].key if new_models else None
         self._reload_rows(selected_index, selected_key=selected_key)
+        if not new_models:
+            self._show_error("添加未保存：配置可能与已有模型重复，或配置文件写入失败。")
+            return
+        added_text = "、".join(model.get_display_text() for model in new_models)
+        self._show_status(f"已添加：{added_text}")
         current_model = self._model_manager.get_current_model()
         if current_model and current_model.runtime_key != previous_runtime_key:
             self.app.refresh_status()
@@ -5171,21 +5214,45 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
         Binding("q", "cancel", "Cancel", priority=True),
     ]
 
+    def __init__(self, source_model: Any | None = None) -> None:
+        super().__init__()
+        self._source_model = source_model
+
     def compose(self) -> ComposeResult:
+        source = self._source_model
         with VerticalScroll(id="model-form-dialog"):
             yield ModalHeader("➕ 添加模型", title_id="choice-title")
             yield Label("Base URL", classes="model-form-label")
-            yield Input(placeholder="https://api.example.com/v1", id="model-base-url", classes="model-form-input")
+            yield Input(
+                value=source.base_url if source else "",
+                placeholder="https://api.example.com/v1",
+                id="model-base-url",
+                classes="model-form-input",
+            )
             yield Label("API Key", classes="model-form-label")
-            yield ModelPasswordInput(placeholder="API Key", input_id="model-api-key")
+            yield ModelPasswordInput(
+                value=source.api_key if source else "",
+                placeholder="API Key",
+                input_id="model-api-key",
+            )
             yield Label("Model ID(s)（多个用逗号分隔）", classes="model-form-label")
-            yield Input(placeholder="model-a, model-b", id="model-ids", classes="model-form-input")
+            yield Input(
+                value=source.model_id if source else "",
+                placeholder="model-a, model-b",
+                id="model-ids",
+                classes="model-form-input",
+            )
             yield Label("别名（可选；多个模型时用逗号分隔，顺序对应 Model ID）", classes="model-form-label")
-            yield Input(placeholder="日常模型, 深度思考模型", id="model-alias", classes="model-form-input")
+            yield Input(
+                value=source.alias if source else "",
+                placeholder="日常模型, 深度思考模型",
+                id="model-alias",
+                classes="model-form-input",
+            )
             yield Label("消息格式", classes="model-form-label")
             yield Select(
                 [(message_format, message_format) for message_format in MESSAGE_FORMATS],
-                value="openai_chat",
+                value=source.message_format if source else "openai_chat",
                 allow_blank=False,
                 id="model-message-format",
                 classes="model-form-input",

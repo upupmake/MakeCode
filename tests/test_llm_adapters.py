@@ -409,7 +409,7 @@ def test_openai_responses_never_replays_foreign_native_blocks():
     assert "encrypted_content" not in json.dumps(rebuilt)
 
 
-def test_openai_responses_tool_conversion_flattens_namespaces_and_disables_strict():
+def test_openai_responses_tool_conversion_flattens_namespaces_and_preserves_strict():
     tools = [
         {
             "type": "function",
@@ -421,6 +421,7 @@ def test_openai_responses_tool_conversion_flattens_namespaces_and_disables_stric
                     "type": "object",
                     "properties": {"path": {"$ref": "#/$defs/Path"}},
                     "required": ["path"],
+                    "additionalProperties": False,
                 },
                 "strict": True,
             },
@@ -444,8 +445,9 @@ def test_openai_responses_tool_conversion_flattens_namespaces_and_disables_stric
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
                 "required": ["path"],
+                "additionalProperties": False,
             },
-            "strict": False,
+            "strict": True,
         },
         {
             "type": "function",
@@ -455,6 +457,66 @@ def test_openai_responses_tool_conversion_flattens_namespaces_and_disables_stric
             "strict": False,
         },
     ]
+
+
+@pytest.mark.parametrize("strict", [None, False, True], ids=["unspecified", "false", "true"])
+@pytest.mark.parametrize("shape", ["function", "mcp"])
+@pytest.mark.parametrize("namespaced", [False, True], ids=["flat", "namespace"])
+def test_responses_tool_strict_preserves_source_without_mutation(strict, shape, namespaced):
+    schema = {"type": "object", "properties": {"query": {"type": "string"}},
+              "required": ["query"], "additionalProperties": False}
+    definition = {"name": "Search", "description": "Search files",
+                  "parameters" if shape == "function" else "inputSchema": schema}
+    if strict is not None:
+        definition["strict"] = strict
+    tool = {"type": "function", "function": definition} if shape == "function" else definition
+    tools = [{"type": "namespace", "tools": [tool]}] if namespaced else [tool]
+    original = copy.deepcopy(tools)
+
+    formatted = format_openai_responses_tools(tools)
+
+    assert formatted == [{"type": "function", "name": "Search", "description": "Search files",
+                          "parameters": schema, "strict": strict if strict is not None else False}]
+    assert tools == original
+    formatted[0]["parameters"]["properties"]["query"]["type"] = "integer"
+    assert tools == original
+
+
+def test_responses_preserves_strict_for_all_builtin_tools():
+    import main as main_module
+    from tools.todo import TODO_TOOLS
+    from utils import memory
+
+    tools = (main_module.COMMON_TOOLS + main_module.MEMORY_RECALL_TOOLS
+             + main_module.MEMORY_SELF_MANAGEMENT_TOOLS + main_module.SKILL_TOOLS
+             + main_module.TASK_MANAGER_TOOLS + main_module.TEAM_TOOLS + main_module.ASK_USER_TOOLS
+             + main_module.UNDERSTAND_IMAGE_TOOLS + main_module.TITLE_GENERATION_TOOLS
+             + memory.LONG_TERM_MEMORY_TOOLS + memory.MEMORY_RECALL_SELECTION_TOOLS + TODO_TOOLS)
+
+    definitions = [candidate for tool in tools
+                   for candidate in (tool["tools"] if tool.get("type") == "namespace" else [tool])]
+    assert all(tool["function"]["strict"] is True for tool in definitions)
+    formatted = format_openai_responses_tools(tools)
+    assert len(formatted) == len(definitions)
+    assert all(tool["strict"] is True for tool in formatted)
+    assert all(tool["parameters"]["additionalProperties"] is False for tool in formatted)
+
+
+def test_responses_strict_setting_affects_cache_identity_but_not_tool_order():
+    source = [
+        {"name": "Zulu", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+        {"name": "Alpha", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+         "strict": True},
+    ]
+    before = format_openai_responses_tools(source)
+    assert before == format_openai_responses_tools(list(reversed(source)))
+    source[0]["strict"] = True
+    after = format_openai_responses_tools(source)
+    assert [tool["name"] for tool in before] == [tool["name"] for tool in after] == ["Alpha", "Zulu"]
+    common = {"api_key": "key", "base_url": "https://gateway.example/v1", "model": "test",
+              "reasoning_effort": "medium", "messages": [], "instructions": "stable system",
+              "message_format": "openai_responses"}
+    assert build_openai_prompt_cache_key(tools=before, **common) != build_openai_prompt_cache_key(tools=after, **common)
 
 
 def test_anthropic_tool_conversion_uses_input_schema_and_flattens_namespaces():
@@ -1523,6 +1585,7 @@ async def auxiliary_gateway(request, monkeypatch, isolated_responses_runtime, tm
         if model.message_format == "openai_responses":
             TypeAdapter(list[ResponseInputItemParam]).validate_python(body["input"])
             assert body["store"] is False
+            assert all(tool["strict"] is True for tool in body.get("tools", []))
         items = body.get("input", body.get("messages", []))
         for item in items:
             if item.get("type") == "function_call_output":
