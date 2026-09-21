@@ -67,6 +67,7 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 - 启动时以 **Textual TUI 向导面板** 交互式选择工作区目录（当前目录或自定义路径），不再依赖任何环境变量（如历史上的 `MAKECODE_WORKDIR` 已移除）。
 - 支持按模型配置选择消息格式：
     - `openai_chat`（OpenAI Chat Completions 消息格式）
+    - `openai_responses`（OpenAI Responses 协议）
     - `anthropic`（Anthropic Messages 协议）
 - **路径集中管理**：工作区路径、安装目录路径、`.makecode/` 子目录（`conversations/`、`memory/`、`transcripts/` 等）及安装目录下的 `model_config.json`、`mcp_config.json`、`layout_config.json`、`error.log` 均由 `utils/paths.py` 统一提供。
 - **模型配置**：通过内置的 `/models` 命令进行管理（详见 2.15 节）
@@ -534,9 +535,10 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 
 ### 2.22 LLM 客户端适配与请求健壮性（`utils/llm_client.py`）（新增）
 
-- **统一异步流式接口**：主智能体、子智能体、标题、摘要、长期记忆管理和记忆召回均通过 `generate_stream()` 返回统一事件与 `LLMResult`；OpenAI Chat 使用官方 `AsyncOpenAI`，Anthropic Messages 使用官方 `AsyncAnthropic`。
-- **双协议历史重建**：conversation 保存 OpenAI 风格的规范化消息超集，而不是 provider 请求体；任务计划、Sub-Agent history 和 trace 均不进入 provider messages。发起请求时按模型的 `message_format` 重建 OpenAI Chat 消息或 Anthropic content blocks，并仅在来源格式和模型兼容时回放原生 blocks。
-- **Anthropic 前缀缓存**：Anthropic 请求同时设置顶层和 system text block 的 ephemeral `cache_control`。工具定义按名称确定性排序，并在单次主/子智能体运行开始时固定 MCP 工具与 handler 原子快照，使 `tools → system → messages` 前缀保持稳定。
+- **统一异步流式接口**：主智能体、子智能体、标题、摘要、长期记忆管理和记忆召回均通过 `generate_stream()` 返回统一事件与 `LLMResult`；OpenAI Chat 与 Responses 使用官方 `AsyncOpenAI`，Anthropic Messages 使用官方 `AsyncAnthropic`。
+- **三协议历史重建**：conversation 保存 OpenAI 风格的规范化消息超集，而不是 provider 请求体；任务计划、Sub-Agent history 和 trace 均不进入 provider messages。发起请求时按模型的 `message_format` 重建 OpenAI Chat 消息、OpenAI Responses items 或 Anthropic content blocks，并仅在来源格式兼容时回放原生 blocks。
+- **前缀缓存**：OpenAI Chat / Responses 使用稳定的 `prompt_cache_key`（按消息格式隔离）；Anthropic 请求同时设置顶层和 system text block 的 ephemeral `cache_control`。工具定义按名称确定性排序，并在单次主/子智能体运行开始时固定 MCP 工具与 handler 原子快照，使 `tools → system/instructions → messages/input` 前缀保持稳定。Responses 请求固定 `store: false`，通过完整回放同源 `native_blocks` 延续 reasoning 与 tool 上下文。
+- **回放与缓存边界**：同源 Responses 回放保留完整 output items；压缩使原生快照失效后，仍按规范化块保留文本、工具调用顺序及 assistant `phase`。跨协议仅投影目标协议支持的字段，不伪造或转发其他协议的私有推理载荷。前缀稳定是缓存复用的必要条件，不保证服务端命中；切换协议、模型、工具、system/effort 或压缩历史都可能改变前缀。Responses 的失败、截断和缺少完成事件会明确报错，不执行未完成的工具调用。
 - **超时与重试**：请求总超时为 120 秒，连接超时为 10 秒；SDK 最多重试 5 次。请求进行中时运行栏显示 `Client: REQUESTING · xx s`，实际发生重试时追加 `RETRY n/5` 并将耗时重置为当前这次请求。
 - **请求状态生命周期**：所有 LLM 请求在实际网络调用前增加线程安全计数；成功、异常、超时或流式取消均在 `finally` 中清理，最后一个并发请求结束后取消标识。并发请求的重试状态按请求独立追踪。
 - **取消与 `pause_turn`**：取消会丢弃部分 assistant 输出，不执行工具，也不会为首次请求保存 conversation 或生成标题；主循环和标题、摘要、记忆、召回、子智能体报告等二级路径按各自上限有界续接 `pause_turn`。
@@ -786,7 +788,7 @@ python main.py
 
 启动后会进入向导流程：
 
-1. **选择模型消息格式**：在 `/models` 中为模型选择 `openai_chat` 或 `anthropic`；系统使用对应的官方异步 SDK 和消息适配器。
+1. **选择模型消息格式**：在 `/models` 中为模型选择 `openai_chat`、`openai_responses` 或 `anthropic`；系统使用对应的官方异步 SDK 和消息适配器。
 2. **进入交互式终端**：开始与主代理对话，运行期可随时使用 `/cd <path>` 切换到另一个工作区。
 3. **配置模型**：使用 `/models` 命令添加和管理你的模型配置。
 

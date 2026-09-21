@@ -68,6 +68,7 @@ chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode sou
 - Workspace selection happens through an **interactive Textual TUI wizard panel** (current directory or a custom path); MakeCode no longer depends on any environment variable (the historical `MAKECODE_WORKDIR` has been removed).
 - Supports per-model message format selection:
     - `openai_chat` (OpenAI Chat Completions message format)
+    - `openai_responses` (OpenAI Responses protocol)
     - `anthropic` (Anthropic Messages protocol)
 - **Centralized Paths**: workspace paths, install-directory paths, `.makecode/` subdirectories (`conversations/`, `memory/`, `transcripts/`, etc.), as well as `model_config.json`, `mcp_config.json`, `layout_config.json`, and `error.log` under the install directory are all provided by `utils/paths.py`.
 - **Model Configuration**: Managed via the built-in `/models` command (see section 2.14)
@@ -555,9 +556,10 @@ To centrally manage workspace paths and install-directory global configuration, 
 
 ### 2.22 LLM Client Adaptation and Request Resilience (`utils/llm_client.py`) (New)
 
-- **Unified Async Streaming Interface**: The orchestrator, sub-agents, title generation, summaries, long-term memory management, and memory recall all use `generate_stream()` with unified events and `LLMResult`. OpenAI Chat uses the official `AsyncOpenAI` client, while Anthropic Messages uses the official `AsyncAnthropic` client.
-- **Dual-Protocol History Reconstruction**: Conversations store an OpenAI-style normalized message superset, not a provider request body; task plans, Sub-Agent history, and traces never enter provider messages. Each request rebuilds OpenAI Chat messages or Anthropic content blocks according to the model's `message_format`, replaying native blocks only when the source format and model are compatible.
-- **Anthropic Prefix Caching**: Anthropic requests set ephemeral `cache_control` at both the request and system-text-block levels. Tool definitions are sorted deterministically by name, and each orchestrator or sub-agent run takes one atomic snapshot of MCP tools and handlers, stabilizing the `tools → system → messages` prefix.
+- **Unified Async Streaming Interface**: The orchestrator, sub-agents, title generation, summaries, long-term memory management, and memory recall all use `generate_stream()` with unified events and `LLMResult`. OpenAI Chat and Responses use the official `AsyncOpenAI` client, while Anthropic Messages uses the official `AsyncAnthropic` client.
+- **Three-Protocol History Reconstruction**: Conversations store an OpenAI-style normalized message superset, not a provider request body; task plans, Sub-Agent history, and traces never enter provider messages. Each request rebuilds OpenAI Chat messages, OpenAI Responses items, or Anthropic content blocks according to the model's `message_format`, replaying native blocks only when the source format is compatible.
+- **Prefix Caching**: OpenAI Chat / Responses use a stable `prompt_cache_key` isolated by message format. Anthropic requests set ephemeral `cache_control` at both the request and system-text-block levels. Tool definitions are sorted deterministically by name, and each orchestrator or sub-agent run takes one atomic snapshot of MCP tools and handlers, stabilizing the `tools → system/instructions → messages/input` prefix. Responses requests always set `store: false` and continue reasoning/tool context by replaying same-origin `native_blocks` in full.
+- **Replay and Cache Boundaries**: Same-origin Responses replay preserves complete output items. After compaction invalidates a native snapshot, normalized blocks still preserve text, tool-call order, and assistant `phase`. Cross-protocol projection includes only fields supported by the target protocol, without inventing or forwarding foreign private reasoning payloads. Prefix stability is necessary for cache reuse but does not guarantee a server-side hit; changing protocol, model, tools, system/effort, or compacting history can change the prefix. Failed, incomplete, or unterminated Responses streams raise an explicit error instead of executing unfinished tool calls.
 - **Timeouts and Retries**: The total request timeout is 120 seconds and the connection timeout is 10 seconds. The SDK retries at most five times; an in-flight request appears as `Client: REQUESTING · xx s` in the runtime bar, and actual retries append `RETRY n/5` while resetting the elapsed time for that attempt.
 - **Request State Lifecycle**: Every LLM request increments a thread-safe counter before the network call. Success, failure, timeout, and stream cancellation all clean up in `finally`, and the indicator clears after the final concurrent request ends. Retry state is tracked independently per concurrent request.
 - **Cancellation and `pause_turn`**: Cancellation discards partial assistant output, does not execute tools, and does not save a first conversation or generate a title. The main loop and secondary title, summary, memory, recall, and sub-agent report paths resume `pause_turn` with path-specific bounds.
@@ -811,7 +813,7 @@ For packaged releases:
 
 After startup, you will enter a wizard flow:
 
-1. **Select the model message format**: In `/models`, choose `openai_chat` or `anthropic`; MakeCode uses the corresponding official async SDK and message adapter.
+1. **Select the model message format**: In `/models`, choose `openai_chat`, `openai_responses`, or `anthropic`; MakeCode uses the corresponding official async SDK and message adapter.
 2. **Enter the interactive terminal**: Begin your conversation with the main agent; you can switch to another workspace at any time via `/cd <path>`.
 3. **Configure the model**: Use the `/models` command to add and manage model configurations.
 

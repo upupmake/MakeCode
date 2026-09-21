@@ -19,6 +19,7 @@ from tools import understand_image
 from tools.understand_image import load_image_for_understanding, understand_image as understand_image_handler
 from utils.llm_client import (
     build_anthropic_request_messages,
+    build_openai_responses_request,
     create_image_understanding_llm_client,
     sanitize_openai_messages,
 )
@@ -162,6 +163,7 @@ def test_inline_image_blocks_convert_for_openai_and_anthropic():
 
     openai = sanitize_openai_messages([message])
     _, anthropic = build_anthropic_request_messages([message])
+    _, responses = build_openai_responses_request([message])
 
     assert openai[0]["content"][0]["type"] == "image_url"
     assert openai[0]["content"][0]["image_url"]["url"] == (
@@ -175,6 +177,11 @@ def test_inline_image_blocks_convert_for_openai_and_anthropic():
             "media_type": "image/png",
             "data": base64.b64encode(MIN_PNG).decode("ascii"),
         },
+    }
+    assert responses[0]["content"][0] == {
+        "type": "input_image",
+        "image_url": "data:image/png;base64," + base64.b64encode(MIN_PNG).decode("ascii"),
+        "detail": "auto",
     }
     assert message["content"][0]["data"] == MIN_PNG
 

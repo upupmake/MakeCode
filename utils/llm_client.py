@@ -31,8 +31,11 @@ _CURRENT_CLIENT_REQUEST_ID: ContextVar[int | None] = ContextVar(
 )
 
 
+SourceFormat = Literal["openai_chat", "openai_responses", "anthropic"]
+
+
 class MessageMetadata(TypedDict, total=False):
-    source_format: Literal["openai_chat", "anthropic"]
+    source_format: SourceFormat
     source_model: str
     native_blocks: list[dict[str, Any]]
 
@@ -87,7 +90,7 @@ def build_assistant_message(
     reasoning: str = "",
     tool_calls: list[dict[str, Any]] | None = None,
     content_blocks: list[dict[str, Any]] | None = None,
-    source_format: Literal["openai_chat", "anthropic"],
+    source_format: SourceFormat,
     source_model: str,
     native_blocks: list[dict[str, Any]] | None = None,
     stop_reason: str | None = None,
@@ -122,7 +125,7 @@ def build_llm_result(
     tool_calls: list[dict[str, Any]] | None = None,
     assistant_tool_calls: list[dict[str, Any]] | None = None,
     content_blocks: list[dict[str, Any]] | None = None,
-    source_format: Literal["openai_chat", "anthropic"],
+    source_format: SourceFormat,
     source_model: str,
     native_blocks: list[dict[str, Any]] | None = None,
     stop_reason: str | None = None,
@@ -510,6 +513,8 @@ class AsyncBaseLLMClient(ABC):
 
 
 def _to_plain_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
     if isinstance(value, dict):
         return copy.deepcopy(value)
     if hasattr(value, "model_dump"):
@@ -685,17 +690,23 @@ def build_openai_prompt_cache_key(
     reasoning_effort: str,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
+    message_format: SourceFormat = "openai_chat",
+    instructions: str | None = None,
 ) -> str:
     leading_system_messages = []
-    for message in messages:
-        if message.get("role") != "system":
-            break
-        leading_system_messages.append(message)
+    if message_format == "openai_responses":
+        if instructions:
+            leading_system_messages.append({"role": "system", "content": instructions})
+    else:
+        for message in messages:
+            if message.get("role") != "system":
+                break
+            leading_system_messages.append(message)
 
     identity = {
         "version": 2,
         "base_url": base_url,
-        "message_format": "openai_chat",
+        "message_format": message_format,
         "model": model,
         "reasoning_effort": reasoning_effort,
         "system_messages": leading_system_messages,
@@ -1037,6 +1048,219 @@ def build_anthropic_request_messages(
     return "\n\n".join(system_parts), request_messages
 
 
+def format_openai_responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for tool in format_openai_tools(tools):
+        function = tool.get("function", {})
+        formatted = {
+            "type": "function",
+            "name": function.get("name"),
+            "description": function.get("description", ""),
+            "parameters": function.get("parameters", {}),
+            "strict": False,
+        }
+        result.append(formatted)
+    return result
+
+
+def _openai_responses_image_block(
+    block: dict[str, Any],
+    conversation_root: Path | None,
+) -> dict[str, Any] | None:
+    converted = _openai_image_block(block, conversation_root)
+    if converted is None:
+        return None
+    return {
+        "type": "input_image",
+        "image_url": converted["image_url"]["url"],
+        "detail": "auto",
+    }
+
+
+def _openai_responses_user_content(
+    content: Any,
+    conversation_root: Path | None = None,
+) -> Any:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else str(content)
+
+    blocks = []
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                blocks.append({"type": "input_text", "text": block})
+            continue
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "image":
+            converted = _openai_responses_image_block(block, conversation_root)
+            if converted is not None:
+                blocks.append(converted)
+            continue
+        if block.get("type") in {"text", "input_text"}:
+            text = block.get("text", "")
+            if text:
+                blocks.append({"type": "input_text", "text": text})
+            continue
+        blocks.append(copy.deepcopy(block))
+    if len(blocks) == 1 and blocks[0].get("type") == "input_text":
+        return blocks[0]["text"]
+    return blocks
+
+
+def _openai_responses_function_call_item(tool_call: dict[str, Any]) -> dict[str, Any]:
+    function = tool_call.get("function", {}) if isinstance(tool_call.get("function"), dict) else {}
+    arguments = tool_call.get("arguments", function.get("arguments", ""))
+    if isinstance(arguments, dict):
+        arguments = json.dumps(arguments, ensure_ascii=False)
+    elif arguments is None:
+        arguments = ""
+    else:
+        arguments = str(arguments)
+    return {
+        "type": "function_call",
+        "call_id": tool_call.get("call_id") or tool_call.get("id", ""),
+        "name": tool_call.get("name") or function.get("name", ""),
+        "arguments": arguments,
+    }
+
+
+def _openai_responses_assistant_items(message: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = message.get("message_metadata")
+    if (
+        isinstance(metadata, dict)
+        and metadata.get("source_format") == "openai_responses"
+        and isinstance(metadata.get("native_blocks"), list)
+    ):
+        return copy.deepcopy(metadata["native_blocks"])
+
+    items = []
+    # 压缩会使原生快照失效，但规范化块仍保留 message/tool 的顺序和 phase。
+    if (
+        isinstance(metadata, dict)
+        and metadata.get("source_format") == "openai_responses"
+        and message.get("content_blocks")
+    ):
+        for block in message["content_blocks"]:
+            if block.get("type") == "text":
+                item = {"type": "message", "role": "assistant", "content": block["text"]}
+                if block.get("phase") is not None:
+                    item["phase"] = block["phase"]
+                items.append(item)
+            elif block.get("type") == "tool_call":
+                items.append(_openai_responses_function_call_item(block))
+        return items
+
+    content = message.get("content")
+    text = ""
+    if isinstance(content, str) and content:
+        text = content
+    elif isinstance(content, list):
+        text = "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") in {"text", "output_text"}
+        )
+    if not text:
+        text = _text_from_content_blocks(message)
+    if text:
+        item = {
+            "type": "message",
+            "role": "assistant",
+            "content": text,
+        }
+        phase = None
+        if isinstance(metadata, dict):
+            phase = metadata.get("phase")
+        if isinstance(phase, str) and phase:
+            item["phase"] = phase
+        items.append(item)
+
+    tool_calls = message.get("tool_calls") or _tool_calls_from_content_blocks(message)
+    for tool_call in tool_calls:
+        items.append(_openai_responses_function_call_item(tool_call))
+    return items
+
+
+def _openai_responses_tool_output(message: dict[str, Any]) -> dict[str, Any]:
+    content = message.get("content", "")
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False)
+    return {
+        "type": "function_call_output",
+        "call_id": message.get("tool_call_id") or message.get("call_id", ""),
+        "output": content,
+    }
+
+
+def build_openai_responses_request(
+    messages: list[dict[str, Any]],
+    conversation_root: Path | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    system_parts = []
+    request_items = []
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            text = _content_text(message.get("content"))
+            if text:
+                system_parts.append(text)
+        elif role == "tool":
+            request_items.append(_openai_responses_tool_output(message))
+        elif role == "assistant":
+            request_items.extend(_openai_responses_assistant_items(message))
+        elif role == "user":
+            content = _openai_responses_user_content(message.get("content"), conversation_root)
+            request_items.append({"role": "user", "content": content})
+
+    return "\n\n".join(system_parts), request_items
+
+
+def _normalized_openai_responses_blocks(native_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = []
+    for block in native_blocks:
+        block_type = block.get("type")
+        if block_type == "message":
+            text = "".join(
+                part.get("refusal", "") if part.get("type") == "refusal" else part.get("text", "")
+                for part in block.get("content") or []
+                if isinstance(part, dict) and part.get("type") in {"output_text", "text", "refusal"}
+            )
+            if text:
+                normalized_message = {"type": "text", "text": text}
+                if block.get("phase") is not None:
+                    normalized_message["phase"] = block["phase"]
+                normalized.append(normalized_message)
+            continue
+        if block_type == "reasoning":
+            summary = "".join(
+                part.get("text", "")
+                for part in block.get("summary") or []
+                if isinstance(part, dict) and part.get("type") in {"summary_text", "text"}
+            )
+            if summary:
+                normalized.append({"type": "reasoning", "text": summary})
+            else:
+                normalized.append({"type": "redacted_reasoning"})
+            continue
+        if block_type == "function_call":
+            normalized.append({
+                "type": "tool_call",
+                "id": block.get("call_id") or block.get("id", ""),
+                "name": block.get("name", ""),
+                "arguments": block.get("arguments", ""),
+            })
+            continue
+        normalized.append({
+            "type": "native",
+            "native_type": block_type,
+            "block": copy.deepcopy(block),
+        })
+    return normalized
+
+
 def format_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
     for tool in tools:
@@ -1089,6 +1313,150 @@ def _normalized_anthropic_blocks(native_blocks: list[dict[str, Any]]) -> list[di
                 "block": copy.deepcopy(block),
             })
     return normalized
+
+
+class OpenAIResponsesClient(AsyncBaseLLMClient):
+    def __init__(
+        self,
+        client: Any,
+        model: str,
+        reasoning_effort: str = "medium",
+        *,
+        base_url: str = "",
+        api_key: str = "",
+        conversation_root: Path | None = None,
+    ):
+        super().__init__(client, model, reasoning_effort, conversation_root=conversation_root)
+        self.base_url = base_url
+        self.api_key = api_key
+
+    def format_tools(self, pydantic_tools: list) -> list:
+        return format_openai_responses_tools(pydantic_tools)
+
+    async def generate_stream(
+        self,
+        messages: list,
+        tools: list = None,
+    ):
+        instructions, request_items = build_openai_responses_request(
+            messages,
+            self.conversation_root,
+        )
+        kwargs = {
+            "model": self.model,
+            "input": request_items,
+            "stream": True,
+            "store": False,
+            "include": ["reasoning.encrypted_content"],
+            "reasoning": {
+                "effort": self.reasoning_effort,
+                "summary": "auto",
+            },
+            "prompt_cache_key": build_openai_prompt_cache_key(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
+                messages=request_items,
+                tools=tools,
+                message_format="openai_responses",
+                instructions=instructions,
+            ),
+            "prompt_cache_retention": "24h",
+        }
+        if instructions:
+            kwargs["instructions"] = instructions
+        if tools:
+            kwargs["tools"] = tools
+
+        if _is_response_cancelled():
+            return
+        with _client_request_active():
+            stream = _tracked_async_stream(
+                lambda: self.client.responses.create(**kwargs)
+            )
+            final_response = None
+            tool_calls_started = False
+            try:
+                async for event in stream:
+                    if _is_response_cancelled():
+                        return
+                    event_type = event.type
+                    if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+                        if event.delta:
+                            yield {"type": "text", "content": event.delta}
+                    elif event_type == "response.reasoning_summary_text.delta":
+                        if event.delta:
+                            yield {"type": "reasoning", "content": event.delta}
+                    elif event_type == "response.output_item.added":
+                        if event.item.type == "function_call" and not tool_calls_started:
+                            tool_calls_started = True
+                            yield {"type": "tool_calls"}
+                    elif event_type == "response.completed":
+                        final_response = event.response
+                        break
+                    elif event_type in {"response.failed", "response.incomplete"}:
+                        response = _to_plain_dict(event.response)
+                        detail = response.get("error") or response.get("incomplete_details") or {}
+                        raise RuntimeError(f"OpenAI Responses {event_type}: {json.dumps(detail, ensure_ascii=False)}")
+                    elif event_type == "error":
+                        raise RuntimeError(f"OpenAI Responses error ({event.code}): {event.message}")
+            except _LLMRequestCancelled:
+                return
+            finally:
+                await stream.aclose()
+
+        if final_response is None:
+            raise RuntimeError("OpenAI Responses stream ended without a terminal response.completed event.")
+
+        native_blocks = [
+            _to_plain_dict(block)
+            for block in final_response.output
+        ]
+        content_blocks = _normalized_openai_responses_blocks(native_blocks)
+        text = "".join(block["text"] for block in content_blocks if block["type"] == "text")
+        reasoning = "".join(block["text"] for block in content_blocks if block["type"] == "reasoning")
+        assistant_tool_calls = []
+        tool_calls = []
+        for block in native_blocks:
+            if block.get("type") != "function_call":
+                continue
+            arguments = block.get("arguments", "")
+            if isinstance(arguments, dict):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            call_id = block.get("call_id") or block.get("id", "")
+            assistant_tool_call = {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": block.get("name", ""),
+                    "arguments": arguments,
+                },
+            }
+            assistant_tool_calls.append(assistant_tool_call)
+            tool_calls.append({
+                "id": call_id,
+                "name": block.get("name", ""),
+                "arguments": arguments,
+                "raw": copy.deepcopy(block),
+            })
+
+        result = build_llm_result(
+            text=text,
+            reasoning=reasoning,
+            tool_calls=tool_calls,
+            assistant_tool_calls=assistant_tool_calls,
+            content_blocks=content_blocks,
+            source_format="openai_responses",
+            source_model=self.model,
+            native_blocks=native_blocks,
+            stop_reason=getattr(final_response, "status", None),
+            usage=_to_plain_dict(getattr(final_response, "usage", None)) or None,
+        )
+        yield {
+            "type": "done",
+            "result": result,
+        }
 
 
 class AnthropicMessagesClient(AsyncBaseLLMClient):
@@ -1237,7 +1605,12 @@ def _create_async_chat_client(model_config, conversation_root: Path | None = Non
         max_retries=_LLM_MAX_RETRIES,
         default_headers={"User-Agent": "MakeCode Agent"},
     )
-    return AsyncChatAPIClient(
+    adapter_cls = (
+        OpenAIResponsesClient
+        if model_config.message_format == "openai_responses"
+        else AsyncChatAPIClient
+    )
+    return adapter_cls(
         client,
         model_config.model_id,
         model_config.reasoning_effort,
@@ -1253,6 +1626,8 @@ def format_tools_for_current_model(tools: list[dict[str, Any]]) -> list[dict[str
         raise RuntimeError("No model configured. Please use /models to configure a model first.")
     if current_model.message_format == "anthropic":
         return format_anthropic_tools(tools)
+    if current_model.message_format == "openai_responses":
+        return format_openai_responses_tools(tools)
     return format_openai_tools(tools)
 
 

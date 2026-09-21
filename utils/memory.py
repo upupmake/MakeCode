@@ -1116,11 +1116,11 @@ def _token_value_text(value: object) -> str:
     return str(value)
 
 
-def _token_reasoning_text(message: dict, anthropic_request: bool = False) -> str:
-    if anthropic_request:
+def _token_reasoning_text(message: dict, message_format: str | None = None) -> str:
+    if message_format in {"anthropic", "openai_responses"}:
         metadata = message.get("message_metadata")
-        # Anthropic 请求只回放本协议产出的 thinking 块，外来 reasoning 不会被发送（见 _anthropic_assistant_content）。
-        if not isinstance(metadata, dict) or metadata.get("source_format") != "anthropic":
+        # 这些协议只回放本协议产出的 reasoning/thinking，外来 reasoning 不会被发送。
+        if not isinstance(metadata, dict) or metadata.get("source_format") != message_format:
             return ""
     reasoning = message.get("reasoning_content")
     if isinstance(reasoning, str) and reasoning:
@@ -1148,7 +1148,6 @@ def _build_token_estimation_sections(
         # 未显式指定时按当前模型协议估算，保证与实际请求内容一致。
         current_model = get_current_model_config()
         message_format = current_model.message_format if current_model is not None else None
-    anthropic_request = message_format == "anthropic"
     projected_messages = text_only_messages(
         strip_native_message_payloads(messages)
     )
@@ -1172,7 +1171,7 @@ def _build_token_estimation_sections(
                 sections["user"].append(f"<user>{text}</user>")
             continue
         if role == "assistant":
-            reasoning = _token_reasoning_text(message, anthropic_request)
+            reasoning = _token_reasoning_text(message, message_format)
             if reasoning:
                 sections["reasoning"].append(f"<reasoning>{reasoning}</reasoning>")
             text = _compaction_message_text(message)

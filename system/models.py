@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_REASONING_EFFORT = "medium"
-MESSAGE_FORMATS = ("openai_chat", "anthropic")
+MESSAGE_FORMATS = ("openai_chat", "openai_responses", "anthropic")
 DEFAULT_MESSAGE_FORMAT = "openai_chat"
 ModelKey = tuple[str, str, str, str]
 

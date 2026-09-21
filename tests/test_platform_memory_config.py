@@ -2161,6 +2161,9 @@ def test_message_format_is_identity_while_reasoning_effort_is_runtime_only(tmp_p
     openai_model = manager.add_model(
         "https://example.com", "key", ["same"], message_format="openai_chat"
     )[0]
+    responses_model = manager.add_model(
+        "https://example.com", "key", ["same"], message_format="openai_responses"
+    )[0]
     anthropic_model = manager.add_model(
         "https://example.com", "key", ["same"], message_format="anthropic"
     )[0]
@@ -2172,7 +2175,9 @@ def test_message_format_is_identity_while_reasoning_effort_is_runtime_only(tmp_p
         message_format="openai_chat",
     )
 
+    assert openai_model.key != responses_model.key
     assert openai_model.key != anthropic_model.key
+    assert responses_model.key != anthropic_model.key
     assert openai_model.key == high_model.key
     assert openai_model.runtime_key != high_model.runtime_key
 
@@ -3428,6 +3433,24 @@ def test_estimate_tokens_skips_foreign_reasoning_for_anthropic_requests():
             anthropic_sourced,
         ],
         message_format="anthropic",
+    )
+    responses_sourced = {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "responses summary",
+        "message_metadata": {"source_format": "openai_responses", "source_model": "gpt-test"},
+    }
+    responses_total = memory.estimate_tokens(
+        [{"role": "user", "content": "question"}, openai_sourced, responses_sourced],
+        message_format="openai_responses",
+    )
+    assert responses_total == memory.estimate_tokens(
+        [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+            responses_sourced,
+        ],
+        message_format="openai_responses",
     )
 
 

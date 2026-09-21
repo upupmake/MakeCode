@@ -1,7 +1,11 @@
 import base64
 from pathlib import Path
 
-from utils.llm_client import build_anthropic_request_messages, sanitize_openai_messages
+from utils.llm_client import (
+    build_anthropic_request_messages,
+    build_openai_responses_request,
+    sanitize_openai_messages,
+)
 from utils.vision import (
     image_reference_marker,
     parse_image_placeholders,
@@ -122,10 +126,14 @@ def test_openai_and_anthropic_convert_canonical_image_blocks(tmp_path):
 
     openai = sanitize_openai_messages([message], conversation_root)
     _, anthropic = build_anthropic_request_messages([message], conversation_root)
+    _, responses = build_openai_responses_request([message], conversation_root)
 
     assert openai[0]["content"][0] == {"type": "text", "text": "question "}
     assert openai[0]["content"][1]["type"] == "image_url"
     assert openai[0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert responses[0]["content"][0] == {"type": "input_text", "text": "question "}
+    assert responses[0]["content"][1]["type"] == "input_image"
+    assert responses[0]["content"][1]["image_url"].startswith("data:image/png;base64,")
     assert anthropic[0]["content"][1] == {
         "type": "image",
         "source": {
@@ -152,3 +160,4 @@ def test_protocol_clients_drop_images_when_no_conversation_root_is_supplied(tmp_
 
     assert sanitize_openai_messages([message])[0]["content"] == [{"type": "text", "text": "question "}]
     assert build_anthropic_request_messages([message])[1][0]["content"] == [{"type": "text", "text": "question "}]
+    assert build_openai_responses_request([message])[1][0]["content"] == "question "
