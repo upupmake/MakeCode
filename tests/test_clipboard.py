@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
 from textual.widgets import Label
 from textual.widgets.text_area import Selection
 
@@ -178,6 +179,32 @@ class CopyModalHost(App):
 
     def on_mount(self) -> None:
         self.push_screen(self._modal)
+
+
+@pytest.mark.anyio
+async def test_copy_modal_opens_on_last_section_and_scrolls_container_to_end():
+    latest = "latest answer\n" * 20
+    modal = CopyContentModal([
+        {"role": "user", "content": "first question\n" * 20},
+        {"role": "assistant", "content": "first answer\n" * 20},
+        {"role": "user", "content": "latest question\n" * 20},
+        {"role": "assistant", "content": latest},
+    ])
+    app = CopyModalHost(modal)
+
+    async with app.run_test(size=(80, 20)) as host:
+        await host.pause()
+        last = modal.query_one("#copy-section-text-3")
+        assert modal.focused is last
+        last_line = last.document.line_count - 1
+        last_col = len(last.document.get_line(last_line))
+        assert last.cursor_location == (last_line, last_col)
+        sections = modal.query_one("#copy-sections", VerticalScroll)
+        sections.scroll_to(y=0, animate=False, immediate=True)
+        assert sections.scroll_y == 0
+        modal._scroll_copy_sections_to_end()
+        assert sections.max_scroll_y > 0
+        assert sections.scroll_y == sections.max_scroll_y
 
 
 @pytest.mark.anyio

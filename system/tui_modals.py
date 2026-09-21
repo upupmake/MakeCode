@@ -2792,12 +2792,20 @@ class CopyContentModal(ClosableModalScreen[str]):
                 yield Button("关闭", id="copy-close", variant="warning")
 
     def on_mount(self) -> None:
-        text_area = self.query_one("#copy-sections TextArea", TextArea)
-        text_area.focus()
-        last_line = text_area.document.line_count - 1
-        last_col = len(text_area.document.get_line(last_line)) if last_line >= 0 else 0
-        text_area.move_cursor((last_line, last_col))
-        text_area.scroll_cursor_visible()
+        text_areas = list(self.query(".copy-section-text"))
+        if text_areas:
+            text_area = text_areas[-1]
+            text_area.focus()
+            last_line = text_area.document.line_count - 1
+            last_col = len(text_area.document.get_line(last_line)) if last_line >= 0 else 0
+            text_area.move_cursor((last_line, last_col))
+        self.call_after_refresh(self._scroll_copy_sections_to_end)
+
+    def _scroll_copy_sections_to_end(self) -> None:
+        self.query_one("#copy-sections", VerticalScroll).scroll_end(
+            animate=False,
+            immediate=True,
+        )
 
     def _on_key(self, event: Key) -> None:
         if event.key == "c":
