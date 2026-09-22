@@ -902,7 +902,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 
 Important built-in rules include:
 
-- Prefer File tools for file reads, writes, and edits; default to terminal searches (e.g., `grep`/`rg`/`find`) that print absolute paths with file/directory markers. Group text results by file, print each absolute path header once, then include 1-based match/context line markers and useful context while preserving source indentation without adding spaces after line-number separators. The terminal command itself should produce this compact shape rather than relying on final-response post-processing.
+- Prefer File tools for file reads, writes, and edits; default to terminal searches (e.g., `grep`/`rg`/`find`).
 - Regular file reads, writes, and edits should not rely on shell commands.
 - Always call `GetRunnableTasks` before delegation.
 - `DelegateTasks` only accepts tasks from the latest runnable frontier.

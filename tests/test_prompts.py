@@ -41,7 +41,7 @@ class PromptPolicyTests(unittest.TestCase):
         self.assertNotIn("MUST confirm with the user first", prompt)
         self.assertIn("Otherwise report the blocker clearly", prompt)
 
-    def test_prompts_omit_search_tool_names_and_require_agent_friendly_terminal_search(self):
+    def test_prompts_omit_search_tool_names_and_detailed_terminal_search_formatting(self):
         for prompt in (
             self._orchestrator_prompt(plan_mode=False),
             self._orchestrator_prompt(plan_mode=True),
@@ -49,31 +49,14 @@ class PromptPolicyTests(unittest.TestCase):
         ):
             self.assertNotIn("ContentSearch", prompt)
             self.assertNotIn("FileSearch", prompt)
-            self.assertIn("repository searches", prompt)
-            self.assertIn("absolute path and an explicit type marker", prompt)
-            self.assertIn("group output by file", prompt)
-            self.assertIn("`File: <absolute path>` exactly once", prompt)
-            self.assertIn("do not repeat the full path on every result line", prompt)
-            self.assertIn("tool result is already compact, not only in your final response", prompt)
-            self.assertIn("original 1-based line numbers", prompt)
-            self.assertIn("`<line number>:<verbatim line>`", prompt)
-            self.assertIn("`<line number>-<verbatim line>`", prompt)
-            self.assertIn("`@@ <a>-<b> skipped @@`", prompt)
-            self.assertIn("`rg --heading -n -C N --color never`", prompt)
-            self.assertIn("`grep -n -h -C N` per file", prompt)
-            self.assertIn("Never suppress filenames across multiple files without adding file headings", prompt)
-            self.assertIn("group `Select-String -Context N,N` results by Path", prompt)
-            self.assertIn("without default display prefixes, highlighting, or table truncation", prompt)
-            self.assertIn("Desired content-search shape", prompt)
-            self.assertIn("`File: /absolute/path/file.py`", prompt)
-            self.assertIn("without duplicate lines", prompt)
-            self.assertIn("separate disjoint ranges with `--`", prompt)
-            self.assertIn("with no extra space after `:` or `-`", prompt)
-            self.assertIn("preserve indentation and trailing spaces", prompt)
-            self.assertIn("state when results are truncated", prompt)
-            self.assertNotIn("<absolute path>:<line number>:<verbatim line>", prompt)
-            self.assertNotIn("grep -nH", prompt)
-            self.assertNotIn("rg -n -C N --with-filename", prompt)
+            self.assertIn("For file, path, and text searches, use RunTerminalCommand by default", prompt)
+            self.assertIn("Do not assume a particular search program is installed", prompt)
+            self.assertIn("Use RunTerminalCommand for: builds, tests, git, package management, system info, and file, path, and text searches", prompt)
+            self.assertNotIn("repository searches", prompt)
+            self.assertNotIn("When searching with RunTerminalCommand", prompt)
+            self.assertNotIn("absolute path and an explicit type marker", prompt)
+            self.assertNotIn("Desired content-search shape", prompt)
+            self.assertNotIn("/absolute/path", prompt)
 
     def test_plan_mode_prompt_lists_read_only_search_commands(self):
         prompt = self._orchestrator_prompt(plan_mode=True)

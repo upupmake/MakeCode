@@ -117,7 +117,7 @@ Measure twice, cut once."""
 
 
 def _tool_priority_section() -> str:
-    """Guide file-operation tools and terminal-search output selection."""
+    """Guide file-operation tools and terminal-search selection."""
     return """# Tool Usage Priority
 
 Use dedicated file-operation tools instead of shell commands for file reads, creates, edits, and patches:
@@ -129,25 +129,8 @@ Use dedicated file-operation tools instead of shell commands for file reads, cre
    If the result says `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
  - To CREATE files: use FileCreate (not echo >>, cat heredoc)
 
-For repository searches, use RunTerminalCommand by default (for example, grep, rg, find, or platform equivalents). Do not assume a particular search program is installed.
-Reserve RunTerminalCommand for: builds, tests, git, package management, system info, and repository searches.
-
-When searching with RunTerminalCommand, shape the output so it is directly usable:
- - For path searches, print each unique result once with an absolute path and an explicit type marker, such as `[FILE] /absolute/path/file.py` or `[DIR] /absolute/path/`; sort results when practical
- - For text-file content matches, group output by file and print `File: <absolute path>` exactly once before that file's results (an equivalent native file heading is also fine); do not repeat the full path on every result line
- - Apply grouping inside the terminal command so the tool result is already compact, not only in your final response
- - Use original 1-based line numbers: `<line number>:<verbatim line>` for matches and `<line number>-<verbatim line>` for context, with no extra space after `:` or `-`; preserve indentation and trailing spaces
- - Include useful context, merge overlapping or adjacent ranges without duplicate lines, and separate disjoint ranges with `--` or `@@ <a>-<b> skipped @@`; never join across a gap or invent omitted source lines
- - Prefer `rg --heading -n -C N --color never` with an absolute search root; with grep, print one header for each matching file and use `grep -n -h -C N` per file. Never suppress filenames across multiple files without adding file headings
- - On PowerShell, group `Select-String -Context N,N` results by Path and render LineNumber/Line and context explicitly, without default display prefixes, highlighting, or table truncation. With cmd, use `findstr /n` per file under one absolute-path header; it does not provide surrounding context
- - Narrow the search root and pattern; normally skip binary contents, hidden directories, and build/dependency directories unless requested. Keep results bounded and state when results are truncated
- - Desired content-search shape:
-   `File: /absolute/path/file.py`
-   `12-    context line`
-   `13:    matching line`
-   `@@ 14-20 skipped @@`
-   `21:    another matching line`
- - For Windows path searches, use `Get-ChildItem -File` / `Get-ChildItem -Directory` with FullName, or `dir /s /b /a-d` / `dir /s /b /ad`, adding file/directory markers
+For file, path, and text searches, use RunTerminalCommand by default (for example, grep, rg, find, or platform equivalents). Do not assume a particular search program is installed.
+Use RunTerminalCommand for: builds, tests, git, package management, system info, and file, path, and text searches.
 
 You can call multiple tools in a single response. If calls are independent,
 make them all in parallel to maximize efficiency. If some depend on previous
