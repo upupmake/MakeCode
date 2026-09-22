@@ -647,13 +647,13 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(truncate_output(first), first)
 
         second = memory._compact_tool_output_text(first)
-        expected_omitted_tokens = memory.estimate_text_tokens(first) - 2000
+        expected_omitted_tokens = memory.estimate_text_tokens(first) - 1500
         expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(
             omitted_tokens=expected_omitted_tokens,
         )
         self.assertEqual(
             second,
-            "甲" * 1000 + expected_marker + "乙" * 1000,
+            "甲" * 750 + expected_marker + "乙" * 750,
         )
         self.assertEqual(memory._compact_tool_output_text(second), second)
         self.assertEqual(truncate_output(second), second)

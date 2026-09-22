@@ -458,11 +458,11 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
 
     assert memory.get_memory_recall_window_size() == 3
     assert memory.get_memory_pre_recall() is True
-    assert memory.get_context_length() == 200
-    assert memory.get_context_token_limit() == 200 * 1024
+    assert memory.get_context_length() == 350
+    assert memory.get_context_token_limit() == 350 * 1024
     assert memory.get_compaction_thresholds() == (70, 90)
-    assert memory.get_tool_output_compact_tokens() == 2000
-    assert memory.get_partial_compact_percentages() == (30, 50)
+    assert memory.get_tool_output_compact_tokens() == 1500
+    assert memory.get_partial_compact_percentages() == (50, 99)
     assert memory.set_context_length(300) == 300
     assert memory.set_compaction_thresholds(65, 85) == (65, 85)
     assert memory.set_tool_output_compact_tokens(2400) == 2400
@@ -3381,8 +3381,8 @@ def test_tool_output_compaction_is_transactional_idempotent_and_protects_latest_
 
     assert memory.compact_tool_outputs(messages) is True
     compacted = messages[3]["content"]
-    expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=400)
-    assert compacted == "甲" * 1000 + expected_marker + "乙" * 1000
+    expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=900)
+    assert compacted == "甲" * 750 + expected_marker + "乙" * 750
     assert "native_blocks" not in messages[2]["message_metadata"]
     assert messages[7]["content"] == latest_output
     assert messages[6]["message_metadata"]["native_blocks"] == [{"type": "tool_use", "id": "call_latest"}]
@@ -3398,23 +3398,23 @@ def test_tool_output_compaction_includes_pretruncation_marker_in_payload():
 
     compacted = memory._compact_tool_output_text(pretruncated)
     expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(
-        omitted_tokens=memory.estimate_text_tokens(pretruncated) - 2000,
+        omitted_tokens=memory.estimate_text_tokens(pretruncated) - 1500,
     )
 
-    assert compacted == "甲" * 1000 + expected_marker + "乙" * 1000
+    assert compacted == "甲" * 750 + expected_marker + "乙" * 750
     assert "[...此处省略" not in compacted
 
 
 def test_tool_output_compaction_uses_exact_token_boundaries():
-    exact = "甲" * 2000
-    over = "甲" * 1001 + "乙" * 1000
+    exact = "甲" * 1500
+    over = "甲" * 751 + "乙" * 750
     long_but_token_light = "A" * 3000
 
     assert memory.TOOL_OUTPUT_COMPACT_MARKER == "\n\n...[该工具执行结果已被压缩 {omitted_tokens} tokens]...\n\n"
     assert memory._compact_tool_output_text(exact) == exact
     assert memory._compact_tool_output_text(long_but_token_light) == long_but_token_light
     assert memory._compact_tool_output_text(over) == (
-        "甲" * 1000 + memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=1) + "乙" * 1000
+        "甲" * 750 + memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=1) + "乙" * 750
     )
 
 
@@ -3439,24 +3439,24 @@ def test_tool_output_compaction_handles_english_and_unicode_token_boundaries():
         head = compacted[:marker_match.start()]
         tail = compacted[marker_match.end():]
         expected_tokens = memory._ENCODER.encode(output, disallowed_special=())
-        expected_head = memory._ENCODER.decode_bytes(expected_tokens[:1000]).decode("utf-8", errors="ignore")
-        expected_tail = memory._ENCODER.decode_bytes(expected_tokens[-1000:]).decode("utf-8", errors="ignore")
+        expected_head = memory._ENCODER.decode_bytes(expected_tokens[:750]).decode("utf-8", errors="ignore")
+        expected_tail = memory._ENCODER.decode_bytes(expected_tokens[-750:]).decode("utf-8", errors="ignore")
 
         assert head == expected_head
         assert tail == expected_tail
-        assert memory.estimate_text_tokens(head) <= 1000
-        assert memory.estimate_text_tokens(tail) <= 1000
+        assert memory.estimate_text_tokens(head) <= 750
+        assert memory.estimate_text_tokens(tail) <= 750
         assert "�" not in compacted
 
 
 def test_tool_output_compaction_fallback_is_conservative_without_tiktoken(monkeypatch):
     monkeypatch.setattr(memory, "_ENCODER", None)
-    output = "甲" * 2001
+    output = "甲" * 1501
 
     compacted = memory._compact_tool_output_text(output)
 
     expected_marker = memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=1)
-    assert compacted == "甲" * 1000 + expected_marker + "甲" * 1000
+    assert compacted == "甲" * 750 + expected_marker + "甲" * 750
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "old"},
@@ -3470,7 +3470,7 @@ def test_tool_output_compaction_fallback_is_conservative_without_tiktoken(monkey
         {
             "type": "function_call_output",
             "call_id": "call_old",
-            "content": "甲" * 2001,
+            "content": "甲" * 1501,
         },
         {"role": "user", "content": "latest"},
         {"role": "assistant", "content": "latest answer"},
@@ -3478,9 +3478,9 @@ def test_tool_output_compaction_fallback_is_conservative_without_tiktoken(monkey
 
     assert memory.compact_tool_outputs(messages) is True
     assert messages[3]["content"] == (
-        "甲" * 1000
+        "甲" * 750
         + memory.TOOL_OUTPUT_COMPACT_MARKER.format(omitted_tokens=1)
-        + "甲" * 1000
+        + "甲" * 750
     )
     assert "native_blocks" not in messages[2]["message_metadata"]
 
