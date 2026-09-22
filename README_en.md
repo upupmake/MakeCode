@@ -81,8 +81,8 @@ Provides the following execution primitives:
 - `FileCreate`: only for creating and writing a NEW file (when target file does not exist or is empty). Tree-sitter syntax validation runs after writing; detected syntax errors are appended as a warning with line numbers and do not roll back the write.
 - `FileEdit`: modify an existing file. **Uses whole-line search-and-replace (search_content → replace_content) instead of line number ranges**. No prior `FileRead` call is required. **Staged matching**: every block is first matched against the file as it was read; a block that cannot be placed yet is deferred and retried against the text the applied blocks produced, so **chaining one block onto another block's output still works** regardless of the order the blocks are written in. Matching is whole-line: exact first, then tolerating trailing whitespace and a uniform indentation shift (the replacement is re-indented by the same amount). Each block must match exactly one location; if any block never resolves, the **whole batch is rejected and every problem is reported at once** (candidate line numbers, a unified diff against the closest region, plus targeted hints for "an earlier block rewrote those lines" and for copied line-number prefixes). Applying splices bottom-up, and the commit uses a same-directory temp file plus an atomic replace that preserves the original line endings, trailing-newline state, BOM and file mode. Non-UTF-8 and binary files are refused outright.
 - `FilePatch`: apply a patch affecting one or more files, starting directly with `*** Update File: path`, `*** Add File: path`, or `*** Delete File: path`. The patch ends at the end of the `patch` string, with no outer wrapper. Update hunks follow standard unified diff syntax: every unchanged context line after `@@` starts with exactly one space, removed lines start with `-`, and added lines start with `+`; pure insertions use a zero-old-line header such as `@@ -0,0 +1,1 @@` (a bare `@@` is also allowed for an empty file); `Add File` content uses one `+` prefix per line. Each actual file may appear only once in a patch, including paths that differ only by case but resolve to the same inode. Each file is parsed, validated, matched, and committed independently; one file failing does not block the others, while any hunk failure leaves that file untouched. Existing files preserve their original line endings, BOM, and mode during per-file atomic replacement. Paths resolve `.`, `..`, and symlinks first; paths outside the workspace trigger one approval for the whole patch.
-- `ContentSearch`: recursively search text file contents under `root_dir` with `content_regex`, optionally filtering files by absolute path with `path_regex`; supports `context_size` to include that many lines before and after each match (default: 1); regex uses Python syntax. Output follows the same `grep -n` convention: matched lines as `<line number>:<verbatim line>`, context lines as `<line number>-<verbatim line>`, both without a separator space, and non-adjacent ranges separated by `@@ a-b skipped @@`. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
-- `FileSearch`: recursively search files and directories under `root_dir`, matching `path_regex` against absolute paths; supports type filtering (`file`/`dir`/`all`). Automatically excludes hidden and build/dependency directories and returns up to 500 items. Ideal for quickly exploring project structure.
+- `ContentSearch`: a fallback for terminal content searches (`grep`/`rg`/`findstr`/`Select-String`); recursively search text file contents under `root_dir` with `content_regex`, optionally filtering files by absolute path with `path_regex`; supports `context_size` to include that many lines before and after each match (default: 1); regex uses Python syntax. Output is grouped by file with one `File: path` header per file, then follows the same `grep -n` convention: matched lines as `<line number>:<verbatim line>`, context lines as `<line number>-<verbatim line>`, both without a separator space, and non-adjacent ranges separated by `@@ a-b skipped @@`. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
+- `FileSearch`: recursively search files and directories under `root_dir`, matching `path_regex` against absolute paths; supports type filtering (`file`/`dir`/`all`). Directories use `[DIR] path/`, while file results are deduplicated and sorted. Automatically excludes hidden and build/dependency directories and returns up to 500 items. Use as a fallback to terminal search (`find`/`rg --files`).
 - `RunTerminalCommand`: run a non-interactive terminal command
 
 #### 📋 Tree-sitter Syntax Validation (`system/ts_validator.py`)
@@ -410,7 +410,7 @@ MakeCode supports Plan/Act mode switching, ensuring the agent focuses on analysi
 
 #### Core Concepts
 
-- **Plan Mode**: Only read-only tools, planning tools, and restricted terminal commands are allowed (e.g., `FileRead`, `ContentSearch`, `FileSearch`, `TaskManager`, `LoadSkill`, etc.), file writes, edits, and task delegation are prohibited
+- **Plan Mode**: Only read-only tools, planning tools, and restricted terminal commands are allowed (e.g., `FileRead`, `TaskManager`, `LoadSkill`, and read-only inspection commands), file writes, edits, and task delegation are prohibited
 - **Act Mode**: Full execution mode where all tools are available
 
 #### Restricted Tools in Plan Mode
@@ -423,8 +423,9 @@ The following tools are blocked in Plan Mode:
 
 `RunTerminalCommand` is available in Plan Mode, but with a **two-layer filtering mechanism**:
 
-1. **Prefix Filtering**: Only `git`, `pip`, `npm`, `docker` command prefixes are allowed; other commands are blocked directly
-2. **HITL Confirmation**: Allowed commands still trigger the user confirmation panel and require manual approval before execution
+1. **Prefix Filtering**: Common inspection prefixes are allowed (Unix: `git`, `grep`, `rg`, `find`, `ls`, `cat`; Windows cmd/pwsh: `findstr`, `Get-ChildItem`, `Select-String`, `Get-Content`). Matching is case-insensitive and ignores executable suffixes and path prefixes; other commands are blocked directly
+2. **Read-only form constraint**: Even when a command prefix is allowed, use only read-only / inspection forms; do not use mutating subcommands, write-back flags such as `sed -i`, output redirection, shell wrappers, or pipelines that write files or change system state.
+3. **HITL Confirmation**: Allowed commands still trigger the user confirmation panel and require manual approval before execution
 
 #### Switching Methods
 
@@ -901,8 +902,8 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 
 Important built-in rules include:
 
-- Prefer File tools for file reads, writes, edits, and text search.
-- Regular file manipulation should not rely on shell commands.
+- Prefer File tools for file reads, writes, and edits; default to terminal searches (e.g., `grep`/`rg`/`find`) that print absolute paths with file/directory markers. Group text results by file, print each absolute path header once, then include 1-based match/context line markers and useful context while preserving source indentation without adding spaces after line-number separators. The terminal command itself should produce this compact shape rather than relying on final-response post-processing.
+- Regular file reads, writes, and edits should not rely on shell commands.
 - Always call `GetRunnableTasks` before delegation.
 - `DelegateTasks` only accepts tasks from the latest runnable frontier.
 - Only parallel-safe and independent tasks should be delegated concurrently.

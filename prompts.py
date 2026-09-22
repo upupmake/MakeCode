@@ -117,10 +117,10 @@ Measure twice, cut once."""
 
 
 def _tool_priority_section() -> str:
-    """Guide tool selection to prefer dedicated tools over shell commands."""
+    """Guide file-operation tools and terminal-search output selection."""
     return """# Tool Usage Priority
 
-Do NOT use RunTerminalCommand when a dedicated tool exists:
+Use dedicated file-operation tools instead of shell commands for file reads, creates, edits, and patches:
  - To READ files: use FileRead (not cat, head, tail, type)
  - To EDIT a single existing file: use FileEdit (not sed, awk, or terminal editors)
  - To APPLY a complete unified-diff patch: use FilePatch (not terminal patch commands)
@@ -128,10 +128,26 @@ Do NOT use RunTerminalCommand when a dedicated tool exists:
    Prefer FileEdit for a simple single-file search-and-replace; do not use the number of affected files as the sole criterion for choosing between them.
    If the result says `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
  - To CREATE files: use FileCreate (not echo >>, cat heredoc)
- - To SEARCH file content: prefer ContentSearch when you only need to locate and view matches
- - To SEARCH files by path regex: prefer FileSearch when you only need to list matching paths
-   Do not treat them as the only way to search: they return plain matched lines/paths without post-processing. When results need counting, aggregation, sorting, pipelines, or chaining into follow-up commands, use RunTerminalCommand instead (e.g., grep/rg/find with pipes).
- - Reserve RunTerminalCommand for: builds, tests, git, package management, system info, and searches that need pipelines or aggregation
+
+For repository searches, use RunTerminalCommand by default (for example, grep, rg, find, or platform equivalents). Do not assume a particular search program is installed.
+Reserve RunTerminalCommand for: builds, tests, git, package management, system info, and repository searches.
+
+When searching with RunTerminalCommand, shape the output so it is directly usable:
+ - For path searches, print each unique result once with an absolute path and an explicit type marker, such as `[FILE] /absolute/path/file.py` or `[DIR] /absolute/path/`; sort results when practical
+ - For text-file content matches, group output by file and print `File: <absolute path>` exactly once before that file's results (an equivalent native file heading is also fine); do not repeat the full path on every result line
+ - Apply grouping inside the terminal command so the tool result is already compact, not only in your final response
+ - Use original 1-based line numbers: `<line number>:<verbatim line>` for matches and `<line number>-<verbatim line>` for context, with no extra space after `:` or `-`; preserve indentation and trailing spaces
+ - Include useful context, merge overlapping or adjacent ranges without duplicate lines, and separate disjoint ranges with `--` or `@@ <a>-<b> skipped @@`; never join across a gap or invent omitted source lines
+ - Prefer `rg --heading -n -C N --color never` with an absolute search root; with grep, print one header for each matching file and use `grep -n -h -C N` per file. Never suppress filenames across multiple files without adding file headings
+ - On PowerShell, group `Select-String -Context N,N` results by Path and render LineNumber/Line and context explicitly, without default display prefixes, highlighting, or table truncation. With cmd, use `findstr /n` per file under one absolute-path header; it does not provide surrounding context
+ - Narrow the search root and pattern; normally skip binary contents, hidden directories, and build/dependency directories unless requested. Keep results bounded and state when results are truncated
+ - Desired content-search shape:
+   `File: /absolute/path/file.py`
+   `12-    context line`
+   `13:    matching line`
+   `@@ 14-20 skipped @@`
+   `21:    another matching line`
+ - For Windows path searches, use `Get-ChildItem -File` / `Get-ChildItem -Directory` with FullName, or `dir /s /b /a-d` / `dir /s /b /ad`, adding file/directory markers
 
 You can call multiple tools in a single response. If calls are independent,
 make them all in parallel to maximize efficiency. If some depend on previous
@@ -267,11 +283,13 @@ Blocked tools:
  - DelegateTasks — sub-agent delegation
 
 Allowed tools:
- - FileRead, ContentSearch, FileSearch — file reading and searching
+ - FileRead — file reading
  - RecallLongTermMemory — read-only long-term memory recall
  - RunTerminalCommand — restricted to {_allowed_cmds}; other commands are blocked and allowed commands require confirmation
  - TaskManager planning tools (CreateTasks, UpdateTasksContent, UpdateTasksStatus, UpdateTasksDependencies, GetRunnableTasks, GetTaskTable)
  - LoadSkill — load domain-specific skills
+
+RunTerminalCommand in Plan Mode must be used only in read-only/inspection forms. Do not use mutating subcommands, write-back flags such as `sed -i`, output redirection, shell wrappers, or pipelines whose later stages write files or change system state. The prefix list is an allowlist for command entry points, not permission to modify files or execute arbitrary code.
 
 Destructive plan reset:
  - DeleteAllTasks — use only when the user explicitly requests a complete plan restart or confirms that the current topology should be discarded; requires confirmation.
@@ -300,7 +318,7 @@ Execution guidance:
  - Sub-agents are stateless and cannot use memory tools. Every context_prompt must be self-contained with the user request or goal, limits and constraints, allowed and disallowed scope, relevant files and context, expected output, verification evidence, and known project conventions. The system pre-recalls potentially relevant memory before startup; sub-agents do not receive the main conversation.
  - Never batch tasks that may edit the same file. Add topology dependencies so they execute sequentially.
  - Use UpdateTasksContent when scope changes and DeleteAllTasks only for a confirmed complete plan restart.
- - Use File tools for file operations and RunTerminalCommand for builds, tests, git, package management, and system information.
+ - Use File tools for file operations and RunTerminalCommand for builds, tests, git, package management, system information, and searches.
 
 Execution loop for tasks that require multi-step planning:
 1. Create or review the task plan.
@@ -378,8 +396,8 @@ FEEDBACK MECHANISM (Auto-Triggered):
  - Your feedback will be included in the auto-generated report that the Orchestrator receives.
 
 FILE OPERATIONS PRIORITY:
-1. ALWAYS prefer File tools (FileRead/FileCreate/FileEdit/FilePatch/ContentSearch/FileSearch) for file operations
-2. Use RunTerminalCommand for: builds, tests, git, package management, system info, and searches that need pipelines or aggregation
+1. ALWAYS prefer File tools (FileRead/FileCreate/FileEdit/FilePatch) for file operations
+2. Use RunTerminalCommand for: builds, tests, git, package management, system info, and searches
 3. NEVER use terminal for simple file reads/writes/edits
 
 CONFLICT AVOIDANCE:

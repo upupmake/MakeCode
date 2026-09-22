@@ -235,12 +235,12 @@ def _decode_terminal_output(raw_output: bytes) -> str:
     encodings = ['utf-8', 'gbk', 'gb2312', locale.getpreferredencoding()]
     for enc in encodings:
         try:
-            out = raw_output.decode(enc).strip()
+            out = raw_output.decode(enc).strip("\r\n")
             break
         except (UnicodeDecodeError, LookupError):
             continue
     if out is None:
-        out = raw_output.decode('utf-8', errors='replace').strip()
+        out = raw_output.decode('utf-8', errors='replace').strip("\r\n")
     return truncate_output(out)
 
 
@@ -1191,9 +1191,15 @@ def file_edit(path: str, edits: Any) -> str:
 
 class ContentSearch(ToolArgumentsModel):
     """
-    Search for a regex pattern in text files within a specific directory.
+    Fallback regex search over text-file contents.
+
+    Prefer RunTerminalCommand with grep/rg, findstr, Select-String, or an equivalent
+    command for most content searches.
+    Use this tool only when the terminal is unavailable, restricted, or cannot easily
+    return numbered, copyable match lines.
 
     OUTPUT FORMAT (same convention as `grep -n`):
+    - Results are grouped by file with one `File: <path>` header before that file's lines.
     - Matched lines are rendered as `<line number>:<verbatim line content>`, context lines
       as `<line number>-<verbatim line content>`. Everything after the first separator is
       the exact file content, including its indentation.
@@ -1212,7 +1218,10 @@ class ContentSearch(ToolArgumentsModel):
 
     content_regex: str = Field(
         ...,
-        description="Python regex pattern to search for in the file contents.",
+        description=(
+            "Python regex pattern to search for in the file contents. "
+            "Use this tool only as a fallback when a terminal search cannot produce numbered match lines."
+        ),
     )
     root_dir: str = Field(
         default=".",
@@ -1357,7 +1366,15 @@ def content_search(
 
 class FileSearch(ToolArgumentsModel):
     """
-    Search for files and/or directories matching a regex pattern against absolute normalized paths.
+    Fallback search for files and directories by absolute-path regex.
+
+    Prefer RunTerminalCommand with find, ls, rg --files, Get-ChildItem, or an equivalent
+    command for most path searches. Use this tool only when the terminal is unavailable,
+    restricted, or cannot easily return absolute paths with a file/directory distinction.
+
+    OUTPUT FORMAT:
+    - Files are listed once as plain relative paths; directories use `[DIR] path/`.
+    - Results are deduplicated, with sorted directories before sorted files.
 
     AUTO-EXCLUDED:
     - Hidden directories (starting with '.'), unless the hidden directory itself is specified as root_dir
@@ -1370,7 +1387,10 @@ class FileSearch(ToolArgumentsModel):
 
     path_regex: str = Field(
         default=".*",
-        description="Python regex pattern matched against each item's absolute normalized path. Defaults to '.*'.",
+        description=(
+            "Python regex pattern matched against each item's absolute normalized path. Defaults to '.*'. "
+            "Use this tool only as a fallback when a terminal search cannot produce absolute paths with a file/directory distinction."
+        ),
     )
     root_dir: str = Field(
         default=".",

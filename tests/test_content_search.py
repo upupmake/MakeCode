@@ -31,6 +31,7 @@ def test_content_search_merges_overlapping_context_ranges(monkeypatch, tmp_path)
     result = _search_in_workspace(monkeypatch, tmp_path, "needle", context_size=1)
 
     assert "skipped" not in result
+    assert result.count("File: sample.txt") == 1
     assert result.index("1-before") < result.index("2:first needle")
     assert result.index("3-between") < result.index("4:second needle")
 
@@ -96,6 +97,11 @@ def test_content_search_schema_defaults_context_size_to_one():
         "context_size",
     }
     assert set(tool["function"]["parameters"]["properties"]) == set(common.ContentSearch.model_fields)
+    assert "Fallback regex search" in tool["function"]["description"]
+    assert "Prefer RunTerminalCommand" in tool["function"]["description"]
+    assert "Select-String" in tool["function"]["description"]
+    assert "grouped by file" in tool["function"]["description"]
+    assert "fallback" in tool["function"]["parameters"]["properties"]["content_regex"]["description"]
     with pytest.raises(ValueError):
         common.ContentSearch(content_regex="needle", context_size=-1)
 
@@ -140,3 +146,8 @@ def test_file_search_schema_uses_path_regex():
         "type",
     }
     assert set(tool["function"]["parameters"]["properties"]) == set(common.FileSearch.model_fields)
+    assert "Fallback search" in tool["function"]["description"]
+    assert "Prefer RunTerminalCommand" in tool["function"]["description"]
+    assert "Get-ChildItem" in tool["function"]["description"]
+    assert "listed once" in tool["function"]["description"]
+    assert "fallback" in tool["function"]["parameters"]["properties"]["path_regex"]["description"]

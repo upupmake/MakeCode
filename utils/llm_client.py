@@ -1470,7 +1470,9 @@ class OpenAIResponsesClient(AsyncBaseLLMClient):
                 if final_response is not None:
                     break
                 if retry_reason is None:
-                    raise RuntimeError("OpenAI Responses stream ended without a terminal response.completed event.")
+                    if retries_taken >= max_retries:
+                        raise RuntimeError("OpenAI Responses stream ended without a terminal response.completed event.")
+                    retry_reason = "missing response.completed"
                 if _is_response_cancelled():
                     return
                 retries_taken += 1

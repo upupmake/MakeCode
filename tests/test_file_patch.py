@@ -567,8 +567,9 @@ def test_file_patch_deletes_a_file_at_end_of_input(monkeypatch, tmp_path, final_
     "",
     "\n",
     "not a file header",
-    "*** Begin Patch\n*** Add File: new.txt\n+content\n*** End Patch",
     "*** End Patch",
+    "*** Begin Patch",
+    "*** Begin Patch\n*** End Patch",
 ])
 def test_file_patch_rejects_empty_malformed_or_wrapped_input(monkeypatch, tmp_path, patch):
     _workspace(monkeypatch, tmp_path)
@@ -663,6 +664,25 @@ def test_file_patch_ignores_trailing_end_marker(monkeypatch, tmp_path, line_endi
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "content\n"
 
 
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("final_newline", [False, True])
+@pytest.mark.parametrize("trailing_end", [False, True])
+def test_file_patch_ignores_leading_begin_marker(
+    monkeypatch, tmp_path, line_ending, final_newline, trailing_end
+):
+    _workspace(monkeypatch, tmp_path)
+    patch = "*** Begin Patch\n*** Add File: new.txt\n+content"
+    if trailing_end:
+        patch += "\n*** End Patch"
+    if final_newline:
+        patch += "\n"
+
+    result = common.file_patch(patch.replace("\n", line_ending))
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "content\n"
+
+
 def test_file_patch_reports_non_final_end_marker_as_input_error(monkeypatch, tmp_path):
     _workspace(monkeypatch, tmp_path)
 
@@ -675,6 +695,21 @@ def test_file_patch_reports_non_final_end_marker_as_input_error(monkeypatch, tmp
     assert result.startswith("Error: FilePatch rejected before any file changes.")
     assert "Format error:" in result
     assert "only accepted as the final line" in result
+    assert not (tmp_path / "new.txt").exists()
+
+
+def test_file_patch_reports_non_initial_begin_marker_as_input_error(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+
+    result = common.file_patch(
+        "*** Add File: new.txt\n"
+        "+content\n"
+        "*** Begin Patch\n"
+    )
+
+    assert result.startswith("Error: FilePatch rejected before any file changes.")
+    assert "Format error:" in result
+    assert "only accepted as the first line" in result
     assert not (tmp_path / "new.txt").exists()
 
 
@@ -774,6 +809,7 @@ def test_file_patch_reports_multiple_top_level_format_errors(monkeypatch, tmp_pa
     _workspace(monkeypatch, tmp_path)
 
     result = common.file_patch(
+        "*** End Patch\n"
         "*** Begin Patch\n"
         "*** End Patch\n"
         "*** Add File: first.txt\n"
@@ -782,6 +818,7 @@ def test_file_patch_reports_multiple_top_level_format_errors(monkeypatch, tmp_pa
 
     assert result.startswith("Error: FilePatch rejected before any file changes.")
     assert "Format error: Detected multiple format errors:" in result
-    assert "unexpected patch marker '*** Begin Patch' at patch line 1" in result
-    assert "unexpected patch marker '*** End Patch' at patch line 2" in result
+    assert "unexpected patch marker '*** End Patch' at patch line 1" in result
+    assert "unexpected patch marker '*** Begin Patch' at patch line 2" in result
+    assert "unexpected patch marker '*** End Patch' at patch line 3" in result
     assert not (tmp_path / "first.txt").exists()

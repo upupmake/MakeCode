@@ -1295,13 +1295,11 @@ def test_responses_inline_image_matches_sdk_input_schema():
 @pytest.mark.anyio
 @pytest.mark.parametrize("failure, message", [
     ("failed", "server_error"), ("incomplete", "max_output_tokens"),
-    ("error", "bad request"), ("missing", "terminal"),
+    ("error", "bad request"),
 ])
 async def test_responses_terminal_failures_are_not_silent(failure, message, isolated_responses_runtime):
     if failure == "error":
         events = [{"type": "error", "code": "invalid_request", "message": "bad request", "param": None}]
-    elif failure == "missing":
-        events = []
     else:
         events = [responses_terminal_event([], failure,
             error={"code": "server_error", "message": "upstream failed"} if failure == "failed" else None,
@@ -1387,6 +1385,50 @@ async def test_responses_sdk_multi_turn_keeps_exact_request_prefix(responses_nat
     assert "previous_response_id" not in requests[0]
     assert "reasoning.encrypted_content" in requests[0]["include"]
     assert result.usage["input_tokens_details"]["cached_tokens"] == 1024
+
+
+@pytest.mark.anyio
+async def test_responses_missing_completed_retries_before_output(isolated_responses_runtime):
+    import system.tui_app as tui
+
+    items = [{"id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+              "content": [{"type": "output_text", "text": "answer", "annotations": []}]}]
+    byte_streams = [
+        ResponsesByteStream([]),
+        ResponsesByteStream([]),
+        ResponsesByteStream([
+            {"type": "response.output_text.delta", "delta": "answer", "item_id": "msg_1",
+             "output_index": 0, "content_index": 0, "logprobs": []},
+            responses_terminal_event(items),
+        ]),
+    ]
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=byte_streams[len(requests) - 1])
+
+    async def backoff(delay):
+        assert byte_streams[len(requests) - 1].closed
+
+    raw = _TrackedAsyncOpenAI(base_url="https://gateway.example/v1", api_key="test-key",
+                             http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), max_retries=2)
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock(side_effect=backoff)) as sleep:
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+        assert [call.args[0] for call in sleep.await_args_list] == [0.5, 1.0]
+    finally:
+        await raw.close()
+
+    assert len(requests) == 3
+    assert requests[0] == requests[1] == requests[2]
+    assert all(stream.closed for stream in byte_streams)
+    assert [event["type"] for event in emitted] == ["text", "done"]
+    assert emitted[-1]["result"].text == "answer"
+    assert [call.args[1:] for call in tui.set_client_request_retry.call_args_list] == [(1, 2), (2, 2)]
+    assert [call.args[0] for call in tui.set_client_request_active.call_args_list] == [True, False]
 
 
 @pytest.mark.parametrize("target", ["openai_chat", "openai_responses", "anthropic"])
@@ -1839,6 +1881,87 @@ async def test_responses_disconnect_after_output_never_retries(isolated_response
         await client.client.close()
     assert len(requests) == 1
     assert emitted == [{"type": "text", "content": "partial"}]
+
+
+@pytest.mark.anyio
+async def test_responses_missing_completed_retries_after_output(isolated_responses_runtime):
+    requests = []
+    streams = [
+        ResponsesByteStream([
+            {"type": "response.output_text.delta", "delta": "partial", "item_id": "msg_1",
+             "output_index": 0, "content_index": 0, "logprobs": []},
+        ]),
+        ResponsesByteStream([
+            {"type": "response.output_text.delta", "delta": "answer", "item_id": "msg_1",
+             "output_index": 0, "content_index": 0, "logprobs": []},
+            responses_terminal_event([]),
+        ]),
+    ]
+
+    async def handler(http_request):
+        requests.append(json.loads(http_request.content))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=streams[len(requests) - 1])
+
+    raw = _TrackedAsyncOpenAI(
+        base_url="https://gateway.example/v1",
+        api_key="test-key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        max_retries=1,
+    )
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+        assert sleep.await_count == 1
+    finally:
+        await raw.close()
+
+    assert len(requests) == 2
+    assert [event["type"] for event in emitted] == ["text", "text", "done"]
+    assert emitted[0] == {"type": "text", "content": "partial"}
+    assert emitted[1] == {"type": "text", "content": "answer"}
+    assert all(stream.closed for stream in streams)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("max_retries", [0, 2])
+async def test_responses_missing_completed_respects_retry_limit(max_retries, isolated_responses_runtime):
+    requests = []
+    client, byte_stream = responses_sdk_client([], requests=requests)
+    client.client.max_retries = max_retries
+    emitted = []
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(RuntimeError, match="without a terminal response.completed"):
+            async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
+                emitted.append(event)
+        assert sleep.await_count == max_retries
+    finally:
+        await client.client.close()
+
+    assert len(requests) == max_retries + 1
+    assert emitted == []
+    assert byte_stream.closed
+
+
+@pytest.mark.anyio
+async def test_responses_missing_completed_cancellation_stops_retry(monkeypatch, isolated_responses_runtime):
+    requests = []
+    client, byte_stream = responses_sdk_client([], requests=requests)
+    client.client.max_retries = 2
+
+    async def cancel_during_backoff(delay):
+        assert byte_stream.closed
+        monkeypatch.setattr("utils.llm_client._is_response_cancelled", lambda: True)
+
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=cancel_during_backoff):
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+    finally:
+        await client.client.close()
+    assert len(requests) == 1
+    assert emitted == []
 
 
 @pytest.mark.anyio

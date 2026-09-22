@@ -80,8 +80,8 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 - `FileCreate`：仅用于新建并写入文件（目标文件不存在或为空时）。写入后自动触发 Tree-sitter 语法验证，若检测到语法错误会附加详细报错行号作为告警（不回滚写入）。
 - `FileEdit`：用于修改已存在文件。**使用整行搜索替换机制（search_content → replace_content），而非行号范围**。无需先调用 `FileRead`。**分阶定位**：每个块先针对读取时的文件内容定位；暂时无法落位的块会被推迟，再针对已应用块产生的文本重试，因此**链式编辑（块 N 针对块 M 的产物）仍然可用**，且不依赖块的书写顺序。匹配为整行匹配，先精确匹配，再允许忽略行尾空白与整块统一缩进偏移（替换内容按同一偏移自动重排）。每个块必须唯一命中；只要有任何块始终无法落位，就**整批拒绝并一次性报出全部问题**（含候选行号、最接近区域的 unified diff、“被前一个块改掉”与行号前缀误抄的定向提示）。应用时按行号倒序 splice，写入采用同目录临时文件 + 原子替换，保留原换行风格、末尾有无换行、BOM 与文件权限位；非 UTF-8 与二进制文件直接拒绝编辑。
 - `FilePatch`：用于应用单文件或多文件补丁，直接以 `*** Update File: path`、`*** Add File: path` 或 `*** Delete File: path` 开头，以 `patch` 字符串结尾作为补丁结束，不使用外层包裹标记。Update hunk 遵循标准 unified diff：`@@` 之后的未修改上下文行必须以一个空格开头，删除行以 `-` 开头，新增行以 `+` 开头；纯新增使用零旧行范围（如 `@@ -0,0 +1,1 @@`），空文件也允许使用裸 `@@`；Add File 的内容每行以一个 `+` 开头。每个实际文件在一个补丁中只能出现一次（包括大小写不同但指向同一 inode 的路径）。每个文件会独立解析、校验、匹配和提交；单个文件失败不会阻塞其他文件，同一文件内任意 hunk 失败则该文件不写入。已有文件通过临时文件替换，保留原始行尾、BOM 与权限位。路径会先解析 `.`、`..` 和符号链接，解析结果超出 workspace 时对本次补丁统一请求批准。
-- `ContentSearch`：通过 `content_regex` 在 `root_dir` 下递归搜索文本文件内容，并可用 `path_regex` 按文件绝对路径正则过滤；支持 `context_size` 指定每个匹配行前后包含的上下文行数（默认为 1）；正则使用 Python 语法。输出同样对齐 `grep -n`：命中行 `行号:原文`、上下文行 `行号-原文`，均无分隔空格，不连续区间之间插入 `@@ a-b skipped @@`。自动排除常见构建/依赖目录（`build`、`dist`、`__pycache__`、`node_modules`、`target`、`venv`、`site-packages`、`htmlcov`）和 `.` 开头的隐藏目录，减少无关匹配。
-- `FileSearch`：在 `root_dir` 下递归搜索文件和目录，通过 `path_regex` 按绝对路径正则匹配，支持类型过滤（`file`/`dir`/`all`）。自动排除隐藏目录和构建/依赖目录，最多返回 500 条结果。适合快速探索项目结构。
+- `ContentSearch`：作为终端内容搜索（`grep`/`rg`/`findstr`/`Select-String`）的后备，通过 `content_regex` 在 `root_dir` 下递归搜索文本文件内容，并可用 `path_regex` 按文件绝对路径正则过滤；支持 `context_size` 指定每个匹配行前后包含的上下文行数（默认为 1）；正则使用 Python 语法。输出按文件分组，每个文件只显示一次 `File: path` 标题；命中行 `行号:原文`、上下文行 `行号-原文`，均无分隔空格，不连续区间之间插入 `@@ a-b skipped @@`。自动排除常见构建/依赖目录（`build`、`dist`、`__pycache__`、`node_modules`、`target`、`venv`、`site-packages`、`htmlcov`）和 `.` 开头的隐藏目录，减少无关匹配。
+- `FileSearch`：在 `root_dir` 下递归搜索文件和目录，通过 `path_regex` 按绝对路径正则匹配，支持类型过滤（`file`/`dir`/`all`）。目录使用 `[DIR] path/` 标记，文件结果去重并排序；自动排除隐藏目录和构建/依赖目录，最多返回 500 条结果。作为终端搜索（`find`/`rg --files`）的后备使用。
 - `RunTerminalCommand`：执行非交互式终端命令。
 
 #### 📋 Tree-sitter 语法验证（`system/ts_validator.py`）
@@ -389,7 +389,7 @@ MakeCode 支持 Plan/Act 模式切换，确保智能体在规划阶段专注于�
 
 #### 核心概念
 
-- **Plan Mode**：只允许只读工具、规划工具和受限终端命令（如 `FileRead`、`ContentSearch`、`FileSearch`、`TaskManager`、`LoadSkill` 等），禁止文件写入、编辑和任务委派
+- **Plan Mode**：只允许只读工具、规划工具和受限终端命令（如 `FileRead`、`TaskManager`、`LoadSkill` 以及只读检查类终端命令），禁止文件写入、编辑和任务委派
 - **Act Mode**：完整执行模式，所有工具均可使用
 
 #### Plan Mode 限制工具
@@ -402,8 +402,9 @@ MakeCode 支持 Plan/Act 模式切换，确保智能体在规划阶段专注于�
 
 `RunTerminalCommand` 在 Plan Mode 下可用，但采用**两层过滤机制**：
 
-1. **前缀过滤**：仅允许 `git`、`pip`、`npm`、`docker` 命令前缀，其他命令直接拦截
-2. **HITL 确认**：允许的命令仍会触发用户确认面板，需手动放行后执行
+1. **前缀过滤**：允许规划阶段常用的检查命令前缀（Unix 如 `git`、`grep`、`rg`、`find`、`ls`、`cat`；Windows cmd/pwsh 如 `findstr`、`Get-ChildItem`、`Select-String`、`Get-Content`），其他命令直接拦截。匹配大小写不敏感，并忽略可执行文件后缀与路径前缀。
+2. **只读形式约束**：即使命令前缀被允许，也只能使用只读/检查形式；禁止修改子命令、写回参数（如 `sed -i`）、输出重定向、shell 包装器，以及会写文件或改变系统状态的管道。
+3. **HITL 确认**：允许的命令仍会触发用户确认面板，需手动放行后执行
 
 #### 切换方式
 
@@ -871,8 +872,8 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 
 项目当前内置的重要规则包括：
 
-- 优先使用 File 工具进行文件读写与文本搜索。
-- 常规文件操作不应依赖终端命令完成。
+- 文件读取、写入与编辑优先使用 File 工具；搜索默认使用终端命令（如 `grep`/`rg`/`find`），并要求路径结果带绝对路径和文件/目录标记；文本结果按文件分组，每个文件只显示一次绝对路径标题，下面使用 1-based 行号、命中/上下文标记和足够上下文，行号分隔符后不添加空格并保留原始缩进；终端命令本身应直接产出这种紧凑格式，不要等最终回复时再整理。
+- 常规文件读写与编辑不应依赖终端命令完成。
 - 委派前必须先调用 `GetRunnableTasks`。
 - `DelegateTasks` 只允许处理最新可执行前沿中的任务。
 - 仅适合并行且彼此独立的任务才能并发委派。

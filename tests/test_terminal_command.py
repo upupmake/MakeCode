@@ -73,6 +73,12 @@ def test_terminal_result_reports_nonzero_exit_as_failure_even_without_output():
     assert result.endswith("(no output)")
 
 
+def test_terminal_output_preserves_indentation_and_trailing_spaces():
+    result = _run_with_process(FakeProcess(0, stdout=b"    needle = 1    \n"))
+
+    assert result.endswith("    needle = 1    ")
+
+
 @pytest.mark.parametrize(
     "command",
     [

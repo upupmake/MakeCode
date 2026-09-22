@@ -223,6 +223,8 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
         lines.pop()
     if lines and lines[-1].rstrip(" \t") == "*** End Patch":
         lines.pop()
+    if lines and lines[0].rstrip(" \t") == "*** Begin Patch":
+        lines.pop(0)
     format_errors: list[str] = []
     for line_number, line in enumerate(lines, 1):
         line_without_trailing_whitespace = line.rstrip(" \t")
@@ -234,7 +236,7 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
         elif line_without_trailing_whitespace == "*** Begin Patch":
             format_errors.append(
                 f"unexpected patch marker '*** Begin Patch' at patch line {line_number}; "
-                "remove this marker"
+                "it is only accepted as the first line"
             )
     result: list[_PatchFile] = []
     index = 0
