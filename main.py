@@ -68,6 +68,7 @@ from system.tui_app import (
     set_agent_loop_active,
     set_temporary_query_enabled,
     refresh_status,
+    refresh_token_usage,
     scroll_all_panes_to_bottom,
     consume_temporary_query,
     clear_temporary_query,
@@ -579,6 +580,7 @@ async def _agent_loop_with_client(
         llm_client.append_assistant_message(messages, raw_message)
         committed_response = True
         CONVERSATION_STORE.save_messages(messages)
+        refresh_token_usage()
         has_tool_call = len(tool_calls) > 0
         stop_reason = raw_message.get("stop_reason") if isinstance(raw_message, dict) else None
 
@@ -672,6 +674,7 @@ async def _agent_loop_with_client(
 
         if has_tool_call:
             CONVERSATION_STORE.save_messages(messages)
+            refresh_token_usage()
 
         if not has_tool_call and stop_reason != "pause_turn":
             break

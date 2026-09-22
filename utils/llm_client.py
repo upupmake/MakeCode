@@ -533,6 +533,25 @@ def _is_retryable_openai_stream_error(exc: Exception) -> bool:
     return isinstance(exc, APIError) and str(exc) == "Upstream HTTP/2 stream failed"
 
 
+def _responses_retry_reason(code: object, message: object) -> str | None:
+    error_text = f"{code or ''} {message or ''}".lower()
+    if "upstream_stream_break" in error_text:
+        return "upstream_stream_break"
+    if "overload" in error_text:
+        return "server overloaded"
+    return None
+
+
+def _responses_api_error_reason(exc: APIError) -> str | None:
+    body = getattr(exc, "body", None)
+    body_code = body.get("code") if isinstance(body, dict) else None
+    body_message = body.get("message") if isinstance(body, dict) else None
+    return _responses_retry_reason(
+        getattr(exc, "code", None) or body_code,
+        body_message or str(exc),
+    )
+
+
 def _openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     result = []
     for raw_tool_call in tool_calls or []:
@@ -1371,45 +1390,95 @@ class OpenAIResponsesClient(AsyncBaseLLMClient):
         if tools:
             kwargs["tools"] = tools
 
+        configured_max_retries = getattr(self.client, "max_retries", 0)
+        max_retries = (
+            max(0, configured_max_retries)
+            if isinstance(configured_max_retries, int)
+            else 0
+        )
+        retries_taken = 0
         if _is_response_cancelled():
             return
         with _client_request_active():
-            stream = _tracked_async_stream(
-                lambda: self.client.responses.create(**kwargs)
-            )
-            final_response = None
-            tool_calls_started = False
-            try:
-                async for event in stream:
-                    if _is_response_cancelled():
-                        return
-                    event_type = event.type
-                    if event_type in {"response.output_text.delta", "response.refusal.delta"}:
-                        if event.delta:
-                            yield {"type": "text", "content": event.delta}
-                    elif event_type == "response.reasoning_summary_text.delta":
-                        if event.delta:
-                            yield {"type": "reasoning", "content": event.delta}
-                    elif event_type == "response.output_item.added":
-                        if event.item.type == "function_call" and not tool_calls_started:
-                            tool_calls_started = True
-                            yield {"type": "tool_calls"}
-                    elif event_type == "response.completed":
-                        final_response = event.response
-                        break
-                    elif event_type in {"response.failed", "response.incomplete"}:
-                        response = _to_plain_dict(event.response)
-                        detail = response.get("error") or response.get("incomplete_details") or {}
-                        raise RuntimeError(f"OpenAI Responses {event_type}: {json.dumps(detail, ensure_ascii=False)}")
-                    elif event_type == "error":
-                        raise RuntimeError(f"OpenAI Responses error ({event.code}): {event.message}")
-            except _LLMRequestCancelled:
-                return
-            finally:
-                await stream.aclose()
+            while True:
+                if _is_response_cancelled():
+                    return
+                stream = _tracked_async_stream(
+                    lambda: self.client.responses.create(**kwargs)
+                )
+                final_response = None
+                tool_calls_started = False
+                output_started = False
+                retry_reason = None
+                try:
+                    async for event in stream:
+                        if _is_response_cancelled():
+                            return
+                        event_type = event.type
+                        if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+                            if event.delta:
+                                output_started = True
+                                yield {"type": "text", "content": event.delta}
+                        elif event_type == "response.reasoning_summary_text.delta":
+                            if event.delta:
+                                output_started = True
+                                yield {"type": "reasoning", "content": event.delta}
+                        elif event_type == "response.output_item.added":
+                            if event.item.type == "function_call" and not tool_calls_started:
+                                output_started = True
+                                tool_calls_started = True
+                                yield {"type": "tool_calls"}
+                        elif event_type == "response.completed":
+                            final_response = event.response
+                            break
+                        elif event_type in {"response.failed", "response.incomplete"}:
+                            response = _to_plain_dict(event.response)
+                            detail = response.get("error") or response.get("incomplete_details") or {}
+                            retry_reason = _responses_retry_reason(
+                                detail.get("code"),
+                                detail.get("message") or detail.get("reason"),
+                            )
+                            if (
+                                retry_reason is not None
+                                and not output_started
+                                and retries_taken < max_retries
+                            ):
+                                break
+                            raise RuntimeError(f"OpenAI Responses {event_type}: {json.dumps(detail, ensure_ascii=False)}")
+                        elif event_type == "error":
+                            retry_reason = _responses_retry_reason(
+                                getattr(event, "code", None),
+                                getattr(event, "message", None),
+                            )
+                            if (
+                                retry_reason is not None
+                                and not output_started
+                                and retries_taken < max_retries
+                            ):
+                                break
+                            raise RuntimeError(f"OpenAI Responses error ({event.code}): {event.message}")
+                except _LLMRequestCancelled:
+                    return
+                except APIError as exc:
+                    retry_reason = _responses_api_error_reason(exc)
+                    if (
+                        retry_reason is None
+                        or output_started
+                        or retries_taken >= max_retries
+                    ):
+                        raise
+                finally:
+                    await stream.aclose()
 
-        if final_response is None:
-            raise RuntimeError("OpenAI Responses stream ended without a terminal response.completed event.")
+                if final_response is not None:
+                    break
+                if retry_reason is None:
+                    raise RuntimeError("OpenAI Responses stream ended without a terminal response.completed event.")
+                if _is_response_cancelled():
+                    return
+                retries_taken += 1
+                _set_client_request_retry(retries_taken, max_retries, None, retry_reason)
+                await asyncio.sleep(min(0.5 * (2 ** (retries_taken - 1)), 8.0))
 
         native_blocks = [
             _to_plain_dict(block)

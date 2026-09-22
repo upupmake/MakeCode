@@ -307,3 +307,25 @@ async def test_async_stream_renderer_consumes_unified_done_result():
         rendered = await StreamRenderer().render_async(stream())
 
     assert rendered == ("async answer", [], result.assistant_message)
+
+
+@pytest.mark.anyio
+async def test_stream_renderer_posts_reasoning_status_only_once_per_response():
+    async def stream():
+        for _ in range(100):
+            yield {"type": "reasoning", "content": "reasoning chunk "}
+        yield {"type": "text", "content": "answer"}
+
+    renderer = StreamRenderer()
+    with patch("system.stream_render.post_tui") as post, patch(
+        "system.stream_render.is_cancelled", return_value=False
+    ):
+        for _ in range(2):
+            await renderer.render_async(stream())
+
+    statuses = [
+        call.args[1]
+        for call in post.call_args_list
+        if call.args[0] == TuiRegion.STATUS
+    ]
+    assert statuses.count("Orchestrator reasoning") == 2

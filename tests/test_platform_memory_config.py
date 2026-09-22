@@ -5762,6 +5762,63 @@ async def test_agent_loop_reads_current_context_limit_for_entry_and_render_witho
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("ending", ["success", "cancel", "error"])
+async def test_agent_loop_refreshes_tokens_only_after_history_is_committed(ending):
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    tool_call = {"id": "call_1", "name": "MissingTool", "arguments": "{}"}
+    assistant = {"role": "assistant", "content": "working", "tool_calls": [tool_call]}
+    final = {"role": "assistant", "content": "done", "stop_reason": "end_turn"}
+    snapshots = []
+    requests = []
+
+    async def stream(history, tools, client):
+        requests.append(list(history))
+        if len(requests) == 1:
+            assert not snapshots
+            return "working", [tool_call], assistant, False
+        assert len(snapshots) == 2
+        assert snapshots[-1][-1]["role"] == "tool"
+        if ending == "error":
+            raise RuntimeError("stream interrupted")
+        if ending == "cancel":
+            return "", [], None, True
+        return "done", [], final, False
+
+    class FakeClient:
+        @staticmethod
+        def append_assistant_message(history, raw_message):
+            history.append(raw_message)
+
+        @staticmethod
+        def format_tool_result(tool_id, tool_name, output):
+            return {"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": output}
+
+    with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "_stream_with_render", side_effect=stream), \
+            patch.object(main_module, "refresh_token_usage", side_effect=lambda: snapshots.append(list(messages))), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
+            patch.object(main_module, "_generate_title_if_missing", new=AsyncMock(return_value=False)), \
+            patch.object(main_module, "_apply_pending_title"), \
+            patch.object(main_module, "post_tui"), \
+            patch.object(main_module.console, "print"), \
+            patch.object(main_module, "log_error_traceback"):
+        assert await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert len(requests) == 2
+    assert snapshots[0] == [*requests[0], assistant]
+    assert snapshots[1] == requests[1]
+    assert len(snapshots) == (3 if ending == "success" else 2)
+    if ending == "success":
+        assert snapshots[-1][-1] == final
+
+
+@pytest.mark.anyio
 async def test_agent_loop_cancel_after_committed_round_does_not_recheck_compaction():
     messages = [
         {"role": "system", "content": "system"},

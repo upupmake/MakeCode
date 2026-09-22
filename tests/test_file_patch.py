@@ -105,8 +105,10 @@ def test_file_patch_rejects_ambiguous_hunk_without_writing(monkeypatch, tmp_path
         "+changed\n"
     )
 
-    assert result.startswith("Error: FilePatch completed partially: 0 file(s) patched, 1 file(s) failed.")
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched, 1 patch entry(s) failed.")
     assert "matches multiple locations" in result
+    assert "No files were changed" in result
+    assert "Add enough unchanged context" in result
     assert target.read_text(encoding="utf-8") == original
 
 
@@ -174,7 +176,10 @@ def test_file_patch_commits_valid_file_when_another_fails(monkeypatch, tmp_path)
     )
 
     assert result.startswith("Error: FilePatch completed partially:")
-    assert "missing.txt: target not found: missing.txt" in result
+    assert "Successful entries are already committed" in result
+    assert "do not resubmit them" in result
+    assert "[entry 2] Update missing.txt" in result
+    assert "[entry 2] Update missing.txt: Preflight error: target not found: missing.txt" in result
     assert first.read_text(encoding="utf-8") == "after\n"
 
 
@@ -198,7 +203,7 @@ def test_file_patch_rejects_case_aliases_of_the_same_file(monkeypatch, tmp_path)
     )
 
     assert result.startswith(
-        "Error: FilePatch completed partially: 0 file(s) patched, 2 file(s) failed."
+        "Error: FilePatch failed: 0 file(s) patched, 2 patch entry(s) failed."
     )
     assert "resolved paths refer to the same file" in result
     assert first.read_text(encoding="utf-8") == "before\n"
@@ -289,8 +294,8 @@ def test_file_patch_keeps_valid_files_when_another_file_section_is_malformed(mon
         "not a hunk\n"
     )
 
-    assert result.startswith("Error: FilePatch completed partially: 1 file(s) patched, 1 file(s) failed.")
-    assert "bad.txt: expected '@@'" in result
+    assert result.startswith("Error: FilePatch completed partially: 1 file(s) patched, 1 patch entry(s) failed.")
+    assert "[entry 2] Update bad.txt: Format error: expected '@@' before update hunk" in result
     assert good.read_text(encoding="utf-8") == "after\n"
 
 
@@ -302,8 +307,11 @@ def test_file_patch_requires_plus_lines_for_added_files(monkeypatch, tmp_path):
         "not prefixed\n"
     )
 
-    assert result.startswith("Error: FilePatch completed partially: 0 file(s) patched, 1 file(s) failed.")
-    assert "new.txt: added file new.txt must contain only '+' lines" in result
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched, 1 patch entry(s) failed.")
+    assert "[entry 1] Add new.txt" in result
+    assert "must start with '+'" in result
+    assert "patch line 2" in result
+    assert "'not prefixed'" in result
     assert not (tmp_path / "new.txt").exists()
 
 
@@ -355,6 +363,8 @@ def test_file_patch_rolls_back_when_commit_fails(monkeypatch, tmp_path):
     )
 
     assert result.startswith("Error: FilePatch completed partially:")
+    assert "commit failed: simulated commit failure" in result
+    assert "inspect the affected files and any recovery backups" in result
     assert first.read_text(encoding="utf-8") == "ONE\n"
     assert second.read_text(encoding="utf-8") == "two\n"
 
@@ -384,9 +394,9 @@ def test_file_patch_keeps_other_files_when_one_path_cannot_be_resolved(monkeypat
     )
 
     assert result.startswith(
-        "Error: FilePatch completed partially: 1 file(s) patched, 1 file(s) failed."
+        "Error: FilePatch completed partially: 1 file(s) patched, 1 patch entry(s) failed."
     )
-    assert "broken.txt: could not resolve path: simulated symlink loop" in result
+    assert "[entry 2] Update broken.txt: Path error: could not resolve path: simulated symlink loop" in result
     assert good.read_text(encoding="utf-8") == "after\n"
 
 
@@ -414,9 +424,11 @@ def test_file_patch_retains_backup_when_rollback_restore_fails(monkeypatch, tmp_
 
     backups = list(tmp_path.glob(".sample.txt.makecode-backup-*"))
     assert result.startswith(
-        "Error: FilePatch completed partially: 0 file(s) patched, 1 file(s) failed."
+        "Error: FilePatch failed: 0 file(s) patched, 1 patch entry(s) failed."
     )
     assert "rollback failed and recovery backup was retained" in result
+    assert "No files were changed" not in result
+    assert "inspect the affected files and any recovery backups" in result
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "before\n"
 
@@ -460,9 +472,9 @@ def test_file_patch_keeps_valid_files_when_another_file_path_is_invalid(monkeypa
     )
 
     assert result.startswith(
-        "Error: FilePatch completed partially: 1 file(s) patched, 1 file(s) failed."
+        "Error: FilePatch completed partially: 1 file(s) patched, 1 patch entry(s) failed."
     )
-    assert "<invalid path>: invalid file path" in result
+    assert "[entry 1] Update <invalid path>: Format error: invalid file path" in result
     assert good.read_text(encoding="utf-8") == "after\n"
 
 
@@ -515,14 +527,16 @@ def test_file_patch_deletes_a_file_at_end_of_input(monkeypatch, tmp_path, final_
     "\n",
     "not a file header",
     "*** Begin Patch\n*** Add File: new.txt\n+content\n*** End Patch",
-    "*** Add File: new.txt\n+content\n*** End Patch",
+    "*** End Patch",
 ])
 def test_file_patch_rejects_empty_malformed_or_wrapped_input(monkeypatch, tmp_path, patch):
     _workspace(monkeypatch, tmp_path)
 
     result = common.file_patch(patch)
 
-    assert result.startswith("Error:")
+    assert result.startswith("Error: FilePatch rejected before any file changes.")
+    assert "Format error:" in result
+    assert "Start directly with a file header" in result
     assert not (tmp_path / "new.txt").exists()
 
 
@@ -548,8 +562,12 @@ def test_file_patch_detects_duplicate_paths_with_trailing_stars(monkeypatch, tmp
         "*** Delete File: sample.txt ***"
     )
 
-    assert "0 file(s) patched, 2 file(s) failed" in result
-    assert "used by multiple patch entries" in result
+    assert "0 file(s) patched, 2 patch entry(s) failed" in result
+    assert "declared by entry 1 (Update sample.txt), entry 2 (Delete sample.txt)" in result
+    assert "Keep only one file header" in result
+    assert "multiple '@@' hunks" in result
+    assert "[entry 1] Update sample.txt" in result
+    assert "[entry 2] Delete sample.txt" in result
     assert target.read_text(encoding="utf-8") == "before\n"
 
 
@@ -570,3 +588,155 @@ def test_file_patch_schema_describes_only_the_canonical_unwrapped_format():
         assert "outer wrapper" in description
         assert "*** Begin Patch" not in description
         assert "*** End Patch" not in description
+
+
+def test_file_patch_schema_is_agent_friendly():
+    tool = next(tool["function"] for tool in common.FILE_TOOLS if tool["function"]["name"] == "FilePatch")
+    patch_description = tool["parameters"]["properties"]["patch"]["description"]
+
+    for description in (tool["description"], patch_description):
+        normalized = " ".join(description.split())
+        assert "Read the current file first" in normalized
+        assert "FileRead" in normalized
+        assert "one file section per path" in normalized
+        assert "line-number" in normalized
+        assert "partial" in normalized
+        assert "retry only" in normalized
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("final_newline", [False, True])
+def test_file_patch_ignores_trailing_end_marker(monkeypatch, tmp_path, line_ending, final_newline):
+    _workspace(monkeypatch, tmp_path)
+    patch = "*** Add File: new.txt\n+content\n*** End Patch"
+    if final_newline:
+        patch += "\n"
+
+    result = common.file_patch(patch.replace("\n", line_ending))
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "content\n"
+
+
+def test_file_patch_reports_non_final_end_marker_as_input_error(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+
+    result = common.file_patch(
+        "*** End Patch\n"
+        "*** Add File: new.txt\n"
+        "+content\n"
+    )
+
+    assert result.startswith("Error: FilePatch rejected before any file changes.")
+    assert "Format error:" in result
+    assert "only accepted as the final line" in result
+    assert not (tmp_path / "new.txt").exists()
+
+
+def test_file_patch_schema_description_contains_multi_hunk_examples(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    tool = next(
+        tool["function"]
+        for tool in common.FILE_TOOLS
+        if tool["function"]["name"] == "FilePatch"
+    )
+    description = tool["description"]
+
+    assert "Example 1" in description
+    assert "multiple @@ hunks" in description
+    assert "Example 2" in description
+    assert "*** Update File: first.txt" in description
+    assert "*** Add File: second.txt" in description
+    assert "*** End Patch" not in description
+
+
+def test_file_patch_reports_entry_numbers_and_retry_scope(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    first = tmp_path / "first.txt"
+    first.write_text("before\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: first.txt\n@@\n-before\n+after\n"
+        "*** Update File: missing.txt\n@@\n-before\n+after\n"
+    )
+
+    assert "completed partially" in result
+    assert "[entry 2] Update missing.txt" in result
+    assert "Successful entries are already committed; do not resubmit them." in result
+    assert first.read_text(encoding="utf-8") == "after\n"
+
+
+def test_file_patch_adds_specific_hunk_repair_guidance(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("same\nvalue\n\nsame\nvalue\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n@@\n same\n-value\n+changed\n"
+    )
+
+    assert "matches multiple locations" in result
+    assert "Add enough unchanged context" in result
+    assert "No files were changed" in result
+    assert target.read_text(encoding="utf-8") == "same\nvalue\n\nsame\nvalue\n"
+
+
+def test_file_patch_reports_multiple_specific_entry_errors(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+
+    result = common.file_patch(
+        "*** Add File: invalid.txt\n"
+        "missing plus prefix\n"
+        "*** Update File: missing.txt\n"
+        "@@\n"
+        "-before\n"
+        "+after\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched, 2 patch entry(s) failed.")
+    assert "Detected failures (retry only these entries):" in result
+    assert "[entry 1] Add invalid.txt: Format error:" in result
+    assert "every added-file content line must start with '+'" in result
+    assert "[entry 2] Update missing.txt: Preflight error: target not found" in result
+    assert "Invalid arguments provided" not in result
+
+
+def test_file_patch_reports_multiple_hunk_errors_in_one_file(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("same\nvalue\n\nsame\nvalue\nkeep\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        " same\n"
+        "-value\n"
+        "+changed\n"
+        "@@\n"
+        "-missing\n"
+        "+inserted\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed:")
+    assert "Hunk error:" in result
+    assert "Detected 2 hunk errors" in result
+    assert "hunk 1 matches multiple locations" in result
+    assert "hunk 2 context was not found" in result
+    assert target.read_text(encoding="utf-8") == "same\nvalue\n\nsame\nvalue\nkeep\n"
+
+
+def test_file_patch_reports_multiple_top_level_format_errors(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+
+    result = common.file_patch(
+        "*** Begin Patch\n"
+        "*** End Patch\n"
+        "*** Add File: first.txt\n"
+        "+first\n"
+    )
+
+    assert result.startswith("Error: FilePatch rejected before any file changes.")
+    assert "Format error: Detected multiple format errors:" in result
+    assert "unexpected patch marker '*** Begin Patch' at patch line 1" in result
+    assert "unexpected patch marker '*** End Patch' at patch line 2" in result
+    assert not (tmp_path / "first.txt").exists()

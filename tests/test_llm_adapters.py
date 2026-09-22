@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from openai import APIError, AsyncOpenAI
 from openai.types.responses.response_input_param import ResponseInputItemParam
 from pydantic import TypeAdapter
 
@@ -1202,9 +1202,10 @@ def responses_native_items():
 
 
 class ResponsesByteStream(httpx.AsyncByteStream):
-    def __init__(self, events, fail=False):
+    def __init__(self, events, fail=False, error=None):
         self.events = events
         self.fail = fail
+        self.error = error
         self.closed = False
 
     async def __aiter__(self):
@@ -1213,6 +1214,8 @@ class ResponsesByteStream(httpx.AsyncByteStream):
             yield f"event: {event['type']}\ndata: {json.dumps(data)}\n\n".encode()
         if self.fail:
             raise httpx.ReadError("stream disconnected")
+        if self.error is not None:
+            raise self.error
 
     async def aclose(self):
         self.closed = True
@@ -1298,11 +1301,14 @@ async def test_responses_terminal_failures_are_not_silent(failure, message, isol
             error={"code": "server_error", "message": "upstream failed"} if failure == "failed" else None,
             incomplete_details={"reason": "max_output_tokens"} if failure == "incomplete" else None)]
     client, byte_stream = responses_sdk_client(events)
+    client.client.max_retries = 2
     emitted = []
     try:
-        with pytest.raises(Exception, match=message):
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(Exception, match=message):
             async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
                 emitted.append(event)
+        sleep.assert_not_awaited()
         assert not any(event["type"] == "done" for event in emitted)
         assert byte_stream.closed
     finally:
@@ -1412,6 +1418,254 @@ def test_mixed_protocol_history_projection_is_prefix_stable(target, responses_na
     assert history == original
     assert build_openai_responses_request(history)[1][1:5] == responses_native_items
     assert "encrypted-test-state" not in json.dumps(strip_native_message_payloads(history))
+
+
+@pytest.mark.anyio
+async def test_responses_upstream_break_retries_before_output(isolated_responses_runtime):
+    import system.tui_app as tui
+
+    failure = responses_terminal_event([], "failed", error={
+        "code": "upstream_stream_break",
+        "message": "Upstream stream ended prematurely; safe to retry",
+    })
+    items = [{"id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+              "content": [{"type": "output_text", "text": "answer", "annotations": []}]}]
+    byte_streams = [
+        ResponsesByteStream([failure]),
+        ResponsesByteStream([failure]),
+        ResponsesByteStream([
+            {"type": "response.output_text.delta", "delta": "answer", "item_id": "msg_1",
+             "output_index": 0, "content_index": 0, "logprobs": []},
+            responses_terminal_event(items),
+        ]),
+    ]
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=byte_streams[len(requests) - 1])
+
+    async def backoff(delay):
+        assert byte_streams[len(requests) - 1].closed
+
+    raw = _TrackedAsyncOpenAI(base_url="https://gateway.example/v1", api_key="test-key",
+                             http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), max_retries=2)
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock(side_effect=backoff)) as sleep:
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+        assert [call.args[0] for call in sleep.await_args_list] == [0.5, 1.0]
+    finally:
+        await raw.close()
+
+    assert len(requests) == 3
+    assert requests[0] == requests[1] == requests[2]
+    assert all(stream.closed for stream in byte_streams)
+    assert [event["type"] for event in emitted] == ["text", "done"]
+    assert emitted[-1]["result"].text == "answer"
+    assert [call.args[1:] for call in tui.set_client_request_retry.call_args_list] == [(1, 2), (2, 2)]
+    assert [call.args[0] for call in tui.set_client_request_active.call_args_list] == [True, False]
+
+
+@pytest.mark.anyio
+async def test_responses_api_overload_retries_before_output(isolated_responses_runtime):
+    request = httpx.Request("POST", "https://gateway.example/v1/responses")
+    overload = APIError(
+        "Our servers are currently overloaded. Please try again later.",
+        request,
+        body={"code": "server_error", "message": "Our servers are currently overloaded. Please try again later."},
+    )
+    streams = [
+        ResponsesByteStream([], error=overload),
+        ResponsesByteStream([
+            {"type": "response.output_text.delta", "delta": "answer", "item_id": "msg_1",
+             "output_index": 0, "content_index": 0, "logprobs": []},
+            responses_terminal_event([]),
+        ]),
+    ]
+    requests = []
+
+    async def handler(http_request):
+        body = json.loads(http_request.content)
+        TypeAdapter(list[ResponseInputItemParam]).validate_python(body["input"])
+        requests.append(body)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=streams[len(requests) - 1])
+
+    raw = _TrackedAsyncOpenAI(
+        base_url="https://gateway.example/v1",
+        api_key="test-key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        max_retries=1,
+    )
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+    finally:
+        await raw.close()
+
+    assert len(requests) == 2
+    assert all(stream.closed for stream in streams)
+    assert sleep.await_args_list[0].args == (0.5,)
+    assert [event["type"] for event in emitted] == ["text", "done"]
+
+
+@pytest.mark.anyio
+async def test_responses_error_event_overload_retries_before_output(isolated_responses_runtime):
+    streams = [
+        ResponsesByteStream([{
+            "type": "error",
+            "code": "server_error",
+            "message": "Our servers are currently overloaded. Please try again later.",
+            "param": None,
+        }]),
+        ResponsesByteStream([responses_terminal_event([])]),
+    ]
+    requests = []
+
+    async def handler(http_request):
+        requests.append(json.loads(http_request.content))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=streams[len(requests) - 1])
+
+    raw = _TrackedAsyncOpenAI(
+        base_url="https://gateway.example/v1",
+        api_key="test-key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        max_retries=1,
+    )
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+    finally:
+        await raw.close()
+
+    assert len(requests) == 2
+    assert sleep.await_args_list[0].args == (0.5,)
+    assert emitted[-1]["type"] == "done"
+
+
+@pytest.mark.anyio
+async def test_responses_api_overload_after_output_does_not_retry(isolated_responses_runtime):
+    request = httpx.Request("POST", "https://gateway.example/v1/responses")
+    overload = APIError(
+        "Our servers are currently overloaded. Please try again later.",
+        request,
+        body={"code": "server_error", "message": "Our servers are currently overloaded. Please try again later."},
+    )
+    requests = []
+    stream = ResponsesByteStream([
+        {"type": "response.output_text.delta", "delta": "partial", "item_id": "msg_1",
+         "output_index": 0, "content_index": 0, "logprobs": []},
+    ], error=overload)
+
+    async def handler(http_request):
+        requests.append(json.loads(http_request.content))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+    raw = _TrackedAsyncOpenAI(
+        base_url="https://gateway.example/v1",
+        api_key="test-key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        max_retries=2,
+    )
+    client = OpenAIResponsesClient(raw, "test")
+    emitted = []
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(APIError, match="overloaded"):
+            async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
+                emitted.append(event)
+    finally:
+        await raw.close()
+
+    assert len(requests) == 1
+    assert sleep.await_count == 0
+    assert emitted == [{"type": "text", "content": "partial"}]
+    assert stream.closed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("max_retries", [0, 2])
+async def test_responses_upstream_break_respects_retry_limit(max_retries, isolated_responses_runtime):
+    requests = []
+    client, byte_stream = responses_sdk_client([
+        responses_terminal_event([], "failed", error={"code": "upstream_stream_break", "message": "safe to retry"}),
+    ], requests=requests)
+    client.client.max_retries = max_retries
+    emitted = []
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(RuntimeError, match="response.failed.*upstream_stream_break"):
+            async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
+                emitted.append(event)
+        assert sleep.await_count == max_retries
+    finally:
+        await client.client.close()
+
+    assert len(requests) == max_retries + 1
+    assert emitted == []
+    assert byte_stream.closed
+
+
+@pytest.mark.anyio
+async def test_responses_upstream_break_cancellation_stops_retry(monkeypatch, isolated_responses_runtime):
+    requests = []
+    client, byte_stream = responses_sdk_client([
+        responses_terminal_event([], "failed", error={"code": "upstream_stream_break", "message": "safe to retry"}),
+    ], requests=requests)
+    client.client.max_retries = 2
+
+    async def cancel_during_backoff(delay):
+        assert byte_stream.closed
+        monkeypatch.setattr("utils.llm_client._is_response_cancelled", lambda: True)
+
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=cancel_during_backoff):
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+    finally:
+        await client.client.close()
+    assert len(requests) == 1
+    assert emitted == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("output", ["text", "reasoning", "refusal", "tool_calls"])
+async def test_responses_upstream_break_after_output_never_retries(output, isolated_responses_runtime):
+    events = {
+        "text": {"type": "response.output_text.delta", "delta": "partial", "item_id": "msg_1",
+                 "output_index": 0, "content_index": 0, "logprobs": []},
+        "reasoning": {"type": "response.reasoning_summary_text.delta", "delta": "partial",
+                      "item_id": "rs_1", "output_index": 0, "summary_index": 0},
+        "refusal": {"type": "response.refusal.delta", "delta": "partial", "item_id": "msg_1",
+                    "output_index": 0, "content_index": 0},
+        "tool_calls": {"type": "response.output_item.added", "output_index": 0,
+                       "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1",
+                                "name": "Read", "arguments": "", "status": "in_progress"}},
+    }
+    requests = []
+    client, byte_stream = responses_sdk_client([
+        events[output],
+        responses_terminal_event([], "failed", error={"code": "upstream_stream_break", "message": "safe to retry"}),
+    ], requests=requests)
+    client.client.max_retries = 2
+    emitted = []
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(RuntimeError, match="upstream_stream_break"):
+            async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
+                emitted.append(event)
+        sleep.assert_not_awaited()
+    finally:
+        await client.client.close()
+
+    assert len(requests) == 1
+    assert len(emitted) == 1
+    assert emitted[0]["type"] == ("text" if output == "refusal" else output)
+    assert byte_stream.closed
 
 
 @pytest.mark.anyio

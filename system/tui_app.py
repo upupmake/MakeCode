@@ -517,6 +517,16 @@ class TuiBridge:
         else:
             app.call_from_thread(app.refresh_status)
 
+    def refresh_token_usage(self) -> None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            app.refresh_token_usage()
+        else:
+            app.call_from_thread(app.refresh_token_usage)
+
     def flush_screen(self) -> None:
         with self._app_lock:
             app = self._app
@@ -737,7 +747,9 @@ class TokenUsageBar(Static):
     def update_usage(self, breakdown: dict[str, int], threshold: int) -> None:
         total = sum(breakdown.get(key, 0) for key in self._LABELS)
         ratio = total / threshold * 100 if threshold else 0
-        self.update(Text(f"📈 {total:,}/{threshold:,} ({ratio:.1f}%)", style="bold #bfdbfe"))
+        content = Text(f"📈 {total:,}/{threshold:,} ({ratio:.1f}%)", style="bold #bfdbfe")
+        if self.content != content:
+            self.update(content)
         table = Table.grid(padding=(0, 1))
         table.add_column(style="bold #93c5fd", no_wrap=True)
         table.add_column(justify="right", style="#e0f2fe", no_wrap=True)
@@ -1276,6 +1288,8 @@ class MakeCodeTuiApp(App[None]):
         self._image_placeholder_handler = image_placeholder_handler
         self._image_clipboard_handler = image_clipboard_handler
         self._token_usage_provider = token_usage_provider
+        self._token_usage: tuple[dict[str, int], int] | None = None
+        self._token_usage_refresh_pending = False
         self._mode_label = "ACT"
         self._agent_loop_active = False
         self._temporary_query_enabled = False
@@ -1388,6 +1402,7 @@ class MakeCodeTuiApp(App[None]):
         self._update_input_title()
         self._update_hitl_button()
         self._update_runtime_info()
+        self.refresh_token_usage()
         self._update_clock()
         self._update_responsive_layout()
         self.set_interval(0.5, self._check_responsive_layout)
@@ -1531,16 +1546,18 @@ class MakeCodeTuiApp(App[None]):
         )
         pane.set_class(pane_is_active, "pane-active")
 
-    def _update_tail(self, region: TuiRegion, payload: Any) -> None:
+    def _update_tail(self, region: TuiRegion, payload: Any) -> bool:
         tail = self._tails.get(region)
         if tail is None:
-            return
-        if payload is None or payload == "":
-            tail.update("")
-            tail.set_class(False, "pane-tail-visible")
-            return
+            return False
+        if payload is None:
+            payload = ""
+        visible = payload != ""
+        if tail.content == payload and tail.has_class("pane-tail-visible") == visible:
+            return False
         tail.update(payload)
-        tail.set_class(True, "pane-tail-visible")
+        tail.set_class(visible, "pane-tail-visible")
+        return True
 
     def _is_log_at_bottom(self, log: RichLog) -> bool:
         return bool(log.is_vertical_scroll_end or log.scroll_y >= log.max_scroll_y - 1)
@@ -1610,12 +1627,16 @@ class MakeCodeTuiApp(App[None]):
 
     def handle_tui_event(self, event: TuiEvent) -> None:
         if event.region == TuiRegion.STATUS:
-            self._runtime_info = str(event.payload)
-            self._update_runtime_info()
+            value = str(event.payload)
+            if self._runtime_info != value:
+                self._runtime_info = value
+                self._update_runtime_info()
             return
         if event.region == TuiRegion.RUNTIME_INFO:
             runtime_info = self.query_one("#runtime-info-bar", Static)
-            runtime_info.update(str(event.payload))
+            value = str(event.payload)
+            if runtime_info.content != value:
+                runtime_info.update(value, layout=False)
             return
 
         scroller = self._region_scroller(event.region)
@@ -1627,8 +1648,8 @@ class MakeCodeTuiApp(App[None]):
                 should_scroll_end = self._batch_force_scroll or self._is_log_at_bottom(log)
             else:
                 should_scroll_end = self._batch_force_scroll or (scroller is not None and self._is_scroller_at_bottom(scroller))
-            self._update_tail(event.region, event.payload)
-            if should_scroll_end:
+            tail_changed = self._update_tail(event.region, event.payload)
+            if tail_changed and should_scroll_end:
                 self._defer_or_scroll_now(event.region, scroller)
             return
         if event.clear:
@@ -2104,6 +2125,7 @@ class MakeCodeTuiApp(App[None]):
         self._update_header_status()
         self._update_input_title()
         self._update_runtime_info()
+        self.refresh_token_usage()
         self.handle_tui_event(TuiEvent(TuiRegion.STATUS, f"{self._mode_label} mode"))
 
     def action_insert_newline(self) -> None:
@@ -2428,6 +2450,8 @@ class MakeCodeTuiApp(App[None]):
         elif not was_active or retry_count != previous_retry_count:
             self._client_request_started_at = time.monotonic()
         self._update_runtime_info()
+        if not active and self._token_usage_refresh_pending:
+            self.refresh_token_usage()
 
     def _update_input_visibility(self) -> None:
         bottom_grid = self.query_one("#bottom-grid", Vertical)
@@ -2477,7 +2501,10 @@ class MakeCodeTuiApp(App[None]):
 
     def _update_clock(self) -> None:
         try:
-            self.query_one("#top-clock", Static).update(datetime.now().strftime("%H:%M:%S"))
+            clock = self.query_one("#top-clock", Static)
+            value = datetime.now().strftime("%H:%M:%S")
+            if clock.content != value:
+                clock.update(value, layout=False)
         except Exception:
             pass
         if self._client_request_active:
@@ -2505,12 +2532,9 @@ class MakeCodeTuiApp(App[None]):
         self.open_tool_history_modal(TOOL_EXECUTION_HISTORY, list(messages))
 
     def open_token_usage_modal(self) -> None:
-        if self._modal_active or self._token_usage_provider is None:
+        if self._modal_active or self._token_usage is None:
             return
-        try:
-            breakdown, threshold = self._token_usage_provider()
-        except Exception:
-            return
+        breakdown, threshold = self._token_usage
 
         def _done(value: str | None) -> None:
             self._modal_active = False
@@ -2593,6 +2617,7 @@ class MakeCodeTuiApp(App[None]):
         self._update_header_status()
         self._update_hitl_button()
         self._update_runtime_info()
+        self.refresh_token_usage()
         self._refresh_mcp_switch_runtime()
 
     def _refresh_mcp_switch_runtime(self) -> None:
@@ -2601,6 +2626,28 @@ class MakeCodeTuiApp(App[None]):
         if callable(refresh_runtime) and screen is not self:
             refresh_runtime()
 
+    def refresh_token_usage(self) -> None:
+        if self._token_usage_provider is None:
+            return
+        if self._client_request_active:
+            self._token_usage_refresh_pending = True
+            return
+        self._token_usage_refresh_pending = False
+        token_usage = self.query_one("#token-usage-bar", TokenUsageBar)
+        try:
+            breakdown, threshold = self._token_usage_provider()
+        except Exception:
+            self._token_usage = None
+            content = Text("📈 Tokens", style="bold #bfdbfe")
+            if token_usage.content != content:
+                token_usage.update(content)
+            token_usage.tooltip = None
+            return
+        if self._token_usage == (breakdown, threshold):
+            return
+        self._token_usage = (dict(breakdown), threshold)
+        token_usage.update_usage(breakdown, threshold)
+
     def _update_runtime_info(self) -> None:
         if self._runtime_info_provider is None:
             return
@@ -2608,18 +2655,6 @@ class MakeCodeTuiApp(App[None]):
             value = self._runtime_info_provider()
         except Exception:
             return
-        runtime_info = self.query_one("#runtime-info-bar", Static)
-        token_usage = self.query_one("#token-usage-bar", TokenUsageBar)
-        if self._token_usage_provider is not None:
-            try:
-                breakdown, threshold = self._token_usage_provider()
-                token_usage.update_usage(breakdown, threshold)
-            except Exception:
-                token_usage.update(Text("📈 Tokens", style="bold #bfdbfe"))
-                token_usage.tooltip = None
-        else:
-            token_usage.update(Text("📈 Tokens", style="bold #bfdbfe"))
-            token_usage.tooltip = None
         if self._client_request_active:
             elapsed = 0
             if self._client_request_started_at is not None:
@@ -2630,7 +2665,9 @@ class MakeCodeTuiApp(App[None]):
                     f"RETRY {self._client_retry_count}/{self._client_max_retries}"
                 )
             value = f"{' · '.join(client_parts)}  | {value}"
-        runtime_info.update(value)
+        runtime_info = self.query_one("#runtime-info-bar", Static)
+        if runtime_info.content != value:
+            runtime_info.update(value, layout=False)
 
     def _get_slash_matches(self, text: str) -> list[tuple[str, str]]:
         stripped = text.strip()
@@ -2915,6 +2952,10 @@ def set_client_request_retry(request_id: int, retry_count: int, max_retries: int
 
 def refresh_status() -> None:
     TUI_BRIDGE.refresh_status()
+
+
+def refresh_token_usage() -> None:
+    TUI_BRIDGE.refresh_token_usage()
 
 
 def flush_tui_screen() -> None:

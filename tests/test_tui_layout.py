@@ -3,7 +3,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from rich.panel import Panel
@@ -13,7 +13,7 @@ from system.console_render import _render_startup_banner
 from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import MakeCodeTuiApp, TuiBridge
 from system.tui_types import TuiEvent, TuiRegion
-from system.tui_modals import ChoiceModal, ToolHistoryModal
+from system.tui_modals import ChoiceModal, TokenUsageModal, ToolHistoryModal
 from utils.skills import SkillLoader
 
 
@@ -819,6 +819,145 @@ async def test_quick_panel_returns_to_one_row_after_widening_terminal():
         assert len({button.region.y for button in buttons}) == 1
         assert all(button.region.x + button.region.width <= app.size.width for button in buttons)
         assert str(app.query_one("#quick-panel-toggle").label) == "▾ 快捷面板"
+
+
+@pytest.mark.anyio
+async def test_stream_updates_and_token_modal_reuse_last_committed_usage():
+    history = [{"role": "user", "content": "question"}]
+    provider = Mock(side_effect=lambda: ({"assistant": len(history)}, 100))
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "runtime", token_usage_provider=provider)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        provider.assert_called_once_with()
+        provider.reset_mock()
+        app.set_agent_loop_active(True)
+        app.set_client_request_active(True)
+        token_usage = app.query_one("#token-usage-bar")
+        previous_content = token_usage.content
+
+        for index in range(20):
+            app.handle_tui_event(TuiEvent(TuiRegion.STATUS, "Orchestrator reasoning"))
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, Text(f"tail {index}"), tail=True))
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, f"paragraph {index}"))
+        app._update_clock()
+        app.set_client_request_active(True, retry_count=1, max_retries=2)
+        app.open_token_usage_modal()
+        await pilot.pause()
+
+        assert isinstance(app.screen, TokenUsageModal)
+        assert app.screen._breakdown == {"assistant": 1}
+        provider.assert_not_called()
+        app.screen.dismiss(None)
+        await pilot.pause()
+
+        # Network completion precedes committing the assistant message.
+        app.set_client_request_active(False)
+        provider.assert_not_called()
+        assert token_usage.content == previous_content
+        history.append({"role": "assistant", "content": "answer"})
+        app.refresh_token_usage()
+        provider.assert_called_once_with()
+        assert "2/100" in str(token_usage.content)
+
+
+@pytest.mark.anyio
+async def test_token_refresh_defers_config_changes_until_requests_finish():
+    provider = Mock(return_value=({"assistant": 1}, 100))
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "runtime", token_usage_provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        provider.reset_mock()
+        app.set_client_request_active(True)
+        provider.return_value = ({"assistant": 2}, 200)
+        app.refresh_status()
+        app.refresh_token_usage()
+        provider.assert_not_called()
+
+        app.set_client_request_active(False)
+        provider.assert_called_once_with()
+        assert "2/200" in str(app.query_one("#token-usage-bar").content)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_plan_mode_change_refreshes_tool_tokens_only_outside_stream(streaming):
+    provider = Mock(return_value=({"system": 10}, 100))
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "runtime", token_usage_provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        provider.reset_mock()
+        if streaming:
+            app.set_client_request_active(True)
+        provider.return_value = ({"system": 5}, 100)
+        with patch("utils.plan_mode.toggle_plan_mode", return_value=True):
+            app.action_toggle_plan_mode()
+        if streaming:
+            provider.assert_not_called()
+            app.set_client_request_active(False)
+        provider.assert_called_once_with()
+        assert "5/100" in str(app.query_one("#token-usage-bar").content)
+
+
+@pytest.mark.anyio
+async def test_unchanged_status_and_usage_do_not_request_layout():
+    breakdown = {"assistant": 1, "tool": 1}
+    provider = Mock(return_value=(breakdown, 100))
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "runtime", token_usage_provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        runtime = app.query_one("#runtime-info-bar")
+        token_usage = app.query_one("#token-usage-bar")
+        tooltip = token_usage.tooltip
+        with patch.object(runtime, "update", wraps=runtime.update) as update_runtime, \
+                patch.object(token_usage, "update", wraps=token_usage.update) as update_tokens:
+            app._update_runtime_info()
+            app.handle_tui_event(TuiEvent(TuiRegion.RUNTIME_INFO, "runtime"))
+            app.refresh_token_usage()
+            update_runtime.assert_not_called()
+            update_tokens.assert_not_called()
+            assert token_usage.tooltip is tooltip
+
+            # A changed breakdown must refresh the cached details even at the same total.
+            breakdown.update(assistant=2, tool=0)
+            app.refresh_token_usage()
+            assert app._token_usage == ({"assistant": 2, "tool": 0}, 100)
+            assert token_usage.tooltip is not tooltip
+            update_tokens.assert_not_called()
+
+            app.set_client_request_active(True)
+            assert update_runtime.call_args.kwargs == {"layout": False}
+            app.handle_tui_event(TuiEvent(TuiRegion.RUNTIME_INFO, "new runtime"))
+            update_runtime.assert_called_with("new runtime", layout=False)
+
+
+@pytest.mark.anyio
+async def test_identical_tail_events_do_not_update_or_schedule_scrolling():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tail = app.query_one("#content-tail")
+        with patch.object(tail, "update", wraps=tail.update) as update, \
+                patch.object(app, "_defer_or_scroll_now") as scroll:
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, "", tail=True))
+            update.assert_not_called()
+            scroll.assert_not_called()
+
+            for _ in range(3):
+                app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, Text("same tail"), tail=True))
+            update.assert_called_once()
+            scroll.assert_called_once()
+            assert tail.has_class("pane-tail-visible")
+
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, "", tail=True))
+            app.handle_tui_event(TuiEvent(TuiRegion.CONTENT, None, tail=True))
+            assert update.call_count == 2
+            assert scroll.call_count == 2
+            assert not tail.has_class("pane-tail-visible")
 
 
 @pytest.mark.anyio

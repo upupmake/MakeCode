@@ -27,16 +27,52 @@ _FILE_HEADER = re.compile(
 _HUNK_HEADER = re.compile(
     r"^@@(?: -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*)?$"
 )
+_FORMAT_HINT = (
+    "Start directly with a file header such as '*** Update File: path'; "
+    "use one file section per path and put all @@ hunks for that file in it."
+)
+
+
+class _PatchFormatError(ValueError):
+    def __init__(self, messages: list[str] | tuple[str, ...]):
+        self.messages = tuple(messages)
+        super().__init__("; ".join(self.messages))
 
 
 class FilePatch(ToolArgumentsModel):
     """Apply a strict unified-diff patch with independent per-file transactions.
 
     Start directly with ``*** Update File: path``, ``*** Add File: path``, or
-    ``*** Delete File: path``; no outer wrapper. The input ends after the last
-    file operation. A patch may affect one or more files. Update hunks use standard
-    unified-diff context lines (one leading space), plus ``-`` removed and ``+`` added
-    lines. Added-file content must use one ``+`` prefix per line. Delete File has no body.
+    ``*** Delete File: path``; no outer wrapper. Read the current file first and copy
+    exact context; never copy ``<line-number>:`` prefixes from FileRead output. Use one
+    file section per path and put every ``@@`` hunk for that path in that section. Update
+    hunk lines must start with one space (context), ``-`` (remove), or ``+`` (add); a
+    blank context line is still a line containing one leading space. Add File content
+    requires ``+`` on every line, and Delete File has no body. Each file is committed
+    independently; if the result is partial, successful files are already committed;
+    retry only the listed failed entries.
+
+    Examples:
+    Example 1 (one file with multiple @@ hunks in one section)::
+
+        *** Update File: sample.txt
+        @@
+         a
+        -b
+        +B
+        @@
+         c
+        -d
+        +D
+
+    Example 2 (multiple files in separate sections)::
+
+        *** Update File: first.txt
+        @@
+        -before
+        +after
+        *** Add File: second.txt
+        +new content
     """
 
     patch: str = Field(
@@ -45,12 +81,16 @@ class FilePatch(ToolArgumentsModel):
         description=(
             "Complete FilePatch text starting directly with '*** Update File: path', "
             "'*** Add File: path', or '*** Delete File: path', with no outer wrapper. "
-            "The string ends after the last file operation. Update hunks use "
-            "one-space-prefixed context lines, '-' removals, "
-            "and '+' additions. Pure insertions use a zero-old-line hunk such as "
-            "'@@ -0,0 +1,1 @@'; a bare '@@' pure insertion is allowed only for an empty file. "
-            "Add File content uses one '+' prefix per line; Delete File has no body. "
-            "Each actual file may appear only once; each file is committed independently."
+            "Read the current file first and copy exact context from FileRead without "
+            "line-number prefixes. Use one file section per path and put all @@ hunks "
+            "for that path in it. Update hunk lines must start with one space for "
+            "context, '-' for removals, or '+' for additions; blank context lines still "
+            "need the leading space. Pure insertions use a zero-old-line hunk such as "
+            "'@@ -0,0 +1,1 @@'; a bare '@@' pure insertion is allowed only for an empty "
+            "file. Add File content uses one '+' prefix per line; Delete File has no body. "
+            "Each actual file may appear only once and is committed independently. If "
+            "the result is partial, retry only the listed failed entries. See the tool "
+            "description for complete examples."
         ),
     )
 
@@ -83,7 +123,62 @@ class _Plan:
 
 
 def _patch_error(message: str) -> ValueError:
-    return ValueError(f"FilePatch parse error: {message}")
+    return _PatchFormatError([message])
+
+
+def _typed_failure(kind: str, message: str) -> str:
+    return f"{kind}: {message}"
+
+
+def _format_input_error(exc: Exception) -> str:
+    messages = getattr(exc, "messages", None)
+    if messages:
+        if len(messages) == 1:
+            return messages[0]
+        return "Detected multiple format errors:\n" + "\n".join(
+            f"  - {message}" for message in messages
+        )
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        details = []
+        for error in errors():
+            location = ".".join(str(item) for item in error.get("loc", ())) or "patch"
+            if error.get("type") == "string_too_short":
+                details.append(f"{location} is empty")
+            else:
+                details.append(f"{location}: {error.get('msg', str(error))}")
+        if details:
+            return "; ".join(details)
+    return str(exc)
+
+
+def _explain_failure(message: str) -> str:
+    if "matches multiple locations" in message:
+        return f"{message}; Add enough unchanged context to make the hunk unique"
+    if "context was not found" in message:
+        return (
+            f"{message}; re-read the file with FileRead and copy exact context "
+            "without line-number prefixes"
+        )
+    if "overlaps another hunk" in message:
+        return f"{message}; Merge overlapping hunks into one non-overlapping change"
+    if "invalid line prefix" in message:
+        return (
+            f"{message}; blank context lines must be a single leading space, "
+            "not an empty line"
+        )
+    if "must start with '+'" in message:
+        return f"{message}; prefix every added-file content line with '+'"
+    if "expected '@@' before update hunk" in message:
+        return f"{message}; put every update hunk after the file header"
+    if "declared by entry" in message or "refer to the same file" in message:
+        return (
+            f"{message}; Keep only one file header and combine multiple '@@' "
+            "hunks for that path under it"
+        )
+    if "rollback failed" in message or "commit failed" in message:
+        return f"{message}; inspect the affected files and any recovery backups"
+    return message
 
 
 def _is_file_boundary(line: str) -> bool:
@@ -114,15 +209,35 @@ def _skip_to_file_boundary(lines: list[str], index: int, end: int) -> int:
 def _parse_patch(patch: str) -> list[_PatchFile]:
     normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
     lines = normalized.split("\n")
-    if lines and lines[-1] == "":
+    while lines and lines[-1] == "":
         lines.pop()
+    if lines and lines[-1].rstrip(" \t") == "*** End Patch":
+        lines.pop()
+    format_errors: list[str] = []
+    for line_number, line in enumerate(lines, 1):
+        line_without_trailing_whitespace = line.rstrip(" \t")
+        if line_without_trailing_whitespace == "*** End Patch":
+            format_errors.append(
+                f"unexpected patch marker '*** End Patch' at patch line {line_number}; "
+                "it is only accepted as the final line"
+            )
+        elif line_without_trailing_whitespace == "*** Begin Patch":
+            format_errors.append(
+                f"unexpected patch marker '*** Begin Patch' at patch line {line_number}; "
+                "remove this marker"
+            )
     result: list[_PatchFile] = []
     index = 0
     end = len(lines)
     while index < end:
         match = _FILE_HEADER.match(lines[index])
         if not match:
-            raise _patch_error(f"expected a file header at line {index + 1}")
+            line = lines[index].rstrip(" \t")
+            if line not in {"*** Begin Patch", "*** End Patch"}:
+                format_errors.append(f"expected a file header at patch line {index + 1}")
+            next_boundary = _skip_to_file_boundary(lines, index, end)
+            index = next_boundary if next_boundary > index else index + 1
+            continue
         operation = match.group(1)
         path = match.group(2).strip()
         path_error = None
@@ -143,8 +258,8 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
                 line = lines[index]
                 if not line.startswith("+"):
                     parse_error = (
-                        f"added file {path} must contain only '+' lines "
-                        f"(line {index + 1})"
+                        f"added file {path} has invalid content at patch line {index + 1}: "
+                        f"{line!r}; every added-file content line must start with '+'"
                     )
                     index = _skip_to_file_boundary(lines, index, end)
                     break
@@ -200,8 +315,9 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
                     new_lines.append(context)
                 else:
                     parse_error = (
-                        f"update hunk for {path} contains an invalid line prefix "
-                        f"at line {line_number}; context lines must start with a space"
+                        f"update hunk for {path} has invalid line prefix {line[:1]!r} "
+                        f"at patch line {line_number}; hunk lines must start with ' ' "
+                        "(context), '-' (remove), or '+' (add)"
                     )
                     break
             if parse_error is not None:
@@ -232,7 +348,11 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
         result.append(_PatchFile("Update", path, hunks=tuple(hunks), parse_error=parse_error))
 
     if not result:
+        if format_errors:
+            raise _PatchFormatError(format_errors)
         raise _patch_error("patch contains no file operations")
+    if format_errors:
+        raise _PatchFormatError(format_errors)
     return result
 
 
@@ -322,21 +442,30 @@ def _locate_hunk(
 def _apply_hunks(text: str, hunks: tuple[_Hunk, ...], path: Path) -> tuple[bytes, int]:
     lines, endings = _text_lines(text)
     located: list[tuple[int, int, tuple[str, ...]]] = []
+    hunk_errors: list[str] = []
     for number, hunk in enumerate(hunks, 1):
         try:
             span = _locate_hunk(lines, hunk)
         except ValueError as exc:
-            raise ValueError(f"{path}: hunk {number} {exc}") from exc
+            hunk_errors.append(f"hunk {number} {exc}")
+            continue
         if span is None:
-            raise ValueError(f"{path}: hunk {number} context was not found")
+            hunk_errors.append(f"hunk {number} context was not found")
+            continue
         start, end = span
         if any(
             (start < other_end and other_start < end)
             or (start == other_start and start == end == other_start == other_end)
             for other_start, other_end, _ in located
         ):
-            raise ValueError(f"{path}: hunk {number} overlaps another hunk")
+            hunk_errors.append(f"hunk {number} overlaps another hunk")
+            continue
         located.append((start, end, hunk.new_lines))
+    if hunk_errors:
+        raise ValueError(
+            f"{path}: {'; '.join(hunk_errors)}" if len(hunk_errors) == 1
+            else f"{path}: Detected {len(hunk_errors)} hunk errors: {'; '.join(hunk_errors)}"
+        )
 
     for start, end, replacement in sorted(located, key=lambda item: item[0], reverse=True):
         old_endings = endings[start:end]
@@ -490,7 +619,10 @@ def file_patch(patch: str) -> str:
             validated = FilePatch.model_validate({"patch": patch})
             specs = _parse_patch(validated.patch)
         except Exception as exc:
-            return f"Error: Invalid arguments provided to FilePatch. {exc}"
+            details = _format_input_error(exc)
+            if _FORMAT_HINT not in details:
+                details = f"{details}. {_FORMAT_HINT}"
+            return f"Error: FilePatch rejected before any file changes. Format error: {details}"
 
         raw_summary = ", ".join(f"{spec.operation} {spec.path}" for spec in specs)
         allowed, reason = check_permission("tool", "FilePatch", raw_summary)
@@ -504,26 +636,30 @@ def file_patch(patch: str) -> str:
         for index, spec in enumerate(specs, 1):
             if spec.parse_error is not None:
                 resolved.append((spec, None))
-                failures[index] = spec.parse_error
+                failures[index] = _typed_failure("Format error", spec.parse_error)
                 continue
             try:
                 resolved.append((spec, _resolve_patch_path(spec.path, workdir)))
             except Exception as exc:
                 resolved.append((spec, None))
-                failures[index] = f"could not resolve path: {exc}"
+                failures[index] = _typed_failure("Path error", f"could not resolve path: {exc}")
 
         def mark_duplicate_paths(items: list[tuple[_PatchFile, Path | None]]) -> None:
             by_path: dict[Path, list[int]] = {}
             for index, (_, path) in enumerate(items, 1):
-                if path is None:
+                if index in failures or path is None:
                     continue
                 by_path.setdefault(path, []).append(index)
             for path, indexes in by_path.items():
                 if len(indexes) > 1:
+                    entries = ", ".join(
+                        f"entry {index} ({specs[index - 1].operation} {specs[index - 1].path})"
+                        for index in indexes
+                    )
                     for index in indexes:
-                        failures[index] = (
-                            f"resolved path {path} is used by multiple patch entries "
-                            f"({', '.join(str(item) for item in indexes)})"
+                        failures[index] = _typed_failure("Path conflict",
+                            f"resolved path {path} is declared by {entries}; "
+                            "combine all changes for this file into one file section"
                         )
 
         def mark_alias_paths(items: list[tuple[_PatchFile, Path | None]]) -> None:
@@ -537,11 +673,14 @@ def file_patch(patch: str) -> str:
             for _identity, indexes in by_identity.items():
                 if len(indexes) < 2:
                     continue
-                labels = ", ".join(specs[index - 1].path for index in indexes)
+                entries = ", ".join(
+                    f"entry {index} ({specs[index - 1].operation} {specs[index - 1].path})"
+                    for index in indexes
+                )
                 for index in indexes:
-                    failures[index] = (
-                        f"resolved paths refer to the same file ({labels}); "
-                        "use one patch entry for this file"
+                    failures[index] = _typed_failure("Path conflict",
+                        f"resolved paths refer to the same file ({entries}); "
+                        "combine them into one patch entry for this file"
                     )
 
         mark_duplicate_paths(resolved)
@@ -561,10 +700,14 @@ def file_patch(patch: str) -> str:
                 current = _resolve_patch_path(spec.path, workdir)
             except Exception as exc:
                 rechecked.append((spec, None))
-                failures[index] = f"could not resolve path after approval: {exc}"
+                failures[index] = _typed_failure(
+                    "Path error", f"could not resolve path after approval: {exc}"
+                )
                 continue
             if original != current:
-                failures[index] = "path changed while waiting for approval; re-read and retry"
+                failures[index] = _typed_failure(
+                    "Path changed", "path changed while waiting for approval; re-read and retry"
+                )
             rechecked.append((spec, current))
         resolved = rechecked
         mark_duplicate_paths(resolved)
@@ -583,10 +726,10 @@ def file_patch(patch: str) -> str:
                 if index in failures or path is None:
                     continue
                 if spec.parse_error is not None:
-                    failures[index] = spec.parse_error
+                    failures[index] = _typed_failure("Format error", spec.parse_error)
                     continue
                 if external_permission_error and not path.is_relative_to(workdir):
-                    failures[index] = external_permission_error
+                    failures[index] = _typed_failure("Permission error", external_permission_error)
                     continue
                 try:
                     exists = path.exists()
@@ -628,23 +771,44 @@ def file_patch(patch: str) -> str:
                         ),
                     ))
                 except Exception as exc:
-                    failures[index] = str(exc)
+                    message = str(exc)
+                    kind = "Hunk error" if spec.operation == "Update" and "hunk" in message else "Preflight error"
+                    failures[index] = _typed_failure(kind, message)
 
             committed: list[tuple[int, _Plan]] = []
             for index, plan in planned:
                 try:
                     _commit([plan])
                 except Exception as exc:
-                    failures[index] = str(exc)
+                    message = f"commit failed: {exc}"
+                    kind = "Rollback error" if "rollback failed" in message else "Commit error"
+                    failures[index] = _typed_failure(kind, message)
                 else:
                     committed.append((index, plan))
 
             report = []
             if failures:
-                report.append(
-                    f"Error: FilePatch completed partially: {len(committed)} file(s) patched, "
-                    f"{len(failures)} file(s) failed."
-                )
+                if committed:
+                    report.append(
+                        f"Error: FilePatch completed partially: {len(committed)} file(s) patched, "
+                        f"{len(failures)} patch entry(s) failed."
+                    )
+                    report.append(
+                        "Successful entries are already committed; do not resubmit them. "
+                        "Retry only the failed entries below."
+                    )
+                else:
+                    report.append(
+                        f"Error: FilePatch failed: 0 file(s) patched, "
+                        f"{len(failures)} patch entry(s) failed."
+                    )
+                    if any("rollback failed" in message for message in failures.values()):
+                        report.append(
+                            "The operation may have changed files; inspect the affected files "
+                            "and recovery backups."
+                        )
+                    else:
+                        report.append("No files were changed; fix the failed entries and retry.")
             else:
                 report.append(f"Patched {len(committed)} file(s) atomically.")
 
@@ -671,10 +835,16 @@ def file_patch(patch: str) -> str:
                     if not is_valid:
                         report.append(f"  Warning: syntax error in {plan.spec.path}\n{err_msg}")
             if failures:
-                report.append("Failures:")
+                report.append("Detected failures (retry only these entries):")
                 for index, (spec, _) in enumerate(resolved, 1):
                     if index in failures:
-                        report.append(f"  {spec.path}: {failures[index]}")
+                        report.append(
+                            f"  [entry {index}] {spec.operation} {spec.path}: "
+                            f"{_explain_failure(failures[index])}"
+                        )
             return "\n".join(report)
     except Exception as exc:
-        return f"Error: FilePatch failed; no changes were saved. {exc}"
+        return (
+            "Error: FilePatch aborted unexpectedly; inspect the workspace before retrying. "
+            f"Details: {exc}"
+        )

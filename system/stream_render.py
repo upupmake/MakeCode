@@ -17,7 +17,7 @@ class StreamRenderer:
     def __init__(self, console=None, update_interval: float = 0.05):
         self.console = console
         self.update_interval = update_interval
-        self.tail_update_interval = 0.5
+        self.tail_update_interval = 0.3
         self._last_tail_update_at: dict[TuiRegion, float] = {}
         self._active_regions: set[TuiRegion] = set()
 
@@ -105,7 +105,8 @@ class StreamRenderer:
                 event_type = event.get("type")
 
                 if event_type == "reasoning":
-                    post_tui(TuiRegion.STATUS, f"{agent_name} reasoning")
+                    if not reasoning_started:
+                        post_tui(TuiRegion.STATUS, f"{agent_name} reasoning")
                     reasoning_content, reasoning_buffer, reasoning_started = self._handle_reasoning(
                         event["content"], reasoning_content, reasoning_buffer, reasoning_started
                     )
