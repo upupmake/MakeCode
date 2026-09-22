@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import pathlib
 import threading
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1663,6 +1664,91 @@ async def test_startup_workdir_completion_supports_tilde_and_quoted_space_paths(
 
     assert app.result == f'custom:"space dir{os.sep}"'
     assert resolve_chosen_workdir(app.result, tmp_path) == (tmp_path / "space dir").resolve()
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_long_path_stays_inside_dialog(tmp_path):
+    long_cwd = tmp_path.joinpath(*(["very-long-directory-name"] * 6))
+    modal = StartupWorkdirModal(long_cwd)
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        dialog = modal.query_one("#startup-dialog")
+        title = modal.query_one("#startup-title", Label)
+
+        assert title.size.height == 4
+        assert str(long_cwd) in str(title.render())
+        assert dialog.size.width > app.size.width
+        assert modal.max_scroll_x > 0
+        modal.scroll_home(animate=False)
+        await pilot.pause()
+        assert modal.scroll_x == 0
+        assert dialog.region.x == 0
+        assert dialog.virtual_region.x == 0
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_short_path_stays_centered(tmp_path):
+    modal = StartupWorkdirModal(pathlib.Path("/tmp/project"))
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        dialog = modal.query_one("#startup-dialog")
+        title = modal.query_one("#startup-title", Label)
+
+        assert title.size.height == 4
+        assert dialog.size.width < app.size.width
+        assert modal.max_scroll_x == 0
+        assert dialog.region.x > 0
+        assert dialog.region.right < app.size.width
+        assert dialog.region.x == (app.size.width - dialog.region.width) // 2
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_wide_characters_fit_inside_dialog():
+    cwd = pathlib.Path("/Users/makemake/Desktop/Code/baidu/devops-ai/mcp-plugin-center")
+    modal = StartupWorkdirModal(cwd)
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(160, 30)) as pilot:
+        await pilot.pause()
+        dialog = modal.query_one("#startup-dialog")
+        title = modal.query_one("#startup-title", Label)
+        rendered = str(title.render())
+
+        assert title.size.height == 4
+        assert str(cwd) in rendered
+        assert dialog.size.width <= app.size.width
+        assert modal.max_scroll_x == 0
+        assert title.virtual_region.right <= dialog.region.width - 1
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_close_button_stays_at_top_right():
+    modal = StartupWorkdirModal(pathlib.Path("/tmp/project"))
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        dialog = modal.query_one("#startup-dialog")
+        close_button = modal.query_one("#modal-close")
+        content_top = dialog.region.y + dialog.styles.gutter.top
+        content_right = dialog.region.right - dialog.styles.gutter.right
+
+        assert close_button.region.y == content_top
+        assert close_button.region.right == content_right
+        assert "当前目录" in str(modal.query_one("#startup-title", Label).render())
+        assert "输入自定义路径" in str(modal.query_one("#startup-title", Label).render())
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        content_top = dialog.region.y + dialog.styles.gutter.top
+        content_right = dialog.region.right - dialog.styles.gutter.right
+
+        assert close_button.region.y == content_top
+        assert close_button.region.right == content_right
 
 
 @pytest.mark.anyio

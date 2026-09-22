@@ -100,8 +100,13 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, StartupWorkdirModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, EditModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, ExtraToolsModal, RecallModelPickerModal, ImageUnderstandingModelPickerModal, InfoPanelModal,
+    ChoiceModal, DelegateTasksModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, EditModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, ExtraToolsModal, RecallModelPickerModal, ImageUnderstandingModelPickerModal, InfoPanelModal,
     TokenUsageModal, CopyContentModal, TaskPanelModal, ToolHistoryModal, SkillsConfigModal, TemporaryQueryModal {
+        align: center middle;
+    }
+
+    StartupWorkdirModal {
+        overflow-x: auto;
         align: center middle;
     }
 
@@ -159,7 +164,6 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     #startup-dialog {
-        width: 80;
         height: auto;
         border: round #38bdf8;
         background: $surface;
@@ -167,8 +171,10 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     #startup-title {
+        width: 1fr;
         height: auto;
         margin-bottom: 0;
+        text-wrap: nowrap;
     }
 
     #startup-input {
@@ -1669,6 +1675,9 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
         custom_input.display = False
         self._refresh_text()
 
+    def on_resize(self, event: Resize) -> None:
+        self._fit_dialog()
+
     def _on_key(self, event: Key) -> None:
         if event.key == "ctrl+c":
             event.stop()
@@ -1874,6 +1883,16 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             marker = "❯" if index == self._selected_index else " "
             lines.append(f"  {marker} {text}")
         self.query_one("#startup-title", Label).update("\n".join(lines))
+        content_width = max(Text(line).cell_len for line in lines)
+        self.query_one("#startup-dialog").styles.width = content_width + 9
+        self._fit_dialog()
+
+    def _fit_dialog(self) -> None:
+        dialog = self.query_one("#startup-dialog")
+        overflows = dialog.size.width > self.size.width
+        self.styles.align_horizontal = "left" if overflows else "center"
+        if overflows:
+            self.scroll_home(animate=False)
 
     def action_cancel(self) -> None:
         self.dismiss("abort")

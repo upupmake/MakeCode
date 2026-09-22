@@ -4261,6 +4261,157 @@ async def test_async_chat_stream_retries_http2_error_before_output():
 
 
 @pytest.mark.anyio
+async def test_async_chat_stream_retries_token_generation_error_before_output():
+    first_stream = _ClosableAsyncStream(
+        [],
+        error_after_chunks=APIError(
+            "Internal error during token generation",
+            request=httpx.Request("GET", "https://example.com"),
+            body=None,
+        ),
+    )
+    second_stream = _ClosableAsyncStream([
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="answer",
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+    ])
+    raw_client = Mock()
+    raw_client.max_retries = 1
+    raw_client.chat.completions.create = AsyncMock(side_effect=[first_stream, second_stream])
+    client = AsyncChatAPIClient(raw_client, "test-model")
+
+    with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+        events = [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+
+    assert [event["type"] for event in events] == ["text", "done"]
+    assert events[-1]["result"].text == "answer"
+    assert raw_client.chat.completions.create.await_count == 2
+    sleep.assert_awaited_once()
+    assert first_stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_async_chat_stream_does_not_replay_after_partial_token_generation_error():
+    first_stream = _ClosableAsyncStream(
+        [
+            SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="partial",
+                        reasoning_content=None,
+                        reasoning=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason=None,
+                )],
+                usage=None,
+            ),
+        ],
+        error_after_chunks=APIError(
+            "Internal error during token generation",
+            request=httpx.Request("GET", "https://example.com"),
+            body=None,
+        ),
+    )
+    second_stream = _ClosableAsyncStream([
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="answer",
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+    ])
+    raw_client = Mock()
+    raw_client.max_retries = 1
+    raw_client.chat.completions.create = AsyncMock(side_effect=[first_stream, second_stream])
+    client = AsyncChatAPIClient(raw_client, "test-model")
+
+    with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+        events = [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+
+    assert [event["type"] for event in events] == ["text", "text", "done"]
+    assert events[0]["content"] == "partial"
+    assert events[1]["content"] == "answer"
+    assert events[-1]["result"].text == "answer"
+    assert raw_client.chat.completions.create.await_count == 2
+    sleep.assert_awaited_once()
+    assert first_stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_async_chat_stream_retries_after_partial_tool_calls():
+    first_stream = _ClosableAsyncStream(
+        [
+            SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        reasoning=None,
+                        tool_calls=[SimpleNamespace(
+                            index=0,
+                            id="call_1",
+                            type="function",
+                            function=SimpleNamespace(name="Read", arguments='{"path":"'),
+                        )],
+                    ),
+                    finish_reason=None,
+                )],
+                usage=None,
+            ),
+        ],
+        error_after_chunks=APIError(
+            "Internal error during token generation",
+            request=httpx.Request("GET", "https://example.com"),
+            body=None,
+        ),
+    )
+    second_stream = _ClosableAsyncStream([
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="answer",
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+    ])
+    raw_client = Mock()
+    raw_client.max_retries = 1
+    raw_client.chat.completions.create = AsyncMock(side_effect=[first_stream, second_stream])
+    client = AsyncChatAPIClient(raw_client, "test-model")
+
+    with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+        events = [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+
+    assert [event["type"] for event in events] == ["tool_calls", "text", "done"]
+    assert events[-1]["result"].text == "answer"
+    assert events[-1]["result"].tool_calls == []
+    assert raw_client.chat.completions.create.await_count == 2
+    sleep.assert_awaited_once()
+    assert first_stream.closed is True
+
+
+@pytest.mark.anyio
 async def test_async_chat_stream_cancellation_stops_before_retry():
     from system import stream_cancel
 
@@ -4364,15 +4515,32 @@ async def test_async_chat_stream_does_not_replay_after_partial_http2_error():
             body=None,
         ),
     )
+    second_stream = _ClosableAsyncStream([
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="answer",
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+    ])
     raw_client = Mock()
-    raw_client.max_retries = 5
-    raw_client.chat.completions.create = AsyncMock(return_value=first_stream)
+    raw_client.max_retries = 1
+    raw_client.chat.completions.create = AsyncMock(side_effect=[first_stream, second_stream])
     client = AsyncChatAPIClient(raw_client, "test-model")
 
-    with pytest.raises(APIError, match="Upstream HTTP/2 stream failed"):
-        [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+    with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+        events = [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
 
-    assert raw_client.chat.completions.create.await_count == 1
+    assert [event["type"] for event in events] == ["text", "text", "done"]
+    assert events[-1]["result"].text == "answer"
+    assert raw_client.chat.completions.create.await_count == 2
+    sleep.assert_awaited_once()
     assert first_stream.closed is True
 
 
@@ -4430,15 +4598,32 @@ async def test_async_chat_stream_does_not_replay_after_partial_output():
         ],
         error_after_chunks=json.JSONDecodeError("Expecting value", "", 0),
     )
+    second_stream = _ClosableAsyncStream([
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="answer",
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        ),
+    ])
     raw_client = Mock()
-    raw_client.max_retries = 5
-    raw_client.chat.completions.create = AsyncMock(return_value=first_stream)
+    raw_client.max_retries = 1
+    raw_client.chat.completions.create = AsyncMock(side_effect=[first_stream, second_stream])
     client = AsyncChatAPIClient(raw_client, "test-model")
 
-    with pytest.raises(json.JSONDecodeError):
-        [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
+    with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+        events = [event async for event in client.generate_stream([{"role": "user", "content": "hello"}])]
 
-    assert raw_client.chat.completions.create.await_count == 1
+    assert [event["type"] for event in events] == ["text", "text", "done"]
+    assert events[-1]["result"].text == "answer"
+    assert raw_client.chat.completions.create.await_count == 2
+    sleep.assert_awaited_once()
     assert first_stream.closed is True
 
 

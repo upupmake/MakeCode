@@ -112,6 +112,47 @@ def test_file_patch_rejects_ambiguous_hunk_without_writing(monkeypatch, tmp_path
     assert target.read_text(encoding="utf-8") == original
 
 
+def test_file_patch_allows_noop_hunk_as_locator(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("before\nchange me\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        " before\n"
+        "@@\n"
+        "-change me\n"
+        "+changed\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert "M sample.txt (2 hunk(s))" in result
+    assert target.read_text(encoding="utf-8") == "before\nchanged\n"
+
+
+@pytest.mark.parametrize("hunk_body", [" before\n", "-before\n+before\n"])
+def test_file_patch_rejects_file_with_only_noop_hunks(monkeypatch, tmp_path, hunk_body):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        f"{hunk_body}"
+    )
+
+    assert result.startswith(
+        "Error: FilePatch failed: 0 file(s) patched, 1 patch entry(s) failed."
+    )
+    assert "contains only no-op '@@' hunks" in result
+    assert "context-only or identical '-'/'+' hunks are allowed only as locators" in result
+    assert "keep locator hunks only alongside at least one effective '-'/'+' change" in result
+    assert "No files were changed" in result
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
 def test_file_patch_updates_an_existing_empty_file_with_pure_addition(monkeypatch, tmp_path):
     _workspace(monkeypatch, tmp_path)
     target = tmp_path / "empty.txt"
@@ -602,6 +643,10 @@ def test_file_patch_schema_is_agent_friendly():
         assert "line-number" in normalized
         assert "partial" in normalized
         assert "retry only" in normalized
+        assert "effective change" in normalized
+        assert "context-only" in normalized
+        assert "locator" in normalized
+        assert "another changing hunk" in normalized
 
 
 @pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"])

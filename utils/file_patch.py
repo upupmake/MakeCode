@@ -50,7 +50,9 @@ class FilePatch(ToolArgumentsModel):
     blank context line is still a line containing one leading space. Add File content
     requires ``+`` on every line, and Delete File has no body. Each file is committed
     independently; if the result is partial, successful files are already committed;
-    retry only the listed failed entries.
+    retry only the listed failed entries. Each Update file must contain at least one
+    effective change. A context-only hunk or an identical ``-``/``+`` replacement may
+    be included only as a locator alongside another changing hunk.
 
     Examples:
     Example 1 (one file with multiple @@ hunks in one section)::
@@ -87,7 +89,10 @@ class FilePatch(ToolArgumentsModel):
             "context, '-' for removals, or '+' for additions; blank context lines still "
             "need the leading space. Pure insertions use a zero-old-line hunk such as "
             "'@@ -0,0 +1,1 @@'; a bare '@@' pure insertion is allowed only for an empty "
-            "file. Add File content uses one '+' prefix per line; Delete File has no body. "
+            "file. Each Update file must contain at least one effective change. A "
+            "context-only hunk or identical '-'/'+' replacement may be included only "
+            "as a locator alongside another changing hunk. Add File content uses one "
+            "'+' prefix per line; Delete File has no body. "
             "Each actual file may appear only once and is committed independently. If "
             "the result is partial, retry only the listed failed entries. See the tool "
             "description for complete examples."
@@ -162,6 +167,11 @@ def _explain_failure(message: str) -> str:
         )
     if "overlaps another hunk" in message:
         return f"{message}; Merge overlapping hunks into one non-overlapping change"
+    if "contains only no-op" in message:
+        return (
+            f"{message}; keep locator hunks only alongside at least one effective "
+            "'-'/'+' change"
+        )
     if "invalid line prefix" in message:
         return (
             f"{message}; blank context lines must be a single leading space, "
@@ -300,15 +310,12 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
 
             old_lines: list[str] = []
             new_lines: list[str] = []
-            changed = False
             parse_error = None
             for line_number, line in body:
                 if line.startswith("+"):
                     new_lines.append(line[1:])
-                    changed = True
                 elif line.startswith("-"):
                     old_lines.append(line[1:])
-                    changed = True
                 elif line.startswith(" "):
                     context = line[1:]
                     old_lines.append(context)
@@ -331,9 +338,6 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
             if not old_lines and not new_lines:
                 parse_error = f"update hunk for {path} does not contain any file lines"
                 break
-            if not changed or old_lines == new_lines:
-                parse_error = f"update hunk for {path} does not change anything"
-                break
             hunks.append(
                 _Hunk(
                     tuple(old_lines),
@@ -345,6 +349,14 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
 
         if not hunks and parse_error is None:
             parse_error = f"update file {path} has no hunks"
+        elif parse_error is None and not any(
+            hunk.old_lines != hunk.new_lines for hunk in hunks
+        ):
+            parse_error = (
+                f"update file {path} contains only no-op '@@' hunks; at least one "
+                "hunk must make an effective change; context-only or identical "
+                "'-'/'+' hunks are allowed only as locators alongside a changing hunk"
+            )
         result.append(_PatchFile("Update", path, hunks=tuple(hunks), parse_error=parse_error))
 
     if not result:
