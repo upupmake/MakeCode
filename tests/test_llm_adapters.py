@@ -1293,11 +1293,11 @@ def test_responses_inline_image_matches_sdk_input_schema():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure, message", [
-    ("failed", "server_error"), ("incomplete", "max_output_tokens"),
-    ("error", "bad request"),
+@pytest.mark.parametrize("failure, message, expected_retries", [
+    ("failed", "server_error", 2), ("incomplete", "max_output_tokens", 0),
+    ("error", "bad request", 0),
 ])
-async def test_responses_terminal_failures_are_not_silent(failure, message, isolated_responses_runtime):
+async def test_responses_terminal_failures_are_not_silent(failure, message, expected_retries, isolated_responses_runtime):
     if failure == "error":
         events = [{"type": "error", "code": "invalid_request", "message": "bad request", "param": None}]
     else:
@@ -1312,7 +1312,7 @@ async def test_responses_terminal_failures_are_not_silent(failure, message, isol
                 pytest.raises(Exception, match=message):
             async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
                 emitted.append(event)
-        sleep.assert_not_awaited()
+        assert sleep.await_count == expected_retries
         assert not any(event["type"] == "done" for event in emitted)
         assert byte_stream.closed
     finally:
@@ -1677,6 +1677,184 @@ async def test_responses_error_event_overload_retries_before_output(isolated_res
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("partial", [None, "text", "tool_calls"])
+@pytest.mark.parametrize("error_style", ["event", "sdk", "sdk_no_code"])
+async def test_responses_sdk_processing_error_retries_incomplete_stream(partial, error_style, isolated_responses_runtime):
+    import system.tui_app as tui
+
+    message = (
+        "An error occurred while processing your request. You can retry your request, "
+        "or contact us through our help center at help.openai.com if the error persists. "
+        "Please include the request ID 062df7a9-fe1a-4b21-97c1-5ec0d1bc4357 in your message."
+    )
+    partial_events = {
+        None: [],
+        "text": [{"type": "response.output_text.delta", "delta": "partial", "item_id": "msg_1",
+                  "output_index": 0, "content_index": 0, "logprobs": []}],
+        "tool_calls": [{"type": "response.output_item.added", "output_index": 0,
+                        "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1",
+                                 "name": "Read", "arguments": "", "status": "in_progress"}}],
+    }
+    items = [{"id": "msg_2", "type": "message", "role": "assistant", "status": "completed",
+              "content": [{"type": "output_text", "text": "answer", "annotations": []}]}]
+    error_event = (
+        {"type": "error", "code": "server_error", "message": message, "param": None}
+        if error_style == "event" else {
+            "type": "error", "error": {
+                **({"code": "server_error"} if error_style == "sdk" else {}), "message": message,
+            },
+        }
+    )
+    streams = [
+        ResponsesByteStream([*partial_events[partial], error_event]),
+        ResponsesByteStream([{"type": "response.output_text.delta", "delta": "answer", "item_id": "msg_2",
+                              "output_index": 0, "content_index": 0, "logprobs": []},
+                             responses_terminal_event(items)]),
+    ]
+    requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        TypeAdapter(list[ResponseInputItemParam]).validate_python(body["input"])
+        requests.append(body)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=streams[len(requests) - 1])
+
+    raw = _TrackedAsyncOpenAI(
+        base_url="https://gateway.example/v1", api_key="test-key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), max_retries=1,
+    )
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+    finally:
+        await raw.close()
+
+    assert len(requests) == 2
+    assert requests[0] == requests[1]
+    assert all(stream.closed for stream in streams)
+    assert sleep.await_args_list[0].args == (0.5,)
+    assert tui.set_client_request_retry.call_args_list[0].args[1:] == (1, 1)
+    assert [event["type"] for event in emitted] == ([partial] if partial else []) + ["text", "done"]
+    assert emitted[-1]["result"].text == "answer"
+    assert emitted[-1]["result"].tool_calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("max_retries", [0, 2])
+async def test_responses_sdk_processing_error_respects_retry_limit(max_retries, isolated_responses_runtime):
+    message = "An error occurred while processing your request. You can retry your request."
+    requests = []
+    client, byte_stream = responses_sdk_client([
+        {"type": "error", "error": {"code": "server_error", "message": message}}
+    ], requests=requests)
+    client.client.max_retries = max_retries
+    emitted = []
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(APIError, match="An error occurred while processing your request"):
+            async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
+                emitted.append(event)
+        assert sleep.await_count == max_retries
+    finally:
+        await client.client.close()
+
+    assert len(requests) == max_retries + 1
+    assert all(body == requests[0] for body in requests)
+    assert emitted == []
+    assert byte_stream.closed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("code, message", [
+    ("invalid_request", "Invalid input. You can retry your request."),
+    ("bad_request", "An error occurred while processing your request. You can retry your request."),
+    ("authentication_error", "An error occurred while processing your request. You can retry your request."),
+    ("insufficient_quota", "An error occurred while processing your request. You can retry your request."),
+])
+async def test_responses_sdk_other_retry_suggestion_is_not_retryable(code, message, isolated_responses_runtime):
+    requests = []
+    client, byte_stream = responses_sdk_client([
+        {"type": "error", "error": {"code": code, "message": message}}
+    ], requests=requests)
+    client.client.max_retries = 2
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(APIError, match="You can retry your request"):
+            async for _ in client.generate_stream([{"role": "user", "content": "hi"}]):
+                pass
+        sleep.assert_not_awaited()
+    finally:
+        await client.client.close()
+
+    assert len(requests) == 1
+    assert byte_stream.closed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [400, 401, 403])
+async def test_responses_http_client_errors_do_not_retry_even_with_server_message(
+    status_code, isolated_responses_runtime,
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(status_code, json={"error": {
+            "code": "server_error",
+            "message": "An error occurred while processing your request. You can retry your request.",
+        }})
+
+    raw = _TrackedAsyncOpenAI(
+        base_url="https://gateway.example/v1", api_key="test-key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), max_retries=1,
+    )
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(APIError, match="An error occurred while processing your request"):
+            async for _ in client.generate_stream([{"role": "user", "content": "hi"}]):
+                pass
+        sleep.assert_not_awaited()
+    finally:
+        await raw.close()
+
+    assert len(requests) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [429, 500])
+async def test_responses_http_transient_errors_use_sdk_retry_only(status_code, isolated_responses_runtime):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(status_code, json={"error": {
+            "code": "server_error",
+            "message": "An error occurred while processing your request. You can retry your request.",
+        }})
+
+    raw = _TrackedAsyncOpenAI(
+        base_url="https://gateway.example/v1", api_key="test-key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), max_retries=1,
+    )
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch.object(AsyncOpenAI, "_sleep_for_retry", new=AsyncMock()) as sdk_sleep, \
+                patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as app_sleep, \
+                pytest.raises(APIError, match="An error occurred while processing your request"):
+            async for _ in client.generate_stream([{"role": "user", "content": "hi"}]):
+                pass
+        assert sdk_sleep.await_count == 1
+        app_sleep.assert_not_awaited()
+    finally:
+        await raw.close()
+
+    assert len(requests) == 2
+
+
+@pytest.mark.anyio
 async def test_responses_api_overload_after_output_does_not_retry(isolated_responses_runtime):
     request = httpx.Request("POST", "https://gateway.example/v1/responses")
     overload = APIError(
@@ -1864,7 +2042,43 @@ async def test_responses_upstream_break_after_output_never_retries(output, isola
 
 
 @pytest.mark.anyio
-async def test_responses_disconnect_after_output_never_retries(isolated_responses_runtime):
+async def test_responses_disconnect_after_output_retries_incomplete_stream(isolated_responses_runtime):
+    requests = []
+    items = [{"id": "msg_2", "type": "message", "role": "assistant", "status": "completed",
+              "content": [{"type": "output_text", "text": "answer", "annotations": []}]}]
+    streams = [
+        ResponsesByteStream([{"type": "response.output_text.delta", "delta": "partial", "item_id": "msg_1",
+                              "content_index": 0, "output_index": 0, "logprobs": []}], fail=True),
+        ResponsesByteStream([{"type": "response.output_text.delta", "delta": "answer", "item_id": "msg_2",
+                              "content_index": 0, "output_index": 0, "logprobs": []},
+                             responses_terminal_event(items)]),
+    ]
+
+    async def handler(http_request):
+        requests.append(json.loads(http_request.content))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=streams[len(requests) - 1])
+
+    raw = _TrackedAsyncOpenAI(
+        base_url="https://gateway.example/v1", api_key="test-key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), max_retries=1,
+    )
+    client = OpenAIResponsesClient(raw, "test")
+    try:
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep:
+            emitted = [event async for event in client.generate_stream([{"role": "user", "content": "hi"}])]
+    finally:
+        await raw.close()
+    assert len(requests) == 2
+    assert requests[0] == requests[1]
+    assert sleep.await_args_list[0].args == (0.5,)
+    assert [event["type"] for event in emitted] == ["text", "text", "done"]
+    assert emitted[-1]["result"].text == "answer"
+    assert all(stream.closed for stream in streams)
+
+
+@pytest.mark.anyio
+async def test_responses_disconnect_respects_retry_limit(isolated_responses_runtime):
     requests = []
     client, byte_stream = responses_sdk_client([
         {"type": "response.output_text.delta", "delta": "partial", "item_id": "msg_1",
@@ -1873,14 +2087,16 @@ async def test_responses_disconnect_after_output_never_retries(isolated_response
     client.client.max_retries = 2
     emitted = []
     try:
-        with pytest.raises(httpx.ReadError, match="disconnected"):
+        with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
+                pytest.raises(httpx.ReadError, match="disconnected"):
             async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
                 emitted.append(event)
-        assert byte_stream.closed
+        assert sleep.await_count == 2
     finally:
         await client.client.close()
-    assert len(requests) == 1
-    assert emitted == [{"type": "text", "content": "partial"}]
+    assert len(requests) == 3
+    assert emitted == [{"type": "text", "content": "partial"}] * 3
+    assert byte_stream.closed
 
 
 @pytest.mark.anyio

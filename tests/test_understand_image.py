@@ -16,7 +16,7 @@ from tools.extra_tools import (
     set_understand_image_config,
 )
 from tools import understand_image
-from tools.understand_image import load_image_for_understanding, understand_image as understand_image_handler
+from tools.understand_image import UnderstandImage, load_image_for_understanding, understand_image as understand_image_handler
 from utils.llm_client import (
     build_anthropic_request_messages,
     build_openai_responses_request,
@@ -149,6 +149,7 @@ async def test_load_local_jpg_without_eof_marker(tmp_path, monkeypatch):
 
 
 def test_inline_image_blocks_convert_for_openai_and_anthropic():
+    second = MIN_PNG + b"second"
     message = {
         "role": "user",
         "content": [
@@ -156,6 +157,11 @@ def test_inline_image_blocks_convert_for_openai_and_anthropic():
                 "type": "image",
                 "media_type": "image/png",
                 "data": MIN_PNG,
+            },
+            {
+                "type": "image",
+                "media_type": "image/png",
+                "data": second,
             },
             {"type": "text", "text": "describe this"},
         ],
@@ -169,7 +175,10 @@ def test_inline_image_blocks_convert_for_openai_and_anthropic():
     assert openai[0]["content"][0]["image_url"]["url"] == (
         "data:image/png;base64," + base64.b64encode(MIN_PNG).decode("ascii")
     )
-    assert openai[0]["content"][1] == {"type": "text", "text": "describe this"}
+    assert openai[0]["content"][1]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(second).decode("ascii")
+    )
+    assert openai[0]["content"][2] == {"type": "text", "text": "describe this"}
     assert anthropic[0]["content"][0] == {
         "type": "image",
         "source": {
@@ -178,12 +187,50 @@ def test_inline_image_blocks_convert_for_openai_and_anthropic():
             "data": base64.b64encode(MIN_PNG).decode("ascii"),
         },
     }
+    assert anthropic[0]["content"][1] == {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": base64.b64encode(second).decode("ascii"),
+        },
+    }
     assert responses[0]["content"][0] == {
         "type": "input_image",
         "image_url": "data:image/png;base64," + base64.b64encode(MIN_PNG).decode("ascii"),
         "detail": "auto",
     }
+    assert responses[0]["content"][1] == {
+        "type": "input_image",
+        "image_url": "data:image/png;base64," + base64.b64encode(second).decode("ascii"),
+        "detail": "auto",
+    }
     assert message["content"][0]["data"] == MIN_PNG
+    assert message["content"][1]["data"] == second
+
+
+def test_understand_image_accepts_single_or_bounded_image_list():
+    single = UnderstandImage.model_validate({"prompt": "describe", "image_url": "one.png"})
+    multiple = UnderstandImage.model_validate({
+        "prompt": "compare",
+        "image_url": ["one.png", "two.png"],
+    })
+
+    assert single.image_url == "one.png"
+    assert multiple.image_url == ["one.png", "two.png"]
+
+    with pytest.raises(ValueError, match="at least 1"):
+        UnderstandImage.model_validate({"prompt": "describe", "image_url": []})
+    with pytest.raises(ValueError, match="at most 4"):
+        UnderstandImage.model_validate({
+            "prompt": "describe",
+            "image_url": ["one.png", "two.png", "three.png", "four.png", "five.png"],
+        })
+    with pytest.raises(ValueError, match="Image 2.*must not be empty"):
+        UnderstandImage.model_validate({
+            "prompt": "describe",
+            "image_url": ["one.png", "   "],
+        })
 
 
 @pytest.mark.anyio
@@ -205,6 +252,121 @@ async def test_understand_image_uses_dedicated_client_and_returns_text(png_file)
     }
     assert client.messages[1]["content"][1]["text"] == "What is this?"
     close_client.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_understand_image_accepts_image_list_in_one_request(png_file):
+    second_data = MIN_PNG + b"second-image"
+    second_path = png_file.with_name("second.png")
+    second_path.write_bytes(second_data)
+    client = FakeVisionClient("two images")
+    with (
+        patch.object(understand_image, "is_understand_image_enabled", return_value=True),
+        patch.object(understand_image, "create_image_understanding_llm_client", return_value=client),
+        patch.object(understand_image, "close_async_llm_client", return_value=None) as close_client,
+        patch.object(understand_image, "post_tui"),
+    ):
+        output = await understand_image_handler(
+            "Compare these images.",
+            [str(png_file), str(second_path)],
+        )
+
+    assert output == "two images"
+    assert client.messages[1]["content"][:2] == [
+        {"type": "image", "media_type": "image/png", "data": MIN_PNG},
+        {"type": "image", "media_type": "image/png", "data": second_data},
+    ]
+    assert client.messages[1]["content"][2] == {
+        "type": "text",
+        "text": "Compare these images.",
+    }
+    close_client.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        ("missing", "Image file not found"),
+        ("non-image", "Unsupported image type"),
+        ("empty", "Image data is empty"),
+    ],
+)
+async def test_understand_image_reports_failing_image_and_path(png_file, failure, reason):
+    second_path = png_file.with_name(f"{failure}.jpg")
+    if failure == "non-image":
+        second_path.write_text("not an image", encoding="utf-8")
+    elif failure == "empty":
+        second_path.write_bytes(b"")
+    with (
+        patch.object(understand_image, "is_understand_image_enabled", return_value=True),
+        patch.object(understand_image, "create_image_understanding_llm_client") as create_client,
+    ):
+        output = await understand_image_handler(
+            "Compare these images.", [str(png_file), str(second_path)]
+        )
+
+    assert output.startswith(f"Error: Image 2 ({str(second_path)!r}): {reason}")
+    create_client.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_understand_image_reports_remote_failure_and_url(png_file):
+    url = "https://example.com/missing.png"
+    client = FakeAsyncClient(MIN_PNG, status_code=404)
+    with (
+        patch.object(understand_image, "is_understand_image_enabled", return_value=True),
+        patch.object(understand_image.httpx, "AsyncClient", return_value=client),
+        patch.object(understand_image, "create_image_understanding_llm_client") as create_client,
+        patch.object(understand_image, "log_error_traceback"),
+    ):
+        output = await understand_image_handler(
+            "Compare these images.", [str(png_file), url]
+        )
+
+    assert output == f"Error: Image 2 ({url!r}): HTTP 404"
+    create_client.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_understand_image_allows_images_exceeding_10mb_in_total(png_file):
+    image_data = MIN_PNG + b"\x00" * (6 * 1024 * 1024 - len(MIN_PNG))
+    png_file.write_bytes(image_data)
+    second_path = png_file.with_name("second.png")
+    second_path.write_bytes(image_data)
+    client = FakeVisionClient("two images")
+    with (
+        patch.object(understand_image, "is_understand_image_enabled", return_value=True),
+        patch.object(understand_image, "create_image_understanding_llm_client", return_value=client),
+        patch.object(understand_image, "close_async_llm_client", return_value=None) as close_client,
+        patch.object(understand_image, "post_tui"),
+    ):
+        output = await understand_image_handler(
+            "Compare these images.", [str(png_file), str(second_path)]
+        )
+
+    assert output == "two images"
+    assert [len(block["data"]) for block in client.messages[1]["content"][:2]] == [
+        6 * 1024 * 1024, 6 * 1024 * 1024,
+    ]
+    close_client.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_understand_image_rejects_oversized_individual_image(png_file):
+    second_path = png_file.with_name("oversized.png")
+    second_path.write_bytes(MIN_PNG + b"\x00\x00")
+    with (
+        patch.object(understand_image, "is_understand_image_enabled", return_value=True),
+        patch.object(understand_image, "_MAX_IMAGE_BYTES", len(MIN_PNG) + 1),
+        patch.object(understand_image, "create_image_understanding_llm_client") as create_client,
+    ):
+        output = await understand_image_handler(
+            "Compare these images.", [str(png_file), str(second_path)]
+        )
+
+    assert output == f"Error: Image 2 ({str(second_path)!r}): Image exceeds {len(MIN_PNG) + 1} bytes"
+    create_client.assert_not_called()
 
 
 @pytest.mark.anyio

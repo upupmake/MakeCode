@@ -540,17 +540,35 @@ def _is_retryable_openai_stream_error(exc: Exception) -> bool:
 
 
 def _responses_retry_reason(code: object, message: object) -> str | None:
-    error_text = f"{code or ''} {message or ''}".lower()
+    code_text = str(code or "").lower()
+    error_text = f"{code_text} {message or ''}".lower()
+    if code_text in {
+        "invalid_request", "invalid_request_error", "bad_request", "bad_request_error",
+        "authentication_error", "unauthorized", "permission_error", "permission_denied",
+        "forbidden", "insufficient_quota", "context_length_exceeded", "model_not_found",
+        "not_found",
+    }:
+        return None
     if "upstream_stream_break" in error_text:
         return "upstream_stream_break"
     if "overload" in error_text:
         return "server overloaded"
     if "internal error during token generation" in error_text:
         return "token generation error"
+    if code_text in {
+        "server_error", "internal_error", "internal_server_error",
+        "service_unavailable", "rate_limit_exceeded", "rate_limit_error",
+    }:
+        return "server error" if "rate_limit" not in code_text else "rate limited"
+    if "an error occurred while processing your request. you can retry your request" in error_text:
+        return "server processing error"
     return None
 
 
 def _responses_api_error_reason(exc: APIError) -> str | None:
+    # HTTP status retries are handled by the SDK; do not multiply its attempts.
+    if getattr(exc, "status_code", None) is not None:
+        return None
     body = getattr(exc, "body", None)
     body_code = body.get("code") if isinstance(body, dict) else None
     body_message = body.get("message") if isinstance(body, dict) else None
@@ -1457,8 +1475,11 @@ class OpenAIResponsesClient(AsyncBaseLLMClient):
                             raise RuntimeError(f"OpenAI Responses error ({event.code}): {event.message}")
                 except _LLMRequestCancelled:
                     return
-                except APIError as exc:
-                    retry_reason = _responses_api_error_reason(exc)
+                except (APIError, httpx.RequestError) as exc:
+                    retry_reason = (
+                        _responses_api_error_reason(exc)
+                        if isinstance(exc, APIError) else "connection error"
+                    )
                     if (
                         retry_reason is None
                         or retries_taken >= max_retries
