@@ -4581,7 +4581,7 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
                     id=meta["input_id"],
                     classes="memory-config-input",
                 )
-            enabled = bool(self._values.get("memory_pre_recall", True))
+            enabled = bool(self._values.get("memory_pre_recall", False))
             yield Label("记忆预召回 (memory_pre_recall)", classes="memory-config-label")
             yield Button(
                 self._memory_pre_recall_label(enabled),
@@ -4633,7 +4633,7 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
         return "记忆预召回：已开启" if enabled else "记忆预召回：已关闭"
 
     def _toggle_memory_pre_recall(self) -> None:
-        enabled = not bool(self._values.get("memory_pre_recall", True))
+        enabled = not bool(self._values.get("memory_pre_recall", False))
         self._values["memory_pre_recall"] = enabled
         self.query_one("#memory-config-memory-pre-recall", Button).label = self._memory_pre_recall_label(enabled)
 
@@ -4663,7 +4663,7 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
         if not 0 < partial_min_percent < partial_max_percent < 100:
             self._show_error("第二层可压缩落点必须满足 0 < 下限 < 上限 < 100。")
             return None
-        values["memory_pre_recall"] = bool(self._values.get("memory_pre_recall", True))
+        values["memory_pre_recall"] = bool(self._values.get("memory_pre_recall", False))
         values["memory_recall_model_key"] = self._values.get("memory_recall_model_key")
         values["memory_recall_model_display"] = self._values.get("memory_recall_model_display", "同主模型")
         return values

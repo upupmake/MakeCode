@@ -456,7 +456,7 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     config_file.write_text(json.dumps({"memory_size": 9}), encoding="utf-8")
 
     assert memory.get_memory_recall_window_size() == 3
-    assert memory.get_memory_pre_recall() is True
+    assert memory.get_memory_pre_recall() is False
     assert memory.get_context_length() == 350
     assert memory.get_context_token_limit() == 350 * 1024
     assert memory.get_compaction_thresholds() == (70, 90)
@@ -470,7 +470,7 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert saved["memory_size"] == 9
     assert saved["memory_recall_window_size"] == 3
-    assert saved["memory_pre_recall"] is True
+    assert saved["memory_pre_recall"] is False
     assert saved["context_length"] == 300
     assert saved["tool_output_compact_threshold"] == 65
     assert saved["partial_compact_threshold"] == 85
@@ -598,9 +598,9 @@ def test_memory_pre_recall_requires_boolean(tmp_path, monkeypatch, enabled):
         memory.set_memory_pre_recall(enabled)
 
     assert json.loads(config_file.read_text(encoding="utf-8")) == {"memory_size": 9}
-    assert memory.get_memory_pre_recall() is True
+    assert memory.get_memory_pre_recall() is False
     saved = json.loads(config_file.read_text(encoding="utf-8"))
-    assert saved["memory_pre_recall"] is True
+    assert saved["memory_pre_recall"] is False
 
 
 def test_memory_config_modal_includes_compaction_threshold_fields():
@@ -4778,6 +4778,7 @@ async def test_user_request_passes_recall_query_to_agent_loop():
     with patch.object(main_module, "set_agent_loop_active"), \
             patch.object(main_module, "_ensure_active_conversation"), \
             patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
+            patch.object(main_module, "get_memory_pre_recall", return_value=True), \
             patch.object(main_module, "refresh_status"):
         await main_module._process_user_query("新的用户请求", history, command_handler)
 
@@ -4874,6 +4875,7 @@ async def test_skill_command_passes_original_recall_query_and_loaded_content():
     with patch.object(main_module, "set_agent_loop_active"), \
             patch.object(main_module, "_ensure_active_conversation"), \
             patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
+            patch.object(main_module, "get_memory_pre_recall", return_value=True), \
             patch.object(main_module, "refresh_status"):
         await main_module._process_user_query(
             "/demo-skill 处理这个请求",
@@ -4907,6 +4909,7 @@ async def test_process_user_query_runs_agent_loop_for_title_detection():
             patch.object(main_module, "_ensure_active_conversation"), \
             patch.object(main_module, "agent_loop", new_callable=AsyncMock, return_value=True) as run_agent_loop, \
             patch.object(main_module, "generate_title", new_callable=AsyncMock) as generate_title, \
+            patch.object(main_module, "get_memory_pre_recall", return_value=True), \
             patch.object(main_module, "_apply_pending_title"), \
             patch.object(main_module, "refresh_status"):
         history = [{"role": "system", "content": "system"}]
