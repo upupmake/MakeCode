@@ -131,7 +131,7 @@ from utils.tool_validation import (
     parse_tool_arguments,
     validate_builtin_tool_arguments,
 )
-from system.tool_history import tool_result_status
+from system.tool_render import tool_result_status
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 

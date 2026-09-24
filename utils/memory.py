@@ -19,7 +19,6 @@ from system.console_render import (
 )
 from system.models import get_current_model_config
 from system.stream_render import StreamRenderer
-from system.tool_history import TOOL_EXECUTION_HISTORY, tool_result_status
 from system.tui_app import TuiRegion, post_tui
 from utils.memory_catalog import read_memory_records, sort_memory_records
 from utils.llm_client import (
@@ -990,13 +989,6 @@ async def memory_agent_loop(
                 handler = LONG_TERM_MEMORY_TOOL_HANDLERS.get(tool_name)
                 tool_error = False
                 output = ""
-                execution_id = TOOL_EXECUTION_HISTORY.start(
-                    tool_name,
-                    tool_args,
-                    tool_call_id=tool_id or "",
-                    source="memory",
-                    actor=MEMORY_AGENT_IDENTITY,
-                )
                 if not handler:
                     tool_error = True
                     output = f"未知记忆工具：{tool_name}"
@@ -1031,12 +1023,6 @@ async def memory_agent_loop(
                         post_tui(TuiRegion.BACKGROUND, f"[bold green]🧠 记忆工具执行完成并产生变更：{escape(tool_name)}[/bold green]")
                     else:
                         post_tui(TuiRegion.BACKGROUND, f"[#aaaaaa]🧠 记忆工具执行完成：{escape(tool_name)}[/#aaaaaa]")
-                TOOL_EXECUTION_HISTORY.finish(
-                    execution_id,
-                    output,
-                    status=tool_result_status(is_error=tool_error, output=output),
-                    error=str(output) if tool_error else "",
-                )
                 had_error = had_error or tool_error
                 saved_outputs.append({"tool": tool_name, "output": output})
                 if tool_id:
@@ -1521,7 +1507,6 @@ async def _summarize_messages(
         messages: list[dict],
         reason: str,
         *,
-        clear_tool_history: bool,
         require_memory_success: bool = False,
         memory_messages: list[dict] | None = None,
 ) -> str:
@@ -1564,8 +1549,6 @@ async def _summarize_messages(
         raise RuntimeError("Compaction summary was empty.")
     _compact_console.print("[#aaaaaa]摘要生成流程已结束。[/#aaaaaa]")
 
-    if clear_tool_history:
-        TOOL_EXECUTION_HISTORY.clear()
     await memory_agent_loop(
         conversation_text=memory_conversation_text,
         summary=summary,
@@ -1609,7 +1592,6 @@ async def partial_compact(
     summary = await _summarize_messages(
         selected_messages,
         reason,
-        clear_tool_history=False,
         require_memory_success=True,
         memory_messages=messages,
     )
@@ -1629,7 +1611,6 @@ async def auto_compact(
     summary = await _summarize_messages(
         source_messages,
         reason,
-        clear_tool_history=True,
     )
 
     system_msgs = [message for message in source_messages if message.get("role") == "system"]

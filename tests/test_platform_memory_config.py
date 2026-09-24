@@ -15,7 +15,6 @@ from rich.text import Text
 from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
-from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal, filter_choice_options
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
@@ -4080,68 +4079,6 @@ async def test_auto_compact_summary_ignores_private_native_payloads():
 
 
 @pytest.mark.anyio
-async def test_auto_compact_clears_old_tool_history_before_memory_agent_and_preserves_new_history():
-    messages = [{"role": "system", "content": "system"}]
-    execution_id = memory.TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "old.py"})
-    memory.TOOL_EXECUTION_HISTORY.finish(execution_id, "old content")
-    fake_client = Mock()
-    fake_client.get_summary_stream_events.return_value = object()
-
-    async def run_memory_agent(*args, **kwargs):
-        assert memory.TOOL_EXECUTION_HISTORY.snapshot() == []
-        new_execution_id = memory.TOOL_EXECUTION_HISTORY.start(
-            "AppendLongTermMemory",
-            {"insight": "new memory"},
-            source="memory",
-            actor=memory.MEMORY_AGENT_IDENTITY,
-        )
-        memory.TOOL_EXECUTION_HISTORY.finish(new_execution_id, "saved")
-        return []
-
-    memory_loop = AsyncMock(side_effect=run_memory_agent)
-
-    try:
-        with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
-                patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
-                patch.object(memory, "_compact_console"), \
-                patch.object(
-                    memory.StreamRenderer,
-                    "render_text_stream_async",
-                    new_callable=AsyncMock,
-                    return_value=("summary", [], None),
-                ), \
-                patch.object(memory, "memory_agent_loop", new=memory_loop), \
-                patch.object(memory, "print_formatted_text"), \
-                patch.object(memory, "post_tui"):
-            await memory.auto_compact(messages)
-
-        memory_loop.assert_awaited_once()
-        records = memory.TOOL_EXECUTION_HISTORY.snapshot()
-        assert len(records) == 1
-        assert records[0].tool_name == "AppendLongTermMemory"
-        assert records[0].source == "memory"
-    finally:
-        memory.TOOL_EXECUTION_HISTORY.clear()
-
-
-@pytest.mark.anyio
-async def test_auto_compact_preserves_tool_execution_history_when_compaction_fails():
-    messages = [{"role": "system", "content": "system"}]
-    execution_id = memory.TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "old.py"})
-    memory.TOOL_EXECUTION_HISTORY.finish(execution_id, "old content")
-
-    try:
-        with patch.object(memory, "_compact_console"), \
-                patch.object(memory, "create_current_async_llm_client", return_value=None):
-            with pytest.raises(RuntimeError, match="No model configured"):
-                await memory.auto_compact(messages)
-
-        assert len(memory.TOOL_EXECUTION_HISTORY.snapshot()) == 1
-    finally:
-        memory.TOOL_EXECUTION_HISTORY.clear()
-
-
-@pytest.mark.anyio
 async def test_async_chat_client_uses_configured_reasoning_effort():
     raw_client = Mock()
     raw_stream = _ClosableAsyncStream([
@@ -6208,7 +6145,6 @@ async def test_agent_loop_returns_builtin_validation_error_without_calling_handl
 
 @pytest.mark.anyio
 async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_error():
-    TOOL_EXECUTION_HISTORY.clear()
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -6278,7 +6214,6 @@ async def test_agent_loop_resumes_pause_turn_and_marks_unknown_tool_result_as_er
     tool_result = next(message for message in requests[2] if message.get("role") == "tool")
     assert tool_result["name"] == "MissingTool"
     assert tool_result["is_error"] is True
-    assert TOOL_EXECUTION_HISTORY.snapshot() == []
     assert save_messages.call_count == 4
 
 

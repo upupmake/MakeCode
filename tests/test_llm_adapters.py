@@ -2304,7 +2304,6 @@ def auxiliary_sse_response(request, message_format, reply):
 async def auxiliary_gateway(request, monkeypatch, isolated_responses_runtime, tmp_path):
     import main as main_module
     import system.stream_render as stream_render
-    from system.tool_history import ToolExecutionHistory
     from utils import llm_client, memory, teams
     from tools import understand_image
 
@@ -2365,13 +2364,11 @@ async def auxiliary_gateway(request, monkeypatch, isolated_responses_runtime, tm
     monkeypatch.setattr(stream_render, "is_cancelled", lambda: False)
     monkeypatch.setattr(memory, "_compact_console", Mock())
     monkeypatch.setattr(memory, "_render_agent_response_message", Mock())
-    monkeypatch.setattr(memory, "TOOL_EXECUTION_HISTORY", ToolExecutionHistory())
     monkeypatch.setattr(memory, "_MEMORY_RECALL_WINDOWS", {})
     monkeypatch.setattr(memory, "list_long_term_memories", lambda: [{
         "id": "mem_test", "category": "workflow", "insight": "durable test rule", "evidence": "test",
         "reuse_condition": "test trigger", "status": "active", "updated_at": "2026-01-01 00:00:00",
     }])
-    monkeypatch.setattr(teams, "TOOL_EXECUTION_HISTORY", ToolExecutionHistory())
     monkeypatch.setattr(teams, "get_sub_agent_console", lambda: False)
     monkeypatch.setattr(teams.GLOBAL_MCP_MANAGER, "get_registry_snapshot", lambda: ([], {}))
     monkeypatch.setattr(teams, "_workdir", lambda: tmp_path)

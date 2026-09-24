@@ -26,8 +26,7 @@ from tools.extra_tools import (
     is_understand_image_enabled,
     set_understand_image_config,
 )
-from system.tool_history import TOOL_EXECUTION_HISTORY
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, show_tool_history_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationListItem, ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -1000,11 +999,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             )
         return True
 
-    def handle_tool_history(self, history: list[dict[str, Any]]) -> bool:
-        """打开当前对话的工具执行历史浏览器。"""
-        show_tool_history_tui(TOOL_EXECUTION_HISTORY, history)
-        return True
-
     def handle_new(self, history: list, current_conversation: Optional[Path]) -> tuple:
         """处理 /new 命令，返回 (should_continue, new_conversation)。"""
         from utils import tasks as tasks_module
@@ -1071,7 +1065,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
     def _reset_conversation_view(self, history: list) -> None:
         history.clear()
         history.append({"role": "system", "content": self.get_system_prompt_fn()})
-        TOOL_EXECUTION_HISTORY.clear()
         for region in (
             TuiRegion.CONTENT,
             TuiRegion.TASK,
@@ -1356,7 +1349,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         tasks_module.TASK_MANAGER = next_task_manager
         teams_module.TEAM = next_team
-        TOOL_EXECUTION_HISTORY.clear()
         reset_memory_recall_windows()
         hitl_mod.SESSION_WHITELIST.clear()
         hitl_mod.PATH_WHITELIST.clear()
@@ -1455,10 +1447,6 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
 
         if query == "/copy":
             self.handle_copy(history)
-            return CommandResult(action=CommandAction.CONTINUE)
-
-        if query == "/tool-history":
-            self.handle_tool_history(history)
             return CommandResult(action=CommandAction.CONTINUE)
 
         if query == "/models":

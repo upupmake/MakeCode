@@ -465,7 +465,6 @@ async def test_every_documented_slash_command_has_a_real_route_or_alias(monkeypa
         "handle_cmds": True,
         "handle_task_table": True,
         "handle_copy": True,
-        "handle_tool_history": True,
         "handle_models": None,
         "handle_layout": None,
         "handle_update": None,
@@ -1125,7 +1124,6 @@ def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp
 
     handler = make_handler(store)
     handler.console = Mock()
-    tool_history = Mock()
     events = []
     begin_batch = Mock()
 
@@ -1136,8 +1134,6 @@ def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp
     monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
     monkeypatch.setattr("system.commands.post_tui", Mock())
     monkeypatch.setattr("system.commands.begin_tui_batch_render", begin_batch)
-    monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
-
     loaded_history, loaded_conversation = handler.handle_load(
         [{"role": "system", "content": "old"}],
         None,
@@ -1158,7 +1154,6 @@ def test_load_conversation_automatically_restores_task_and_sub_agent_history(tmp
     assert tasks_module.TASK_MANAGER._data == task_plan
     assert teams_module.TEAM.conversation_id == conversation.parent.name
     assert teams_module.TEAM.history == team_history
-    tool_history.clear.assert_called_once_with()
     begin_batch.assert_called_once_with(force_scroll=True)
 
 
@@ -1249,7 +1244,6 @@ def test_load_conversation_without_sidecars_activates_empty_histories(tmp_path, 
 
 
 def test_load_malformed_messages_keeps_previous_state(tmp_path, monkeypatch):
-    from system.tool_history import ToolExecutionHistory
     from utils import tasks as tasks_module
     from utils import teams as teams_module
 
@@ -1266,9 +1260,6 @@ def test_load_malformed_messages_keeps_previous_state(tmp_path, monkeypatch):
     store.activate(previous_snapshot)
     monkeypatch.setattr(tasks_module, "TASK_MANAGER", previous_task_manager)
     monkeypatch.setattr(teams_module, "TEAM", previous_team)
-    tool_history = ToolExecutionHistory()
-    tool_history.start("FileRead", "{}")
-    monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
     monkeypatch.setattr(
         "system.commands.interactive_choose_conversation",
         lambda conversations, **kwargs: str(malformed),
@@ -1290,10 +1281,6 @@ def test_load_malformed_messages_keeps_previous_state(tmp_path, monkeypatch):
     assert store.active_path == previous
     assert tasks_module.TASK_MANAGER is previous_task_manager
     assert teams_module.TEAM is previous_team
-    assert len(tool_history.query()) == 1
-    assert tool_history.query()[0].tool_name == "FileRead"
-
-
 def test_load_failure_keeps_previous_conversation_and_managers(tmp_path, monkeypatch):
     from utils import tasks as tasks_module
     from utils import teams as teams_module
@@ -1379,20 +1366,6 @@ def test_new_resets_conversation_task_and_team_bindings(tmp_path, monkeypatch):
     assert history == [{"role": "system", "content": ""}]
 
 
-def test_reset_conversation_view_clears_tool_history(monkeypatch):
-    handler = make_handler()
-    tool_history = Mock()
-    monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
-    monkeypatch.setattr("system.commands.post_tui", Mock())
-    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
-    history = [{"role": "system", "content": "old"}, {"role": "user", "content": "question"}]
-
-    handler._reset_conversation_view(history)
-
-    assert history == [{"role": "system", "content": ""}]
-    tool_history.clear.assert_called_once_with()
-
-
 def test_tasks_command_opens_task_management_panel(monkeypatch):
     manager = Mock()
     manager.get_task_table.return_value = {
@@ -1442,21 +1415,6 @@ def test_skills_command_does_not_refresh_system_prompt_without_changes(monkeypat
 
     assert handler.handle_skills_list() is None
     handler.get_system_prompt_fn.assert_not_called()
-
-
-def test_tool_history_command_passes_current_messages(monkeypatch):
-    history = [
-        {"role": "system", "content": "system prompt"},
-        {"role": "tool", "tool_call_id": "call_read", "name": "FileRead", "content": "file"},
-    ]
-    tool_history = Mock()
-    show_history = Mock(return_value="closed")
-    monkeypatch.setattr("system.commands.TOOL_EXECUTION_HISTORY", tool_history)
-    monkeypatch.setattr("system.commands.show_tool_history_tui", show_history)
-
-    assert make_handler().handle_tool_history(history) is True
-
-    show_history.assert_called_once_with(tool_history, history)
 
 
 def test_copy_command_keeps_only_questions_answers_and_terminal_io(monkeypatch):

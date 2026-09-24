@@ -10,10 +10,9 @@ from rich.panel import Panel
 from rich.text import Text
 
 from system.console_render import _render_startup_banner
-from system.tool_history import TOOL_EXECUTION_HISTORY
 from system.tui_app import MakeCodeTuiApp, TuiBridge
 from system.tui_types import TuiEvent, TuiRegion
-from system.tui_modals import ChoiceModal, TokenUsageModal, ToolHistoryModal
+from system.tui_modals import ChoiceModal, TokenUsageModal
 from utils.skills import SkillLoader
 
 
@@ -407,58 +406,6 @@ async def test_title_keeps_header_status_visible_on_compact_layout():
 
 
 @pytest.mark.anyio
-async def test_f7_opens_tool_history_with_current_messages_and_advertises_shortcut():
-    TOOL_EXECUTION_HISTORY.clear()
-    execution_id = TOOL_EXECUTION_HISTORY.start("FileRead", {"path": "README.md"})
-    TOOL_EXECUTION_HISTORY.finish(execution_id, "live history contents")
-    auxiliary_id = TOOL_EXECUTION_HISTORY.start(
-        "AppendLongTermMemory",
-        {"insight": "memory"},
-        source="memory",
-        actor="🧠 记忆代理",
-    )
-    TOOL_EXECUTION_HISTORY.finish(auxiliary_id, "memory result")
-    messages = [
-        {
-            "role": "assistant",
-            "tool_calls": [{
-                "id": "call_read",
-                "name": "FileRead",
-                "arguments": {"path": "README.md"},
-            }],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_read",
-            "name": "FileRead",
-            "content": "current message contents",
-        },
-    ]
-    app = MakeCodeTuiApp(messages_provider=lambda: messages)
-
-    try:
-        async with app.run_test(size=(140, 40)) as pilot:
-            await pilot.pause()
-
-            await pilot.press("f7")
-            await pilot.pause()
-
-            assert isinstance(app.screen, ToolHistoryModal)
-            assert ("Orchestrator", "orchestrator") not in app.screen._SOURCE_OPTIONS
-            assert {item.tool_name for item in app.screen._row_values} == {
-                "AppendLongTermMemory",
-            }
-            assert app.screen._history.snapshot()[0].tool_name == "AppendLongTermMemory"
-            assert app.screen._message_history.snapshot()[0].result == "current message contents"
-            app.screen.action_close()
-            await pilot.pause()
-            assert not isinstance(app.screen, ToolHistoryModal)
-            assert app._modal_active is False
-    finally:
-        TOOL_EXECUTION_HISTORY.clear()
-
-
-@pytest.mark.anyio
 async def test_compact_layout_switches_between_main_and_runtime_panes():
     app = MakeCodeTuiApp()
 
@@ -730,7 +677,7 @@ async def test_runtime_pane_selection_resets_after_returning_to_wide_layout():
 
 
 @pytest.mark.anyio
-async def test_quick_panel_tool_history_button_routes_to_history_command():
+async def test_quick_panel_conversation_history_button_routes_to_load_command():
     app = MakeCodeTuiApp()
     app._run_quick_command = Mock()
 
@@ -739,16 +686,38 @@ async def test_quick_panel_tool_history_button_routes_to_history_command():
         await pilot.click("#quick-panel-toggle")
         await pilot.pause()
 
-        button = app.query_one("#quick-tool-history")
-        assert "工具历史" in str(button.label)
+        button = app.query_one("#quick-conversation-history")
+        assert "对话历史" in str(button.label)
 
-        await pilot.click("#quick-tool-history")
+        await pilot.click("#quick-conversation-history")
         await pilot.pause()
 
         extra_tools = app.query_one("#quick-extra-tools")
         assert "额外工具" in str(extra_tools.label)
 
-        app._run_quick_command.assert_called_once_with("/tool-history")
+        app._run_quick_command.assert_called_once_with("/load")
+
+
+@pytest.mark.anyio
+async def test_quick_panel_conversation_history_is_disabled_during_agent_loop():
+    app = MakeCodeTuiApp()
+    app._run_quick_command = Mock()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        await pilot.click("#quick-panel-toggle")
+        app.set_agent_loop_active(True)
+        await pilot.pause()
+
+        button = app.query_one("#quick-conversation-history")
+        assert button.disabled
+        assert app.query_one("#input-box").has_class("hidden")
+
+        await pilot.click("#quick-conversation-history")
+        await pilot.pause()
+
+        app._run_quick_command.assert_not_called()
+        assert app.query_one("#input-box").has_class("hidden")
 
 
 @pytest.mark.anyio

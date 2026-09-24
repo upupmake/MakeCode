@@ -17,7 +17,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
-from system.tool_history import (
+from system.tool_render import (
     format_tool_arguments,
     format_tool_call_block,
     format_tool_result_block,

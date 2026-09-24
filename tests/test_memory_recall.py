@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import utils.memory as memory
 from prompts import get_orchestrator_system_prompt, get_sub_agent_system_prompt
-from system.tool_history import TOOL_STATUS_FAILED, ToolExecutionHistory
 from utils import text_tokens
 from utils.common import truncate_output
 from utils.teams import build_sub_agent_recall_query, prepend_recalled_memory_to_sub_agent_prompt
@@ -373,14 +372,11 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "assistant", "content": None, "stop_reason": "tool_use"},
             ),
         ]
-        tool_history = ToolExecutionHistory()
-
         with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
                 patch.object(memory, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
                 patch.object(memory.StreamRenderer, "render_text_stream_async", new_callable=AsyncMock, side_effect=stream_results), \
                  patch.object(memory, "post_tui"), \
-                 patch.object(memory, "_render_agent_response_message"), \
-                 patch.object(memory, "TOOL_EXECUTION_HISTORY", tool_history):
+                 patch.object(memory, "_render_agent_response_message"):
             outputs = await memory.memory_agent_loop(
                 conversation_text="[]",
                 summary="",
@@ -395,10 +391,6 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initial_messages[2]["stop_reason"], "pause_turn")
         tool_result = next(item for item in initial_messages if item.get("role") == "tool")
         self.assertTrue(tool_result["is_error"])
-        history_record = tool_history.snapshot()[0]
-        self.assertEqual(history_record.tool_name, "MissingMemoryTool")
-        self.assertEqual(history_record.source, "memory")
-        self.assertEqual(history_record.status, TOOL_STATUS_FAILED)
         close_client.assert_awaited_once_with(fake_client)
 
     async def test_memory_agent_returns_validation_error_without_calling_write_handler(self):
@@ -482,8 +474,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ), \
                  patch.object(memory, "post_tui"), \
-                 patch.object(memory, "_render_agent_response_message"), \
-                 patch.object(memory, "TOOL_EXECUTION_HISTORY", ToolExecutionHistory()):
+                 patch.object(memory, "_render_agent_response_message"):
             with self.assertRaisesRegex(RuntimeError, "tool errors"):
                 await memory.memory_agent_loop(
                     conversation_text="[]",

@@ -60,7 +60,6 @@ from system.tui_modals import (
     TaskPanelModal,
     TemporaryQueryModal,
     TokenUsageModal,
-    ToolHistoryModal,
 )
 from utils import paths
 from utils.terminal import set_terminal_title
@@ -270,27 +269,6 @@ class TuiBridge:
             app.open_copy_content_modal(messages, future)
         else:
             app.call_from_thread(app.open_copy_content_modal, messages, future)
-        return future.result()
-
-    def show_tool_history(
-        self,
-        history: Any,
-        messages: list[dict[str, Any]],
-    ) -> str:
-        with self._app_lock:
-            app = self._app
-        if app is None:
-            return "<cancelled>"
-        future: Future[str] = Future()
-        if self._is_app_thread():
-            app.open_tool_history_modal(history, messages, future)
-        else:
-            app.call_from_thread(
-                app.open_tool_history_modal,
-                history,
-                messages,
-                future,
-            )
         return future.result()
 
     def manage_models(self, model_manager: Any) -> str:
@@ -1243,7 +1221,6 @@ class MakeCodeTuiApp(App[None]):
         Binding("escape", "cancel_response", "Cancel", priority=True),
         Binding("ctrl+n", "insert_newline", "New line", priority=True),
         Binding("f6", "toggle_compact_panes", "切换面板", priority=True, show=False),
-        Binding("f7", "open_tool_history", "工具历史", priority=True, show=False),
         Binding("ctrl+g", "open_temporary_query", "追加临时指令", priority=True, show=False),
     ]
 
@@ -1329,7 +1306,7 @@ class MakeCodeTuiApp(App[None]):
             yield Static("", id="top-clock")
         with Vertical(id="quick-panel-shell"):
             with Grid(id="quick-panel-buttons", classes="hidden"):
-                yield Button("🧰 工具历史", id="quick-tool-history", classes="quick-panel-button")
+                yield Button("💬 对话历史", id="quick-conversation-history", classes="quick-panel-button")
                 yield Button("🧠 记忆", id="quick-memory", classes="quick-panel-button")
                 yield Button("📚 技能", id="quick-skills", classes="quick-panel-button")
                 yield Button("🛠️ 命令", id="quick-commands", classes="quick-panel-button")
@@ -1401,6 +1378,7 @@ class MakeCodeTuiApp(App[None]):
         self._update_header_status()
         self._update_input_title()
         self._update_hitl_button()
+        self.query_one("#quick-conversation-history", Button).disabled = self._agent_loop_active
         self._update_runtime_info()
         self.refresh_token_usage()
         self._update_clock()
@@ -2007,26 +1985,6 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(CopyContentModal(messages), _done)
 
-    def open_tool_history_modal(
-        self,
-        history: Any,
-        messages: list[dict[str, Any]],
-        future: Future[str] | None = None,
-    ) -> None:
-        if self._modal_active:
-            if future is not None and not future.done():
-                future.set_result("<cancelled>")
-            return
-
-        def _done(value: str | None) -> None:
-            self._modal_active = False
-            if future is not None and not future.done():
-                future.set_result(value or "<cancelled>")
-            self.query_one("#input-box", MakeCodeInput).focus()
-
-        self._modal_active = True
-        self.push_screen(ToolHistoryModal(history, messages), _done)
-
     def open_model_manager_modal(self, model_manager: Any, future: Future[str]) -> None:
         def _done(value: str | None) -> None:
             self._modal_active = False
@@ -2428,6 +2386,7 @@ class MakeCodeTuiApp(App[None]):
             and self._is_scroller_at_bottom(self._content_scroller)
         )
         self._agent_loop_active = active
+        self.query_one("#quick-conversation-history", Button).disabled = active
         if was_active and not active:
             self.restore_temporary_query_to_input()
             self.set_temporary_query_enabled(False)
@@ -2523,14 +2482,6 @@ class MakeCodeTuiApp(App[None]):
         if cancel_current_response():
             self.query_one("#input-box", MakeCodeInput).focus()
 
-    def action_open_tool_history(self) -> None:
-        if self._modal_active:
-            return
-        from system.tool_history import TOOL_EXECUTION_HISTORY
-
-        messages = self._messages_provider() if self._messages_provider is not None else []
-        self.open_tool_history_modal(TOOL_EXECUTION_HISTORY, list(messages))
-
     def open_token_usage_modal(self) -> None:
         if self._modal_active or self._token_usage is None:
             return
@@ -2587,8 +2538,10 @@ class MakeCodeTuiApp(App[None]):
         if button_id == "compact-pane-toggle":
             self.action_toggle_compact_panes()
             return
+        if button_id == "quick-conversation-history" and self._agent_loop_active:
+            return
         quick_commands = {
-            "quick-tool-history": "/tool-history",
+            "quick-conversation-history": "/load",
             "quick-memory": "/memory-panel",
             "quick-skills": "/skills-list",
             "quick-commands": "/cmds",
@@ -3041,13 +2994,6 @@ def manage_tasks_tui(task_manager: Any) -> str:
 
 def show_copy_content_tui(messages: list[dict[str, Any]]) -> str:
     return TUI_BRIDGE.show_copy_content(messages)
-
-
-def show_tool_history_tui(
-    history: Any,
-    messages: list[dict[str, Any]],
-) -> str:
-    return TUI_BRIDGE.show_tool_history(history, list(messages))
 
 
 def choose_add_model_tui() -> dict[str, str] | None:
