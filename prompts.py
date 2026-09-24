@@ -122,11 +122,9 @@ def _tool_priority_section() -> str:
 
 Use dedicated file-operation tools instead of shell commands for file reads, creates, edits, and patches:
  - To READ files: use FileRead (not cat, head, tail, type)
- - To EDIT a single existing file: use FileEdit (not sed, awk, or terminal editors)
- - To APPLY a complete unified-diff patch: use FilePatch (not terminal patch commands)
-   Do not treat FilePatch as a multi-file-only tool; it applies complete patches affecting one file or multiple files.
-   Prefer FileEdit for a simple single-file search-and-replace; do not use the number of affected files as the sole criterion for choosing between them.
-   If the result says `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
+ - To MODIFY existing files: prefer FilePatch as the default, including changes to a single file. Use it for complete unified-diff patches, multi-file changes, and Add/Delete operations.
+   Use FileEdit only as a fallback for a localized search-and-replace in one existing file when FilePatch is not a good fit or cannot reliably express the edit. Do not choose FileEdit merely because only one file is involved.
+   If FilePatch returns `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
  - To CREATE files: use FileCreate (not echo >>, cat heredoc)
 
 For file, path, and text searches, use RunTerminalCommand by default (for example, grep, rg, find, or platform equivalents). Do not assume a particular search program is installed.
