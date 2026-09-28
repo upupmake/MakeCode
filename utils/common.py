@@ -26,8 +26,8 @@ from utils.tool_validation import ToolArgumentsModel, build_tool_definitions, me
 _OUTPUT_TRUNCATION_MARKER_PATTERN = re.compile(
     r"(?:\n\n)?\[\.\.\.此处省略 \d+ tokens\.\.\.\](?:\n\n)?"
 )
-_OUTPUT_TRUNCATION_MAX_TOKENS = 8000
-_OUTPUT_TRUNCATION_EDGE_TOKENS = 4000
+_OUTPUT_TRUNCATION_MAX_TOKENS = 12000
+_OUTPUT_TRUNCATION_EDGE_TOKENS = 6000
 _UTF8_BOM = b"\xef\xbb\xbf"
 
 

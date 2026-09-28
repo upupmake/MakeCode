@@ -119,14 +119,14 @@ def test_truncated_file_read_keeps_whole_lines_around_the_marker(monkeypatch, tm
 
 
 def test_truncate_output_line_alignment_is_opt_in(monkeypatch):
-    text = "甲" * 5000 + "\n" + "乙" * 5000
+    text = "甲" * 8000 + "\n" + "乙" * 8000
 
     assert "\n" in common.truncate_output(text)
     assert common.truncate_output(text, line_aligned=True).count("\n") >= 4
 
 
 def test_truncate_output_line_alignment_tolerates_text_without_newlines():
-    text = "甲" * 5000 + "乙" * 5000
+    text = "甲" * 7000 + "乙" * 7000
     aligned = common.truncate_output(text, line_aligned=True)
 
     assert aligned == common.truncate_output(text)
@@ -135,7 +135,7 @@ def test_truncate_output_line_alignment_tolerates_text_without_newlines():
 
 def test_truncate_output_returns_short_text_unchanged_when_line_aligned():
     assert common.truncate_output("a\nb\nc", line_aligned=True) == "a\nb\nc"
-    assert text_tokens.estimate_text_tokens("a\nb\nc") < 8000
+    assert text_tokens.estimate_text_tokens("a\nb\nc") < common._OUTPUT_TRUNCATION_MAX_TOKENS
 
 
 def test_file_create_line_count_matches_file_read_total_lines(monkeypatch, tmp_path):

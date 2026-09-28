@@ -599,15 +599,15 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retruncated.count("[...内容截断...]"), 1)
 
     def test_truncate_output_uses_exact_token_boundary(self):
-        exact = "甲" * 8000
-        over = "甲" * 4000 + "乙" * 4001
+        exact = "甲" * 12000
+        over = "甲" * 6000 + "乙" * 6001
         token_light = "A" * 20000
 
         self.assertEqual(truncate_output(exact), exact)
         self.assertEqual(truncate_output(token_light), token_light)
         self.assertEqual(
             truncate_output(over),
-            "甲" * 4000 + "\n\n[...此处省略 1 tokens...]\n\n" + "乙" * 4000,
+            "甲" * 6000 + "\n\n[...此处省略 1 tokens...]\n\n" + "乙" * 6000,
         )
 
     def test_truncate_output_uses_tokens_and_preserves_utf8_boundaries(self):
@@ -622,15 +622,15 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         head, tail = result.split("\n\n", 2)[0], result.rsplit("\n\n", 2)[-1]
         self.assertEqual(
             head,
-            encoder.decode_bytes(tokens[:4000]).decode("utf-8", errors="ignore"),
+            encoder.decode_bytes(tokens[:6000]).decode("utf-8", errors="ignore"),
         )
         self.assertEqual(
             tail,
-            encoder.decode_bytes(tokens[-4000:]).decode("utf-8", errors="ignore"),
+            encoder.decode_bytes(tokens[-6000:]).decode("utf-8", errors="ignore"),
         )
         self.assertNotIn("�", result)
-        self.assertLessEqual(memory.estimate_text_tokens(head), 4000)
-        self.assertLessEqual(memory.estimate_text_tokens(tail), 4000)
+        self.assertLessEqual(memory.estimate_text_tokens(head), 6000)
+        self.assertLessEqual(memory.estimate_text_tokens(tail), 6000)
 
     def test_truncate_output_retruncating_existing_output_is_idempotent(self):
         text = "甲" * 4000 + "中😀English " * 2000 + "乙" * 4000
@@ -651,23 +651,23 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.count("[该工具执行结果已被压缩 "), 1)
 
     def test_truncate_output_fallback_preserves_unicode(self):
-        text = "𐍈" * 8001
+        text = "𐍈" * 12001
         with patch.object(text_tokens, "_ENCODER", None):
             result = truncate_output(text)
 
         self.assertEqual(
             result,
-            "𐍈" * 4000 + "\n\n[...此处省略 1 tokens...]\n\n" + "𐍈" * 4000,
+            "𐍈" * 6000 + "\n\n[...此处省略 1 tokens...]\n\n" + "𐍈" * 6000,
         )
         self.assertNotIn("�", result)
 
     def test_truncate_output_excludes_existing_marker_tokens(self):
         marker = "\n\n[...此处省略 123 tokens...]\n\n"
-        text = "甲" * 4000 + marker + "乙" * 4000
+        text = "甲" * 6000 + marker + "乙" * 6000
         self.assertEqual(truncate_output(text), text)
 
         compact_marker = "\n\n...[该工具执行结果已被压缩 123 tokens]...\n\n"
-        compacted_text = "甲" * 4000 + compact_marker + "乙" * 4000
+        compacted_text = "甲" * 6000 + compact_marker + "乙" * 6000
         truncated = truncate_output(compacted_text)
         self.assertIn("[...此处省略 ", truncated)
         self.assertNotIn("...[该工具执行结果已被压缩 123 tokens]...", truncated)
@@ -679,8 +679,8 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         head, marker_and_tail = result.split("\n\n", 1)
         marker_text, tail = marker_and_tail.split("\n\n", 1)
         self.assertTrue(marker_text.startswith("[...此处省略"))
-        self.assertEqual(head, "甲" * 4000)
-        self.assertEqual(tail, "乙" * 4000)
+        self.assertEqual(head, "甲" * 6000)
+        self.assertEqual(tail, "乙" * 6000)
         self.assertEqual(result.count("[...此处省略"), 1)
 
     def test_recall_candidates_truncate_long_insight(self):
