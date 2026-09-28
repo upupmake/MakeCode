@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import shlex
 import threading
@@ -25,6 +26,7 @@ from utils.llm_client import (
     sanitize_openai_messages,
     strip_native_message_payloads,
 )
+from utils.vision import IMAGE_PLACEHOLDER_PATTERN, image_reference_marker, store_image_bytes_attachment
 import main as main_module
 
 
@@ -4973,6 +4975,7 @@ async def test_agent_loop_injects_temporary_query_into_next_model_request():
             patch.object(main_module.CONVERSATION_STORE, "save_messages"), \
             patch.object(main_module, "estimate_tokens", return_value=0), \
             patch.object(main_module, "consume_temporary_query", side_effect=[None, "/reset project"]), \
+            patch.object(main_module, "_parse_input_images") as parse_input_images, \
             patch.object(main_module, "clear_temporary_query"), \
             patch.object(main_module, "set_temporary_query_enabled"), \
             patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
@@ -4999,6 +5002,117 @@ async def test_agent_loop_injects_temporary_query_into_next_model_request():
     assert content_payloads[0] == "[#3f3f46]─[/#3f3f46]"
     assert content_payloads[1].renderable.plain == temporary_message["content"]
     assert content_payloads[1].title == "[bold #22c55e]You[/bold #22c55e]"
+    parse_input_images.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("protocol", ["openai_chat", "openai_responses", "anthropic"])
+@pytest.mark.parametrize("body_template", [
+    "before {0} after",
+    "{0}",
+    "{0} between {1}",
+    "before {0}{1} between {0} after",
+])
+async def test_agent_loop_injects_temporary_query_images_with_intact_wrapper(tmp_path, protocol, body_template):
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    store = ConversationStore(tmp_path / "conversations")
+    store.ensure_active()
+    image_blocks = [
+        store_image_bytes_attachment(store.active_root, b"first-image", "diagram.png", "image/png"),
+        store_image_bytes_attachment(store.active_root, b"second-image", "diagram.png", "image/png"),
+    ]
+    markers = [image_reference_marker(block) for block in image_blocks]
+    body = body_template.format(*markers)
+    expected_images = [
+        next(block for block in image_blocks if block["attachment_id"] == match.group("id"))
+        for match in IMAGE_PLACEHOLDER_PATTERN.finditer(body)
+    ]
+    image_bytes = {
+        image_blocks[0]["attachment_id"]: b"first-image",
+        image_blocks[1]["attachment_id"]: b"second-image",
+    }
+    requests = []
+
+    class FakeClient:
+        def append_assistant_message(self, history, raw_message):
+            history.append(raw_message)
+
+    async def stream_with_render(history, tools, client):
+        requests.append(list(history))
+        return (
+            "done",
+            [],
+            {"role": "assistant", "content": "done", "stop_reason": "pause_turn" if len(requests) == 1 else "end_turn"},
+            False,
+        )
+
+    with patch.object(main_module, "compact_tool_outputs"), \
+            patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(main_module, "post_tui") as post_tui, \
+            patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "CONVERSATION_STORE", store), \
+            patch.object(main_module, "_ensure_active_conversation"), \
+            patch.object(main_module, "estimate_tokens", return_value=0), \
+            patch.object(main_module, "consume_temporary_query", side_effect=[None, body]), \
+            patch.object(main_module, "recall_long_term_memories", new_callable=AsyncMock) as recall, \
+            patch.object(main_module, "clear_temporary_query"), \
+            patch.object(main_module, "set_temporary_query_enabled"), \
+            patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
+            patch.object(main_module, "_apply_pending_title"):
+        committed = await main_module.agent_loop(messages, llm_client=FakeClient())
+
+    assert committed is True
+    assert len(requests) == 2
+    assert requests[0][-1]["content"] == "hello"
+    temporary_message = requests[1][-1]
+    content = temporary_message["content"]
+    assert temporary_message["role"] == "user"
+    assert content[0]["type"] == content[-1]["type"] == "text"
+    assert content[0]["text"].startswith(main_module.TEMPORARY_INSTRUCTION_START)
+    assert content[-1]["text"].endswith(main_module.TEMPORARY_INSTRUCTION_END)
+    assert [block for block in content if block["type"] == "image"] == expected_images
+    display_content = temporary_message["message_metadata"]["display_content"]
+    assert temporary_message["message_metadata"]["temporary_query"] is True
+    assert display_content.count(main_module.TEMPORARY_INSTRUCTION_START) == 1
+    assert display_content.count(main_module.TEMPORARY_INSTRUCTION_END) == 1
+    assert display_content.count("[图片：diagram.png]") == len(expected_images)
+    assert "[[image:id=" not in display_content
+    panels = [call.args[1] for call in post_tui.call_args_list if len(call.args) > 1 and hasattr(call.args[1], "copy_text")]
+    assert panels[0].renderable.plain == panels[0].copy_text == display_content
+    assert console_render._extract_message_text(temporary_message) == display_content
+    recall.assert_not_awaited()
+
+    if protocol == "openai_chat":
+        request_content = llm_client_module.sanitize_openai_messages([temporary_message], store.active_root)[0]["content"]
+        text_type, image_type = "text", "image_url"
+    elif protocol == "openai_responses":
+        _, request_items = llm_client_module.build_openai_responses_request([temporary_message], store.active_root)
+        request_content = request_items[0]["content"]
+        text_type, image_type = "input_text", "input_image"
+    else:
+        _, request_messages = llm_client_module.build_anthropic_request_messages([temporary_message], store.active_root)
+        request_content = request_messages[0]["content"]
+        text_type, image_type = "text", "image"
+    assert [block["type"] for block in request_content] == [text_type if block["type"] == "text" else image_type for block in content]
+    for source, projected in zip(content, request_content):
+        if source["type"] == "text":
+            assert projected["text"] == source["text"]
+        else:
+            encoded = base64.b64encode(image_bytes[source["attachment_id"]]).decode("ascii")
+            if protocol == "openai_chat":
+                assert projected["image_url"]["url"] == f"data:image/png;base64,{encoded}"
+            elif protocol == "openai_responses":
+                assert projected["image_url"] == f"data:image/png;base64,{encoded}"
+                assert projected["detail"] == "auto"
+            else:
+                assert projected["source"] == {"type": "base64", "media_type": "image/png", "data": encoded}
+    assert store.load(store.active_path).messages == messages
 
 
 @pytest.mark.anyio

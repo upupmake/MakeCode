@@ -1,6 +1,5 @@
 import asyncio
 import os
-import re
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -27,11 +26,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Collapsible, Footer, Input, Label, RichLog, Static, TextArea
 
 from system.clipboard import copy_to_system_clipboard, strip_invisible_characters
-from utils.vision import (
-    IMAGE_PLACEHOLDER_PATTERN,
-    image_placeholder_text,
-    image_reference_marker,
-)
+from utils.vision import image_reference_marker
 from system.tui_types import (
     TuiEvent,
     TuiRegion,
@@ -39,6 +34,7 @@ from system.tui_types import (
     normalize_layout_ratios,
     save_layout_ratios,
 )
+from system.image_input import ImageAwareTextArea
 from system.tui_modals import (
     AddModelModal,
     ChoiceModal,
@@ -63,19 +59,6 @@ from system.tui_modals import (
 )
 from utils import paths
 from utils.terminal import set_terminal_title
-
-
-_IMAGE_DISPLAY_PLACEHOLDER_PATTERN = re.compile(r"\[图片：[^\]\n]+\]")
-
-
-def _input_image_placeholder_matches(text: str):
-    return sorted(
-        [
-            *IMAGE_PLACEHOLDER_PATTERN.finditer(text),
-            *_IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text),
-        ],
-        key=lambda match: match.start(),
-    )
 
 
 class TuiBridge:
@@ -549,63 +532,12 @@ class TuiBridge:
 TUI_BRIDGE = TuiBridge()
 
 
-class MakeCodeInput(TextArea):
-    def _navigate_image_placeholder(self, event: Key) -> bool:
-        if event.key not in {"left", "right"} or self.selection.start != self.selection.end:
-            return False
-        row, column = self.cursor_location
-        cursor_index = self.document.get_index_from_location((row, column))
-        for match in _input_image_placeholder_matches(self.text):
-            if event.key == "left" and match.start() < cursor_index <= match.end():
-                target_index = match.start()
-            elif event.key == "right" and match.start() <= cursor_index < match.end():
-                target_index = match.end()
-            else:
-                continue
-            self.cursor_location = self.document.get_location_from_index(target_index)
-            event.stop()
-            event.prevent_default()
-            return True
-        return False
-
-    def _delete_image_placeholder(self, event: Key) -> bool:
-        if event.key not in {"backspace", "delete"}:
-            return False
+class MakeCodeInput(ImageAwareTextArea):
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        super().on_text_area_changed(event)
         app = self.app
-        if not isinstance(app, MakeCodeTuiApp):
-            return False
-        row, column = self.cursor_location
-        cursor_index = self.document.get_index_from_location((row, column))
-        text = self.text
-        if event.key == "backspace":
-            match = next(
-                (
-                    candidate
-                    for candidate in _input_image_placeholder_matches(text)
-                    if candidate.start() < cursor_index <= candidate.end()
-                ),
-                None,
-            )
-        else:
-            match = next(
-                (
-                    candidate
-                    for candidate in _input_image_placeholder_matches(text)
-                    if candidate.start() <= cursor_index < candidate.end()
-                ),
-                None,
-            )
-        if match is None:
-            return False
-        if match.re is _IMAGE_DISPLAY_PLACEHOLDER_PATTERN:
-            app.remove_input_image_marker(text, match.start(), match.group(0))
-        start = self.document.get_location_from_index(match.start())
-        end = self.document.get_location_from_index(match.end())
-        self.document.replace_range(start, end, "")
-        self.cursor_location = start
-        event.stop()
-        event.prevent_default()
-        return True
+        if isinstance(app, MakeCodeTuiApp):
+            app.update_input_height()
 
     def on_paste(self, event: Paste) -> None:
         app = self.app
@@ -619,13 +551,6 @@ class MakeCodeInput(TextArea):
         self.insert(text)
         event.stop()
         event.prevent_default()
-
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        app = self.app
-        if not isinstance(app, MakeCodeTuiApp):
-            return
-        app.update_input_height()
-        app.reconcile_input_image_markers(self.text)
 
     def _on_key(self, event: Key) -> None:
         app = self.app
@@ -1282,7 +1207,6 @@ class MakeCodeTuiApp(App[None]):
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
         self._input_history_draft = ""
-        self._input_image_markers: list[tuple[str, str]] = []
         self._modal_active = False
         self._right_column_visible = True
         self._compact_show_runtime = False
@@ -1323,7 +1247,16 @@ class MakeCodeTuiApp(App[None]):
                     yield Static("", id="content-tail", classes="pane-tail")
                 with Vertical(id="bottom-grid"):
                     yield Static("", id="slash-hints")
-                    yield MakeCodeInput(id="input-box", placeholder='Prompt here e.g. "整理当前项目的架构"')
+                    yield MakeCodeInput(
+                        id="input-box",
+                        placeholder='Prompt here e.g. "整理当前项目的架构"',
+                        image_placeholder_handler=self._image_placeholder_handler,
+                        image_clipboard_handler=self._image_clipboard_handler,
+                        image_error_handler=lambda exc: post_tui(
+                            TuiRegion.BACKGROUND,
+                            f"[bold red]⚠️ 粘贴图片失败：{escape(str(exc))}[/bold red]",
+                        ),
+                    )
             with Vertical(id="right-column"):
                 with Vertical(id="task-pane", classes="pane"):
                     yield TuiRichLog(id="task-log", classes="pane-log", markup=True, wrap=True, min_width=1)
@@ -1809,7 +1742,15 @@ class MakeCodeTuiApp(App[None]):
         ):
             return
         pending_query = self._temporary_query
-        modal = TemporaryQueryModal(pending_query)
+        modal = TemporaryQueryModal(
+            pending_query,
+            image_placeholder_handler=self._image_placeholder_handler,
+            image_clipboard_handler=self._image_clipboard_handler,
+            image_error_handler=lambda exc: post_tui(
+                TuiRegion.BACKGROUND,
+                f"[bold red]⚠️ 粘贴图片失败：{escape(str(exc))}[/bold red]",
+            ),
+        )
 
         def _done(value: str | None) -> None:
             self._modal_active = False
@@ -2111,103 +2052,20 @@ class MakeCodeTuiApp(App[None]):
         )
 
     def paste_image_from_system_clipboard(self, paste_text: str | None = None) -> bool:
-        if self._image_clipboard_handler is None:
-            return False
-        try:
-            marker = self._image_clipboard_handler(paste_text)
-        except TypeError:
-            marker = self._image_clipboard_handler()
-        except ValueError as exc:
-            post_tui(TuiRegion.BACKGROUND, f"[bold red]⚠️ 粘贴图片失败：{escape(str(exc))}[/bold red]")
-            return False
-        if marker is None:
-            return False
-        if marker == "":
-            return True
         input_box = self.query_one("#input-box", MakeCodeInput)
-        cursor_index = input_box.document.get_index_from_location(input_box.cursor_location)
-        display_text = self._display_input_text(marker)
-        image_index = sum(
-            1 for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(
-                input_box.text[:cursor_index]
-            )
-        )
-        for placeholder, reference in self._display_input_with_image_markers(marker)[1]:
-            self._input_image_markers.insert(image_index, (placeholder, reference))
-            image_index += 1
-        input_box.insert(display_text)
-        return True
-
-    def _display_input_with_image_markers(
-        self,
-        text: str,
-    ) -> tuple[str, list[tuple[str, str]]]:
-        if self._image_placeholder_handler is None:
-            return text, []
-        try:
-            display_text, parts = self._image_placeholder_handler(text)
-        except ValueError:
-            return text, []
-        entries = [
-            (image_placeholder_text(part), image_reference_marker(part))
-            for part in parts
-            if part.get("type") == "image"
-        ]
-        return display_text, entries
+        return input_box.paste_image_from_system_clipboard(paste_text)
 
     def _load_input_text(self, text: str) -> None:
-        display_text, entries = self._display_input_with_image_markers(text)
-        self._input_image_markers = entries
         input_box = self.query_one("#input-box", MakeCodeInput)
-        input_box.load_text(display_text)
-
-    def remove_input_image_marker(self, text: str, start: int, display_text: str) -> None:
-        if _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.fullmatch(display_text) is None:
-            return
-        image_index = sum(
-            1 for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text[:start])
-        )
-        if (
-            image_index < len(self._input_image_markers)
-            and self._input_image_markers[image_index][0] == display_text
-        ):
-            del self._input_image_markers[image_index]
-
-    def reconcile_input_image_markers(self, text: str) -> None:
-        remaining = list(self._input_image_markers)
-        reconciled = []
-        for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text):
-            for index, entry in enumerate(remaining):
-                if entry[0] == match.group(0):
-                    reconciled.append(entry)
-                    del remaining[index]
-                    break
-        self._input_image_markers = reconciled
+        input_box.load_serialized_text(text)
 
     def _serialize_input_text(self, text: str) -> str:
-        self.reconcile_input_image_markers(text)
-        if not self._input_image_markers:
-            return text
-        serialized = []
-        position = 0
-        image_index = 0
-        for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text):
-            serialized.append(text[position:match.start()])
-            if (
-                image_index < len(self._input_image_markers)
-                and self._input_image_markers[image_index][0] == match.group(0)
-            ):
-                serialized.append(self._input_image_markers[image_index][1])
-                image_index += 1
-            else:
-                serialized.append(match.group(0))
-            position = match.end()
-        serialized.append(text[position:])
-        return "".join(serialized)
+        input_box = self.query_one("#input-box", MakeCodeInput)
+        return input_box.serialize_text(text)
 
     def _display_input_text(self, text: str) -> str:
-        display_text, _ = self._display_input_with_image_markers(text)
-        return display_text
+        input_box = self.query_one("#input-box", MakeCodeInput)
+        return input_box.display_text(text)
 
     def _record_input_history(self, text: str) -> None:
         if not self._input_history or self._input_history[-1] != text:
@@ -2326,14 +2184,13 @@ class MakeCodeTuiApp(App[None]):
         text = input_box.text.strip()
         if not text:
             return
-        serialized_text = self._serialize_input_text(text)
+        serialized_text = input_box.serialize_text().strip()
         display_text = self._display_input_text(text)
         if self._submit_handler is None or not self._submit_lock.acquire(blocking=False):
             return
         try:
             self._record_input_history(serialized_text)
-            self._input_image_markers = []
-            input_box.load_text("")
+            input_box.load_serialized_text("")
             self.update_input_height()
             self._slash_matches = []
             self._slash_match_index = 0

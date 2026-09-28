@@ -201,6 +201,49 @@ def test_anthropic_message_conversion_extracts_system_and_groups_parallel_tool_r
     ]
 
 
+def test_temporary_instruction_image_blocks_keep_text_image_text_order_across_protocols():
+    content = [
+        {
+            "type": "text",
+            "text": "<makecode-temporary-user-instruction>\nBefore\n",
+        },
+        {
+            "type": "image",
+            "data": b"\x89PNG\r\n\x1a\nimage",
+            "media_type": "image/png",
+        },
+        {
+            "type": "text",
+            "text": "\nAfter\n</makecode-temporary-user-instruction>",
+        },
+    ]
+    message = {"role": "user", "content": content}
+
+    openai_content = sanitize_openai_messages([message])[0]["content"]
+    assert [block["type"] for block in openai_content] == ["text", "image_url", "text"]
+    assert openai_content[0]["text"].startswith("<makecode-temporary-user-instruction>")
+    assert openai_content[2]["text"].endswith("</makecode-temporary-user-instruction>")
+    assert openai_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    _, responses_items = build_openai_responses_request([message])
+    responses_content = responses_items[0]["content"]
+    assert [block["type"] for block in responses_content] == [
+        "input_text",
+        "input_image",
+        "input_text",
+    ]
+    assert responses_content[0]["text"].startswith("<makecode-temporary-user-instruction>")
+    assert responses_content[2]["text"].endswith("</makecode-temporary-user-instruction>")
+    assert responses_content[1]["image_url"].startswith("data:image/png;base64,")
+
+    _, anthropic_messages = build_anthropic_request_messages([message])
+    anthropic_content = anthropic_messages[0]["content"]
+    assert [block["type"] for block in anthropic_content] == ["text", "image", "text"]
+    assert anthropic_content[0]["text"].startswith("<makecode-temporary-user-instruction>")
+    assert anthropic_content[2]["text"].endswith("</makecode-temporary-user-instruction>")
+    assert anthropic_content[1]["source"]["media_type"] == "image/png"
+
+
 def test_anthropic_message_conversion_replays_native_blocks_across_models():
     native_blocks = [
         {"type": "thinking", "thinking": "summary", "signature": "sig"},

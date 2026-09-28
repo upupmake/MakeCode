@@ -29,6 +29,7 @@ from system.tui_types import (
     LAYOUT_RIGHT_KEYS,
     normalize_layout_ratios,
 )
+from system.image_input import ImageAwareTextArea
 from utils import paths
 
 
@@ -1432,9 +1433,19 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
         Binding("escape", "cancel", "Cancel", priority=True),
     ]
 
-    def __init__(self, value: str | None = None) -> None:
+    def __init__(
+        self,
+        value: str | None = None,
+        *,
+        image_placeholder_handler: Callable[[str], tuple[str, list[dict[str, Any]]]] | None = None,
+        image_clipboard_handler: Callable[[str | None], str | None] | None = None,
+        image_error_handler: Callable[[Exception], None] | None = None,
+    ) -> None:
         super().__init__()
         self._value = value or ""
+        self._image_placeholder_handler = image_placeholder_handler
+        self._image_clipboard_handler = image_clipboard_handler
+        self._image_error_handler = image_error_handler
 
     def compose(self) -> ComposeResult:
         with Vertical(id="temporary-query-dialog"):
@@ -1446,14 +1457,17 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
                 id="temporary-query-description",
                 markup=False,
             )
-            yield TextArea(
+            yield ImageAwareTextArea(
                 self._value,
                 id="temporary-query-input",
                 show_line_numbers=False,
                 soft_wrap=True,
+                image_placeholder_handler=self._image_placeholder_handler,
+                image_clipboard_handler=self._image_clipboard_handler,
+                image_error_handler=self._image_error_handler,
             )
             yield Label(
-                "Enter 提交；Ctrl+N 换行；Esc 取消。",
+                "支持粘贴图片；Enter 提交；Ctrl+N 换行；Esc 取消。",
                 id="temporary-query-hint",
                 markup=False,
             )
@@ -1462,7 +1476,7 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
                 yield Button("关闭", id="temporary-query-cancel", variant="warning", classes="temporary-query-action")
 
     def on_mount(self) -> None:
-        query_input = self.query_one("#temporary-query-input", TextArea)
+        query_input = self.query_one("#temporary-query-input", ImageAwareTextArea)
         query_input.focus()
         query_input.cursor_location = query_input.document.end
 
@@ -1473,15 +1487,15 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
             self.action_cancel()
 
     def action_submit(self) -> None:
-        value = self.query_one("#temporary-query-input", TextArea).text.strip()
+        value = self.query_one("#temporary-query-input", ImageAwareTextArea).serialize_text().strip()
         if value:
             self.dismiss(value)
 
     def current_text(self) -> str:
-        return self.query_one("#temporary-query-input", TextArea).text
+        return self.query_one("#temporary-query-input", ImageAwareTextArea).serialize_text()
 
     def action_insert_newline(self) -> None:
-        self.query_one("#temporary-query-input", TextArea).insert("\n")
+        self.query_one("#temporary-query-input", ImageAwareTextArea).insert("\n")
 
     def action_cancel(self) -> None:
         self.dismiss(None)

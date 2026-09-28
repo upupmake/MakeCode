@@ -88,6 +88,7 @@ from utils.llm_client import (
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
 from utils.vision import (
+    IMAGE_PLACEHOLDER_PATTERN,
     image_reference_marker,
     parse_image_placeholders,
     remove_image_placeholders,
@@ -527,9 +528,13 @@ async def _agent_loop_with_client(
             ),
             "message_metadata": {"temporary_query": True},
         }
+        display_content = message["content"]
+        if IMAGE_PLACEHOLDER_PATTERN.search(temporary_query):
+            display_content, message["content"] = _parse_input_images(message["content"])
+            message["message_metadata"]["display_content"] = display_content
         messages.append(message)
         post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
-        post_tui(TuiRegion.CONTENT, render_content_user_message(message["content"]))
+        post_tui(TuiRegion.CONTENT, render_content_user_message(display_content))
         return message
 
     set_temporary_query_enabled(True)

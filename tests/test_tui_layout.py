@@ -3,17 +3,19 @@ import json
 import threading
 import time
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from rich.panel import Panel
 from rich.text import Text
+from textual.events import Paste
 
 from system.console_render import _render_startup_banner
 from system.tui_app import MakeCodeTuiApp, TuiBridge
 from system.tui_types import TuiEvent, TuiRegion
 from system.tui_modals import ChoiceModal, TokenUsageModal
 from utils.skills import SkillLoader
+from utils.vision import image_reference_marker, parse_image_placeholders, store_image_bytes_attachment
 
 
 TEST_LAYOUT_RATIOS = {
@@ -193,6 +195,134 @@ async def test_temporary_query_shortcut_accepts_and_replaces_pending_query():
         await pilot.pause()
         assert app._temporary_query is None
         app.set_temporary_query_enabled(False)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("state", ["draft", "pending", "editing", "cancelled_edit", "consumed"])
+async def test_temporary_query_images_round_trip_through_editing_and_loop_end(tmp_path, state):
+    markers = [
+        image_reference_marker(store_image_bytes_attachment(tmp_path, data, "diagram.png", "image/png"))
+        for data in (b"first-image", b"second-image")
+    ]
+    clipboard = Mock(side_effect=markers)
+
+    app = MakeCodeTuiApp(
+        submit_handler=AsyncMock(),
+        image_placeholder_handler=lambda value: parse_image_placeholders(value, tmp_path),
+        image_clipboard_handler=clipboard,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        main_input = app.query_one("#input-box")
+        main_draft = f"{markers[1]} untouched"
+        app._load_input_text(main_draft)
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+
+        query_input = app.screen.query_one("#temporary-query-input")
+        query_input.insert("before ")
+        app.post_message(Paste("diagram.png"))
+        await pilot.pause()
+        query_input.insert(" between\n")
+        app.post_message(Paste("diagram.png"))
+        await pilot.pause()
+        query_input.insert(" after")
+        original_query = f"before {markers[0]} between\n{markers[1]} after"
+        expected_query = original_query
+        assert query_input.text == "before [图片：diagram.png] between\n[图片：diagram.png] after"
+        assert app.screen.current_text() == original_query
+        assert main_input.serialize_text() == main_draft
+        assert clipboard.call_args_list == [(("diagram.png",),), (("diagram.png",),)]
+
+        if state != "draft":
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app._temporary_query == original_query
+            if state != "pending":
+                await pilot.press("ctrl+g")
+                await pilot.pause()
+                query_input = app.screen.query_one("#temporary-query-input")
+                assert query_input.serialize_text() == original_query
+                query_input.cursor_location = (0, len("before "))
+                await pilot.press("right")
+                assert query_input.cursor_location == (0, len("before [图片：diagram.png]"))
+                await pilot.press("left")
+                assert query_input.cursor_location == (0, len("before "))
+                await pilot.press("delete")
+                query_input.cursor_location = query_input.document.end
+                query_input.insert("\nupdated")
+                edited_query = f"before  between\n{markers[1]} after\nupdated"
+                assert app.screen.current_text() == edited_query
+                assert app._temporary_query == original_query
+                assert main_input.serialize_text() == main_draft
+                if state == "editing":
+                    expected_query = edited_query
+                elif state == "cancelled_edit":
+                    await pilot.press("escape")
+                    await pilot.pause()
+                    assert app._temporary_query == original_query
+                elif state == "consumed":
+                    assert app.consume_temporary_query() == original_query
+                    await pilot.pause()
+                    expected_query = main_draft
+
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+
+        expected_display, _ = parse_image_placeholders(expected_query, tmp_path)
+        assert main_input.text == expected_display
+        assert main_input.serialize_text() == expected_query
+        assert app._temporary_query is None
+        assert not app._temporary_query_enabled
+        assert not app._modal_active
+        assert "<makecode-temporary-user-instruction>" not in main_input.text
+        with patch.object(app, "_launch_submit_handler") as launch:
+            await pilot.press("enter")
+            await pilot.pause()
+            launch.assert_called_once_with(expected_query)
+        assert main_input.text == main_input.serialize_text() == ""
+        assert app._input_history == [expected_query]
+
+
+@pytest.mark.anyio
+async def test_temporary_query_preserves_mixed_multi_file_pastes_and_repeated_images(tmp_path):
+    first = store_image_bytes_attachment(tmp_path, b"first-image", "提示文案.jpg", "image/jpeg")
+    second = store_image_bytes_attachment(tmp_path, b"second-image", "提示文案.jpg", "image/jpeg")
+    notes = tmp_path / "说明 文件.txt"
+    notes.write_text("notes", encoding="utf-8")
+    folder = tmp_path / "素材目录"
+    folder.mkdir()
+    payload = f"{image_reference_marker(first)}{notes}{folder}{image_reference_marker(second)}"
+    display, _ = parse_image_placeholders(payload, tmp_path)
+
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=lambda value: parse_image_placeholders(value, tmp_path),
+        image_clipboard_handler=lambda paste_text: payload,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        query_input = app.screen.query_one("#temporary-query-input")
+
+        query_input.on_paste(Paste("multi-selection"))
+        query_input.on_paste(Paste("multi-selection"))
+
+        assert query_input.text == display + display
+        assert app.screen.current_text() == payload + payload
+
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+
+        input_box = app.query_one("#input-box")
+        assert input_box.text == display + display
+        assert input_box.serialize_text() == payload + payload
 
 
 @pytest.mark.anyio
