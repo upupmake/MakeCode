@@ -994,14 +994,22 @@ async def test_hitl_command_refreshes_tui_status(monkeypatch):
 
 def test_flush_screen_clears_terminal_and_requests_full_repaint():
     app = MakeCodeTuiApp.__new__(MakeCodeTuiApp)
+    events = []
     app._driver = Mock()
-    app.refresh = Mock()
+    app._driver.write.side_effect = lambda value: events.append(("write", value))
+    app._driver.flush.side_effect = lambda: events.append("flush")
+    app.refresh = Mock(side_effect=lambda **kwargs: events.append(("refresh", kwargs)))
 
     app.flush_screen()
 
-    app._driver.write.assert_called_once_with("\x1b[2J\x1b[H")
+    app._driver.write.assert_called_once_with("\x1b[0m\x1b[2J\x1b[H")
     app._driver.flush.assert_called_once_with()
     app.refresh.assert_called_once_with(repaint=True, layout=True)
+    assert events == [
+        ("refresh", {"repaint": True, "layout": True}),
+        ("write", "\x1b[0m\x1b[2J\x1b[H"),
+        "flush",
+    ]
 
 def test_load_by_id_skips_picker(tmp_path, monkeypatch):
     store = ConversationStore(tmp_path / "conversations")

@@ -1437,9 +1437,9 @@ class MakeCodeTuiApp(App[None]):
         TUI_BRIDGE.unbind(self)
 
     def flush_screen(self) -> None:
-        self._driver.write("\x1b[2J\x1b[H")
-        self._driver.flush()
         self.refresh(repaint=True, layout=True)
+        self._driver.write("\x1b[0m\x1b[2J\x1b[H")
+        self._driver.flush()
 
     def _set_pane_active(self, region: TuiRegion, active: bool) -> None:
         pane = self._panes.get(region)
