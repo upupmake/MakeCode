@@ -16,7 +16,7 @@ from rich.text import Text
 from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
-from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal, filter_choice_options
+from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryDetailModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal, filter_choice_options
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
@@ -796,7 +796,7 @@ def test_tui_modals_use_q_not_escape_for_cancel():
 
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import Button, DataTable, Input, Label, ListView, Select, TextArea
+from textual.widgets import Button, DataTable, Input, Label, ListView, RichLog, Select, TextArea
 
 
 @pytest.fixture
@@ -3024,9 +3024,165 @@ async def test_memory_panel_adds_through_append_and_returns_to_new_card():
         assert len(memory_list.children) == 2
         assert memory_list.index == 0
         assert "mem_new" in str(memory_list.children[0].query_one(Label).render())
-        assert modal._expanded_id == "mem_new"
+        assert not modal.query("#memory-detail")
         assert "共 2 条 active 记忆" in str(modal.query_one("#memory-summary", Label).render())
         assert app.status_refreshes == 1
+
+
+@pytest.mark.anyio
+async def test_memory_panel_opens_selected_memory_in_detail_modal():
+    provider = Mock()
+    provider.list_long_term_memories.return_value = [{
+        "id": "mem_detail",
+        "created_at": "2026-08-04 12:00:00",
+        "updated_at": "2026-08-04 12:01:00",
+        "category": "workflow",
+        "insight": "详细记忆内容",
+        "evidence": "用户明确提出需求",
+        "reuse_condition": "当修改记忆面板时",
+        "status": "active",
+    }]
+    modal = MemoryPanelModal(provider)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        assert not modal.query("#memory-detail")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, MemoryDetailModal)
+        assert "🧠 记忆详情" in str(app.screen.query_one("#memory-detail-title", Label).render())
+        detail = "\n".join(line.text for line in app.screen.query_one("#memory-detail-content", RichLog).lines)
+        assert "mem_detail" in detail
+        assert "详细记忆内容" in detail
+        assert "用户明确提出需求" in detail
+        assert "当修改记忆面板时" in detail
+
+        await pilot.press("q")
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert modal.query_one("#memory-list", ListView).index == 0
+
+
+@pytest.mark.anyio
+async def test_memory_panel_click_selects_other_card_before_opening_detail():
+    provider = Mock()
+    provider.list_long_term_memories.return_value = [
+        {
+            "id": f"mem_{index}",
+            "created_at": f"2026-08-04 12:0{index}:00",
+            "updated_at": f"2026-08-04 12:0{index}:00",
+            "category": "workflow",
+            "insight": f"记忆 {index}",
+            "evidence": "",
+            "reuse_condition": "查看记忆时",
+            "status": "active",
+        }
+        for index in range(2)
+    ]
+    modal = MemoryPanelModal(provider)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        memory_list = modal.query_one("#memory-list", ListView)
+        assert memory_list.index == 0
+
+        other_card = memory_list.children[1]
+        await pilot.click(other_card)
+        await pilot.pause()
+        assert app.screen is modal
+        assert_list_selection(memory_list, 1)
+
+        await pilot.click(other_card)
+        await pilot.pause()
+        assert isinstance(app.screen, MemoryDetailModal)
+        detail = "".join(line.text for line in app.screen.query_one("#memory-detail-content", RichLog).lines)
+        assert "mem_0" in detail
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert app.screen is modal
+        assert_list_selection(memory_list, 1)
+
+        await pilot.press("up", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, MemoryDetailModal)
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert app.screen is modal
+        assert_list_selection(memory_list, 0)
+
+        await pilot.click(memory_list.children[0])
+        await pilot.pause()
+        assert app.screen is modal
+
+        await pilot.click(memory_list.children[0])
+        await pilot.pause()
+        assert isinstance(app.screen, MemoryDetailModal)
+
+
+@pytest.mark.anyio
+async def test_memory_panel_detail_modal_scrolls_long_content_on_short_terminal():
+    insight = "这是一段需要完整展示的长期记忆。" * 80
+    provider = Mock()
+    provider.list_long_term_memories.return_value = [
+        {
+            "id": "mem_newer",
+            "created_at": "2026-08-05 12:00:00",
+            "updated_at": "2026-08-05 12:00:00",
+            "category": "workflow",
+            "insight": "其他记忆",
+            "evidence": "",
+            "reuse_condition": "其他条件",
+            "status": "active",
+        },
+        {
+            "id": "mem_long",
+            "created_at": "2026-08-04 12:00:00",
+            "updated_at": "2026-08-04 12:00:00",
+            "category": "preference",
+            "insight": insight,
+            "evidence": "[原样显示]",
+            "reuse_condition": "当查看长记忆时",
+            "status": "active",
+        },
+    ]
+    modal = MemoryPanelModal(provider)
+    app = ChoiceModalHost(modal)
+
+    async with app.run_test(size=(62, 25)) as pilot:
+        await pilot.pause()
+        memory_list = modal.query_one("#memory-list", ListView)
+        memory_list.index = 1
+        await pilot.pause()
+
+        await pilot.press("space")
+        await pilot.pause()
+
+        assert isinstance(app.screen, MemoryDetailModal)
+        detail = app.screen.query_one("#memory-detail-content", RichLog)
+        assert detail.max_scroll_y > 0
+        assert "mem_long" in "".join(line.text for line in detail.lines)
+        assert "[原样显示]" in "".join(line.text for line in detail.lines)
+        close = app.screen.query_one("#memory-detail-close", Button)
+        assert close.region.y >= 0
+        assert close.region.y + close.region.height <= app.size.height
+
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert detail.scroll_y > 0
+
+        await pilot.click("#memory-detail-close")
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert_list_selection(memory_list, 1)
+        assert memory_list.has_focus
 
 
 @pytest.mark.anyio

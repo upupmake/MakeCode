@@ -89,7 +89,7 @@ class ModalHeader(Horizontal):
 
 class ChoiceModal(ClosableModalScreen[str]):
     CSS = """
-    ChoiceModal, DelegateTasksModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, EditModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryConfigModal, ExtraToolsModal, RecallModelPickerModal, ImageUnderstandingModelPickerModal, InfoPanelModal,
+    ChoiceModal, DelegateTasksModal, ModelPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, McpAddModal, ModelManagerModal, AddModelModal, EditModelModal, AddMemoryModal, LayoutModal, MemoryPanelModal, MemoryDetailModal, MemoryConfigModal, ExtraToolsModal, RecallModelPickerModal, ImageUnderstandingModelPickerModal, InfoPanelModal,
     TokenUsageModal, CopyContentModal, TaskPanelModal, SkillsConfigModal, TemporaryQueryModal {
         align: center middle;
     }
@@ -531,6 +531,35 @@ class ChoiceModal(ClosableModalScreen[str]):
         padding: 1 2;
     }
 
+    #memory-detail-dialog {
+        width: 88%;
+        height: 86%;
+        min-height: 18;
+        border: round #3b82f6;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #memory-detail-title {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #memory-detail-content {
+        height: 1fr;
+        min-height: 1;
+        margin-top: 1;
+    }
+
+    #memory-detail-actions {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #memory-detail-close {
+        width: 16;
+    }
+
     #memory-title {
         height: auto;
         margin-bottom: 0;
@@ -564,14 +593,6 @@ class ChoiceModal(ClosableModalScreen[str]):
     #memory-list > ListItem > Label {
         width: 1fr;
         height: auto;
-    }
-
-    #memory-detail {
-        height: 10;
-        min-height: 4;
-        margin-top: 1;
-        border: round #3b82f6;
-        padding: 0 1;
     }
 
     #memory-help {
@@ -4161,6 +4182,57 @@ class ModelManagerModal(ClosableModalScreen[str]):
         )
 
 
+class MemoryDetailModal(ClosableModalScreen[str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("q", "close", "Close", priority=True),
+    ]
+
+    def __init__(self, memory: dict[str, Any]) -> None:
+        super().__init__()
+        self._memory = memory
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="memory-detail-dialog"):
+            yield ModalHeader("🧠 记忆详情", title_id="memory-detail-title", markup=False)
+            yield RichLog(id="memory-detail-content", markup=False, wrap=True, min_width=1)
+            with Horizontal(id="memory-detail-actions"):
+                yield Button("关闭", id="memory-detail-close", variant="primary")
+
+    def on_mount(self) -> None:
+        content = self.query_one("#memory-detail-content", RichLog)
+        content.write(self._detail_text(), expand=True, shrink=True, scroll_end=False)
+        content.focus()
+
+    def _detail_text(self) -> str:
+        return "\n".join([
+            f"ID: {self._memory.get('id', '')}",
+            f"Category: {self._memory.get('category', '')}",
+            f"Created: {self._memory.get('created_at', '')}",
+            f"Updated: {self._memory.get('updated_at', '')}",
+            "",
+            f"Insight:\n{self._memory.get('insight', '')}",
+            "",
+            f"Evidence:\n{self._memory.get('evidence', '') or '（未填写）'}",
+            "",
+            f"Reuse condition:\n{self._memory.get('reuse_condition', '')}",
+        ])
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "q":
+            self.action_close()
+            event.stop()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "memory-detail-close":
+            self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss("closed")
+
+
 class MemoryPanelModal(ClosableModalScreen[list[str]]):
     CSS = ChoiceModal.CSS
     BINDINGS: list[Binding] = []
@@ -4169,7 +4241,7 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         super().__init__()
         self._memory_provider = memory_provider
         self._memories: list[dict[str, Any]] = []
-        self._expanded_id: str | None = None
+        self._last_clicked_index: int | None = None
         self._pending_delete_id: str | None = None
         self._pending_delete_index: int | None = None
         self._deleted_ids: list[str] = []
@@ -4180,9 +4252,8 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
             yield ModalHeader(self._title_text(), title_id="memory-title", markup=False)
             yield Label(self._summary_text(), id="memory-summary", markup=False)
             yield ListView(id="memory-list")
-            yield RichLog(id="memory-detail", markup=False, wrap=True, min_width=1)
             yield Label(
-                "↑↓ 选择记忆 · Enter/Space 查看详情 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 关闭",
+                "↑↓ 选择记忆 · 再次点击或 Enter/Space 弹窗查看详情 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 关闭",
                 id="memory-help",
                 markup=False,
             )
@@ -4207,7 +4278,7 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
             insight = f"{insight[:157]}..."
 
         label = Text()
-        label.append("▼ " if memory_id == self._expanded_id else "● ", style="#f59e0b")
+        label.append("● ", style="#f59e0b")
         label.append(category)
         label.append(f"  ·  {updated_at}")
         label.append(f"\n   {insight or '（无内容）'}")
@@ -4215,6 +4286,7 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         return label
 
     def _reload_rows(self, selected_index: int | None = None, selected_id: str | None = None) -> None:
+        self._last_clicked_index = None
         self._pending_delete_id = None
         self._pending_delete_index = None
         self._memories = sorted(
@@ -4251,7 +4323,6 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
                 choice_list.focus()
             else:
                 self.query_one("#memory-add", Button).focus()
-            self._update_detail()
 
         self.call_after_refresh(_mount_rows)
 
@@ -4275,43 +4346,14 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
             return None
         return self._memories[index]
 
-    def _update_detail(self) -> None:
-        detail = self.query_one("#memory-detail", RichLog)
-        detail.clear()
-        current = self._current_memory()
-        if current is None:
-            detail.write("暂无详情。", expand=True, shrink=True)
-            return
-        if current.get("id") != self._expanded_id:
-            detail.write("按 Enter/Space 展开当前记忆的完整内容。", expand=True, shrink=True)
-            return
-        detail.write(
-            "\n".join(
-                [
-                    f"ID: {current.get('id', '')}",
-                    f"Category: {current.get('category', '')}",
-                    f"Created: {current.get('created_at', '')}",
-                    f"Updated: {current.get('updated_at', '')}",
-                    "",
-                    f"Insight:\n{current.get('insight', '')}",
-                    "",
-                    f"Evidence:\n{current.get('evidence', '') or '（未填写）'}",
-                    "",
-                    f"Reuse condition:\n{current.get('reuse_condition', '')}",
-                ]
-            ),
-            expand=True,
-            shrink=True,
-            scroll_end=False,
-        )
-
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        if event.list_view.id == "memory-list":
-            self.action_toggle_detail()
-
-    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        if event.list_view.id == "memory-list":
-            self._update_detail()
+        if event.list_view.id != "memory-list":
+            return
+        if self._last_clicked_index == event.index:
+            self._last_clicked_index = None
+            self.action_show_detail()
+            return
+        self._last_clicked_index = event.index
 
     def _on_key(self, event: Key) -> None:
         if event.key == "q":
@@ -4337,8 +4379,8 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         if not isinstance(self.focused, ListView):
             return
         key_actions = {
-            "enter": self.action_toggle_detail,
-            "space": self.action_toggle_detail,
+            "enter": self.action_show_detail,
+            "space": self.action_show_detail,
             "d": self.action_delete,
         }
         action = key_actions.get(event.key)
@@ -4348,19 +4390,13 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         event.stop()
         event.prevent_default()
 
-    def action_toggle_detail(self) -> None:
+    def action_show_detail(self) -> None:
         if self._pending_delete_id is not None:
             return
         current = self._current_memory()
         if current is None:
             return
-        memory_id = current.get("id")
-        self._expanded_id = None if self._expanded_id == memory_id else memory_id
-        choice_list = self.query_one("#memory-list", ListView)
-        for index, item in enumerate(self._memories):
-            choice_list.children[index].query_one(Label).update(self._memory_label(item))
-        self._update_detail()
-        choice_list.focus()
+        self.app.push_screen(MemoryDetailModal(current))
 
     def action_add(self) -> None:
         if self._pending_delete_id is not None:
@@ -4377,7 +4413,6 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
             self.query_one("#memory-title", Label).update(f"❌ 添加长期记忆失败：{exc}")
             return
         memory_id = record.get("id") if isinstance(record, dict) else None
-        self._expanded_id = memory_id
         self._reload_rows(selected_id=memory_id)
         self.app.refresh_status()
 
@@ -4402,8 +4437,6 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         deleted = self._memory_provider.delete_long_term_memory(self._pending_delete_id)
         if deleted:
             self._deleted_ids.append(self._pending_delete_id)
-        if self._expanded_id == self._pending_delete_id:
-            self._expanded_id = None
         self._reload_rows(selected_index)
         if deleted:
             self.app.refresh_status()
