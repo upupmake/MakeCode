@@ -14,36 +14,39 @@ from system.window_attention import request_window_attention
 
 
 class Option(ToolArgumentsModel):
-    """A single option presented to the user."""
-    content: str = Field(..., description="The text content of this option.")
+    """One concise choice for a single user decision."""
+    content: str = Field(..., description="Choice text shown to the user.")
     is_recommended: bool = Field(
         default=False,
-        description="Whether this option is recommended by the agent.",
+        description="True only for the single evidence-based default.",
     )
 
 
 class AskUser(ToolArgumentsModel):
     """
-    Proactively ask the user a question and wait for their response.
+    Ask the user to make one bounded decision through the interactive choice panel.
 
-    WHEN TO USE:
-    - The requirement is ambiguous and you need clarification
-    - There are multiple valid approaches and you need the user to choose
-    - A decision requires user preference or domain knowledge
+    Use when the answer depends on user preference, domain knowledge, or an
+    unresolved scope/high-impact choice that cannot be settled from the workspace
+    or conversation. Do not use for facts available from tools, routine low-risk
+    implementation choices, or approval already handled by HITL.
 
-    BEHAVIOR:
-    - Presents the question and options in an interactive panel
-    - The user can select a listed option
-    - Returns a JSON string with the user's choice
+    Ask one concise question in the user's language and provide 2-4 mutually
+    exclusive, actionable options. Mark at most one evidence-based default as
+    recommended. Do not add an "Other" option; custom input is provided
+    automatically.
+
+    A selected option or custom input is the user's decision. "<cancelled>" and
+    "<empty_input>" mean that no decision was provided.
     """
     question: str = Field(
         ...,
-        description="The question or message to present to the user.",
+        description="One concise decision question in the user's language.",
     )
     options: list[Option] = Field(
         ...,
         min_length=1,
-        description="List of options for the user to choose from.",
+        description="The choices for the question.",
     )
 
     @field_validator("options", mode="before")

@@ -61,6 +61,7 @@ class PromptPolicyTests(unittest.TestCase):
     def test_plan_mode_prompt_lists_read_only_search_commands(self):
         prompt = self._orchestrator_prompt(plan_mode=True)
 
+        self.assertIn("AskUser — bounded clarification when planning depends on user preference or scope", prompt)
         self.assertIn("grep", prompt)
         self.assertIn("rg", prompt)
         self.assertIn("find", prompt)
@@ -208,6 +209,8 @@ class PromptPolicyTests(unittest.TestCase):
         prompt = self._orchestrator_prompt(plan_mode=False)
 
         self.assertIn("First use read-only inspection", prompt)
+        self.assertIn("Use AskUser when an unresolved decision affects", prompt)
+        self.assertIn("Do not use AskUser for facts available from tools", prompt)
         self.assertIn("user-visible behavior, data, architecture, scope, or irreversible outcomes", prompt)
         self.assertIn("For low-risk implementation details, choose the smallest reasonable option", prompt)
         self.assertNotIn("Resolve ambiguous requirements with the user before creating tasks", prompt)

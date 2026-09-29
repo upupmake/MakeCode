@@ -244,3 +244,14 @@ def test_builtin_tool_registries_match_handler_boundaries():
     assert set(memory.LONG_TERM_MEMORY_TOOL_MODELS).isdisjoint(
         main_module.BASE_SUPER_TOOL_MODELS
     )
+
+
+def test_ask_user_schema_describes_bounded_decisions():
+    description = ask_user.ASK_USER_TOOLS[0]["function"]["description"]
+
+    assert "one bounded decision" in description
+    assert "Do not use for facts available from tools" in description
+    assert "2-4 mutually" in description
+    assert 'Do not add an "Other" option' in description
+    assert '"<cancelled>"' in description
+    assert '"<empty_input>"' in description
