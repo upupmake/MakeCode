@@ -58,6 +58,17 @@ class PromptPolicyTests(unittest.TestCase):
             self.assertNotIn("Desired content-search shape", prompt)
             self.assertNotIn("/absolute/path", prompt)
 
+    def test_prompts_widen_file_context_after_patch_or_edit_failures(self):
+        for prompt in (
+            self._orchestrator_prompt(plan_mode=False),
+            self._orchestrator_prompt(plan_mode=True),
+            self._sub_agent_prompt(),
+        ):
+            self.assertIn("If FilePatch or FileEdit fails because the selected context is ambiguous", prompt)
+            self.assertIn("Re-run FileRead with a wider contiguous range", prompt)
+            self.assertIn("more unchanged context in the FilePatch hunk or FileEdit search_content", prompt)
+            self.assertIn("Never copy FileRead's `<line number>:` prefixes into edits.", prompt)
+
     def test_plan_mode_prompt_lists_read_only_search_commands(self):
         prompt = self._orchestrator_prompt(plan_mode=True)
 

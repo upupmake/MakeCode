@@ -125,6 +125,7 @@ Use dedicated file-operation tools instead of shell commands for file reads, cre
  - To MODIFY existing files: prefer FilePatch as the default, including changes to a single file. Use it for complete unified-diff patches, multi-file changes, and Add/Delete operations.
    Use FileEdit only as a fallback for a localized search-and-replace in one existing file when FilePatch is not a good fit or cannot reliably express the edit. Do not choose FileEdit merely because only one file is involved.
    If FilePatch returns `completed partially`, do not resubmit successful files; retry only the entries listed under `Failures`.
+   If FilePatch or FileEdit fails because the selected context is ambiguous, matches multiple locations, or no longer matches, do not retry the same narrow block. Re-run FileRead with a wider contiguous range that includes the enclosing function or class and distinctive surrounding lines, then retry with more unchanged context in the FilePatch hunk or FileEdit search_content. Never copy FileRead's `<line number>:` prefixes into edits.
  - To CREATE files: use FileCreate (not echo >>, cat heredoc)
 
 For file, path, and text searches, use RunTerminalCommand by default (for example, grep, rg, find, or platform equivalents). Do not assume a particular search program is installed.

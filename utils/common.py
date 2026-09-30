@@ -398,11 +398,10 @@ class FileRead(ToolArgumentsModel):
     - Non-adjacent regions are separated by a `@@ <a>-<b> skipped @@` marker. Lines on
       opposite sides of that marker are NOT adjacent in the file.
 
-    PERFORMANCE GUIDELINES:
-    1. Provide specific regions when possible to reduce context usage.
-    2. PREFER providing MULTIPLE regions in a SINGLE call rather than multiple separate calls.
+    READING GUIDELINES:
+    1. PREFER providing MULTIPLE regions in a SINGLE call rather than multiple separate calls.
        Example: regions=[{"start":1,"end":150},{"start":300,"end":450}]
-    3. Overlapping or adjacent regions will be automatically merged for efficiency.
+    2. Overlapping or adjacent regions will be automatically merged for efficiency.
 
     WORKFLOW: Before calling FileRead, estimate all line ranges you need, then provide them all at once.
     """

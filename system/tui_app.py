@@ -60,6 +60,8 @@ from system.tui_modals import (
 from utils import paths
 from utils.terminal import set_terminal_title
 
+COMPACT_WIDTH = 140
+
 
 class TuiBridge:
     def __init__(self) -> None:
@@ -1217,19 +1219,19 @@ class MakeCodeTuiApp(App[None]):
         self._batch_scroll_regions: set[TuiRegion] = set()
         self._batch_force_scroll = False
         self._batch_runtime_dirty = False
-        self._quick_panel_expanded = False
+        self._quick_panel_expanded = True
         self.title = "MakeCode"
         self.sub_title = "🎬 Act · Ready"
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-bar"):
             yield ConversationTitle("MakeCode", id="top-title")
-            yield Button("▸ 快捷面板", id="quick-panel-toggle")
+            yield Button("▾ 快捷面板", id="quick-panel-toggle")
             yield Button("运行面板 F6", id="compact-pane-toggle")
             yield Static("", id="top-status")
             yield Static("", id="top-clock")
         with Vertical(id="quick-panel-shell"):
-            with Grid(id="quick-panel-buttons", classes="hidden"):
+            with Grid(id="quick-panel-buttons"):
                 yield Button("💬 对话历史", id="quick-conversation-history", classes="quick-panel-button")
                 yield Button("🧠 记忆", id="quick-memory", classes="quick-panel-button")
                 yield Button("📚 技能", id="quick-skills", classes="quick-panel-button")
@@ -1377,15 +1379,21 @@ class MakeCodeTuiApp(App[None]):
             return
         previous_width = self._last_responsive_width
         self._last_responsive_width = width
-        if previous_width and previous_width < 140 <= width:
+        # 快捷面板仅在按钮能单行放下时自动展开，窄屏（会挤成两行）强制收起。
+        if previous_width == 0:
+            self._quick_panel_expanded = width >= COMPACT_WIDTH
+        elif previous_width < COMPACT_WIDTH <= width:
             self._right_column_visible = True
+            self._quick_panel_expanded = True
+        elif previous_width >= COMPACT_WIDTH > width:
+            self._quick_panel_expanded = False
         self._apply_responsive_layout()
 
     def _apply_responsive_layout(self) -> None:
         left_column = self.query_one("#left-column", Vertical)
         right_column = self.query_one("#right-column", Vertical)
         toggle = self.query_one("#compact-pane-toggle", Button)
-        compact = self._last_responsive_width < 140
+        compact = self._last_responsive_width < COMPACT_WIDTH
         if compact:
             self._right_column_visible = self._compact_show_runtime
         self._update_quick_panel()
@@ -1406,7 +1414,7 @@ class MakeCodeTuiApp(App[None]):
         toggle.label = "隐藏运行面板 F6" if self._right_column_visible else "运行面板 F6"
 
     def action_toggle_compact_panes(self) -> None:
-        if self.size.width >= 140:
+        if self.size.width >= COMPACT_WIDTH:
             self._right_column_visible = not self._right_column_visible
         else:
             self._compact_show_runtime = not self._compact_show_runtime
@@ -2293,7 +2301,7 @@ class MakeCodeTuiApp(App[None]):
         title_widget = self.query_one("#top-title", Static)
         responsive_width = self._last_responsive_width or self.size.width
         title_widget.styles.max_width = (
-            max(0, (responsive_width - 36) // 3) if responsive_width < 140 else 44
+            max(0, (responsive_width - 36) // 3) if responsive_width < COMPACT_WIDTH else 44
         )
         title_widget.update(Text(display_title, overflow="ellipsis", no_wrap=True))
         title_widget.tooltip = conversation_title or None
@@ -2366,7 +2374,7 @@ class MakeCodeTuiApp(App[None]):
     def _update_quick_panel(self) -> None:
         toggle = self.query_one("#quick-panel-toggle", Button)
         buttons = self.query_one("#quick-panel-buttons", Grid)
-        compact = self._last_responsive_width < 140
+        compact = self._last_responsive_width < COMPACT_WIDTH
         toggle.set_class(compact, "compact")
         buttons.set_class(compact, "compact")
         if compact:

@@ -807,13 +807,30 @@ async def test_runtime_pane_selection_resets_after_returning_to_wide_layout():
 
 
 @pytest.mark.anyio
+async def test_quick_panel_defaults_to_expanded_when_wide_and_toggle_collapses():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+
+        buttons = app.query_one("#quick-panel-buttons")
+        toggle = app.query_one("#quick-panel-toggle")
+        assert not buttons.has_class("hidden")
+        assert str(toggle.label) == "▾ 快捷面板"
+
+        await pilot.click("#quick-panel-toggle")
+        await pilot.pause()
+
+        assert buttons.has_class("hidden")
+        assert str(toggle.label) == "▸ 快捷面板"
+
+
+@pytest.mark.anyio
 async def test_quick_panel_conversation_history_button_routes_to_load_command():
     app = MakeCodeTuiApp()
     app._run_quick_command = Mock()
 
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.pause()
-        await pilot.click("#quick-panel-toggle")
         await pilot.pause()
 
         button = app.query_one("#quick-conversation-history")
@@ -835,7 +852,6 @@ async def test_quick_panel_conversation_history_is_disabled_during_agent_loop():
 
     async with app.run_test(size=(140, 40)) as pilot:
         await pilot.pause()
-        await pilot.click("#quick-panel-toggle")
         app.set_agent_loop_active(True)
         await pilot.pause()
 
@@ -857,8 +873,6 @@ async def test_quick_panel_extra_tools_and_mcp_config_buttons_route_to_commands(
 
     async with app.run_test(size=(140, 40)) as pilot:
         await pilot.pause()
-        await pilot.click("#quick-panel-toggle")
-        await pilot.pause()
 
         extra_tools = app.query_one("#quick-extra-tools")
         mcp_config = app.query_one("#quick-mcp-config")
@@ -877,11 +891,17 @@ async def test_quick_panel_extra_tools_and_mcp_config_buttons_route_to_commands(
 
 
 @pytest.mark.anyio
-async def test_compact_quick_panel_wraps_all_actions_into_two_rows():
+async def test_compact_quick_panel_stays_collapsed_until_expanded_into_two_rows():
     app = MakeCodeTuiApp()
 
     async with app.run_test(size=(86, 40)) as pilot:
         await pilot.pause()
+
+        grid = app.query_one("#quick-panel-buttons")
+        toggle = app.query_one("#quick-panel-toggle")
+        assert grid.has_class("hidden")
+        assert str(toggle.label) == "▸ 快捷"
+
         await pilot.click("#quick-panel-toggle")
         await pilot.pause()
 
@@ -898,7 +918,7 @@ async def test_compact_quick_panel_wraps_all_actions_into_two_rows():
             button.region.y + button.region.height <= app.query_one("#main-grid").region.y
             for button in buttons
         )
-        assert str(app.query_one("#quick-panel-toggle").label) == "▾ 快捷"
+        assert str(toggle.label) == "▾ 快捷"
 
 
 @pytest.mark.anyio
@@ -918,6 +938,34 @@ async def test_quick_panel_returns_to_one_row_after_widening_terminal():
         assert len({button.region.y for button in buttons}) == 1
         assert all(button.region.x + button.region.width <= app.size.width for button in buttons)
         assert str(app.query_one("#quick-panel-toggle").label) == "▾ 快捷面板"
+
+
+@pytest.mark.anyio
+async def test_quick_panel_auto_expands_and_collapses_across_compact_breakpoint():
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+
+        grid = app.query_one("#quick-panel-buttons")
+        toggle = app.query_one("#quick-panel-toggle")
+        assert grid.has_class("hidden")
+        assert str(toggle.label) == "▸ 快捷"
+
+        await pilot.resize_terminal(180, 40)
+        await pilot.pause()
+
+        assert not grid.has_class("hidden")
+        assert not grid.has_class("compact")
+        assert str(toggle.label) == "▾ 快捷面板"
+        assert len({button.region.y for button in app.query(".quick-panel-button")}) == 1
+
+        await pilot.resize_terminal(100, 40)
+        await pilot.pause()
+
+        assert grid.has_class("hidden")
+        assert grid.has_class("compact")
+        assert str(toggle.label) == "▸ 快捷"
 
 
 @pytest.mark.anyio
