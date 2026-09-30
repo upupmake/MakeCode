@@ -68,6 +68,17 @@ class PromptPolicyTests(unittest.TestCase):
             self.assertIn("Re-run FileRead with a wider contiguous range", prompt)
             self.assertIn("more unchanged context in the FilePatch hunk or FileEdit search_content", prompt)
             self.assertIn("Never copy FileRead's `<line number>:` prefixes into edits.", prompt)
+            self.assertIn("all hunks in one `*** Update File` section are matched together in the order supplied", prompt)
+            self.assertIn("exactly one non-overlapping forward match sequence exists", prompt)
+            self.assertIn("later hunks may disambiguate earlier repeated text", prompt)
+            self.assertIn("An unnumbered `@@` hunk searches forward", prompt)
+            self.assertIn("may select a later matching occurrence", prompt)
+            self.assertIn("never one before the current hunk position", prompt)
+            self.assertIn("Matching tries exact lines first", prompt)
+            self.assertIn("ignores trailing whitespace", prompt)
+            self.assertIn("Unicode punctuation is not normalized", prompt)
+            self.assertIn("first re-run FileRead and regenerate the complete patch", prompt)
+            self.assertIn("do not resubmit the same patch", prompt)
 
     def test_plan_mode_prompt_lists_read_only_search_commands(self):
         prompt = self._orchestrator_prompt(plan_mode=True)

@@ -73,6 +73,7 @@ class CommandResult:
     payload: Any = None
     skip_memory_recall: bool = False
     original_query: str | None = None
+    skip_compaction: bool = False
 
 
 # ============================================================================
@@ -1580,6 +1581,21 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             if new_history is not history:
                 scroll_all_panes_to_bottom()
             return CommandResult(action=CommandAction.LOAD_HISTORY, payload=(new_history, new_conversation))
+
+        # /nc <query> - 跳过本次请求的上下文压缩
+        if query == "/nc" or query.startswith("/nc "):
+            user_query = query.removeprefix("/nc").strip()
+            if not user_query:
+                self.console.print(
+                    "\n[bold yellow]用法：/nc <query>[/bold yellow]",
+                    tui_region=TuiRegion.BACKGROUND,
+                )
+                return CommandResult(action=CommandAction.CONTINUE)
+            return CommandResult(
+                action=CommandAction.RUN_AGENT,
+                payload=user_query,
+                skip_compaction=True,
+            )
 
         # /nm <query> - 跳过本次请求的记忆预召回
         if query == "/nm" or query.startswith("/nm "):

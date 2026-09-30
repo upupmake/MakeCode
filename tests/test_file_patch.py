@@ -39,6 +39,27 @@ def test_file_patch_updates_an_existing_file(monkeypatch, tmp_path, line_ending,
     assert target.read_text(encoding="utf-8") == "def run():\n    return 2\n"
 
 
+def test_file_patch_applies_codex_multiple_chunks_fixture_shape(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "multi.txt"
+    target.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Begin Patch\n"
+        "*** Update File: multi.txt\n"
+        "@@\n"
+        "-line2\n"
+        "+changed2\n"
+        "@@\n"
+        "-line4\n"
+        "+changed4\n"
+        "*** End Patch\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == "line1\nchanged2\nline3\nchanged4\nline5\n"
+
+
 def test_file_patch_applies_multiple_non_overlapping_hunks_bottom_up(monkeypatch, tmp_path):
     _workspace(monkeypatch, tmp_path)
     target = tmp_path / "sample.txt"
@@ -181,6 +202,494 @@ def test_file_patch_uses_coordinates_for_pure_addition_in_non_empty_file(monkeyp
 
     assert result.startswith("Patched 1 file(s) atomically.")
     assert target.read_text(encoding="utf-8") == "first\ninserted\nsecond\n"
+
+
+def test_file_patch_uses_coordinates_to_select_repeated_context(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("same\nvalue\n\nsame\nvalue\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@ -4,2 +4,2 @@\n"
+        " same\n"
+        "-value\n"
+        "+changed\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == "same\nvalue\n\nsame\nchanged\n"
+
+
+def test_file_patch_uses_coordinate_as_forward_search_lower_bound(
+    monkeypatch, tmp_path
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("same\nvalue\n\nsame\nvalue\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@ -2,2 +2,2 @@\n"
+        " same\n"
+        "-value\n"
+        "+changed\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == "same\nvalue\n\nsame\nchanged\n"
+
+
+def test_file_patch_follows_forward_order_for_repeated_bare_hunks(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("11\n22\n33\n44\n55\n22\n77\n22\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        "-11\n"
+        "+aa\n"
+        "@@\n"
+        "-22\n"
+        "+bb\n"
+        "@@\n"
+        "-33\n"
+        "+cc\n"
+        "@@\n"
+        "-22\n"
+        "+dd\n"
+        "@@\n"
+        "-77\n"
+        "+pp\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == "aa\nbb\ncc\n44\n55\ndd\npp\n22\n"
+
+
+def test_file_patch_consumes_repeated_matches_in_hunk_order(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("11\n22\n33\n44\n55\n55\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        "-11\n"
+        "+aa\n"
+        "@@\n"
+        "-22\n"
+        "+bb\n"
+        "@@\n"
+        "-33\n"
+        "+cc\n"
+        "@@\n"
+        "-55\n"
+        "+nn\n"
+        "@@\n"
+        "-55\n"
+        "+mm\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == "aa\nbb\ncc\n44\nnn\nmm\n"
+
+
+def test_file_patch_handles_more_hunks_than_python_recursion_limit():
+    hunks = tuple(
+        patch_impl._Hunk((f"return query{i}();",), (f"return updated{i}();",))
+        for i in range(1050)
+    )
+    lines = [f"return query{i}();" for i in range(1050)]
+
+    located = patch_impl._find_unique_hunk_sequence(lines, hunks, "exact")
+
+    assert len(located) == len(hunks)
+    assert located[0] == (0, 1, ("return updated0();",))
+    assert located[-1] == (1049, 1050, ("return updated1049();",))
+
+
+def test_file_patch_rejects_ambiguous_forward_sequence(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    original = "11\n22\n33\n22\n22\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        "-11\n"
+        "+aa\n"
+        "@@\n"
+        "-22\n"
+        "+bb\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched")
+    assert "matches multiple locations" in result
+    assert "candidate starts: 2, 4, 5" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_reports_ambiguous_repeated_hunks_after_last_unique_hunk(
+    monkeypatch, tmp_path
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    original = "11\n22\n33\n44\n55\n22\n77\n22\n22\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        "-11\n"
+        "+aa\n"
+        "@@\n"
+        "-33\n"
+        "+aa\n"
+        "@@\n"
+        "-22\n"
+        "+aa\n"
+        "@@\n"
+        "-22\n"
+        "+aa\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched")
+    assert "found at least 3 valid non-overlapping forward match sequences after line 3" in result
+    assert "candidate starts: 6, 8, 9" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_resolves_repeated_java_method_blocks_as_one_unique_sequence(
+    monkeypatch, tmp_path
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "DashboardServiceImpl.java"
+    target.write_text(
+        "public class DashboardServiceImpl {\n"
+        "    public void consumedOverview() {\n"
+        "        String normalizedType = normalizeType(type);\n"
+        "        return query(snapshotId, normalizedType);\n"
+        "    }\n"
+        "\n"
+        "    public void producedOverview() {\n"
+        "        String normalizedType = normalizeType(type);\n"
+        "        return query(snapshotId, normalizedType);\n"
+        "    }\n"
+        "\n"
+        "    public void attributionOverview() {\n"
+        "        String normalizedType = normalizeType(type);\n"
+        "        return query(snapshotId, normalizedType);\n"
+        "    }\n"
+        "\n"
+        "    public void exportOverview() {\n"
+        "        return export(snapshotId);\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = common.file_patch(
+        "*** Update File: DashboardServiceImpl.java\n"
+        "@@\n"
+        "     public void consumedOverview() {\n"
+        "         String normalizedType = normalizeType(type);\n"
+        "-        return query(snapshotId, normalizedType);\n"
+        "+        return query(snapshotId, normalizedType, endDay);\n"
+        "@@\n"
+        "-        String normalizedType = normalizeType(type);\n"
+        "+        String normalizedType = normalizeType(type, endDay);\n"
+        "@@\n"
+        "     public void attributionOverview() {\n"
+        "         String normalizedType = normalizeType(type);\n"
+        "-        return query(snapshotId, normalizedType);\n"
+        "+        return query(snapshotId, normalizedType, endDay);\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == (
+        "public class DashboardServiceImpl {\n"
+        "    public void consumedOverview() {\n"
+        "        String normalizedType = normalizeType(type);\n"
+        "        return query(snapshotId, normalizedType, endDay);\n"
+        "    }\n"
+        "\n"
+        "    public void producedOverview() {\n"
+        "        String normalizedType = normalizeType(type, endDay);\n"
+        "        return query(snapshotId, normalizedType);\n"
+        "    }\n"
+        "\n"
+        "    public void attributionOverview() {\n"
+        "        String normalizedType = normalizeType(type);\n"
+        "        return query(snapshotId, normalizedType, endDay);\n"
+        "    }\n"
+        "\n"
+        "    public void exportOverview() {\n"
+        "        return export(snapshotId);\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def test_file_patch_reports_ambiguous_java_method_sequence_without_writing(
+    monkeypatch, tmp_path
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "DashboardServiceImpl.java"
+    original = (
+        "public class DashboardServiceImpl {\n"
+        "    public void consumedOverview() {\n"
+        "        String normalizedType = normalizeType(type);\n"
+        "        return query(snapshotId, normalizedType);\n"
+        "    }\n"
+        "\n"
+        "    public void producedOverview() {\n"
+        "        String normalizedType = normalizeType(type);\n"
+        "        return query(snapshotId, normalizedType);\n"
+        "    }\n"
+        "\n"
+        "    public void attributionOverview() {\n"
+        "        String normalizedType = normalizeType(type);\n"
+        "        return query(snapshotId, normalizedType);\n"
+        "    }\n"
+        "}\n"
+    )
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: DashboardServiceImpl.java\n"
+        "@@\n"
+        "     public void consumedOverview() {\n"
+        "         String normalizedType = normalizeType(type);\n"
+        "-        return query(snapshotId, normalizedType);\n"
+        "+        return query(snapshotId, normalizedType, endDay);\n"
+        "@@\n"
+        "-        String normalizedType = normalizeType(type);\n"
+        "+        String normalizedType = normalizeType(type, endDay);\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched")
+    assert "found 2 valid non-overlapping forward match sequences after line 4" in result
+    assert "candidate starts: 8, 13" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_falls_back_to_trailing_whitespace_matching(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "Service.java"
+    target.write_text(
+        "class Service {\n"
+        "    String value() {\n"
+        "        return value;   \n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = common.file_patch(
+        "*** Update File: Service.java\n"
+        "@@\n"
+        "-        return value;\n"
+        "+        return updated;\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == (
+        "class Service {\n"
+        "    String value() {\n"
+        "        return updated;\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def test_file_patch_falls_back_to_leading_and_trailing_whitespace_matching(
+    monkeypatch, tmp_path
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "Service.java"
+    target.write_text(
+        "class Service {\n"
+        "    String value() {\n"
+        "        return value;   \n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = common.file_patch(
+        "*** Update File: Service.java\n"
+        "@@\n"
+        "-return value;\n"
+        "+return updated;\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == (
+        "class Service {\n"
+        "    String value() {\n"
+        "return updated;\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def test_file_patch_keeps_whitespace_fallback_ambiguous_sequence_rejected(
+    monkeypatch, tmp_path
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "Service.java"
+    original = (
+        "class Service {\n"
+        "    int value() { return value; }   \n"
+        "    int value() { return value; }   \n"
+        "}\n"
+    )
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: Service.java\n"
+        "@@\n"
+        "-int value() { return value; }\n"
+        "+int value() { return updated; }\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched")
+    assert "hunk sequence is ambiguous" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_does_not_normalize_unicode_punctuation(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "Service.java"
+    original = "class Service { return “value”; }\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: Service.java\n"
+        "@@\n"
+        '-class Service { return "value"; }\n'
+        "+class Service { return updated; }\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched")
+    assert "hunk 1 context was not found" in result
+    assert "file may have changed or this patch may already be applied" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_reports_all_missing_hunks_with_numbers(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.java"
+    original = "class Sample {}\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.java\n"
+        "@@\n"
+        "-missing one\n"
+        "+first\n"
+        "@@\n"
+        "-missing two\n"
+        "+second\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched")
+    assert "Detected 2 hunk errors" in result
+    assert "hunk 1 context was not found" in result
+    assert "hunk 2 context was not found" in result
+    assert str(tmp_path) not in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_reports_forward_order_conflict_with_candidate_location(
+    monkeypatch, tmp_path
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.java"
+    original = "class Sample {}\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.java\n"
+        "@@\n"
+        "-class Sample {}\n"
+        "+class First {}\n"
+        "@@\n"
+        "-class Sample {}\n"
+        "+class Second {}\n"
+    )
+
+    assert result.startswith("Error: FilePatch failed: 0 file(s) patched")
+    assert "hunk sequence has no non-overlapping forward match: hunk 2" in result
+    assert "candidate starts: 1" in result
+    assert "cannot follow hunk 1" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_identifies_first_ambiguous_hunk(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.java"
+    original = "class Sample {}\nreturn value;\nreturn value;\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.java\n"
+        "@@\n"
+        "-class Sample {}\n"
+        "+class Edited {}\n"
+        "@@\n"
+        "-return value;\n"
+        "+return updated;\n"
+    )
+
+    assert "hunk sequence is ambiguous at hunk 2" in result
+    assert "candidate starts: 2, 3" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_stale_hunk_context_reports_reread_guidance(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.java"
+    original = "class Edited {}\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.java\n"
+        "@@\n"
+        "-class Sample {}\n"
+        "+class Edited {}\n"
+    )
+
+    assert "hunk 1 context was not found" in result
+    assert "patch may already be applied" in result
+    assert "Re-read the file with FileRead" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_patch_applies_multiple_coordinate_hunks_against_original_lines(
+    monkeypatch, tmp_path
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("same\nvalue\n\nsame\nvalue\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: sample.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        " same\n"
+        "-value\n"
+        "+first\n"
+        "@@ -4,2 +4,2 @@\n"
+        " same\n"
+        "-value\n"
+        "+second\n"
+    )
+
+    assert result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == "same\nfirst\n\nsame\nsecond\n"
 
 
 def test_file_patch_pure_addition_at_eof_preserves_line_boundaries_without_final_newline(
@@ -648,6 +1157,18 @@ def test_file_patch_schema_is_agent_friendly():
         assert "context-only" in normalized
         assert "locator" in normalized
         assert "another changing hunk" in normalized
+        assert "All hunks in one Update File section are matched together in the order supplied" in normalized
+        assert "exactly one non-overlapping forward match sequence exists" in normalized
+        assert "forward search position" in normalized
+        assert "earliest original-file line to search from" in normalized
+        assert "must match exactly at the selected location" in normalized
+        assert "later hunks search only forward" in normalized
+        assert "Matching tries exact lines first" in normalized
+        assert "ignores trailing whitespace" in normalized
+        assert "ignores leading and trailing whitespace" in normalized
+        assert "Unicode punctuation is not normalized" in normalized
+        assert "call FileRead before retrying" in normalized
+        assert "do not resubmit the same patch" in normalized
 
 
 @pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"])
@@ -799,8 +1320,6 @@ def test_file_patch_reports_multiple_hunk_errors_in_one_file(monkeypatch, tmp_pa
 
     assert result.startswith("Error: FilePatch failed:")
     assert "Hunk error:" in result
-    assert "Detected 2 hunk errors" in result
-    assert "hunk 1 matches multiple locations" in result
     assert "hunk 2 context was not found" in result
     assert target.read_text(encoding="utf-8") == "same\nvalue\n\nsame\nvalue\nkeep\n"
 

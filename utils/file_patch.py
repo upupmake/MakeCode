@@ -6,6 +6,7 @@ import os
 import re
 import stat
 import tempfile
+from bisect import bisect_left, bisect_right
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,10 @@ class _PatchFormatError(ValueError):
         super().__init__("; ".join(self.messages))
 
 
+class _NoHunkSequence(ValueError):
+    """This match mode has no complete sequence; a more tolerant mode may succeed."""
+
+
 class FilePatch(ToolArgumentsModel):
     """Apply a strict unified-diff patch with independent per-file transactions.
 
@@ -52,7 +57,19 @@ class FilePatch(ToolArgumentsModel):
     independently; if the result is partial, successful files are already committed;
     retry only the listed failed entries. Each Update file must contain at least one
     effective change. A context-only hunk or an identical ``-``/``+`` replacement may
-    be included only as a locator alongside another changing hunk.
+    be included only as a locator alongside another changing hunk. All hunks in one
+    Update File section are matched together in the order supplied. The tool applies
+    the section only when exactly one non-overlapping forward match sequence exists;
+    multiple valid sequences are rejected. An unnumbered ``@@`` hunk starts at the
+    current forward search position. For a hunk with old-side text, standard coordinates
+    such as ``@@ -1063,2 +1063,2 @@`` set the earliest original-file line to search from,
+    not a requirement to match at that exact line. The hunk's old-side lines must match
+    exactly at the selected location, and later hunks search only forward. Matching
+    tries exact lines first, then ignores trailing whitespace, then ignores leading
+    and trailing whitespace. The complete sequence must still be unique; Unicode
+    punctuation is not normalized. If a hunk sequence fails because its context is
+    ambiguous or missing, call FileRead before retrying and do not resubmit the same
+    patch.
 
     Examples:
     Example 1 (one file with multiple @@ hunks in one section)::
@@ -92,7 +109,21 @@ class FilePatch(ToolArgumentsModel):
             "file. Each Update file must contain at least one effective change. A "
             "context-only hunk or identical '-'/'+' replacement may be included only "
             "as a locator alongside another changing hunk. Add File content uses one "
-            "'+' prefix per line; Delete File has no body. "
+            "'+' prefix per line; Delete File has no body. All hunks in one Update File "
+            "section are matched together in the order supplied. The tool applies the "
+            "section only when exactly one non-overlapping forward match sequence exists; "
+            "multiple valid sequences are rejected. An unnumbered '@@' hunk starts at "
+            "the current forward search position. For a hunk with old-side text, "
+            "standard coordinates such as '@@ -1063,2 +1063,2 @@' set the earliest "
+            "original-file line to search from, not a requirement to match at that exact "
+            "line. Use the FileRead line number only in the hunk header; never copy an "
+            "'N:' prefix into hunk body lines. The hunk's old-side lines must match "
+            "exactly at the selected location, and later hunks search only forward. "
+            "Matching tries exact lines first, then ignores trailing whitespace, then "
+            "ignores leading and trailing whitespace. The complete sequence must still "
+            "be unique; Unicode punctuation is not normalized. If a hunk sequence "
+            "fails because its context is ambiguous or missing, call FileRead before "
+            "retrying and do not resubmit the same patch. "
             "Each actual file may appear only once and is committed independently. If "
             "the result is partial, retry only the listed failed entries. See the tool "
             "description for complete examples."
@@ -159,11 +190,17 @@ def _format_input_error(exc: Exception) -> str:
 
 def _explain_failure(message: str) -> str:
     if "matches multiple locations" in message:
-        return f"{message}; Add enough unchanged context to make the hunk unique"
+        return f"{message}; Add enough unchanged context or coordinates to make the complete hunk sequence unique"
+    if "hunk sequence has no" in message:
+        return (
+            f"{message}; re-read the current file with FileRead and regenerate the "
+            "complete ordered hunk sequence"
+        )
     if "context was not found" in message:
         return (
-            f"{message}; re-read the file with FileRead and copy exact context "
-            "without line-number prefixes"
+            f"{message}; the file may have changed or this patch may already be applied. "
+            "Re-read the file with FileRead before regenerating the patch; do not resubmit "
+            "the same patch"
         )
     if "overlaps another hunk" in message:
         return f"{message}; Merge overlapping hunks into one non-overlapping change"
@@ -416,70 +453,178 @@ def _text_lines(text: str) -> tuple[list[str], list[str]]:
     return lines, endings
 
 
-def _find_occurrences(lines: list[str], needle: tuple[str, ...]) -> list[tuple[int, int]]:
+def _find_occurrences(
+        lines: list[str],
+        needle: tuple[str, ...],
+        match_mode: str = "exact",
+) -> list[tuple[int, int]]:
     size = len(needle)
     if not size or size > len(lines):
         return []
+    if match_mode == "exact":
+        return [
+            (index, index + size)
+            for index in range(len(lines) - size + 1)
+            if tuple(lines[index:index + size]) == needle
+        ]
+    if match_mode == "rstrip":
+        match_line = lambda actual, expected: actual.rstrip() == expected.rstrip()
+    else:
+        match_line = lambda actual, expected: actual.strip() == expected.strip()
     return [
         (index, index + size)
         for index in range(len(lines) - size + 1)
-        if tuple(lines[index:index + size]) == needle
+        if all(
+            match_line(lines[index + offset], expected)
+            for offset, expected in enumerate(needle)
+        )
     ]
 
 
-def _locate_hunk(
-    lines: list[str], hunk: _Hunk
-) -> tuple[int, int] | None:
+def _hunk_candidate_spans(
+        lines: list[str],
+        hunk: _Hunk,
+        match_mode: str,
+) -> list[tuple[int, int]]:
     if hunk.old_lines:
-        spans = _find_occurrences(lines, hunk.old_lines)
-        if not spans:
-            return None
-        if len(spans) > 1:
-            locations = ", ".join(f"{start + 1}-{end}" for start, end in spans[:5])
-            if len(spans) > 5:
-                locations += f", +{len(spans) - 5} more"
-            raise ValueError(f"matches multiple locations ({locations})")
-        return spans[0]
+        search_start = 0
+        if hunk.old_start is not None:
+            if hunk.old_start < 1:
+                raise ValueError(
+                    f"coordinate start {hunk.old_start} is invalid for hunk with old lines"
+                )
+            search_start = hunk.old_start - 1
+        return [
+            span
+            for span in _find_occurrences(lines, hunk.old_lines, match_mode)
+            if span[0] >= search_start
+        ]
 
     if hunk.old_start is None:
         if not lines:
-            return (0, 0)
+            return [(0, 0)]
         raise ValueError("pure addition hunk needs unified-diff coordinates for a non-empty file")
     insertion = hunk.old_start
     if hunk.old_start == 0:
         insertion = 0
     if insertion < 0 or insertion > len(lines):
         raise ValueError(f"pure addition hunk location {hunk.old_start} is outside the file")
-    return insertion, insertion
+    return [(insertion, insertion)]
 
 
-def _apply_hunks(text: str, hunks: tuple[_Hunk, ...], path: Path) -> tuple[bytes, int]:
+def _spans_overlap_or_go_backward(
+        previous: tuple[int, int] | None,
+        current: tuple[int, int],
+) -> bool:
+    if previous is None:
+        return False
+    previous_start, previous_end = previous
+    start, end = current
+    if start < previous_end:
+        return True
+    return start == end == previous_start == previous_end
+
+
+def _find_unique_hunk_sequence(
+        lines: list[str],
+        hunks: tuple[_Hunk, ...],
+        match_mode: str,
+) -> list[tuple[int, int, tuple[str, ...]]]:
+    candidates = [_hunk_candidate_spans(lines, hunk, match_mode) for hunk in hunks]
+    if not candidates:
+        return []
+    # Count complete suffixes, not candidate combinations. Three is enough to report
+    # ambiguity without enumerating exponentially many paths or recursing per hunk.
+    suffix_counts = [[0] * len(spans) for spans in candidates]
+    suffix_counts[-1] = [1] * len(candidates[-1])
+    for index in range(len(candidates) - 2, -1, -1):
+        next_starts = [start for start, _ in candidates[index + 1]]
+        totals = [0] * (len(next_starts) + 1)
+        for offset in range(len(next_starts) - 1, -1, -1):
+            totals[offset] = min(3, totals[offset + 1] + suffix_counts[index + 1][offset])
+        for offset, (start, end) in enumerate(candidates[index]):
+            if start == end and not hunks[index + 1].old_lines:
+                next_offset = bisect_right(next_starts, end)
+            else:
+                next_offset = bisect_left(next_starts, end)
+            suffix_counts[index][offset] = totals[next_offset]
+    sequence_count = min(3, sum(suffix_counts[0]))
+    if not sequence_count:
+        missing = [number for number, spans in enumerate(candidates, 1) if not spans]
+        if missing:
+            details = "; ".join(
+                f"hunk {number} context was not found"
+                + (
+                    f" at or after original line {hunks[number - 1].old_start}"
+                    if hunks[number - 1].old_start is not None else ""
+                )
+                for number in missing
+            )
+            if len(missing) == 1:
+                raise _NoHunkSequence(details)
+            raise _NoHunkSequence(f"Detected {len(missing)} hunk errors: {details}")
+
+        reachable = candidates[0]
+        for number, spans in enumerate(candidates[1:], 2):
+            previous = min(reachable, key=lambda span: (span[1], span[0]))
+            forward = [
+                span for span in spans
+                if not _spans_overlap_or_go_backward(previous, span)
+            ]
+            if not forward:
+                locations = ", ".join(str(start + 1) for start, _ in spans[:5])
+                if len(spans) > 5:
+                    locations += f", +{len(spans) - 5} more"
+                raise _NoHunkSequence(
+                    f"hunk sequence has no non-overlapping forward match: hunk {number} "
+                    f"has context matches (candidate starts: {locations}) but cannot follow "
+                    f"hunk {number - 1}"
+                )
+            reachable = forward
+    selected = []
+    previous = None
+    for index, spans in enumerate(candidates):
+        viable = [
+            span for offset, span in enumerate(spans)
+            if suffix_counts[index][offset]
+            and not _spans_overlap_or_go_backward(previous, span)
+        ]
+        if len(viable) > 1:
+            previous_end = previous[1] if previous is not None else 0
+            possible_locations = sorted({
+                start + 1 for start, _ in spans if start >= previous_end
+            })
+            location_text = ", ".join(str(location) for location in possible_locations[:5])
+            if len(possible_locations) > 5:
+                location_text += f", +{len(possible_locations) - 5} more"
+            count_text = "at least 3" if sequence_count >= 3 else str(sequence_count)
+            raise ValueError(
+                f"hunk sequence is ambiguous at hunk {index + 1}: matches multiple "
+                f"locations; found {count_text} "
+                f"valid non-overlapping forward match sequences after line {previous_end} "
+                f"(candidate starts: {location_text})"
+            )
+        previous = viable[0]
+        selected.append(previous)
+    return [
+        (start, end, hunk.new_lines)
+        for hunk, (start, end) in zip(hunks, selected)
+    ]
+
+
+def _apply_hunks(text: str, hunks: tuple[_Hunk, ...]) -> tuple[bytes, int]:
     lines, endings = _text_lines(text)
-    located: list[tuple[int, int, tuple[str, ...]]] = []
-    hunk_errors: list[str] = []
-    for number, hunk in enumerate(hunks, 1):
+    located = None
+    last_no_match_error = None
+    for match_mode in ("exact", "rstrip", "strip"):
         try:
-            span = _locate_hunk(lines, hunk)
-        except ValueError as exc:
-            hunk_errors.append(f"hunk {number} {exc}")
+            located = _find_unique_hunk_sequence(lines, hunks, match_mode)
+        except _NoHunkSequence as exc:
+            last_no_match_error = exc
             continue
-        if span is None:
-            hunk_errors.append(f"hunk {number} context was not found")
-            continue
-        start, end = span
-        if any(
-            (start < other_end and other_start < end)
-            or (start == other_start and start == end == other_start == other_end)
-            for other_start, other_end, _ in located
-        ):
-            hunk_errors.append(f"hunk {number} overlaps another hunk")
-            continue
-        located.append((start, end, hunk.new_lines))
-    if hunk_errors:
-        raise ValueError(
-            f"{path}: {'; '.join(hunk_errors)}" if len(hunk_errors) == 1
-            else f"{path}: Detected {len(hunk_errors)} hunk errors: {'; '.join(hunk_errors)}"
-        )
+        break
+    if located is None:
+        raise ValueError(str(last_no_match_error)) from last_no_match_error
 
     for start, end, replacement in sorted(located, key=lambda item: item[0], reverse=True):
         old_endings = endings[start:end]
@@ -770,7 +915,7 @@ def file_patch(patch: str) -> str:
 
                     raw = path.read_bytes()
                     text, has_bom = _decode_text(raw, path)
-                    payload, hunk_count = _apply_hunks(text, spec.hunks, path)
+                    payload, hunk_count = _apply_hunks(text, spec.hunks)
                     if has_bom:
                         payload = _UTF8_BOM + payload
                     planned.append((

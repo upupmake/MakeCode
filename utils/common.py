@@ -657,14 +657,12 @@ class FileEdit(ToolArgumentsModel):
        Do not issue two FileEdit calls for the same file in the same turn.
 
     MATCHING RULES:
-    - Every block is first matched against the file as it was read, so blocks copied from one
-      FileRead result do not interfere with each other.
-    - A block that cannot be placed yet is retried against the text produced by the blocks
-      already applied, so chaining one block onto another block's output still works.
-    - Matching is whole-line: exact lines first, then ignoring trailing whitespace and a
-      uniform indentation shift (the replacement is re-indented by the same amount).
-    - Each block MUST match exactly one location. If any block never resolves, nothing is
-      written and every problem is reported at once.
+    - All blocks are matched against the file as it was read and applied atomically.
+    - Blocks must be supplied in forward file order; a later block cannot target an earlier
+      location or text produced by another block.
+    - Matching is whole-line and follows the original file's forward order.
+    - Each block MUST participate in one unique forward match sequence. If any block cannot
+      be placed, nothing is written and every problem is reported at once.
 
     WARNINGS:
     - Never invent code or guess indentation.
@@ -682,9 +680,8 @@ class FileEdit(ToolArgumentsModel):
         min_length=1,
         description=(
             "A non-empty list of edits. Each edit has: search_content (exact lines to find) and "
-            "replace_content (new lines). Blocks are matched against the file as it was read; a "
-            "block that cannot be placed yet is retried against the text earlier blocks produced. "
-            "All blocks are applied atomically."
+            "replace_content (new lines). All blocks are matched against the file as it was read, "
+            "in the order supplied, and applied atomically."
         ),
     )
 
@@ -708,9 +705,9 @@ _LINE_NUMBER_PREFIX_PATTERN = re.compile(r"^(\d+)[:\-](.*)$")
 _DIAGNOSTIC_DIFF_MAX_LINES = 24
 _AMBIGUOUS_LOCATIONS_SHOWN = 5
 _FILE_EDIT_SNAPSHOT_NOTE = (
-    "Blocks are matched against the file as it was read; a block that cannot be placed yet is "
-    "retried against the text produced by the blocks already applied. Nothing is written "
-    "unless every block resolves, so re-read the file and resubmit all blocks together."
+    "All blocks are matched against the file as it was read and must form one valid forward "
+    "sequence. Nothing is written unless every block resolves, so re-read the file and "
+    "resubmit all blocks together."
 )
 
 
@@ -739,6 +736,25 @@ def _find_exact_spans(file_lines: list[str], search_lines: list[str]) -> list[tu
         (index, index + size)
         for index in range(len(file_lines) - size + 1)
         if file_lines[index] == first and file_lines[index: index + size] == search_lines
+    ]
+
+
+def _find_trailing_whitespace_spans(
+        file_lines: list[str], search_lines: list[str]
+) -> list[tuple[int, int]]:
+    """Locate whole-line occurrences while ignoring trailing whitespace only."""
+    size = len(search_lines)
+    if size == 0 or size > len(file_lines):
+        return []
+    first = search_lines[0].rstrip()
+    return [
+        (index, index + size)
+        for index in range(len(file_lines) - size + 1)
+        if file_lines[index].rstrip() == first
+        and all(
+            file_lines[index + offset].rstrip() == expected.rstrip()
+            for offset, expected in enumerate(search_lines)
+        )
     ]
 
 
@@ -802,12 +818,128 @@ def _reindent(lines: list[str], delta: str, search_is_deeper: bool) -> list[str]
     return [delta + line if line.strip() else line for line in lines]
 
 
-def _apply_located(file_lines: list[str], located: list[dict]) -> list[str]:
-    """Splice replacements bottom-up so earlier spans keep their original indices."""
+def _edit_operations(
+        start: int,
+        search_lines: list[str],
+        replace_lines: list[str],
+) -> list[tuple[int, int, list[str]]]:
+    matcher = difflib.SequenceMatcher(
+        a=search_lines,
+        b=replace_lines,
+        autojunk=False,
+    )
+    return [
+        (start + old_start, start + old_end, list(replace_lines[new_start:new_end]))
+        for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes()
+        if tag != "equal"
+    ]
+
+
+def _edit_change_conflicts(
+        left: dict,
+        right: dict,
+) -> bool:
+    if any(
+        left_start == left_end == right_start == right_end
+        for left_start, left_end, _ in left["operations"]
+        for right_start, right_end, _ in right["operations"]
+    ):
+        return True
+    overlap_start = max(left["start"], right["start"])
+    overlap_end = min(left["end"], right["end"])
+    if overlap_start >= overlap_end:
+        return False
+
+    def touches_overlap(operation: tuple[int, int, list[str]]) -> bool:
+        start, end, _ = operation
+        if start == end:
+            return overlap_start <= start < overlap_end
+        return max(start, overlap_start) < min(end, overlap_end)
+
+    return any(
+        touches_overlap(operation)
+        for operation in left["operations"] + right["operations"]
+    )
+
+
+def _build_located_edit(
+        item: dict,
+        span: tuple[int, int, str, bool],
+        match_mode: str,
+        file_lines: list[str],
+) -> dict:
+    start, end, delta, search_is_deeper = span
+    replace_lines = _reindent(item["replace_lines"], delta, search_is_deeper)
+    return {
+        "index": item["index"],
+        "start": start,
+        "end": end,
+        "tier": match_mode,
+        "delta": delta,
+        "search_is_deeper": search_is_deeper,
+        "replace_lines": replace_lines,
+        "operations": _edit_operations(start, file_lines[start:end], replace_lines),
+    }
+
+
+def _split_file_lines(text: str) -> tuple[list[str], list[str]]:
+    if not text:
+        return [], []
+    parts = re.split(r"(\r\n|\n|\r)", text)
+    lines: list[str] = []
+    endings: list[str] = []
+    for index in range(0, len(parts), 2):
+        content = parts[index]
+        ending = parts[index + 1] if index + 1 < len(parts) else ""
+        if index == len(parts) - 1 and content == "" and ending == "":
+            break
+        lines.append(content)
+        endings.append(ending)
+    return lines, endings
+
+
+def _apply_located(
+        file_lines: list[str],
+        file_endings: list[str],
+        located: list[dict],
+        default_ending: str,
+) -> tuple[list[str], list[str]]:
+    """Splice replacements bottom-up while retaining unaffected line endings."""
     result = list(file_lines)
-    for item in sorted(located, key=lambda entry: entry["start"], reverse=True):
-        result[item["start"]: item["end"]] = item["replace_lines"]
-    return result
+    endings = list(file_endings)
+    operations = [
+        operation
+        for item in located
+        for operation in item["operations"]
+    ]
+    for start, end, replacement in sorted(
+            operations,
+            key=lambda operation: (operation[0], operation[1]),
+            reverse=True,
+    ):
+        old_endings = endings[start:end]
+        appended_after_unterminated_line = (
+            bool(replacement)
+            and start == len(result)
+            and start > 0
+            and endings[start - 1] == ""
+        )
+        if len(old_endings) == len(replacement):
+            replacement_endings = old_endings
+        elif replacement:
+            replacement_endings = [
+                next((ending for ending in old_endings if ending), default_ending)
+            ] * len(replacement)
+            if old_endings and old_endings[-1] == "":
+                replacement_endings[-1] = ""
+            elif appended_after_unterminated_line:
+                endings[start - 1] = default_ending
+                replacement_endings[-1] = ""
+        else:
+            replacement_endings = []
+        result[start:end] = replacement
+        endings[start:end] = replacement_endings
+    return result, endings
 
 
 def _search_anchor(
@@ -956,50 +1088,137 @@ def _describe_ambiguous_block(index: int, spans: list[tuple[int, int, str, bool]
     )
 
 
+def _find_unique_edit_sequence(
+        file_lines: list[str],
+        items: list[dict],
+) -> list[dict]:
+    match_modes = ("exact", "trailing-whitespace", "reindented")
+    last_no_match = None
+    for match_mode in match_modes:
+        candidates = []
+        for item in items:
+            spans, tier = _locate_block_at_mode(
+                file_lines,
+                item["search_lines"],
+                match_mode,
+            )
+            if tier != match_mode:
+                spans = []
+            candidates.append([
+                (start, end, delta, search_is_deeper)
+                for start, end, delta, search_is_deeper in spans
+            ])
+
+        solutions: list[tuple[dict, ...]] = []
+        conflict_indexes: set[int] = set()
+
+        stack: list[tuple[int, list[dict]]] = [(0, [])]
+        while stack and len(solutions) < 3:
+            index, selected = stack.pop()
+            if index == len(candidates):
+                solutions.append(tuple(selected))
+                continue
+            for span in reversed(candidates[index]):
+                start = span[0]
+                if selected and start < selected[-1]["start"]:
+                    continue
+                located = _build_located_edit(
+                    items[index], span, match_mode, file_lines
+                )
+                conflicts = [
+                    previous for previous in selected
+                    if _edit_change_conflicts(located, previous)
+                ]
+                if conflicts:
+                    conflict_indexes.update(
+                        [located["index"]] + [previous["index"] for previous in conflicts]
+                    )
+                    continue
+                stack.append((index + 1, selected + [located]))
+        if not solutions:
+            missing = [index + 1 for index, spans in enumerate(candidates) if not spans]
+            if missing:
+                last_no_match = (
+                    f"edit block(s) {', '.join(str(index) for index in missing)} "
+                    f"have no {match_mode} match"
+                )
+            elif conflict_indexes:
+                last_no_match = (
+                    "edit sequence has conflicting changes between blocks "
+                    + ", ".join(f"#{index}" for index in sorted(conflict_indexes))
+                )
+            else:
+                last_no_match = (
+                    f"edit sequence has no valid forward match in {match_mode} mode"
+                )
+            continue
+        if len(solutions) > 1:
+            first = solutions[0]
+            branch_index = next(
+                index
+                for index in range(len(first))
+                if any(
+                    (
+                        solution[index]["start"], solution[index]["end"]
+                    ) != (
+                        first[index]["start"], first[index]["end"]
+                    )
+                    for solution in solutions[1:]
+                )
+            )
+            previous_start = first[branch_index - 1]["start"] if branch_index else 0
+            locations = sorted({
+                span[0] + 1
+                for span in candidates[branch_index]
+                if span[0] >= previous_start
+            })
+            location_text = ", ".join(str(location) for location in locations[:5])
+            if len(locations) > 5:
+                location_text += f", +{len(locations) - 5} more"
+            count = "at least 3" if len(solutions) >= 3 else str(len(solutions))
+            raise ValueError(
+                f"edit sequence is ambiguous at block {branch_index + 1}: found {count} "
+                f"valid forward match sequences after line {previous_start} "
+                f"(candidate starts: {location_text})"
+            )
+        return list(solutions[0])
+
+    raise ValueError(last_no_match or "edit sequence has no forward match")
+
+
 def _locate_block(
         file_lines: list[str], search_lines: list[str]
 ) -> tuple[list[tuple[int, int, str, bool]], str]:
-    """Return every span the block matches, preferring exact lines over an indent shift."""
-    spans = [
-        (start, end, "", False)
-        for start, end in _find_exact_spans(file_lines, search_lines)
-    ]
-    if spans:
-        return spans, "exact"
-    return _find_shifted_spans(file_lines, search_lines), "reindented"
+    """Return every span, preferring exact, trailing-whitespace, then reindented matches."""
+    for match_mode in ("exact", "trailing-whitespace", "reindented"):
+        spans, tier = _locate_block_at_mode(file_lines, search_lines, match_mode)
+        if spans:
+            return spans, tier
+    return [], "exact"
 
 
-def _describe_unresolved_block(
-        index: int,
-        path: str,
-        current_lines: list[str],
+def _locate_block_at_mode(
+        file_lines: list[str],
         search_lines: list[str],
-        snapshot_spans: list[tuple[int, int, str, bool]],
-        applied: list[dict],
-) -> str:
-    spans, _ = _locate_block(current_lines, search_lines)
-    if len(spans) > 1:
-        return _describe_ambiguous_block(index, spans)
-
-    if len(snapshot_spans) == 1 and applied:
-        start, end = snapshot_spans[0][0], snapshot_spans[0][1]
-        blockers = sorted(
-            item["index"] for item in applied
-            if item["stage"] == 1 and item["start"] < end and start < item["end"]
-        )
-        culprit = (
-            " Block " + ", ".join(f"#{i}" for i in blockers) + " already rewrote those lines;"
-            " merge the overlapping edits into a single block."
-            if blockers else
-            " An earlier block in this call changed those lines."
-        )
-        return (
-            f"Block {index}: search_content matched the file as it was read "
-            f"(lines {start + 1}-{end}) but no longer matches after earlier blocks were "
-            f"applied.{culprit}"
-        )
-
-    return _describe_missing_block(index, path, current_lines, search_lines)
+        match_mode: str,
+) -> tuple[list[tuple[int, int, str, bool]], str]:
+    if match_mode == "exact":
+        return [
+            (start, end, "", False)
+            for start, end in _find_exact_spans(file_lines, search_lines)
+        ], "exact"
+    if match_mode == "trailing-whitespace":
+        spans = [
+            (start, end, "", False)
+            for start, end in _find_trailing_whitespace_spans(file_lines, search_lines)
+        ]
+        if spans:
+            return spans, "trailing-whitespace"
+        return [
+            (start, end, "", False)
+            for start, end in _find_exact_spans(file_lines, search_lines)
+        ], "trailing-whitespace"
+    return _find_shifted_spans(file_lines, search_lines), "reindented"
 
 
 def _detect_newline(text: str) -> str:
@@ -1060,19 +1279,10 @@ def file_edit(path: str, edits: Any) -> str:
                 )
 
             newline = _detect_newline(text)
-            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-            trailing_newline = normalized.endswith("\n")
-            if not normalized:
-                file_lines = []
-            else:
-                file_lines = normalized.split("\n")
-                if trailing_newline:
-                    file_lines.pop()
+            file_lines, file_endings = _split_file_lines(text)
 
-            # Locate and apply in stages. Every block is first matched against the file as it
-            # was read; a block that cannot be placed yet is deferred and retried against the
-            # text the applied blocks produced. That keeps chained edits working while still
-            # refusing to let a stale block silently undo an earlier one.
+            # Locate every block against the original snapshot, then apply the complete
+            # forward sequence atomically.
             problems: list[tuple[int, str]] = []
             pending: list[dict] = []
             for index, block in enumerate(parsed_blocks, 1):
@@ -1088,57 +1298,49 @@ def file_edit(path: str, edits: Any) -> str:
                     "replace_lines": _split_edit_lines(block.replace_content),
                 })
 
-            snapshot_spans = {
-                item["index"]: _locate_block(file_lines, item["search_lines"])[0]
-                for item in pending
-            }
-
-            current = list(file_lines)
             applied: list[dict] = []
-            stage = 0
-            while pending:
-                stage += 1
-                resolved, unmatched = [], []
-                for item in pending:
-                    spans, tier = _locate_block(current, item["search_lines"])
-                    if len(spans) == 1:
-                        resolved.append((item, spans[0], tier))
-                    else:
-                        unmatched.append(item)
+            try:
+                applied = _find_unique_edit_sequence(file_lines, pending)
+            except ValueError as exc:
+                message = str(exc)
+                if "edit sequence is ambiguous" in message or "conflicting changes" in message:
+                    for item in pending:
+                        spans, _ = _locate_block(file_lines, item["search_lines"])
+                        if len(spans) > 1:
+                            problems.append((
+                                item["index"],
+                                _describe_ambiguous_block(item["index"], spans),
+                            ))
+                    if not problems:
+                        problems.append((
+                            pending[0]["index"],
+                            f"FileEdit batch error: {message}",
+                        ))
+                else:
+                    for item in pending:
+                        spans, _ = _locate_block(file_lines, item["search_lines"])
+                        if len(spans) > 1:
+                            problems.append((
+                                item["index"],
+                                _describe_ambiguous_block(item["index"], spans),
+                            ))
+                        elif not spans:
+                            problems.append((
+                                item["index"],
+                                _describe_missing_block(
+                                    item["index"], path, file_lines, item["search_lines"]
+                                ),
+                            ))
+                    if not problems:
+                        problems.append((pending[0]["index"], f"FileEdit batch error: {message}"))
 
-                accepted, deferred = [], []
-                for item, span, tier in resolved:
-                    start, end, delta, search_is_deeper = span
-                    if any(start < other["end"] and other["start"] < end for other in accepted):
-                        deferred.append(item)
-                        continue
-                    accepted.append({
-                        "index": item["index"],
-                        "start": start,
-                        "end": end,
-                        "tier": tier,
-                        "delta": delta,
-                        "search_is_deeper": search_is_deeper,
-                        "stage": stage,
-                        "replace_lines": _reindent(item["replace_lines"], delta, search_is_deeper),
-                    })
-
-                if not accepted:
-                    pending = unmatched
-                    break
-
-                current = _apply_located(current, accepted)
-                applied.extend(accepted)
-                pending = sorted(unmatched + deferred, key=lambda item: item["index"])
-
-            for item in pending:
-                problems.append((
-                    item["index"],
-                    _describe_unresolved_block(
-                        item["index"], path, current, item["search_lines"],
-                        snapshot_spans[item["index"]], applied,
-                    ),
-                ))
+            if not problems:
+                current, current_endings = _apply_located(
+                    file_lines, file_endings, applied, newline
+                )
+            else:
+                current = list(file_lines)
+                current_endings = list(file_endings)
 
             if problems:
                 report = [
@@ -1153,28 +1355,23 @@ def file_edit(path: str, edits: Any) -> str:
                 return "\n".join(report)
 
             # Commit atomically, preserving the file's original identity.
-            assembled = newline.join(current) + (newline if trailing_newline else "")
+            assembled = "".join(
+                line + ending for line, ending in zip(current, current_endings)
+            )
             payload = assembled.encode("utf-8")
             _write_file_atomically(fp, _UTF8_BOM + payload if has_bom else payload, original_mode)
 
             report = [f"Edited {path}: applied {len(applied)} edit block(s) atomically."]
             for item in sorted(applied, key=lambda entry: entry["index"]):
                 detail = (
-                    f"  #{item['index']} {item['tier']:<11} "
+                    f"  #{item['index']} {item['tier']:<20} "
                     f"lines {item['start'] + 1}-{item['end']} "
                     f"-> {len(item['replace_lines'])} line(s)"
                 )
                 if item["delta"]:
                     direction = "-" if item["search_is_deeper"] else "+"
                     detail += f" (indent {direction}{len(item['delta'])})"
-                if item["stage"] > 1:
-                    detail += f" (chained, stage {item['stage']})"
                 report.append(detail)
-            if any(item["stage"] > 1 for item in applied):
-                report.append(
-                    "  note: chained blocks matched the text produced by earlier blocks, so "
-                    "their line numbers refer to that intermediate state."
-                )
 
             is_valid, err_msg = validate_code(path, assembled)
             if not is_valid:

@@ -5018,6 +5018,35 @@ async def test_nm_request_skips_pre_recall_and_submits_suffix_as_user_query():
 
 
 @pytest.mark.anyio
+async def test_nc_request_skips_compaction_but_keeps_pre_recall():
+    command_handler = Mock()
+    command_handler.process_command = AsyncMock(return_value=CommandResult(
+        action=CommandAction.RUN_AGENT,
+        payload="直接处理这个请求",
+        skip_compaction=True,
+    ))
+    history = [{"role": "system", "content": "system"}]
+
+    with patch.object(main_module, "set_agent_loop_active"), \
+            patch.object(main_module, "_ensure_active_conversation"), \
+            patch.object(main_module, "agent_loop", new_callable=AsyncMock) as run_agent_loop, \
+            patch.object(main_module, "get_memory_pre_recall", return_value=True), \
+            patch.object(main_module, "post_tui") as post_tui, \
+            patch.object(main_module, "refresh_status"):
+        await main_module._process_user_query("/nc 直接处理这个请求", history, command_handler)
+
+    run_agent_loop.assert_awaited_once_with(
+        history,
+        recall_query="直接处理这个请求",
+        skip_compaction=True,
+    )
+    post_tui.assert_any_call(
+        main_module.TuiRegion.BACKGROUND,
+        "[#aaaaaa]🧹 已跳过本次请求的上下文压缩流程。[/#aaaaaa]",
+    )
+
+
+@pytest.mark.anyio
 async def test_skill_command_passes_original_recall_query_and_loaded_content():
     command_handler = Mock()
     command_handler.process_command = AsyncMock(return_value=CommandResult(
@@ -5873,6 +5902,43 @@ async def test_agent_loop_runs_at_most_one_entry_compaction_layer(
     for expected_message in expected_messages:
         assert any(expected_message in message for message in background_messages)
     assert not any("第三层" in message for message in background_messages)
+
+
+@pytest.mark.anyio
+async def test_agent_loop_skips_entry_compaction_when_requested():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current request"},
+    ]
+    partial_compact = AsyncMock()
+
+    with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+            patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+            patch.object(main_module, "get_context_token_limit", return_value=100), \
+            patch.object(main_module, "get_compaction_thresholds") as get_thresholds, \
+            patch.object(main_module, "estimate_tokens") as estimate_tokens, \
+            patch.object(main_module, "partial_compact", new=partial_compact), \
+            patch.object(main_module, "compact_tool_outputs") as compact_tool_outputs, \
+            patch.object(main_module, "_render_token_usage"), \
+            patch.object(
+                main_module,
+                "_stream_with_render",
+                new_callable=AsyncMock,
+                return_value=("", [], None, True),
+            ), \
+            patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+            patch.object(main_module, "post_tui"):
+        committed = await main_module.agent_loop(
+            messages,
+            llm_client=Mock(),
+            skip_compaction=True,
+        )
+
+    assert committed is False
+    estimate_tokens.assert_not_called()
+    get_thresholds.assert_not_called()
+    partial_compact.assert_not_awaited()
+    compact_tool_outputs.assert_not_called()
 
 
 @pytest.mark.anyio

@@ -355,6 +355,7 @@ async def agent_loop(
     llm_client=None,
     *,
     recall_query: str | None = None,
+    skip_compaction: bool = False,
 ) -> bool:
     """Agent 主循环：每次业务请求独占一个 LLM client。"""
     set_temporary_query_enabled(False)
@@ -372,7 +373,12 @@ async def agent_loop(
         )
         return False
     try:
-        return await _agent_loop_with_client(messages, llm_client, recall_query=recall_query)
+        return await _agent_loop_with_client(
+            messages,
+            llm_client,
+            recall_query=recall_query,
+            skip_compaction=skip_compaction,
+        )
     finally:
         restore_temporary_query_to_input()
         set_temporary_query_enabled(False)
@@ -386,6 +392,7 @@ async def _agent_loop_with_client(
     llm_client,
     *,
     recall_query: str | None = None,
+    skip_compaction: bool = False,
 ) -> bool:
     committed_response = False
     was_cancelled = False
@@ -416,45 +423,62 @@ async def _agent_loop_with_client(
         raise
 
     messages[0] = {"role": "system", "content": get_dynamic_system_prompt()}
-    context_token_limit = get_context_token_limit()
-    initial_context_tokens = estimate_tokens(
-        messages,
-        tools_definition=current_super_tools,
-    )
-    tool_output_threshold, partial_threshold = get_compaction_thresholds()
+    if not skip_compaction:
+        context_token_limit = get_context_token_limit()
+        initial_context_tokens = estimate_tokens(
+            messages,
+            tools_definition=current_super_tools,
+        )
+        tool_output_threshold, partial_threshold = get_compaction_thresholds()
 
-    if initial_context_tokens * 100 >= context_token_limit * partial_threshold:
-        post_tui(
-            TuiRegion.BACKGROUND,
-            "[bold yellow]⚡️ 已触发第二层局部摘要压缩。[/bold yellow]",
-        )
-        compact_reason = (
-            f"Pre agent_loop partial compact triggered: estimated tokens "
-            f"{initial_context_tokens} reached {partial_threshold}% of threshold "
-            f"{context_token_limit}."
-        )
-        partial_succeeded = False
-        try:
-            partial_succeeded = await partial_compact(
-                messages,
-                context_token_limit,
-                initial_context_tokens,
-                compact_reason,
-            )
-        except Exception as exc:
-            log_error_traceback("Orchestrator partial compact error", exc)
-            console.print(
-                f"[bold red]⚠️ {escape(f'局部上下文压缩失败：{exc}')}[/bold red]"
-            )
-        if partial_succeeded:
+        if initial_context_tokens * 100 >= context_token_limit * partial_threshold:
             post_tui(
                 TuiRegion.BACKGROUND,
-                "[bold green]✅ 第二层局部摘要压缩已完成。[/bold green]",
+                "[bold yellow]⚡️ 已触发第二层局部摘要压缩。[/bold yellow]",
             )
-        else:
+            compact_reason = (
+                f"Pre agent_loop partial compact triggered: estimated tokens "
+                f"{initial_context_tokens} reached {partial_threshold}% of threshold "
+                f"{context_token_limit}."
+            )
+            partial_succeeded = False
+            try:
+                partial_succeeded = await partial_compact(
+                    messages,
+                    context_token_limit,
+                    initial_context_tokens,
+                    compact_reason,
+                )
+            except Exception as exc:
+                log_error_traceback("Orchestrator partial compact error", exc)
+                console.print(
+                    f"[bold red]⚠️ {escape(f'局部上下文压缩失败：{exc}')}[/bold red]"
+                )
+            if partial_succeeded:
+                post_tui(
+                    TuiRegion.BACKGROUND,
+                    "[bold green]✅ 第二层局部摘要压缩已完成。[/bold green]",
+                )
+            else:
+                post_tui(
+                    TuiRegion.BACKGROUND,
+                    "[bold yellow]↩️ 第二层局部摘要压缩未提交，回退执行第一层工具输出裁剪。[/bold yellow]",
+                )
+                tool_outputs_compacted = compact_tool_outputs(messages)
+                if tool_outputs_compacted:
+                    post_tui(
+                        TuiRegion.BACKGROUND,
+                        "[bold green]✅ 第一层工具输出裁剪已完成。[/bold green]",
+                    )
+                else:
+                    post_tui(
+                        TuiRegion.BACKGROUND,
+                        "[#aaaaaa]第一层已检查，没有可裁剪的较早工具输出。[/#aaaaaa]",
+                    )
+        elif initial_context_tokens * 100 >= context_token_limit * tool_output_threshold:
             post_tui(
                 TuiRegion.BACKGROUND,
-                "[bold yellow]↩️ 第二层局部摘要压缩未提交，回退执行第一层工具输出裁剪。[/bold yellow]",
+                "[bold yellow]⚡️ 已触发第一层工具输出裁剪。[/bold yellow]",
             )
             tool_outputs_compacted = compact_tool_outputs(messages)
             if tool_outputs_compacted:
@@ -467,22 +491,6 @@ async def _agent_loop_with_client(
                     TuiRegion.BACKGROUND,
                     "[#aaaaaa]第一层已检查，没有可裁剪的较早工具输出。[/#aaaaaa]",
                 )
-    elif initial_context_tokens * 100 >= context_token_limit * tool_output_threshold:
-        post_tui(
-            TuiRegion.BACKGROUND,
-            "[bold yellow]⚡️ 已触发第一层工具输出裁剪。[/bold yellow]",
-        )
-        tool_outputs_compacted = compact_tool_outputs(messages)
-        if tool_outputs_compacted:
-            post_tui(
-                TuiRegion.BACKGROUND,
-                "[bold green]✅ 第一层工具输出裁剪已完成。[/bold green]",
-            )
-        else:
-            post_tui(
-                TuiRegion.BACKGROUND,
-                "[#aaaaaa]第一层已检查，没有可裁剪的较早工具输出。[/#aaaaaa]",
-            )
 
     if recall_query is not None:
         recall_result = await recall_long_term_memories(
@@ -969,6 +977,11 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                     TuiRegion.BACKGROUND,
                     "[#aaaaaa]🧠 已跳过本次请求的记忆预召回流程。[/#aaaaaa]",
                 )
+            if command_result.skip_compaction:
+                post_tui(
+                    TuiRegion.BACKGROUND,
+                    "[#aaaaaa]🧹 已跳过本次请求的上下文压缩流程。[/#aaaaaa]",
+                )
             user_message, display_query = _message_from_user_query(user_query)
             user_message_record = user_message
             if original_query is not None:
@@ -982,13 +995,12 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
                 }
             history.append(user_message_record)
 
-            if skip_memory_recall:
-                await agent_loop(history)
-            else:
-                await agent_loop(
-                    history,
-                    recall_query=remove_image_placeholders(original_query or user_query),
-                )
+            agent_kwargs = {}
+            if command_result.skip_compaction:
+                agent_kwargs["skip_compaction"] = True
+            if not skip_memory_recall:
+                agent_kwargs["recall_query"] = remove_image_placeholders(original_query or user_query)
+            await agent_loop(history, **agent_kwargs)
         except RuntimeError as exc:
             console.print(f"[bold yellow]⚠️ {escape(str(exc))}[/bold yellow]")
         finally:

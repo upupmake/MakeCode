@@ -159,6 +159,25 @@ def test_nm_command_registered_and_returns_plain_query_without_memory_recall():
     assert result.skip_memory_recall is True
 
 
+def test_nc_command_registered_and_returns_plain_query_without_compaction():
+    assert "/nc" in COMMAND_DESCRIPTIONS
+    handler = make_handler()
+
+    result = asyncio.run(handler.process_command(
+        "/nc 请直接处理这个请求",
+        history=[],
+        current_conversation=None,
+        render_banner_fn=Mock(),
+        render_hint_fn=Mock(),
+        render_history_fn=Mock(),
+    ))
+
+    assert result.action == CommandAction.RUN_AGENT
+    assert result.payload == "请直接处理这个请求"
+    assert result.skip_compaction is True
+    assert result.skip_memory_recall is False
+
+
 @pytest.mark.anyio
 async def test_nm_without_query_shows_usage_and_does_not_run_agent():
     handler = make_handler()
