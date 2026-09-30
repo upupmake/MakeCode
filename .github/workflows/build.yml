@@ -58,13 +58,8 @@ jobs:
           MAKECODE_NON_INTERACTIVE: '1'
         run: >-
           python -m pytest
-          tests/test_clipboard.py
-          tests/test_delegate_confirmation.py
-          tests/test_prompts.py
-          tests/test_platform_memory_config.py
-          tests/test_updater_bundle.py
-          tests/test_updater_client.py
-          tests/test_macos_launcher.py
+          tests/
+          --ignore=tests/test_memory_recall_live.py
           -q
 
       - name: Build updater
@@ -239,13 +234,8 @@ jobs:
           MAKECODE_NON_INTERACTIVE: '1'
         run: >-
           python -m pytest
-          tests/test_clipboard.py
-          tests/test_delegate_confirmation.py
-          tests/test_prompts.py
-          tests/test_platform_memory_config.py
-          tests/test_updater_bundle.py
-          tests/test_updater_client.py
-          tests/test_macos_launcher.py
+          tests/
+          --ignore=tests/test_memory_recall_live.py
           -q
 
       - name: Build updater
