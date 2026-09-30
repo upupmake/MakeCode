@@ -1145,6 +1145,10 @@ class ChoiceModal(ClosableModalScreen[str]):
         delete_handler: Callable[[str], None] | None = None,
         preview_handler: Callable[[str], tuple[str, RenderableType]] | None = None,
         search_texts: list[str] | None = None,
+        custom_hint: str = "自定义输入（Enter 提交，q 取消）",
+        custom_placeholder: str = "输入自定义选项",
+        custom_value: str = "",
+        custom_result_prefix: str | None = None,
     ) -> None:
         super().__init__()
         self._title = title
@@ -1153,6 +1157,10 @@ class ChoiceModal(ClosableModalScreen[str]):
         self._delete_handler = delete_handler
         self._preview_handler = preview_handler
         self._search_texts = list(search_texts) if search_texts is not None else None
+        self._custom_hint = custom_hint
+        self._custom_placeholder = custom_placeholder
+        self._custom_value = custom_value
+        self._custom_result_prefix = custom_result_prefix
         self._filtered_options = list(options)
         self._pending_delete_index: int | None = None
         self._reload_generation = 0
@@ -1183,8 +1191,12 @@ class ChoiceModal(ClosableModalScreen[str]):
                     id="choice-list",
                 )
             if self._allow_custom:
-                yield Label("自定义输入（Enter 提交，q 取消）", id="custom-hint")
-                yield Input(placeholder="输入自定义选项", id="custom-input")
+                yield Label(self._custom_hint, id="custom-hint")
+                yield Input(
+                    self._custom_value,
+                    placeholder=self._custom_placeholder,
+                    id="custom-input",
+                )
                 with Horizontal(id="custom-actions"):
                     yield Button("取消", id="custom-cancel", variant="warning")
 
@@ -1221,6 +1233,11 @@ class ChoiceModal(ClosableModalScreen[str]):
         if index < 0 or index >= len(options):
             return None
         return options[index]
+
+    def _custom_result(self, value: str) -> str:
+        if self._custom_result_prefix is None:
+            return value
+        return f"{self._custom_result_prefix}{value}"
 
     def _search_status_text(self) -> str:
         return f"显示 {len(self._filtered_options)} / {len(self._options)}"
@@ -1326,7 +1343,7 @@ class ChoiceModal(ClosableModalScreen[str]):
                 self.query_one("#choice-list", ListView).focus()
             return
         value = event.value.strip()
-        self.dismiss(value if value else "<empty_input>")
+        self.dismiss(self._custom_result(value) if value else "<empty_input>")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "custom-cancel":
@@ -1345,7 +1362,7 @@ class ChoiceModal(ClosableModalScreen[str]):
                     self.query_one("#choice-list", ListView).focus()
                 return
             value = focused.value.strip()
-            self.dismiss(value if value else "<empty_input>")
+            self.dismiss(self._custom_result(value) if value else "<empty_input>")
             return
         option = self._selected_option()
         if option is not None:
@@ -1353,7 +1370,7 @@ class ChoiceModal(ClosableModalScreen[str]):
             return
         if self._allow_custom:
             value = self.query_one("#custom-input", Input).value.strip()
-            self.dismiss(value if value else "<empty_input>")
+            self.dismiss(self._custom_result(value) if value else "<empty_input>")
 
     def action_preview(self) -> None:
         option = self._selected_option()

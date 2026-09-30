@@ -291,11 +291,9 @@ def _render_tool_round(messages: list[dict], assistant_index: int) -> None:
         result_message = results.get(call_id)
         result = None
         is_error = False
-        error = ""
         if result_message is not None:
             result = result_message.get("content", result_message.get("output"))
             is_error = result_message.get("is_error") is True
-            error = str(result) if is_error else ""
         post_tui(
             TuiRegion.CONTENT,
             render_tool_result_block(
@@ -303,7 +301,6 @@ def _render_tool_round(messages: list[dict], assistant_index: int) -> None:
                 status=tool_result_status(is_error=is_error, output=result)
                 if result_message is not None
                 else "incomplete",
-                error=error,
             ),
         )
         post_tui(

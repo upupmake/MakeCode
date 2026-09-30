@@ -141,6 +141,42 @@ async def test_clicking_conversation_title_keeps_input_hidden_until_regeneration
 
 
 @pytest.mark.anyio
+async def test_clicking_conversation_title_accepts_custom_title():
+    current_title = {"value": "现有标题"}
+    updated_titles = []
+    regenerate_title = AsyncMock()
+
+    def update_title(value: str) -> None:
+        updated_titles.append(value)
+        current_title["value"] = value
+
+    app = MakeCodeTuiApp(
+        conversation_title_provider=lambda: current_title["value"],
+        conversation_title_regenerate_handler=regenerate_title,
+        conversation_title_update_handler=update_title,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        await pilot.click("#top-title")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ChoiceModal)
+        custom_input = app.screen.query_one("#custom-input")
+        assert custom_input.placeholder == "输入自定义标题"
+        assert custom_input.value == "现有标题"
+
+        await pilot.click("#custom-input")
+        custom_input.value = "取消"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert updated_titles == ["取消"]
+        regenerate_title.assert_not_awaited()
+        assert str(app.query_one("#top-title").render()) == "MakeCode · 取消"
+
+
+@pytest.mark.anyio
 async def test_clicking_conversation_title_does_not_open_modal_while_agent_is_active():
     app = MakeCodeTuiApp(
         conversation_title_provider=lambda: "现有标题",

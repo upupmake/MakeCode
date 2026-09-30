@@ -6602,6 +6602,29 @@ def test_textual_submit_delegates_client_lifecycle_to_business_operations():
     process_query.assert_awaited_once_with("hello", history, command_handler)
 
 
+def test_textual_title_update_handler_persists_custom_title(tmp_path):
+    history = [{"role": "system", "content": "system"}]
+    store = ConversationStore(tmp_path / "conversations")
+    store.save_messages(history)
+    captured = {}
+
+    class FakeTuiApp:
+        def __init__(self, **kwargs):
+            captured["update_title"] = kwargs["conversation_title_update_handler"]
+
+        def run(self):
+            return None
+
+    with patch.object(main_module, "CONVERSATION_STORE", store), \
+            patch.object(main_module, "MakeCodeTuiApp", FakeTuiApp):
+        main_module._run_textual_main(history, Mock(), prompt_for_workdir=False)
+        captured["update_title"]("自定义标题")
+
+    assert store.active_title == "自定义标题"
+    manifest = json.loads(store.active_path.read_text(encoding="utf-8"))
+    assert manifest["title"] == "自定义标题"
+
+
 def test_textual_startup_load_scrolls_loaded_history_to_bottom():
     history = [{"role": "system", "content": "system"}]
     loaded_history = [

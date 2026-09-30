@@ -667,7 +667,6 @@ async def _agent_loop_with_client(
                 render_tool_result_block(
                     output,
                     status=tool_result_status(is_error=tool_error, output=output),
-                    error=str(output) if tool_error else "",
                 ),
             )
             post_tui(
@@ -1022,6 +1021,9 @@ def _run_textual_main(
     async def conversation_title_regenerate_handler() -> None:
         await _regenerate_conversation_title(history)
 
+    def conversation_title_update_handler(title: str) -> None:
+        CONVERSATION_STORE.update_title(title)
+
     def startup_load_handler() -> None:
         nonlocal history
         set_agent_loop_active(True)
@@ -1097,6 +1099,7 @@ def _run_textual_main(
         header_info_provider=header_info_provider,
         conversation_title_provider=_get_current_conversation_title,
         conversation_title_regenerate_handler=conversation_title_regenerate_handler,
+        conversation_title_update_handler=conversation_title_update_handler,
         messages_provider=lambda: history,
         slash_commands_provider=command_handler.get_slash_completion_commands,
         startup_workdir_provider=startup_workdir_provider if prompt_for_workdir else None,

@@ -61,6 +61,7 @@ from utils import paths
 from utils.terminal import set_terminal_title
 
 COMPACT_WIDTH = 140
+CUSTOM_CONVERSATION_TITLE_PREFIX = "\x00makecode-custom-title:"
 
 
 class TuiBridge:
@@ -1158,6 +1159,7 @@ class MakeCodeTuiApp(App[None]):
         header_info_provider: Callable[[], str] | None = None,
         conversation_title_provider: Callable[[], str | None] | None = None,
         conversation_title_regenerate_handler: Callable[[], Awaitable[None]] | None = None,
+        conversation_title_update_handler: Callable[[str], None] | None = None,
         messages_provider: Callable[[], list[dict[str, Any]]] | None = None,
         slash_commands_provider: Callable[[], dict[str, str]] | None = None,
         startup_workdir_provider: Callable[[], Any] | None = None,
@@ -1184,6 +1186,7 @@ class MakeCodeTuiApp(App[None]):
         self._header_info_provider = header_info_provider
         self._conversation_title_provider = conversation_title_provider
         self._conversation_title_regenerate_handler = conversation_title_regenerate_handler
+        self._conversation_title_update_handler = conversation_title_update_handler
         self._messages_provider = messages_provider
         self._slash_commands_provider = slash_commands_provider
         self._startup_workdir_provider = startup_workdir_provider
@@ -1814,30 +1817,58 @@ class MakeCodeTuiApp(App[None]):
             self._agent_loop_active
             or self._submit_lock.locked()
             or self._modal_active
-            or self._conversation_title_regenerate_handler is None
             or self._conversation_title_provider is None
+            or (
+                self._conversation_title_regenerate_handler is None
+                and self._conversation_title_update_handler is None
+            )
         ):
             return
         try:
-            if not self._conversation_title_provider():
+            current_title = self._conversation_title_provider()
+            if not current_title:
                 return
         except Exception:
             return
 
         confirm_option = "确认重新生成"
+        cancel_option = "取消"
+        custom_title_prefix = CUSTOM_CONVERSATION_TITLE_PREFIX
+        options = [cancel_option]
+        if self._conversation_title_regenerate_handler is not None:
+            options.insert(0, confirm_option)
 
         def _done(value: str | None) -> None:
             self._modal_active = False
-            if value == confirm_option:
+            if value == confirm_option and self._conversation_title_regenerate_handler is not None:
                 self._start_conversation_title_regeneration()
+                return
+            if value is not None and value.startswith(custom_title_prefix):
+                custom_title = value[len(custom_title_prefix):]
+                if self._conversation_title_update_handler is not None:
+                    try:
+                        self._conversation_title_update_handler(custom_title)
+                    except Exception as exc:
+                        post_tui(
+                            TuiRegion.BACKGROUND,
+                            f"[bold red]🏷️ 自定义标题更新失败：{escape(str(exc))}[/bold red]",
+                        )
+                    else:
+                        self.refresh_status()
+                self.query_one("#input-box", MakeCodeInput).focus()
                 return
             self.query_one("#input-box", MakeCodeInput).focus()
 
         self._modal_active = True
         self.push_screen(
             ChoiceModal(
-                "重新生成对话标题？\n将使用当前对话中全部用户消息生成新标题。",
-                [confirm_option, "取消"],
+                "设置对话标题？\n可重新生成标题，或直接输入自定义标题。",
+                options,
+                allow_custom=self._conversation_title_update_handler is not None,
+                custom_hint="自定义标题（Enter 提交，q 取消）",
+                custom_placeholder="输入自定义标题",
+                custom_value=current_title,
+                custom_result_prefix=custom_title_prefix,
             ),
             _done,
         )
