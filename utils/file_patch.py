@@ -566,10 +566,12 @@ def _find_unique_hunk_sequence(
 
         reachable = candidates[0]
         for number, spans in enumerate(candidates[1:], 2):
-            previous = min(reachable, key=lambda span: (span[1], span[0]))
             forward = [
                 span for span in spans
-                if not _spans_overlap_or_go_backward(previous, span)
+                if any(
+                    not _spans_overlap_or_go_backward(previous, span)
+                    for previous in reachable
+                )
             ]
             if not forward:
                 locations = ", ".join(str(start + 1) for start, _ in spans[:5])
