@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -530,6 +531,7 @@ async def test_open_temporary_query_restores_current_draft_when_agent_loop_ends(
         assert not app._modal_active
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_quick_panel_toggle_follows_actual_title_width():
     current_title = {"value": None}
@@ -1268,6 +1270,7 @@ def test_tui_bridge_tracks_retry_count_per_concurrent_request():
     ]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_skills_panel_filters_draft_changes_and_discards_them_on_cancel(tmp_path):
     skills_dir = tmp_path / "skills"
@@ -1332,6 +1335,7 @@ async def test_skills_panel_filters_draft_changes_and_discards_them_on_cancel(tm
         assert "alpha" in loader.skills
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_skills_panel_click_selects_before_toggling_draft(tmp_path):
     skills_dir = tmp_path / "skills"

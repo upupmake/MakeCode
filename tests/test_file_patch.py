@@ -1,4 +1,5 @@
 import importlib
+import sys
 
 import pytest
 
@@ -755,7 +756,10 @@ def test_file_patch_rejects_case_aliases_of_the_same_file(monkeypatch, tmp_path)
     assert result.startswith(
         "Error: FilePatch failed: 0 file(s) patched, 2 patch entry(s) failed."
     )
-    assert "resolved paths refer to the same file" in result
+    if sys.platform == "win32":
+        assert "combine all changes for this file into one file section" in result
+    else:
+        assert "resolved paths refer to the same file" in result
     assert first.read_text(encoding="utf-8") == "before\n"
 
 

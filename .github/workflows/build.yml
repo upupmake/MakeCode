@@ -56,6 +56,7 @@ jobs:
       - name: Run tests
         env:
           MAKECODE_NON_INTERACTIVE: '1'
+          PYTHONUTF8: ${{ runner.os == 'Windows' && '1' || '' }}
         run: >-
           python -m pytest
           tests/
@@ -232,6 +233,7 @@ jobs:
       - name: Run tests
         env:
           MAKECODE_NON_INTERACTIVE: '1'
+          PYTHONUTF8: ${{ runner.os == 'Windows' && '1' || '' }}
         run: >-
           python -m pytest
           tests/

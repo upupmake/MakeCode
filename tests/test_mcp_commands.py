@@ -819,7 +819,10 @@ def test_mcp_manager_removes_tools_when_server_disconnect_cannot_run(tmp_path):
 def test_mcp_manager_does_not_forward_switch_metadata_to_fastmcp():
     manager = GlobalMCPManager()
 
-    with patch("utils.mcp_manager.Client") as client:
+    with (
+        patch("utils.mcp_manager.Client") as client,
+        patch.object(manager, "_should_use_safe_stdio_log", return_value=False),
+    ):
         manager._build_client("filesystem", {
             "command": "npx",
             "args": ["server"],
