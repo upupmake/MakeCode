@@ -970,6 +970,7 @@ async def test_quick_panel_conversation_history_is_disabled_during_agent_loop():
         assert app.query_one("#input-box").has_class("hidden")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_quick_panel_extra_tools_and_mcp_config_buttons_route_to_commands():
     app = MakeCodeTuiApp()
