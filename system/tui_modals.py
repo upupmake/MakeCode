@@ -172,8 +172,6 @@ class ChoiceModal(ClosableModalScreen[str]):
         width: 1fr;
         height: 3;
         margin-top: 1;
-        border: round #334155;
-        background: #0f172a;
     }
 
     #startup-choose-directory {
@@ -181,18 +179,7 @@ class ChoiceModal(ClosableModalScreen[str]):
         height: 3;
         min-height: 3;
         margin-top: 1;
-        border: round #38bdf8;
-        background: #082f49;
-        color: #e0f2fe;
-        text-style: bold;
         content-align: center middle;
-    }
-
-    #startup-choose-directory:hover,
-    #startup-choose-directory:focus {
-        background: #0e7490;
-        color: #f8fafc;
-        border: round #7dd3fc;
     }
 
     #startup-candidates {
@@ -1644,7 +1631,7 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
         with Vertical(id="startup-dialog"):
             yield ModalHeader("", title_id="startup-title")
             if sys.platform in {"darwin", "win32"}:
-                yield Button("📂  快速选择系统目录", id="startup-choose-directory")
+                yield Button("📂  快速选择系统目录", id="startup-choose-directory", variant="primary")
             yield Input(placeholder="输入自定义工作区路径", id="startup-input")
             yield Static("", id="startup-candidates")
 
