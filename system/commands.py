@@ -2,6 +2,7 @@
 斜杠命令模块 - 负责处理所有内置命令和交互式界面
 """
 import json
+import sys
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -26,7 +27,7 @@ from tools.extra_tools import (
     is_understand_image_enabled,
     set_understand_image_config,
 )
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationListItem, ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -1019,15 +1020,18 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
         return True, None
 
     def handle_cd(self, query: str, history: list) -> bool:
-        """处理 /cd 命令，切换当前工作目录。"""
+        """处理 /cd 命令，打开选择器或切换当前工作目录。"""
         if self.apply_workdir is None:
             self.console.print("[bold red]⚠️ 当前环境不支持切换工作目录。[/bold red]")
             return False
 
         raw_path = query.removeprefix("/cd").strip()
         if not raw_path:
-            self.console.print("[bold yellow]用法：/cd <目录路径>[/bold yellow]")
-            render_current_workdir()
+            if sys.platform in {"darwin", "win32"}:
+                TUI_BRIDGE.open_directory_picker_for_input()
+            else:
+                self.console.print("[bold yellow]用法：/cd <目录路径>[/bold yellow]")
+                render_current_workdir()
             return False
         if (raw_path.startswith('"') and raw_path.endswith('"')) or (raw_path.startswith("'") and raw_path.endswith("'")):
             raw_path = raw_path[1:-1].strip()
@@ -1522,7 +1526,7 @@ MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是
             render_current_workdir()
             return CommandResult(action=CommandAction.CONTINUE)
 
-        # /cd - 切换当前工作目录，并开启全新会话
+        # /cd - 打开目录选择器或切换当前工作目录，并开启全新会话
         if query == "/cd" or query.startswith("/cd "):
             changed = self.handle_cd(query, history)
             if changed:

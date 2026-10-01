@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -57,6 +58,7 @@ from system.tui_modals import (
     TemporaryQueryModal,
     TokenUsageModal,
 )
+from utils.directory_picker import DirectoryPickerUnavailableError, choose_directory
 from utils import paths
 from utils.terminal import set_terminal_title
 
@@ -531,6 +533,16 @@ class TuiBridge:
         else:
             app.call_from_thread(app.scroll_all_panes_to_bottom)
 
+    def open_directory_picker_for_input(self) -> None:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            app.open_directory_picker_for_input(allow_during_submit=True)
+        else:
+            app.call_from_thread(app.open_directory_picker_for_input, True)
+
 
 TUI_BRIDGE = TuiBridge()
 
@@ -637,6 +649,16 @@ class ConversationTitle(Static):
         if not isinstance(app, MakeCodeTuiApp):
             return
         app.open_conversation_title_regeneration_modal()
+        event.stop()
+
+
+class WorkdirStatus(Static):
+    def on_click(self, event: Click) -> None:
+        app = self.app
+        if not isinstance(app, MakeCodeTuiApp) or app._agent_loop_active:
+            return
+        if sys.platform in {"darwin", "win32"}:
+            app.open_directory_picker_for_input()
         event.stop()
 
 
@@ -1209,6 +1231,7 @@ class MakeCodeTuiApp(App[None]):
         self._slash_match_index = 0
         self._slash_hint_visible = False
         self._cd_completion_state: tuple[str, int, list[str], int] | None = None
+        self._directory_picker_active = False
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
         self._input_history_draft = ""
@@ -1231,7 +1254,7 @@ class MakeCodeTuiApp(App[None]):
             yield ConversationTitle("MakeCode", id="top-title")
             yield Button("▾ 快捷面板", id="quick-panel-toggle")
             yield Button("运行面板 F6", id="compact-pane-toggle")
-            yield Static("", id="top-status")
+            yield WorkdirStatus("", id="top-status")
             yield Static("", id="top-clock")
         with Vertical(id="quick-panel-shell"):
             with Grid(id="quick-panel-buttons"):
@@ -2311,9 +2334,10 @@ class MakeCodeTuiApp(App[None]):
     def _update_input_visibility(self) -> None:
         bottom_grid = self.query_one("#bottom-grid", Vertical)
         input_box = self.query_one("#input-box", MakeCodeInput)
-        bottom_grid.set_class(self._agent_loop_active, "hidden")
-        input_box.set_class(self._agent_loop_active, "hidden")
-        if self._agent_loop_active:
+        input_hidden = self._agent_loop_active or self._directory_picker_active
+        bottom_grid.set_class(input_hidden, "hidden")
+        input_box.set_class(input_hidden, "hidden")
+        if input_hidden:
             self._hide_slash_hints()
             return
         self.update_input_height()
@@ -2350,9 +2374,49 @@ class MakeCodeTuiApp(App[None]):
         status_text = " · ".join(parts)
         self.sub_title = status_text
         try:
-            self.query_one("#top-status", Static).update(status_text)
+            status = self.query_one("#top-status", WorkdirStatus)
+            status.update(status_text)
+            if sys.platform in {"darwin", "win32"}:
+                status.tooltip = "点击选择工作区目录"
         except Exception:
             pass
+
+    def open_directory_picker_for_input(self, allow_during_submit: bool = False) -> None:
+        if (
+            sys.platform not in {"darwin", "win32"}
+            or self._agent_loop_active
+            or self._modal_active
+            or self._directory_picker_active
+            or (self._submit_lock.locked() and not allow_during_submit)
+        ):
+            return
+
+        self._directory_picker_active = True
+        self._update_input_visibility()
+
+        def _pick() -> None:
+            try:
+                selected = choose_directory(paths.workdir())
+                error = None
+            except DirectoryPickerUnavailableError as exc:
+                selected = None
+                error = str(exc)
+            self.call_from_thread(self._finish_directory_picker, selected, error)
+
+        self.run_worker(_pick, thread=True, exclusive=True)
+
+    def _finish_directory_picker(self, selected: Path | None, error: str | None) -> None:
+        self._directory_picker_active = False
+        self._update_input_visibility()
+        if error:
+            self.notify(error, severity="error")
+            self.query_one("#input-box", MakeCodeInput).focus()
+            return
+        if selected is None:
+            self.query_one("#input-box", MakeCodeInput).focus()
+            return
+        self._run_quick_command(f'/cd "{selected}"')
+        self.query_one("#input-box", MakeCodeInput).focus()
 
     def _update_clock(self) -> None:
         try:

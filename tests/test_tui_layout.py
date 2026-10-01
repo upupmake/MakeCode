@@ -574,6 +574,72 @@ async def test_title_keeps_header_status_visible_on_compact_layout():
 
 
 @pytest.mark.anyio
+async def test_clicking_workdir_status_submits_cd_command_and_is_ignored_during_agent_loop(tmp_path):
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    picker_started = threading.Event()
+    picker_release = threading.Event()
+
+    def pick_directory(*args, **kwargs):
+        picker_started.set()
+        picker_release.wait(1)
+        return selected
+
+    submitted: list[str] = []
+    submitted_event = threading.Event()
+
+    async def submit_handler(query: str) -> str | None:
+        submitted.append(query)
+        submitted_event.set()
+        return None
+
+    app = MakeCodeTuiApp(submit_handler=submit_handler)
+    with (
+        patch("system.tui_app.sys.platform", "darwin"),
+        patch("system.tui_app.paths.workdir", return_value=tmp_path),
+        patch("system.tui_app.choose_directory", side_effect=pick_directory) as picker,
+    ):
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.click("#top-status")
+            assert await asyncio.to_thread(picker_started.wait, 1)
+            await pilot.pause()
+            input_box = app.query_one("#input-box")
+            assert input_box.has_class("hidden")
+
+            picker_release.set()
+            assert await asyncio.to_thread(submitted_event.wait, 1)
+            await pilot.pause()
+            assert submitted == [f'/cd "{selected}"']
+            assert input_box.text == ""
+            assert not input_box.has_class("hidden")
+
+            picker.reset_mock()
+            app.set_agent_loop_active(True)
+            await pilot.pause()
+            await pilot.click("#top-status")
+            await pilot.pause()
+            picker.assert_not_called()
+            assert input_box.has_class("hidden")
+
+    picker.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_clicking_workdir_status_is_ignored_on_linux(tmp_path):
+    app = MakeCodeTuiApp()
+    with (
+        patch("system.tui_app.sys.platform", "linux"),
+        patch("system.tui_app.choose_directory") as picker,
+    ):
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.click("#top-status")
+            await pilot.pause()
+            picker.assert_not_called()
+            input_box = app.query_one("#input-box")
+            assert not input_box.has_class("hidden")
+
+
+@pytest.mark.anyio
 async def test_compact_layout_switches_between_main_and_runtime_panes():
     app = MakeCodeTuiApp()
 

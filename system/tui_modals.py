@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import sys
 from typing import Any, Callable, TypeVar
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from system.tui_types import (
 )
 from system.image_input import ImageAwareTextArea
 from utils import paths
+from utils.directory_picker import DirectoryPickerUnavailableError, choose_directory
 
 
 ModalResult = TypeVar("ModalResult")
@@ -167,7 +169,19 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
 
     #startup-input {
+        width: 1fr;
+        margin-top: 0;
+    }
+
+    #startup-custom-row {
+        height: 3;
         margin-top: 1;
+    }
+
+    #startup-choose-directory {
+        width: 16;
+        min-width: 16;
+        margin-left: 1;
     }
 
     #startup-candidates {
@@ -1613,16 +1627,21 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
         self._completion_index = 0
         self._completion_input = ""
         self._completion_cursor = 0
+        self._directory_picker_active = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="startup-dialog"):
             yield ModalHeader("", title_id="startup-title")
-            yield Input(placeholder="输入自定义工作区路径", id="startup-input")
+            with Horizontal(id="startup-custom-row"):
+                yield Input(placeholder="输入自定义工作区路径", id="startup-input")
+                if sys.platform in {"darwin", "win32"}:
+                    yield Button("快速选择", id="startup-choose-directory", variant="primary")
             yield Static("", id="startup-candidates")
 
     def on_mount(self) -> None:
         custom_input = self.query_one("#startup-input", Input)
         custom_input.display = False
+        self.query_one("#startup-custom-row").display = False
         self._refresh_text()
 
     def on_resize(self, event: Resize) -> None:
@@ -1673,11 +1692,56 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             self._ignore_initial_custom_submit = True
             custom_input = self.query_one("#startup-input", Input)
             custom_input.display = True
+            self.query_one("#startup-custom-row").display = True
             self._hide_completion_candidates()
             custom_input.focus()
             self.query_one("#startup-title", Label).update(
                 "📂 输入自定义工作区路径（Enter 确认）："
             )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "startup-choose-directory" or sys.platform not in {"darwin", "win32"}:
+            return
+        event.stop()
+        if self._directory_picker_active:
+            return
+
+        custom_input = self.query_one("#startup-input", Input)
+        raw_path = custom_input.value.strip()
+        try:
+            initial_dir = Path(raw_path).expanduser() if raw_path else self.cwd
+        except (OSError, ValueError):
+            initial_dir = self.cwd
+        if not initial_dir.is_dir():
+            initial_dir = self.cwd
+
+        self._directory_picker_active = True
+        self.query_one("#startup-choose-directory", Button).disabled = True
+
+        def _pick() -> None:
+            try:
+                selected = choose_directory(initial_dir)
+                error = None
+            except DirectoryPickerUnavailableError as exc:
+                selected = None
+                error = str(exc)
+            self.app.call_from_thread(self._finish_directory_picker, selected, error)
+
+        self.run_worker(_pick, thread=True, exclusive=True)
+
+    def _finish_directory_picker(self, selected: Path | None, error: str | None) -> None:
+        self._directory_picker_active = False
+        self.query_one("#startup-choose-directory", Button).disabled = False
+        if error:
+            self.app.notify(error, severity="error")
+            return
+        if selected is None:
+            self.query_one("#startup-input", Input).focus()
+            return
+        custom_input = self.query_one("#startup-input", Input)
+        custom_input.value = str(selected)
+        custom_input.cursor_position = len(custom_input.value)
+        custom_input.focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "startup-input" or self._mode != "custom":

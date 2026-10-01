@@ -1581,6 +1581,76 @@ class StartupWorkdirModalHost(App):
 
 
 @pytest.mark.anyio
+async def test_startup_workdir_picker_button_fills_custom_input(tmp_path):
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    modal = StartupWorkdirModal(tmp_path)
+    app = StartupWorkdirModalHost(modal)
+
+    with (
+        patch("system.tui_modals.sys.platform", "darwin"),
+        patch("system.tui_modals.choose_directory", return_value=selected) as picker,
+    ):
+        async with app.run_test() as pilot:
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            modal.query_one("#startup-choose-directory").press()
+            for _ in range(3):
+                await pilot.pause()
+
+            custom_input = modal.query_one("#startup-input", Input)
+            assert custom_input.value == str(selected)
+            assert custom_input.cursor_position == len(str(selected))
+
+    picker.assert_called_once_with(tmp_path)
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_omits_picker_button_on_linux(tmp_path):
+    with patch("system.tui_modals.sys.platform", "linux"):
+        modal = StartupWorkdirModal(tmp_path)
+        app = StartupWorkdirModalHost(modal)
+        async with app.run_test() as pilot:
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            assert len(modal.query("#startup-choose-directory")) == 0
+            assert modal.query_one("#startup-input", Input).display is True
+
+
+def test_bare_cd_opens_directory_picker_instead_of_showing_usage():
+    handler = make_handler()
+    handler.console = Mock()
+    handler.apply_workdir = Mock()
+    history = [{"role": "system", "content": "system"}]
+
+    with (
+        patch("system.commands.sys.platform", "darwin"),
+        patch("system.commands.TUI_BRIDGE.open_directory_picker_for_input") as open_picker,
+    ):
+        assert handler.handle_cd("/cd", history) is False
+
+    open_picker.assert_called_once_with()
+
+
+def test_bare_cd_shows_usage_on_linux():
+    handler = make_handler()
+    handler.console = Mock()
+    handler.apply_workdir = Mock()
+    history = [{"role": "system", "content": "system"}]
+
+    with (
+        patch("system.commands.sys.platform", "linux"),
+        patch("system.commands.TUI_BRIDGE.open_directory_picker_for_input") as open_picker,
+        patch("system.commands.render_current_workdir") as render_workdir,
+    ):
+        assert handler.handle_cd("/cd", history) is False
+
+    open_picker.assert_not_called()
+    render_workdir.assert_called_once_with()
+    handler.console.print.assert_any_call("[bold yellow]用法：/cd <目录路径>[/bold yellow]")
+
+
+@pytest.mark.anyio
 async def test_startup_workdir_completion_uses_common_prefix_and_selected_candidate(tmp_path):
     (tmp_path / "alpha").mkdir()
     (tmp_path / "alpine").mkdir()
