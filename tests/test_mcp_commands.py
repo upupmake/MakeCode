@@ -1747,7 +1747,7 @@ async def test_startup_workdir_long_path_stays_inside_dialog(tmp_path):
         dialog = modal.query_one("#startup-dialog")
         title = modal.query_one("#startup-title", Label)
 
-        assert title.size.height == 5
+        assert title.size.height == 7
         assert str(long_cwd) in str(title.render())
         assert dialog.size.width > app.size.width
         assert modal.max_scroll_x > 0
@@ -1768,7 +1768,7 @@ async def test_startup_workdir_short_path_stays_centered(tmp_path):
         dialog = modal.query_one("#startup-dialog")
         title = modal.query_one("#startup-title", Label)
 
-        assert title.size.height == 5
+        assert title.size.height == 7
         assert dialog.size.width < app.size.width
         assert modal.max_scroll_x == 0
         assert dialog.region.x > 0
@@ -1788,7 +1788,7 @@ async def test_startup_workdir_wide_characters_fit_inside_dialog():
         title = modal.query_one("#startup-title", Label)
         rendered = str(title.render())
 
-        assert title.size.height == 5
+        assert title.size.height == 7
         assert str(cwd) in rendered
         assert dialog.size.width <= app.size.width
         assert modal.max_scroll_x == 0

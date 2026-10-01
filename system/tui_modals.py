@@ -1891,10 +1891,12 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             f"当前目录 ({self.cwd})",
             "输入自定义路径...",
         ]
-        lines = ["📂 选择工作区", "使用 ↑/↓ 选择，Enter 确认", ""]
+        lines = ["📂 选择工作区", "", "使用 ↑/↓ 选择，Enter 确认", ""]
         for index, text in enumerate(options):
             marker = "❯" if index == self._selected_index else " "
             lines.append(f"  {marker} {text}")
+            if index == 0:
+                lines.append("")
         self.query_one("#startup-title", Label).update("\n".join(lines))
         content_width = max(max(Text(line).cell_len for line in lines), 28)
         self.query_one("#startup-dialog").styles.width = content_width + 10
