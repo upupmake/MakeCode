@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from rich.console import Console
 from textual.app import App, ComposeResult
-from textual.widgets import Input, Label, Static
+from textual.widgets import Button, Input, Label, Static
 
 from init import resolve_chosen_workdir
 from system.commands import COMMAND_DESCRIPTIONS, CommandAction, CommandHandler, _conversation_preview, _task_plan_preview
@@ -1581,7 +1581,7 @@ class StartupWorkdirModalHost(App):
 
 
 @pytest.mark.anyio
-async def test_startup_workdir_picker_button_fills_custom_input(tmp_path):
+async def test_startup_workdir_picker_button_selects_directory_from_home_screen(tmp_path):
     selected = tmp_path / "selected"
     selected.mkdir()
     modal = StartupWorkdirModal(tmp_path)
@@ -1592,15 +1592,10 @@ async def test_startup_workdir_picker_button_fills_custom_input(tmp_path):
         patch("system.tui_modals.choose_directory", return_value=selected) as picker,
     ):
         async with app.run_test() as pilot:
-            await pilot.press("down", "enter")
-            await pilot.pause()
             modal.query_one("#startup-choose-directory").press()
             for _ in range(3):
                 await pilot.pause()
-
-            custom_input = modal.query_one("#startup-input", Input)
-            assert custom_input.value == str(selected)
-            assert custom_input.cursor_position == len(str(selected))
+            assert app.result == f"custom:{selected}"
 
     picker.assert_called_once_with(tmp_path)
 
@@ -1611,9 +1606,26 @@ async def test_startup_workdir_omits_picker_button_on_linux(tmp_path):
         modal = StartupWorkdirModal(tmp_path)
         app = StartupWorkdirModalHost(modal)
         async with app.run_test() as pilot:
-            await pilot.press("down", "enter")
             await pilot.pause()
             assert len(modal.query("#startup-choose-directory")) == 0
+            assert modal.query_one("#startup-input", Input).display is False
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            assert modal.query_one("#startup-input", Input).display is True
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_hides_picker_button_on_custom_path_screen(tmp_path):
+    with patch("system.tui_modals.sys.platform", "darwin"):
+        modal = StartupWorkdirModal(tmp_path)
+        app = StartupWorkdirModalHost(modal)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            picker_button = modal.query_one("#startup-choose-directory", Button)
+            assert picker_button.display is True
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            assert picker_button.display is False
             assert modal.query_one("#startup-input", Input).display is True
 
 
@@ -1735,7 +1747,7 @@ async def test_startup_workdir_long_path_stays_inside_dialog(tmp_path):
         dialog = modal.query_one("#startup-dialog")
         title = modal.query_one("#startup-title", Label)
 
-        assert title.size.height == 4
+        assert title.size.height == 5
         assert str(long_cwd) in str(title.render())
         assert dialog.size.width > app.size.width
         assert modal.max_scroll_x > 0
@@ -1756,7 +1768,7 @@ async def test_startup_workdir_short_path_stays_centered(tmp_path):
         dialog = modal.query_one("#startup-dialog")
         title = modal.query_one("#startup-title", Label)
 
-        assert title.size.height == 4
+        assert title.size.height == 5
         assert dialog.size.width < app.size.width
         assert modal.max_scroll_x == 0
         assert dialog.region.x > 0
@@ -1776,7 +1788,7 @@ async def test_startup_workdir_wide_characters_fit_inside_dialog():
         title = modal.query_one("#startup-title", Label)
         rendered = str(title.render())
 
-        assert title.size.height == 4
+        assert title.size.height == 5
         assert str(cwd) in rendered
         assert dialog.size.width <= app.size.width
         assert modal.max_scroll_x == 0

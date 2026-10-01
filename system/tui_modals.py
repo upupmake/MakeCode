@@ -170,18 +170,29 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #startup-input {
         width: 1fr;
-        margin-top: 0;
-    }
-
-    #startup-custom-row {
         height: 3;
         margin-top: 1;
+        border: round #334155;
+        background: #0f172a;
     }
 
     #startup-choose-directory {
-        width: 16;
-        min-width: 16;
-        margin-left: 1;
+        width: 1fr;
+        height: 3;
+        min-height: 3;
+        margin-top: 1;
+        border: round #38bdf8;
+        background: #082f49;
+        color: #e0f2fe;
+        text-style: bold;
+        content-align: center middle;
+    }
+
+    #startup-choose-directory:hover,
+    #startup-choose-directory:focus {
+        background: #0e7490;
+        color: #f8fafc;
+        border: round #7dd3fc;
     }
 
     #startup-candidates {
@@ -1632,16 +1643,14 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
     def compose(self) -> ComposeResult:
         with Vertical(id="startup-dialog"):
             yield ModalHeader("", title_id="startup-title")
-            with Horizontal(id="startup-custom-row"):
-                yield Input(placeholder="输入自定义工作区路径", id="startup-input")
-                if sys.platform in {"darwin", "win32"}:
-                    yield Button("快速选择", id="startup-choose-directory", variant="primary")
+            if sys.platform in {"darwin", "win32"}:
+                yield Button("📂  快速选择系统目录", id="startup-choose-directory")
+            yield Input(placeholder="输入自定义工作区路径", id="startup-input")
             yield Static("", id="startup-candidates")
 
     def on_mount(self) -> None:
         custom_input = self.query_one("#startup-input", Input)
         custom_input.display = False
-        self.query_one("#startup-custom-row").display = False
         self._refresh_text()
 
     def on_resize(self, event: Resize) -> None:
@@ -1692,35 +1701,27 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             self._ignore_initial_custom_submit = True
             custom_input = self.query_one("#startup-input", Input)
             custom_input.display = True
-            self.query_one("#startup-custom-row").display = True
             self._hide_completion_candidates()
             custom_input.focus()
             self.query_one("#startup-title", Label).update(
                 "📂 输入自定义工作区路径（Enter 确认）："
             )
+            if sys.platform in {"darwin", "win32"}:
+                self.query_one("#startup-choose-directory", Button).display = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "startup-choose-directory" or sys.platform not in {"darwin", "win32"}:
             return
         event.stop()
-        if self._directory_picker_active:
+        if self._directory_picker_active or self._mode != "select":
             return
-
-        custom_input = self.query_one("#startup-input", Input)
-        raw_path = custom_input.value.strip()
-        try:
-            initial_dir = Path(raw_path).expanduser() if raw_path else self.cwd
-        except (OSError, ValueError):
-            initial_dir = self.cwd
-        if not initial_dir.is_dir():
-            initial_dir = self.cwd
 
         self._directory_picker_active = True
         self.query_one("#startup-choose-directory", Button).disabled = True
 
         def _pick() -> None:
             try:
-                selected = choose_directory(initial_dir)
+                selected = choose_directory(self.cwd)
                 error = None
             except DirectoryPickerUnavailableError as exc:
                 selected = None
@@ -1731,17 +1732,15 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
 
     def _finish_directory_picker(self, selected: Path | None, error: str | None) -> None:
         self._directory_picker_active = False
-        self.query_one("#startup-choose-directory", Button).disabled = False
+        picker_button = self.query_one("#startup-choose-directory", Button)
+        picker_button.disabled = False
         if error:
             self.app.notify(error, severity="error")
             return
         if selected is None:
-            self.query_one("#startup-input", Input).focus()
+            picker_button.focus()
             return
-        custom_input = self.query_one("#startup-input", Input)
-        custom_input.value = str(selected)
-        custom_input.cursor_position = len(custom_input.value)
-        custom_input.focus()
+        self.dismiss(f"custom:{selected}")
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "startup-input" or self._mode != "custom":
@@ -1892,13 +1891,13 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             f"当前目录 ({self.cwd})",
             "输入自定义路径...",
         ]
-        lines = ["📂 选择工作区目录（使用 ↑/↓ 方向键，Enter 确认）：", ""]
+        lines = ["📂 选择工作区", "使用 ↑/↓ 选择，Enter 确认", ""]
         for index, text in enumerate(options):
             marker = "❯" if index == self._selected_index else " "
             lines.append(f"  {marker} {text}")
         self.query_one("#startup-title", Label).update("\n".join(lines))
-        content_width = max(Text(line).cell_len for line in lines)
-        self.query_one("#startup-dialog").styles.width = content_width + 9
+        content_width = max(max(Text(line).cell_len for line in lines), 28)
+        self.query_one("#startup-dialog").styles.width = content_width + 10
         self._fit_dialog()
 
     def _fit_dialog(self) -> None:
