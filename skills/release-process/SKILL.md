@@ -66,7 +66,7 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 `v*` tag 触发 GitHub Actions 后，由工作流自动完成：
 
 - Windows X64：先构建 updater，再构建 PyInstaller onedir 主程序；验证 `MakeCode.exe`、`_internal/` 和内置 updater；生成 `MakeCode-Windows-X64.zip`。
-- macOS ARM64：构建 PyInstaller onedir 主程序；将顶层 `assets/MakeCode.command` 与 `MakeCode/` 目录一起生成 `MakeCode-macOS-ARM64.zip`；不得发布或恢复 `.app`/BUNDLE 方案。
+- macOS ARM64：先构建 updater，再构建 PyInstaller onedir 主程序；验证内置 updater；将顶层 `assets/MakeCode.command` 与 `MakeCode/` 目录一起生成 `MakeCode-macOS-ARM64.zip`；不得发布或恢复 `.app`/BUNDLE 方案。
 - Linux X64：在固定的 `python:3.12-bullseye` 容器中先构建 updater，再构建 onedir 主程序；生成 `MakeCode-Linux-X64.zip`，支持基线为 GLIBC 2.31+。
 
 三个平台的构建任务负责执行测试和静态检查，包括 TOC、目录结构、警告日志、入口文件，以及 Linux ELF/GLIBC 要求。工作流禁止启动 `dist/` 下的程序。
@@ -135,24 +135,23 @@ python github_release.py
 ### 4.1 更新检查流程
 
 用户端启动时会：
-1. Windows/Linux 请求 GitHub latest Release 的 `version.json` 获取最新版本信息
-2. 从 `platforms` 严格选择 `windows-x86_64` 或 `linux-x86_64` 资产并下载、校验和安装
-3. macOS 不支持应用内自动更新，用户需从 GitHub Release 手动下载最新版
+1. 冻结版 Windows/Linux/macOS 请求 GitHub latest Release 的 `version.json` 获取最新版本信息
+2. 从 `platforms` 严格选择 `windows-x86_64`、`linux-x86_64` 或 `macos-arm64` 资产并下载、校验和安装
 
-冻结版 Windows/Linux 同时支持 TUI `/update` 与外部 `--update`。外部命令必须在工作区、模型客户端、MCP 和 TUI 初始化前执行，展示版本与发布日志后默认通过 `[y/N]` 确认；仅显式传入 `-y`/`--yes` 时可跳过确认，非交互终端未传免确认参数时必须拒绝下载。源码运行与 macOS 不支持外部自动安装。`--check-update` 继续保持只读，不下载或安装。
+冻结版 Windows/Linux/macOS 同时支持 TUI `/update` 与外部 `--update`。外部命令必须在工作区、模型客户端、MCP 和 TUI 初始化前执行，展示版本与发布日志后默认通过 `[y/N]` 确认；仅显式传入 `-y`/`--yes` 时可跳过确认，非交互终端未传免确认参数时必须拒绝下载。源码运行不支持外部自动安装。`--check-update` 继续保持只读，不下载或安装。
 
 下载强制 HTTPS 并同时校验 `sha256` 与 `size`；Linux 客户端不得回退使用兼容旧客户端的 Windows 顶层字段。
 
-### 4.2 Windows/Linux 更新执行流程
+### 4.2 更新执行流程
 
-主程序将内置 updater 释放到安装目录之外。Windows 启动 updater 后用 `os._exit(0)` 退出，updater 等待旧进程释放文件；Linux 用 `exec` 将当前前台进程替换为 updater，无需等待旧 PID，shell 会等待更新结果。updater 负责完整 onedir 更新：
+主程序将内置 updater 释放到安装目录之外。Windows 和 macOS 启动 updater 后用 `os._exit(0)` 退出，updater 等待旧进程释放文件；Linux 用 `exec` 将当前前台进程替换为 updater，无需等待旧 PID，shell 会等待更新结果。updater 负责完整目录更新：
 
 ```
 1. 接收 --install-dir、--archive、--pid（Linux exec 路径传 0）
 2. PID 非 0 时等待主程序退出（超时 30 秒）
 3. 拒绝路径穿越、绝对路径和不安全符号链接
 4. 解压到安装目录同级 staging，验证平台入口与 MakeCode/_internal/
-5. Windows 保留安装根目录与 .makecode，事务移动程序条目；Linux 将旧安装目录切换为 backup 并复制 .makecode
+5. Windows 保留安装根目录与 .makecode，事务移动程序条目；Linux 将旧安装目录切换为 backup 并复制 .makecode；macOS 备份并替换 `MakeCode/` 与旁边的 `MakeCode.command`，不触碰 Application Support
 6. 将 staged onedir 应用切换到正式位置
 7. 替换成功后删除 backup 并提示用户手动重新启动 MakeCode
 8. 替换失败则恢复旧版本
@@ -162,7 +161,7 @@ Linux 更新包可保留 PyInstaller 相对符号链接，但链接目标必须�
 
 ### 4.3 更新边界与迁移
 
-- macOS 暂不做应用内自动更新；发布包使用 `MakeCode.command + MakeCode/ onedir`，用户从 GitHub Release 手动下载并替换。
+- macOS 发布包使用 `MakeCode.command + MakeCode/ onedir`；应用内更新替换这两项，共享配置仍位于 `~/Library/Application Support/MakeCode`。
 - 从旧 onefile 版本迁移到首个 onedir 版本应手动完成。安装 onedir 版本后，后续 Windows/Linux 版本才能使用完整目录自动更新。
 - 从 5.3.1 或更早版本升级到 5.3.2 时仍由旧 updater 自动启动新版并等待 `MAKECODE_UPDATE_READY_FILE`；5.3.2 主程序必须保留该一次性兼容信号。5.3.2 内置的新 updater 不设置此变量，也不自动启动后续版本。
 - macOS 打包版配置位于 `~/Library/Application Support/MakeCode`（Windows/Linux 的 `.makecode` 位于安装目录内，更新时保留，见 4.2）。
@@ -222,7 +221,7 @@ git status  # 应输出 "nothing to commit, working tree clean"
 | `.github/workflows/build.yml` | 构建 Windows、macOS、Linux ZIP，并生成包含各平台哈希与大小的 version.json |
 | `MakeCode.spec` | Windows、macOS 与 Linux onedir 打包配置 |
 | `assets/MakeCode.command` | macOS 发布包顶层启动器 |
-| `updater.spec` | Windows/Linux 独立更新器打包配置 |
-| `updater.py` | Windows/Linux onedir 事务更新器源码 |
+| `updater.spec` | Windows/Linux/macOS 独立更新器打包配置 |
+| `updater.py` | Windows/Linux onedir 与 macOS 启动器事务更新器源码 |
 | `github_release.py` | 创建非 latest 的 GitHub Release/tag；供 Actions 在资产上传后设为 latest，并清理同一次版本线内更早的 Release/tag |
 | `.github_token` | GitHub Token（不提交远程） |

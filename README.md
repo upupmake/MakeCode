@@ -458,13 +458,13 @@ MakeCode 支持主智能体主动读取本地图片或网络图片，并额外�
 
 MakeCode 内置了完整的自动更新系统，支持版本检查、完整目录下载与事务升级。
 
-> **平台限制**：应用内自动更新支持 Windows X64 和 Linux X64。macOS 会提示用户前往 GitHub Release 手动下载并替换最新版。
+> **平台限制**：应用内自动更新支持 Windows X64、Linux X64 和 macOS ARM64。源码运行仍需手动更新。
 
 #### 核心组件
 
 - **版本检查**（`system/updater.py`）：从远程服务器获取 `version.json`，与本地 `CURRENT_VERSION` 比较，并从 `platforms` 选择当前平台资产
 - **下载与校验**：支持带进度回调的分块下载（8KB/块），下载完成后校验文件大小和 SHA256
-- **独立更新器**（`updater.py`，Windows/Linux）：主程序将完整 onedir ZIP 下载到临时目录后，释放当前平台 updater 并退出；Windows 保留安装根目录并事务替换程序条目，Linux 事务切换完整目录
+- **独立更新器**（`updater.py`）：主程序将完整 ZIP 下载到临时目录后，释放当前平台 updater 并退出；Windows 保留安装根目录并事务替换程序条目，Linux 事务切换完整 onedir 目录，macOS 事务替换 `MakeCode/` 与旁边的 `MakeCode.command`
 - **安全与回滚**：拒绝路径穿越；Linux 只恢复包内安全的相对符号链接；文件替换失败时恢复旧版本
 - **进度显示**：下载过程中实时显示可视化进度条（`█░` 填充动画）、百分比和 MB 数
 - **启动时后台检查**：程序启动时自动在后台检查更新，若有新版本会在终端提示用户
@@ -481,7 +481,7 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 #### 更新流程
 
 1. 用户执行 TUI `/update` 或外部 `--update` 命令
-2. 系统从 GitHub latest Release 获取 `version.json`，比较版本号并选择 Windows/Linux 平台资产
+2. 系统从 GitHub latest Release 获取 `version.json`，比较版本号并选择当前平台资产
 3. 若有新版本，展示版本号与更新说明，等待用户确认；自动化脚本可显式传入 `-y`/`--yes`
 4. 下载当前平台完整 onedir ZIP，并校验文件大小与 SHA256
 5. 释放当前平台 updater，主程序退出
@@ -489,12 +489,12 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 > **迁移说明**：从 `5.3.1` 或更早版本升级到 `5.3.2` 时，首次更新仍由旧客户端内置的 updater 执行，因此旧 updater 会自动启动 `5.3.2` 一次以完成兼容确认。从 `5.3.2` 开始，内置的新 updater 不再自动启动后续版本，更新成功后由用户在原工作目录手动重新启动。
 
-Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 等受保护目录时需手动更新或调整安装位置。
+Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 等受保护目录时需手动更新或调整安装位置。macOS 配置位于 `~/Library/Application Support/MakeCode/`，更新时只替换解压目录中的程序本体和启动器。
 
 #### 相关组件
 
 - `system/updater.py`：核心更新逻辑（平台资产选择、版本检查、下载、校验、启动更新器）
-- `updater.py`：Windows/Linux 独立更新器，负责事务替换、失败回滚与完成提示
+- `updater.py`：独立更新器，负责事务替换、失败回滚与完成提示
 - `version.py`：版本号与更新服务器地址配置
 - `system/commands.py`：`/update` 命令处理与 TUI 确认
 - `system/cli.py`：`--update` 外部命令、终端确认和 `-y`/`--yes` 非交互授权
@@ -810,7 +810,7 @@ python main.py
 | `--skills-list` | 按当前工作区的目录优先级列出全部 Skills 及项目级启用状态 |
 | `--memory-list` | 按更新时间升序列出当前工作区的 active 长期记忆 |
 | `--check-update` | 联网检查是否有新版本，但不下载或安装 |
-| `--update` | Windows/Linux 冻结版检查、下载并安装更新；展示更新说明后要求确认 |
+| `--update` | 冻结版检查、下载并安装更新；展示更新说明后要求确认 |
 | `--load [CONVERSATION_ID]` | 启动时跳过工作目录选择；不指定 ID 时打开会话选择面板，指定 ID 时直接加载对应会话，找不到时回退到选择面板 |
 | `-y`, `--yes` | 仅与 `--update` 配合使用，显式跳过安装确认 |
 
@@ -824,7 +824,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 ./MakeCode.command --skills-list       # macOS
 ```
 
-`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它只支持 Windows X64/Linux X64 冻结版，macOS 与源码运行仍需手动更新。
+`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64 和 macOS ARM64；源码运行仍需手动更新。
 
 ### 6.5 内置快捷命令（Slash Commands）
 

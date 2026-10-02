@@ -27,12 +27,16 @@ _CHUNK_SIZE = 8192
 
 def _current_platform_key() -> str | None:
     machine = platform.machine().lower()
-    if machine not in {"amd64", "x86_64"}:
-        return None
     if sys.platform == "win32":
+        if machine not in {"amd64", "x86_64"}:
+            return None
         return "windows-x86_64"
     if sys.platform.startswith("linux"):
+        if machine not in {"amd64", "x86_64"}:
+            return None
         return "linux-x86_64"
+    if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
+        return "macos-arm64"
     return None
 
 
@@ -136,6 +140,7 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
     archive_name = {
         "windows-x86_64": "MakeCode-Windows-X64.zip",
         "linux-x86_64": "MakeCode-Linux-X64.zip",
+        "macos-arm64": "MakeCode-macOS-ARM64.zip",
     }[UPDATE_PLATFORM_KEY]
     tmp_dir = tempfile.mkdtemp(prefix="makecode_update_")
     tmp_file = Path(tmp_dir) / archive_name
@@ -215,7 +220,7 @@ def _extract_updater_resource() -> Path:
         src = Path(meipass) / resource_name
         if src.exists():
             shutil.copy2(src, dest)
-            if sys.platform.startswith("linux"):
+            if sys.platform != "win32":
                 dest.chmod(dest.stat().st_mode | 0o700)
             return dest
 
@@ -224,7 +229,7 @@ def _extract_updater_resource() -> Path:
         ref = resources.files("resources").joinpath(resource_name)
         if ref.is_file():
             dest.write_bytes(ref.read_bytes())
-            if sys.platform.startswith("linux"):
+            if sys.platform != "win32":
                 dest.chmod(dest.stat().st_mode | 0o700)
             return dest
     except (ModuleNotFoundError, TypeError, FileNotFoundError):
@@ -238,7 +243,7 @@ def _extract_updater_resource() -> Path:
     ]:
         if candidate.exists():
             shutil.copy2(candidate, dest)
-            if sys.platform.startswith("linux"):
+            if sys.platform != "win32":
                 dest.chmod(dest.stat().st_mode | 0o700)
             return dest
 

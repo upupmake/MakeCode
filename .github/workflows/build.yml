@@ -64,7 +64,7 @@ jobs:
           -q
 
       - name: Build updater
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' || runner.os == 'macOS'
         run: pyinstaller --clean --noconfirm updater.spec
 
       - name: Build MakeCode
@@ -160,6 +160,8 @@ jobs:
               app = dist / "MakeCode"
               if not (app / "MakeCode").is_file() or not (app / "_internal").is_dir():
                   raise SystemExit("Invalid macOS onedir output")
+              if not (app / "_internal" / "updater").is_file():
+                  raise SystemExit("Bundled updater is missing")
               launcher = Path("assets/MakeCode.command")
               if not launcher.is_file() or not os.access(launcher, os.X_OK):
                   raise SystemExit("macOS launcher is missing or not executable")

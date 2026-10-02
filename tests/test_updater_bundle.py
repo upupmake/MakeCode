@@ -21,6 +21,10 @@ def _write_bundle(path: Path, marker: str = "new") -> None:
     with zipfile.ZipFile(path, "w") as bundle:
         bundle.writestr(executable, marker)
         bundle.writestr(runtime, marker)
+        if updater.IS_MACOS:
+            launcher = zipfile.ZipInfo(updater.MACOS_LAUNCHER_NAME)
+            launcher.external_attr = (stat.S_IFREG | 0o755) << 16
+            bundle.writestr(launcher, marker)
 
 
 def test_extract_update_archive_rejects_path_traversal(tmp_path):
@@ -80,6 +84,10 @@ def test_invalid_archive_does_not_remove_current_install(tmp_path):
     archive = tmp_path / "update.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr(f"MakeCode/{_executable_name()}", "new")
+    if updater.IS_MACOS:
+        launcher = install_dir.parent / updater.MACOS_LAUNCHER_NAME
+        launcher.write_text("old-launcher", encoding="utf-8")
+        launcher.chmod(0o755)
 
     with pytest.raises(ValueError, match="更新包结构无效"):
         updater.install_update(archive, install_dir)
@@ -97,11 +105,19 @@ def test_install_update_replaces_directory_and_preserves_user_data(tmp_path):
     (install_dir / ".makecode" / "model_config.json").write_text("config", encoding="utf-8")
     archive = tmp_path / "update.zip"
     _write_bundle(archive)
+    if updater.IS_MACOS:
+        launcher = install_dir.parent / updater.MACOS_LAUNCHER_NAME
+        launcher.write_text("old-launcher", encoding="utf-8")
+        launcher.chmod(0o755)
 
     updater.install_update(archive, install_dir)
 
     assert (install_dir / _executable_name()).read_text(encoding="utf-8") == "new"
-    assert (install_dir / ".makecode" / "model_config.json").read_text(encoding="utf-8") == "config"
+    if updater.IS_MACOS:
+        assert not (install_dir / ".makecode").exists()
+        assert (install_dir.parent / updater.MACOS_LAUNCHER_NAME).read_text(encoding="utf-8") == "new"
+    else:
+        assert (install_dir / ".makecode" / "model_config.json").read_text(encoding="utf-8") == "config"
     assert not list(tmp_path.glob(".MakeCode.*"))
 
 
@@ -137,13 +153,21 @@ def test_install_update_rolls_back_when_replacement_fails(tmp_path):
             return original_replace(source, destination)
 
         failure_patch = patch.object(updater.os, "replace", side_effect=fail_new_install)
+    if updater.IS_MACOS:
+        launcher = install_dir.parent / updater.MACOS_LAUNCHER_NAME
+        launcher.write_text("old-launcher", encoding="utf-8")
+        launcher.chmod(0o755)
 
     with failure_patch:
         with pytest.raises(OSError, match="cannot install"):
             updater.install_update(archive, install_dir)
 
     assert (install_dir / _executable_name()).read_text(encoding="utf-8") == "old"
-    assert (install_dir / ".makecode" / "model_config.json").read_text(encoding="utf-8") == "config"
+    if updater.IS_MACOS:
+        assert (install_dir.parent / updater.MACOS_LAUNCHER_NAME).read_text(encoding="utf-8") == "old-launcher"
+        assert (install_dir / ".makecode" / "model_config.json").read_text(encoding="utf-8") == "config"
+    else:
+        assert (install_dir / ".makecode" / "model_config.json").read_text(encoding="utf-8") == "config"
     assert not list(tmp_path.glob(".MakeCode.*"))
 
 
@@ -165,6 +189,7 @@ def test_linux_install_update_replaces_directory_and_preserves_user_data(tmp_pat
 
     with (
         patch.object(updater, "IS_WINDOWS", False),
+        patch.object(updater, "IS_MACOS", False),
         patch.object(updater.os, "access", return_value=True),
     ):
         updater.install_update(archive, install_dir)
@@ -201,6 +226,10 @@ def test_updater_main_reports_manual_restart(tmp_path, capsys):
     executable.chmod(0o755)
     archive = tmp_path / "update.zip"
     _write_bundle(archive)
+    if updater.IS_MACOS:
+        launcher = install_dir.parent / updater.MACOS_LAUNCHER_NAME
+        launcher.write_text("old-launcher", encoding="utf-8")
+        launcher.chmod(0o755)
 
     argv = [
         "updater",
@@ -219,3 +248,125 @@ def test_updater_main_reports_manual_restart(tmp_path, capsys):
     wait_process_exit.assert_not_called()
     assert (install_dir / _executable_name()).read_text(encoding="utf-8") == "new"
     assert not archive.exists()
+
+
+def _write_macos_bundle(path: Path, marker: str = "new") -> None:
+    executable = zipfile.ZipInfo("MakeCode/MakeCode")
+    executable.external_attr = (stat.S_IFREG | 0o755) << 16
+    runtime = zipfile.ZipInfo("MakeCode/_internal/runtime.dylib")
+    runtime.external_attr = (stat.S_IFREG | 0o644) << 16
+    launcher = zipfile.ZipInfo(updater.MACOS_LAUNCHER_NAME)
+    launcher.external_attr = (stat.S_IFREG | 0o755) << 16
+    with zipfile.ZipFile(path, "w") as bundle:
+        bundle.writestr(executable, marker)
+        bundle.writestr(runtime, marker)
+        bundle.writestr(launcher, marker)
+
+
+def test_macos_install_update_replaces_app_and_launcher(tmp_path):
+    package = tmp_path / "package"
+    install_dir = package / "MakeCode"
+    (install_dir / "_internal").mkdir(parents=True)
+    (install_dir / "MakeCode").write_text("old", encoding="utf-8")
+    (install_dir / "MakeCode").chmod(0o755)
+    launcher = package / updater.MACOS_LAUNCHER_NAME
+    launcher.write_text("old-launcher", encoding="utf-8")
+    launcher.chmod(0o755)
+    archive = tmp_path / "update.zip"
+    _write_macos_bundle(archive)
+
+    with patch.object(updater, "IS_MACOS", True), patch.object(updater, "IS_WINDOWS", False):
+        updater.install_update(archive, install_dir)
+
+    assert (install_dir / "MakeCode").read_text(encoding="utf-8") == "new"
+    assert launcher.read_text(encoding="utf-8") == "new"
+    assert launcher.stat().st_mode & 0o111
+    assert not (install_dir / ".makecode").exists()
+    assert not list(package.glob(".MakeCode.*"))
+
+
+def test_macos_install_update_rolls_back_app_and_launcher(tmp_path):
+    package = tmp_path / "package"
+    install_dir = package / "MakeCode"
+    (install_dir / "_internal").mkdir(parents=True)
+    (install_dir / "MakeCode").write_text("old", encoding="utf-8")
+    (install_dir / "MakeCode").chmod(0o755)
+    launcher = package / updater.MACOS_LAUNCHER_NAME
+    launcher.write_text("old-launcher", encoding="utf-8")
+    launcher.chmod(0o755)
+    archive = tmp_path / "update.zip"
+    _write_macos_bundle(archive)
+    original_replace = updater.os.replace
+
+    def fail_new_launcher(source, destination):
+        source = Path(source)
+        destination = Path(destination)
+        if (
+            destination == launcher
+            and source.name == updater.MACOS_LAUNCHER_NAME
+            and ".MakeCode.staging." in source.parent.name
+        ):
+            raise OSError("cannot install launcher")
+        return original_replace(source, destination)
+
+    with (
+        patch.object(updater, "IS_MACOS", True),
+        patch.object(updater, "IS_WINDOWS", False),
+        patch.object(updater.os, "replace", side_effect=fail_new_launcher),
+    ):
+        with pytest.raises(OSError, match="cannot install launcher"):
+            updater.install_update(archive, install_dir)
+
+    assert (install_dir / "MakeCode").read_text(encoding="utf-8") == "old"
+    assert launcher.read_text(encoding="utf-8") == "old-launcher"
+    assert not list(package.glob(".MakeCode.*"))
+
+
+def test_macos_extract_update_archive_requires_launcher(tmp_path):
+    archive = tmp_path / "update.zip"
+    executable = zipfile.ZipInfo("MakeCode/MakeCode")
+    executable.external_attr = (stat.S_IFREG | 0o755) << 16
+    runtime = zipfile.ZipInfo("MakeCode/_internal/runtime.dylib")
+    runtime.external_attr = (stat.S_IFREG | 0o644) << 16
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(executable, "new")
+        bundle.writestr(runtime, "new")
+
+    with patch.object(updater, "IS_MACOS", True), patch.object(updater, "IS_WINDOWS", False):
+        with pytest.raises(ValueError, match="缺少可执行的 MakeCode.command"):
+            updater.extract_update_archive(archive, tmp_path / "staging")
+
+
+def test_non_macos_extract_update_archive_rejects_launcher(tmp_path):
+    archive = tmp_path / "update.zip"
+    executable = zipfile.ZipInfo(f"MakeCode/{_executable_name()}")
+    executable.external_attr = (stat.S_IFREG | 0o755) << 16
+    runtime = zipfile.ZipInfo("MakeCode/_internal/runtime.bin")
+    runtime.external_attr = (stat.S_IFREG | 0o644) << 16
+    launcher = zipfile.ZipInfo(updater.MACOS_LAUNCHER_NAME)
+    launcher.external_attr = (stat.S_IFREG | 0o755) << 16
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(executable, "new")
+        bundle.writestr(runtime, "new")
+        bundle.writestr(launcher, "launcher")
+
+    with patch.object(updater, "IS_MACOS", False):
+        with pytest.raises(ValueError, match="当前平台更新包不能包含 MakeCode.command"):
+            updater.extract_update_archive(archive, tmp_path / "staging")
+
+
+def test_macos_install_update_requires_existing_launcher(tmp_path):
+    package = tmp_path / "package"
+    install_dir = package / "MakeCode"
+    (install_dir / "_internal").mkdir(parents=True)
+    (install_dir / "MakeCode").write_text("old", encoding="utf-8")
+    (install_dir / "MakeCode").chmod(0o755)
+    archive = tmp_path / "update.zip"
+    _write_macos_bundle(archive)
+
+    with patch.object(updater, "IS_MACOS", True), patch.object(updater, "IS_WINDOWS", False):
+        with pytest.raises(ValueError, match="安装目录旁缺少 MakeCode.command"):
+            updater.install_update(archive, install_dir)
+
+    assert (install_dir / "MakeCode").read_text(encoding="utf-8") == "old"
+    assert not (package / updater.MACOS_LAUNCHER_NAME).exists()

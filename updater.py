@@ -1,4 +1,4 @@
-"""独立更新器：安全解压并事务替换 Windows/Linux onedir 应用目录。"""
+"""独立更新器：安全解压并事务替换 Windows/Linux onedir 应用目录，以及 macOS 的启动器与 onedir 目录。"""
 
 import argparse
 import ctypes
@@ -7,6 +7,7 @@ import os
 import posixpath
 import shutil
 import stat
+import sys
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -17,6 +18,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("updater")
 IS_WINDOWS = os.name == "nt"
+IS_MACOS = sys.platform == "darwin"
+MACOS_LAUNCHER_NAME = "MakeCode.command"
 
 
 def _configure_file_logging(log_file: Path) -> None:
@@ -129,13 +132,16 @@ def extract_update_archive(archive: Path, staging_dir: Path) -> Path:
                 or "\\" in member.filename
                 or ":" in member.filename
                 or ".." in path.parts
-                or path.parts[0] != "MakeCode"
+                or path.parts[0] not in {"MakeCode", MACOS_LAUNCHER_NAME}
+                or (path.parts[0] == MACOS_LAUNCHER_NAME and len(path.parts) != 1)
                 or any(parent in symlink_paths for parent in path.parents)
             ):
                 raise ValueError(f"更新包包含不安全路径: {member.filename}")
             if path in symlink_paths:
                 if IS_WINDOWS:
                     raise ValueError(f"Windows 更新包不能包含符号链接: {member.filename}")
+                if path.parts[0] == MACOS_LAUNCHER_NAME:
+                    raise ValueError(f"更新包包含不安全符号链接: {member.filename}")
                 target = bundle.read(member).decode("utf-8")
                 _validate_symlink_target(path, target)
 
@@ -162,6 +168,12 @@ def extract_update_archive(archive: Path, staging_dir: Path) -> Path:
         raise ValueError(f"更新包结构无效：缺少 {executable.name} 或 _internal")
     if not IS_WINDOWS and not os.access(executable, os.X_OK):
         raise ValueError("更新包结构无效：MakeCode 缺少执行权限")
+    launcher = staging_dir / MACOS_LAUNCHER_NAME
+    if IS_MACOS:
+        if not launcher.is_file() or not os.access(launcher, os.X_OK):
+            raise ValueError(f"更新包结构无效：缺少可执行的 {MACOS_LAUNCHER_NAME}")
+    elif launcher.exists():
+        raise ValueError(f"当前平台更新包不能包含 {MACOS_LAUNCHER_NAME}")
     return app_dir
 
 
@@ -193,6 +205,8 @@ def install_update(archive: Path, install_dir: Path) -> None:
 
     if staging_root.exists() or backup_dir.exists():
         raise FileExistsError("更新暂存目录已存在")
+    if IS_MACOS and not (parent / MACOS_LAUNCHER_NAME).is_file():
+        raise ValueError(f"安装目录旁缺少 {MACOS_LAUNCHER_NAME}")
 
     try:
         staging_root.mkdir()
@@ -207,6 +221,24 @@ def install_update(archive: Path, install_dir: Path) -> None:
                 raise
             old_install_moved = True
             _move_entries(staged_app, install_dir, skip_names={".makecode"})
+        elif IS_MACOS:
+            launcher = parent / MACOS_LAUNCHER_NAME
+            staged_launcher = staging_root / MACOS_LAUNCHER_NAME
+            backup_dir.mkdir()
+            try:
+                retry_file_op(lambda: os.replace(install_dir, backup_dir / install_dir.name))
+                if launcher.exists():
+                    retry_file_op(lambda: os.replace(launcher, backup_dir / MACOS_LAUNCHER_NAME))
+            except Exception:
+                if (backup_dir / install_dir.name).exists() and not install_dir.exists():
+                    retry_file_op(lambda: os.replace(backup_dir / install_dir.name, install_dir))
+                if (backup_dir / MACOS_LAUNCHER_NAME).exists() and not launcher.exists():
+                    retry_file_op(lambda: os.replace(backup_dir / MACOS_LAUNCHER_NAME, launcher))
+                shutil.rmtree(backup_dir, ignore_errors=True)
+                raise
+            old_install_moved = True
+            os.replace(staged_app, install_dir)
+            os.replace(staged_launcher, launcher)
         else:
             retry_file_op(lambda: os.replace(install_dir, backup_dir))
             old_install_moved = True
@@ -221,6 +253,17 @@ def install_update(archive: Path, install_dir: Path) -> None:
                 if backup_dir.exists():
                     _move_entries(backup_dir, install_dir)
                     backup_dir.rmdir()
+            elif IS_MACOS:
+                launcher = parent / MACOS_LAUNCHER_NAME
+                if install_dir.exists():
+                    shutil.rmtree(install_dir, ignore_errors=True)
+                if launcher.exists() or launcher.is_symlink():
+                    launcher.unlink()
+                if (backup_dir / install_dir.name).exists():
+                    retry_file_op(lambda: os.replace(backup_dir / install_dir.name, install_dir))
+                if (backup_dir / MACOS_LAUNCHER_NAME).exists():
+                    retry_file_op(lambda: os.replace(backup_dir / MACOS_LAUNCHER_NAME, launcher))
+                shutil.rmtree(backup_dir, ignore_errors=True)
             else:
                 if install_dir.exists():
                     shutil.rmtree(install_dir, ignore_errors=True)
@@ -245,6 +288,8 @@ def main() -> None:
     executable = _app_executable(install_dir)
     if not executable.is_file():
         parser.error(f"安装目录中缺少 {executable.name}")
+    if IS_MACOS and not (install_dir.parent / MACOS_LAUNCHER_NAME).is_file():
+        parser.error(f"安装目录旁缺少 {MACOS_LAUNCHER_NAME}")
     if not archive.is_file():
         parser.error("更新 ZIP 不存在")
 

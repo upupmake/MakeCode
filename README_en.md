@@ -479,13 +479,13 @@ The orchestrator can analyze a local image file or a public image URL by making 
 
 MakeCode includes a complete built-in auto-update system supporting version checks, complete directory downloads, and transactional upgrades.
 
-> **Platform limitation**: In-app auto-update supports Windows X64 and Linux X64. On macOS, MakeCode directs users to GitHub Releases to download and replace the application manually.
+> **Platform limitation**: In-app auto-update supports Windows X64, Linux X64, and macOS ARM64. Source runs still require a manual update.
 
 #### Core Components
 
 - **Version Checking** (`system/updater.py`): Fetches `version.json`, compares it with the local `CURRENT_VERSION`, and selects the current platform asset from `platforms`
 - **Download & Verification**: Supports chunked downloading (8KB/chunk) with progress callbacks, followed by file-size and SHA256 verification
-- **Standalone Updater** (`updater.py`, Windows/Linux): Downloads the complete onedir ZIP to a temporary directory, releases the current platform updater, and exits; Windows transactionally replaces application entries while preserving the install root, and Linux transactionally switches the complete directory
+- **Standalone Updater** (`updater.py`): Downloads the complete ZIP to a temporary directory, releases the current platform updater, and exits; Windows transactionally replaces application entries while preserving the install root, Linux transactionally switches the complete onedir directory, and macOS transactionally replaces `MakeCode/` plus the sibling `MakeCode.command`
 - **Security & Rollback**: Rejects path traversal; Linux restores only safe relative symlinks; replacement failures restore the old version
 - **Progress Display**: Real-time visual progress bar (`█░` fill animation), percentage, and MB count during download
 - **Background Check on Startup**: Automatically checks for updates in the background at startup; notifies the user in the terminal if a new version is available
@@ -502,7 +502,7 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 #### Update Flow
 
 1. The user runs the TUI `/update` command or external `--update` option
-2. The system fetches `version.json`, compares versions, and selects the Windows/Linux platform asset
+2. The system fetches `version.json`, compares versions, and selects the current platform asset
 3. If a new version is available, it displays the version and release notes and waits for confirmation; automation can explicitly pass `-y`/`--yes`
 4. It downloads the current platform's complete onedir ZIP and verifies file size and SHA256
 5. It releases the current platform updater and exits the main program
@@ -510,12 +510,12 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 
 > **Migration note**: When upgrading from `5.3.1` or earlier to `5.3.2`, the first update still runs through the old client-bundled updater, so that updater launches `5.3.2` once to complete its compatibility check. Starting with `5.3.2`, the bundled updater no longer launches subsequent versions automatically; after a successful update, users restart MakeCode manually from their original workspace.
 
-On Linux, the installation directory must be writable by the current user. Installations under protected locations such as `/opt` or `/usr/local` require a manual update or a user-writable installation location.
+On Linux, the installation directory must be writable by the current user. Installations under protected locations such as `/opt` or `/usr/local` require a manual update or a user-writable installation location. On macOS, shared configuration lives under `~/Library/Application Support/MakeCode/`; updates replace only the unzipped application directory and launcher.
 
 #### Related Components
 
 - `system/updater.py`: Core update logic (platform asset selection, version check, download, verification, updater launch)
-- `updater.py`: Windows/Linux standalone updater for transactional replacement, failure rollback, and completion notification
+- `updater.py`: Standalone updater for transactional replacement, failure rollback, and completion notification
 - `version.py`: Version number and update server URL configuration
 - `system/commands.py`: `/update` command handling and TUI confirmation
 - `system/cli.py`: External `--update`, terminal confirmation, and `-y`/`--yes` non-interactive authorization
@@ -835,7 +835,7 @@ The following options execute and exit immediately without starting the workspac
 | `--skills-list` | List all Skills and their project-level enabled state using the current workspace directory priority |
 | `--memory-list` | List active long-term memories in the current workspace by ascending update time |
 | `--check-update` | Check online for a newer version without downloading or installing it |
-| `--update` | Check, download, and install updates in frozen Windows/Linux builds; asks for confirmation after displaying release notes |
+| `--update` | Check, download, and install updates in frozen Windows/Linux/macOS builds; asks for confirmation after displaying release notes |
 | `--load [CONVERSATION_ID]` | Skip the startup workspace chooser; without an ID open the conversation picker, or load the specified conversation and fall back to the picker if it is not found |
 | `-y`, `--yes` | Use only with `--update` to explicitly skip installation confirmation |
 
@@ -849,7 +849,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 ./MakeCode.command --skills-list       # macOS
 ```
 
-`--models-list`, `--mcp-list`, `--skills-list`, `--memory-list`, and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. `--mcp-add` only changes configuration and keeps the new service disabled without connecting it. `--update` reuses the TUI `/update` HTTPS download, size/SHA256 verification, and transactional replacement flow. It requires terminal confirmation by default; non-interactive environments must explicitly pass `-y`/`--yes`. It supports only frozen Windows X64/Linux X64 builds; macOS and source runs still require manual updates.
+`--models-list`, `--mcp-list`, `--skills-list`, `--memory-list`, and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. `--mcp-add` only changes configuration and keeps the new service disabled without connecting it. `--update` reuses the TUI `/update` HTTPS download, size/SHA256 verification, and transactional replacement flow. It requires terminal confirmation by default; non-interactive environments must explicitly pass `-y`/`--yes`. It supports frozen Windows X64, Linux X64, and macOS ARM64 builds; source runs still require a manual update.
 
 ### 6.5 Built-in Slash Commands
 

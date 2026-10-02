@@ -42,7 +42,7 @@ if os.path.isfile(manifest_path):
 # -------------------------------------------------------------------
 
 updater_datas = []
-if sys.platform == 'win32' or sys.platform.startswith('linux'):
+if sys.platform == 'win32' or sys.platform.startswith('linux') or sys.platform == 'darwin':
     updater_name = 'updater.exe' if sys.platform == 'win32' else 'updater'
     updater_path = os.path.join(project_root, 'dist', updater_name)
     if not os.path.isfile(updater_path):
