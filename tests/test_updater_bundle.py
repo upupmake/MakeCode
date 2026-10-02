@@ -280,7 +280,8 @@ def test_macos_install_update_replaces_app_and_launcher(tmp_path):
 
     assert (install_dir / "MakeCode").read_text(encoding="utf-8") == "new"
     assert launcher.read_text(encoding="utf-8") == "new"
-    assert launcher.stat().st_mode & 0o111
+    if not updater.IS_WINDOWS:
+        assert launcher.stat().st_mode & 0o111
     assert not (install_dir / ".makecode").exists()
     assert not list(package.glob(".MakeCode.*"))
 
