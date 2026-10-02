@@ -180,7 +180,7 @@ Supports:
 
 Skills are loaded from three directories in the following priority order (higher-priority directories override lower-priority skills with the same name):
 
-1. `install_dir/.makecode/skills/<name>/SKILL.md` (bundled skills)
+1. `install_makecode_dir/skills/<name>/SKILL.md` (bundled skills; `install_dir/.makecode/skills/` on Windows, Linux, and source runs, and `~/Library/Application Support/MakeCode/skills/` in packaged macOS builds)
 2. `workdir/.makecode/skills/<name>/SKILL.md` (default location for user skills)
 3. Legacy `workdir/skills/<name>/SKILL.md` (backward compatibility)
 
@@ -528,8 +528,9 @@ To centrally manage workspace paths and install-directory global configuration, 
 
 - **Install Directory**: On Windows, this is the directory containing `MakeCode.exe`; in packaged macOS/Linux releases, it is the directory containing `MakeCode/MakeCode`; for source runs, it is the source root.
     - On Windows, Linux, and source runs, shared configuration lives under `install_dir/.makecode/`.
-    - In the packaged macOS release, shared configuration lives under `~/Library/Application Support/MakeCode/`, preventing application replacement during upgrades from deleting configuration.
-    - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, and `error.log` live in the corresponding shared configuration directory.
+    - In the packaged macOS release, the shared runtime directory is `~/Library/Application Support/MakeCode/`, so the unzipped app directory is not written to during upgrades or normal use.
+    - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, `error.log`, and bundled skills under `skills/` live in the corresponding shared configuration directory.
+    - Packaged macOS builds extract the syntax-validation cache to `~/Library/Application Support/MakeCode/ts_cache/`; Windows, Linux, and source runs still use `install_dir/ts_cache/`.
 - **Workspace Directory (Workdir)**: The user's chosen working directory. Session- and task-related state lives here.
     - `conversations/`, `memory/memory.jsonl`, `memory/memory_config.json`, and `transcripts/` reside under `workdir/.makecode/`.
     - User skills default to `workdir/.makecode/skills/`; legacy `workdir/skills/` remains supported.
@@ -539,7 +540,8 @@ To centrally manage workspace paths and install-directory global configuration, 
 - `paths.install_dir()` / `paths.install_makecode_dir()`: return the program install directory and shared configuration directory respectively; for packaged macOS builds, the latter returns `~/Library/Application Support/MakeCode`.
 - `paths.workdir()` / `paths.workspace_makecode_dir()`: return the current workspace and its `.makecode` subdirectory.
 - `paths.set_workdir(path)`: switch workspace at runtime, used internally by the `/cd` command.
-- `paths.install_skills_dir()`: return the bundled-skill directory at `install_dir/.makecode/skills/`.
+- `paths.install_skills_dir()`: return the bundled-skill directory in the shared configuration directory; `install_dir/.makecode/skills/` on Windows, Linux, and source runs, and `~/Library/Application Support/MakeCode/skills/` in packaged macOS builds.
+- `paths.install_ts_cache_dir()`: return the syntax-validation cache directory; `install_dir/ts_cache/` on Windows, Linux, and source runs, and `~/Library/Application Support/MakeCode/ts_cache/` in packaged macOS builds.
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`: return `workdir/.makecode/skills/` and the legacy `workdir/skills/` respectively.
 - `paths.workspace_disabled_skills_file()`: return the project-level disabled Skills list at `workdir/.makecode/disabled_skills.json`.
 - Conversation/memory/transcript/MCP/model-config getters are all unified here (`workspace_conversations_dir()`, `workspace_memory_jsonl_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
@@ -640,7 +642,7 @@ Additionally, under the install directory (cross-project shared):
 - `<install_dir>/.makecode/skills/`: bundled skills provided with the installation
 - `<install_dir>/.makecode/mcp_stderr.log`, `error.log`: MCP / system error logs
 
-> In packaged macOS builds, shared configuration files live under `~/Library/Application Support/MakeCode/`, while bundled skills are still loaded from `.makecode/skills/` inside the application directory.
+> In packaged macOS builds, shared configuration, bundled skills, and the syntax-validation cache all live under `~/Library/Application Support/MakeCode/`. The unzipped application directory only contains the program itself.
 
 ### 3.2 Architecture Diagram (Mermaid)
 

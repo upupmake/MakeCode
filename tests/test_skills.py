@@ -100,6 +100,7 @@ class SkillLoaderTests(unittest.TestCase):
 
             with (
                 patch.object(paths, "_INSTALL_DIR", install_root),
+                patch.object(paths, "_INSTALL_MAKECODE_DIR", install_root / ".makecode"),
                 patch.object(paths, "_WORKDIR", workspace_root),
             ):
                 install_skills = paths.install_skills_dir()
@@ -116,10 +117,10 @@ class SkillLoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             install_root = Path(temp_dir) / "published"
 
-            with patch.object(paths, "_INSTALL_DIR", install_root):
+            with patch.object(paths, "_INSTALL_MAKECODE_DIR", install_root):
                 install_skills = paths.install_skills_dir()
 
-            self.assertEqual(install_skills, install_root / ".makecode" / "skills")
+            self.assertEqual(install_skills, install_root / "skills")
             self.assertTrue(install_skills.is_dir())
 
     def test_switching_workspace_does_not_load_previous_legacy_skills(self):
@@ -133,6 +134,7 @@ class SkillLoaderTests(unittest.TestCase):
 
             with (
                 patch.object(paths, "_INSTALL_DIR", install_root),
+                patch.object(paths, "_INSTALL_MAKECODE_DIR", install_root / ".makecode"),
                 patch.object(paths, "_WORKDIR", previous_workspace),
             ):
                 loader = SkillLoader()
@@ -255,6 +257,7 @@ class SkillLoaderTests(unittest.TestCase):
 
             with (
                 patch.object(paths, "_INSTALL_DIR", install_root),
+                patch.object(paths, "_INSTALL_MAKECODE_DIR", install_root / ".makecode"),
                 patch.object(paths, "_WORKDIR", previous_workspace),
             ):
                 loader = SkillLoader()
@@ -264,6 +267,68 @@ class SkillLoaderTests(unittest.TestCase):
                 loader.refresh_workspace()
 
             self.assertIn("shared", loader.skills)
+
+
+class InstallRuntimePathTests(unittest.TestCase):
+    def test_frozen_macos_runtime_files_use_application_support(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "MakeCode"
+            support_dir = root / "Application Support" / "MakeCode"
+
+            with (
+                patch.object(paths, "_is_frozen", True),
+                patch.object(paths, "_INSTALL_DIR", install_root),
+                patch.object(paths, "_INSTALL_MAKECODE_DIR", support_dir),
+                patch("sys.platform", "darwin"),
+            ):
+                skills = paths.install_skills_dir()
+                cache = paths.install_ts_cache_dir()
+
+            self.assertEqual(skills, support_dir / "skills")
+            self.assertEqual(cache, support_dir / "ts_cache")
+            self.assertTrue(skills.is_dir())
+            self.assertTrue(cache.is_dir())
+            self.assertFalse((install_root / ".makecode").exists())
+            self.assertFalse((install_root / "ts_cache").exists())
+
+    def test_frozen_windows_runtime_files_stay_beside_install_dir(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir) / "MakeCode"
+            makecode_dir = install_root / ".makecode"
+
+            with (
+                patch.object(paths, "_is_frozen", True),
+                patch.object(paths, "_INSTALL_DIR", install_root),
+                patch.object(paths, "_INSTALL_MAKECODE_DIR", makecode_dir),
+                patch("sys.platform", "win32"),
+            ):
+                skills = paths.install_skills_dir()
+                cache = paths.install_ts_cache_dir()
+
+            self.assertEqual(skills, makecode_dir / "skills")
+            self.assertEqual(cache, install_root / "ts_cache")
+            self.assertTrue(skills.is_dir())
+            self.assertTrue(cache.is_dir())
+
+    def test_frozen_linux_runtime_files_stay_beside_install_dir(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir) / "MakeCode"
+            makecode_dir = install_root / ".makecode"
+
+            with (
+                patch.object(paths, "_is_frozen", True),
+                patch.object(paths, "_INSTALL_DIR", install_root),
+                patch.object(paths, "_INSTALL_MAKECODE_DIR", makecode_dir),
+                patch("sys.platform", "linux"),
+            ):
+                skills = paths.install_skills_dir()
+                cache = paths.install_ts_cache_dir()
+
+            self.assertEqual(skills, makecode_dir / "skills")
+            self.assertEqual(cache, install_root / "ts_cache")
+            self.assertTrue(skills.is_dir())
+            self.assertTrue(cache.is_dir())
 
 
 if __name__ == "__main__":

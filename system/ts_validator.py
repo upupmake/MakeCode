@@ -20,6 +20,8 @@ from tree_sitter_language_pack import (
     configure
 )
 
+from utils import paths
+
 _TS_VALIDATOR_AVAILABLE = False
 _TS_VALIDATOR_WARNING_PRINTED = False
 _TS_CACHED_LANGUAGES = frozenset()
@@ -94,12 +96,7 @@ def init_ts_cache():
         return
 
     # 2. 定位目标目录 (Destination)
-    if is_frozen:
-        dst_cache_dir = Path(sys.executable).parent / "ts_cache"
-    else:
-        dst_cache_dir = src_cache_dir
-
-    dst_cache_dir.mkdir(parents=True, exist_ok=True)
+    dst_cache_dir = paths.install_ts_cache_dir()
     libs_dir = dst_cache_dir / "libs" / platform_key
     libs_dir.mkdir(parents=True, exist_ok=True)
 

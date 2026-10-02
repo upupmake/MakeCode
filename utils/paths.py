@@ -92,7 +92,7 @@ def workspace_memory_config_file() -> Path:
 
 
 def install_skills_dir(*, create: bool = True) -> Path:
-    path = _INSTALL_DIR / ".makecode" / "skills"
+    path = install_makecode_dir(create=create) / "skills"
     if create:
         path.mkdir(parents=True, exist_ok=True)
     return path
@@ -127,3 +127,13 @@ def mcp_stderr_log_file() -> Path:
 
 def error_log_file() -> Path:
     return install_makecode_dir() / "error.log"
+
+
+def install_ts_cache_dir(*, create: bool = True) -> Path:
+    if _is_frozen and sys.platform == "darwin":
+        path = install_makecode_dir(create=create) / "ts_cache"
+    else:
+        path = _INSTALL_DIR / "ts_cache"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path

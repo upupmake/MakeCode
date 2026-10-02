@@ -389,10 +389,10 @@ class CommandHandler:
     def handle_mcp_help(self) -> bool:
         """处理 /mcp-help 命令"""
         content = Markdown(
-            """
+            f"""
 ### MCP 命令帮助
 
-MCP 配置文件位于安装目录的 `.makecode/mcp_config.json`。服务名是唯一标识；如果同名服务已存在，请先使用 `/mcp-delete <name>` 删除，再重新 `/mcp-add`。
+MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；如果同名服务已存在，请先使用 `/mcp-delete <name>` 删除，再重新 `/mcp-add`。
 
 #### `/mcp-help`
 显示当前帮助说明。

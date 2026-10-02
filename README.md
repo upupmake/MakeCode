@@ -165,7 +165,7 @@ Team 模块支持：
 
 技能按以下优先级从三个目录加载（同名技能由高优先级目录覆盖）：
 
-1. 安装目录 `install_dir/.makecode/skills/<name>/SKILL.md`（内置技能）
+1. 共享配置目录 `install_makecode_dir/skills/<name>/SKILL.md`（内置技能；Windows、Linux 与源码运行时为 `install_dir/.makecode/skills/`，macOS 打包版为 `~/Library/Application Support/MakeCode/skills/`）
 2. 工作区 `workdir/.makecode/skills/<name>/SKILL.md`（用户技能的默认安装位置）
 3. 工作区旧路径 `workdir/skills/<name>/SKILL.md`（向后兼容）
 
@@ -507,8 +507,9 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 
 - **安装目录（Install Dir）**：Windows 下为 `MakeCode.exe` 所在目录，macOS/Linux 打包版为 `MakeCode/MakeCode` 所在目录；源码运行时为源码根目录。
     - Windows、Linux 与源码运行时的共享配置位于 `install_dir/.makecode/`。
-    - macOS 打包版的共享配置位于 `~/Library/Application Support/MakeCode/`，避免升级替换应用目录时丢失配置。
-    - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 均位于对应的共享配置目录。
+    - macOS 打包版的共享运行时目录位于 `~/Library/Application Support/MakeCode/`，避免写入或升级替换解压目录。
+    - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 以及内置技能目录 `skills/` 均位于对应的共享配置目录。
+    - macOS 打包版的语法校验缓存位于 `~/Library/Application Support/MakeCode/ts_cache/`；Windows、Linux 与源码运行仍使用 `install_dir/ts_cache/`。
 - **工作区目录（Workdir）**：用户当前交互选择的工程目录，存放会话/任务相关的状态。
     - `conversations/`、`memory/memory.jsonl`、`memory/memory_config.json` 和 `transcripts/` 均位于 `workdir/.makecode/`。
     - 用户技能默认位于 `workdir/.makecode/skills/`，旧路径 `workdir/skills/` 仍兼容。
@@ -518,7 +519,8 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 - `paths.install_dir()` / `paths.install_makecode_dir()`：分别返回程序安装目录与共享配置目录；macOS 打包版的后者返回 `~/Library/Application Support/MakeCode`。
 - `paths.workdir()` / `paths.workspace_makecode_dir()`：返回当前工作区与其 `.makecode` 子目录。
 - `paths.set_workdir(path)`：切换工作区时代替手动拼接，`/cd` 命令内部调用该函数。
-- `paths.install_skills_dir()`：返回安装目录内的内置技能目录 `install_dir/.makecode/skills/`。
+- `paths.install_skills_dir()`：返回共享配置目录下的内置技能目录；Windows、Linux 与源码运行为 `install_dir/.makecode/skills/`，macOS 打包版为 `~/Library/Application Support/MakeCode/skills/`。
+- `paths.install_ts_cache_dir()`：返回语法校验缓存目录；Windows、Linux 与源码运行为 `install_dir/ts_cache/`，macOS 打包版为 `~/Library/Application Support/MakeCode/ts_cache/`。
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`：分别返回 `workdir/.makecode/skills/` 与兼容旧路径 `workdir/skills/`。
 - `paths.workspace_disabled_skills_file()`：返回项目级 Skills 禁用列表 `workdir/.makecode/disabled_skills.json`。
 - 面向会话/记忆/转录/MCP/模型配置的各级 getter（如 `workspace_conversations_dir()`、`workspace_memory_jsonl_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
@@ -619,7 +621,7 @@ Agent/
 - `<install_dir>/.makecode/skills/`：随安装提供的内置技能
 - `<install_dir>/.makecode/mcp_stderr.log`、`error.log`：MCP/系统错误日志
 
-> macOS 打包版的共享配置文件位于 `~/Library/Application Support/MakeCode/`，但内置技能仍从应用目录内的 `.makecode/skills/` 加载。
+> macOS 打包版的共享配置、内置技能和语法校验缓存均位于 `~/Library/Application Support/MakeCode/`，解压目录只保留程序本体。
 
 ### 3.2 架构图（Mermaid）
 
