@@ -120,7 +120,9 @@ def test_windows_directory_picker_uses_sta_powershell_and_decodes_unicode_path(t
     assert command[0] == "powershell.exe"
     assert "-STA" in command
     script = base64.b64decode(command[command.index("-EncodedCommand") + 1]).decode("utf-16le")
-    assert "FolderBrowserDialog" in script
+    assert "DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7" in script
+    assert "PICKFOLDERS" in script
+    assert "FolderBrowserDialog" not in script
     assert str(tmp_path) in script
 
 
