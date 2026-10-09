@@ -5013,6 +5013,14 @@ class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="model-form-dialog"):
             yield ModalHeader("✏️ 修改模型配置", title_id="choice-title")
+            yield Label("消息格式", classes="model-form-label")
+            yield Select(
+                [(message_format, message_format) for message_format in MESSAGE_FORMATS],
+                value=self._model.message_format,
+                allow_blank=False,
+                id="edit-model-message-format",
+                classes="model-form-input",
+            )
             yield Label("Base URL", classes="model-form-label")
             yield Input(
                 value=self._model.base_url,
@@ -5040,21 +5048,13 @@ class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
                 id="edit-model-alias",
                 classes="model-form-input",
             )
-            yield Label("消息格式", classes="model-form-label")
-            yield Select(
-                [(message_format, message_format) for message_format in MESSAGE_FORMATS],
-                value=self._model.message_format,
-                allow_blank=False,
-                id="edit-model-message-format",
-                classes="model-form-input",
-            )
             yield Label("确认后立即写入模型配置。按 Enter 保存，按 q 取消。", id="model-form-hint")
             with Horizontal(id="custom-actions"):
                 yield Button("保存", id="model-confirm", variant="success")
                 yield Button("取消", id="custom-cancel", variant="warning")
 
     def on_mount(self) -> None:
-        self.query_one("#edit-model-base-url", Input).focus()
+        self.query_one("#edit-model-message-format", Select).focus()
 
     def _on_key(self, event: Key) -> None:
         if event.key == "enter" and isinstance(self.focused, Select):
@@ -5113,6 +5113,14 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
         source = self._source_model
         with VerticalScroll(id="model-form-dialog"):
             yield ModalHeader("➕ 添加模型", title_id="choice-title")
+            yield Label("消息格式", classes="model-form-label")
+            yield Select(
+                [(message_format, message_format) for message_format in MESSAGE_FORMATS],
+                value=source.message_format if source else "openai_chat",
+                allow_blank=False,
+                id="model-message-format",
+                classes="model-form-input",
+            )
             yield Label("Base URL", classes="model-form-label")
             yield Input(
                 value=source.base_url if source else "",
@@ -5140,21 +5148,13 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
                 id="model-alias",
                 classes="model-form-input",
             )
-            yield Label("消息格式", classes="model-form-label")
-            yield Select(
-                [(message_format, message_format) for message_format in MESSAGE_FORMATS],
-                value=source.message_format if source else "openai_chat",
-                allow_blank=False,
-                id="model-message-format",
-                classes="model-form-input",
-            )
             yield Label("提示：填写完成后点击“确定”，也可以按 Enter 提交。", id="model-form-hint")
             with Horizontal(id="custom-actions"):
                 yield Button("确定", id="model-confirm", variant="success")
                 yield Button("取消", id="custom-cancel", variant="warning")
 
     def on_mount(self) -> None:
-        self.query_one("#model-base-url", Input).focus()
+        self.query_one("#model-message-format", Select).focus()
 
     def _on_key(self, event: Key) -> None:
         if event.key == "enter" and isinstance(self.focused, Select):
