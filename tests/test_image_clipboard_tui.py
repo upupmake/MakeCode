@@ -474,6 +474,8 @@ async def test_add_model_modal_paste_strips_invisible_characters():
         await pilot.pause()
 
         base_url = app.screen.query_one("#model-base-url", Input)
+        base_url.focus()
+        await pilot.pause()
         assert base_url.has_focus
 
         app.post_message(Paste("https://api.example.com/v1\u200b\ufeff\u200e"))
