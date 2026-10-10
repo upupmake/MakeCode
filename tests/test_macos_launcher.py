@@ -243,3 +243,30 @@ def test_macos_launcher_does_not_replace_regular_python_file(macos_package, tmp_
     assert decoy.read_text(encoding="utf-8") == "not-a-symlink-target"
     assert marker.exists()
 
+
+def test_macos_launcher_restores_python_symlinks_without_path_commands(macos_package, tmp_path, monkeypatch):
+    python_lib = _framework_python(macos_package)
+    internal = python_lib.parents[3]
+    (internal / "Python").write_text("Python.framework/Versions/3.12/Python", encoding="utf-8")
+    marker = tmp_path / "started"
+
+    result = subprocess.run(
+        ["/bin/zsh", "-f", "--no-rcs", str(macos_package / "MakeCode.command"), str(marker)],
+        cwd=marker.parent,
+        env={
+            "PATH": "/nonexistent",
+            "HOME": os.environ.get("HOME", str(tmp_path)),
+            "TERM": "dumb",
+        },
+        input="y\n",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "command not found: readlink" not in result.stderr
+    assert (internal / "Python").is_symlink()
+    assert (internal / "Python").readlink().as_posix() == "Python.framework/Versions/3.12/Python"
+    assert marker.exists()
+

@@ -39,7 +39,7 @@ if [[ -e "$INTERNAL_DIR/Python.framework/Versions/3.12/Python" ]]; then
         local path="$1"
         local target="$2"
         if [[ -L "$path" ]]; then
-            [[ "$(readlink "$path")" == "$target" ]] && return 0
+            [[ "$(/usr/bin/readlink "$path")" == "$target" ]] && return 0
         elif [[ -e "$path" ]]; then
             [[ -f "$path" ]] || return 0
             [[ "$(/bin/cat "$path")" == "$target" ]] || return 0
