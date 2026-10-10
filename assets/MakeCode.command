@@ -33,4 +33,36 @@ if print -r -- "$attributes" | /usr/bin/grep -q ': com\.apple\.quarantine$'; the
     fi
 fi
 
+INTERNAL_DIR="$APP_DIR/_internal"
+if [[ -e "$INTERNAL_DIR/Python.framework/Versions/3.12/Python" ]]; then
+    restore_python_symlink() {
+        local path="$1"
+        local target="$2"
+        if [[ -L "$path" ]]; then
+            [[ "$(readlink "$path")" == "$target" ]] && return 0
+        elif [[ -e "$path" ]]; then
+            [[ -f "$path" ]] || return 0
+            [[ "$(/bin/cat "$path")" == "$target" ]] || return 0
+        fi
+        /bin/rm -f "$path" || return 1
+        /bin/ln -s "$target" "$path"
+    }
+    restore_python_symlink "$INTERNAL_DIR/Python.framework/Versions/Current" "3.12" || {
+        print -u2 -r -- "无法修复 Python.framework 符号链接，未启动 MakeCode。"
+        exit 1
+    }
+    restore_python_symlink "$INTERNAL_DIR/Python.framework/Python" "Versions/Current/Python" || {
+        print -u2 -r -- "无法修复 Python.framework 符号链接，未启动 MakeCode。"
+        exit 1
+    }
+    restore_python_symlink "$INTERNAL_DIR/Python.framework/Resources" "Versions/Current/Resources" || {
+        print -u2 -r -- "无法修复 Python.framework 符号链接，未启动 MakeCode。"
+        exit 1
+    }
+    restore_python_symlink "$INTERNAL_DIR/Python" "Python.framework/Versions/3.12/Python" || {
+        print -u2 -r -- "无法修复 Python.framework 符号链接，未启动 MakeCode。"
+        exit 1
+    }
+fi
+
 exec "$APP_DIR/MakeCode" "$@"

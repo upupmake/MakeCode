@@ -811,7 +811,7 @@ python main.py
 For packaged releases:
 
 - **Windows X64**: Extract `MakeCode-Windows-X64.zip`, then run `MakeCode.exe`.
-- **macOS ARM64**: Extract `MakeCode-macOS-ARM64.zip`, then double-click the top-level `MakeCode.command`; it starts `MakeCode/MakeCode` in Terminal. Starting the frozen executable without a TTY also relaunches it in Terminal automatically.
+- **macOS ARM64**: Extract `MakeCode-macOS-ARM64.zip`, then double-click the top-level `MakeCode.command`; it starts `MakeCode/MakeCode` in Terminal. Starting the frozen executable without a TTY also relaunches it in Terminal automatically. If Finder extraction turns the `_internal/Python` symlink into a regular file, the launcher restores it before start.
 - **Linux X64**: Extract `MakeCode-Linux-X64.zip`, then run `./MakeCode/MakeCode`. If your extraction tool does not preserve executable permissions, first run `chmod +x MakeCode/MakeCode`.
 
 After startup, you will enter a wizard flow:

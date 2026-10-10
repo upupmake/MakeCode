@@ -786,7 +786,7 @@ python main.py
 打包版启动方式：
 
 - **Windows X64**：解压 `MakeCode-Windows-X64.zip` 后运行 `MakeCode.exe`。
-- **macOS ARM64**：解压 `MakeCode-macOS-ARM64.zip` 后双击顶层 `MakeCode.command`；脚本会在 Terminal 中启动 `MakeCode/MakeCode`。直接启动无 TTY 的冻结程序时也会自动重新拉起 Terminal。
+- **macOS ARM64**：解压 `MakeCode-macOS-ARM64.zip` 后双击顶层 `MakeCode.command`；脚本会在 Terminal 中启动 `MakeCode/MakeCode`。直接启动无 TTY 的冻结程序时也会自动重新拉起 Terminal。若访达解压把 `_internal/Python` 符号链接变成普通文件，启动器会在启动前自动修复。
 - **Linux X64**：解压 `MakeCode-Linux-X64.zip` 后运行 `./MakeCode/MakeCode`。若解压工具未保留执行权限，先运行 `chmod +x MakeCode/MakeCode`。
 
 启动后会进入向导流程：

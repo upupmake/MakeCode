@@ -184,3 +184,62 @@ def test_macos_launcher_xattr_failure_does_not_launch(macos_package, tmp_path, f
     assert result.returncode != 0
     assert not marker.exists()
 
+
+def _framework_python(package: Path) -> Path:
+    python_lib = package / "MakeCode" / "_internal" / "Python.framework" / "Versions" / "3.12" / "Python"
+    python_lib.parent.mkdir(parents=True)
+    python_lib.write_bytes(b"fake-python-dylib")
+    python_lib.chmod(0o755)
+    resources = python_lib.parent / "Resources"
+    resources.mkdir()
+    (resources / "Info.plist").write_text("<plist />", encoding="utf-8")
+    return python_lib
+
+
+def test_macos_launcher_restores_finder_extracted_python_symlinks(macos_package, tmp_path):
+    python_lib = _framework_python(macos_package)
+    internal = python_lib.parents[3]
+    (internal / "Python").write_text("Python.framework/Versions/3.12/Python", encoding="utf-8")
+    (internal / "Python.framework" / "Python").write_text("Versions/Current/Python", encoding="utf-8")
+    (internal / "Python.framework" / "Resources").write_text("Versions/Current/Resources", encoding="utf-8")
+    (internal / "Python.framework" / "Versions" / "Current").write_text("3.12", encoding="utf-8")
+    marker = tmp_path / "started"
+
+    result = _run_launcher(macos_package, marker)
+
+    assert result.returncode == 0, result.stderr
+    assert (internal / "Python").is_symlink()
+    assert (internal / "Python").readlink().as_posix() == "Python.framework/Versions/3.12/Python"
+    assert (internal / "Python.framework" / "Python").readlink().as_posix() == "Versions/Current/Python"
+    assert (internal / "Python.framework" / "Resources").readlink().as_posix() == "Versions/Current/Resources"
+    assert (internal / "Python.framework" / "Versions" / "Current").readlink().as_posix() == "3.12"
+    assert marker.exists()
+
+
+def test_macos_launcher_recreates_missing_python_symlink(macos_package, tmp_path):
+    python_lib = _framework_python(macos_package)
+    internal = python_lib.parents[3]
+    marker = tmp_path / "started"
+
+    result = _run_launcher(macos_package, marker)
+
+    assert result.returncode == 0, result.stderr
+    assert (internal / "Python").is_symlink()
+    assert (internal / "Python").readlink().as_posix() == "Python.framework/Versions/3.12/Python"
+    assert marker.exists()
+
+
+def test_macos_launcher_does_not_replace_regular_python_file(macos_package, tmp_path):
+    python_lib = _framework_python(macos_package)
+    internal = python_lib.parents[3]
+    decoy = internal / "Python"
+    decoy.write_text("not-a-symlink-target", encoding="utf-8")
+    marker = tmp_path / "started"
+
+    result = _run_launcher(macos_package, marker)
+
+    assert result.returncode == 0, result.stderr
+    assert decoy.is_file() and not decoy.is_symlink()
+    assert decoy.read_text(encoding="utf-8") == "not-a-symlink-target"
+    assert marker.exists()
+
