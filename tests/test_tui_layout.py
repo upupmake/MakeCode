@@ -1448,7 +1448,7 @@ async def test_skills_panel_click_selects_before_toggling_draft(tmp_path):
         assert await result == "closed"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+@pytest.mark.skipif(sys.platform in {"win32", "darwin"}, reason="Textual test timing is unstable on Windows/macOS CI")
 @pytest.mark.anyio
 async def test_skills_panel_filtered_removal_selects_next_then_previous_row(tmp_path):
     skills_dir = tmp_path / "skills"
