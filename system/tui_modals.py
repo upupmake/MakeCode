@@ -4350,7 +4350,7 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         label = Text()
         label.append("● ", style="#f59e0b")
         label.append(category)
-        label.append(f"  ·  创建 {created_at}  ·  更新 {updated_at}")
+        label.append(f"  ·  {created_at} → {updated_at}")
         label.append(f"\n   {insight or '（无内容）'}")
         label.append(f"\n   ID: {memory_id}")
         return label
