@@ -3048,6 +3048,9 @@ async def test_memory_panel_opens_selected_memory_in_detail_modal():
     async with app.run_test(size=(90, 30)) as pilot:
         await pilot.pause()
         assert not modal.query("#memory-detail")
+        listed = str(modal.query_one("#memory-list", ListView).children[0].query_one(Label).render())
+        assert "创建 2026-08-04 12:00:00" in listed
+        assert "更新 2026-08-04 12:01:00" in listed
 
         await pilot.press("enter")
         await pilot.pause()

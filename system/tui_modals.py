@@ -4341,6 +4341,7 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
     def _memory_label(self, item: dict[str, Any]) -> Text:
         memory_id = str(item.get("id", ""))
         category = str(item.get("category", "未分类"))
+        created_at = str(item.get("created_at", ""))
         updated_at = str(item.get("updated_at", ""))
         insight = " ".join(str(item.get("insight", "")).splitlines())
         if len(insight) > 160:
@@ -4349,7 +4350,7 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         label = Text()
         label.append("● ", style="#f59e0b")
         label.append(category)
-        label.append(f"  ·  {updated_at}")
+        label.append(f"  ·  创建 {created_at}  ·  更新 {updated_at}")
         label.append(f"\n   {insight or '（无内容）'}")
         label.append(f"\n   ID: {memory_id}")
         return label
