@@ -610,24 +610,23 @@ def _sorted_active_memory_records() -> list[dict]:
     return sort_memory_records(list_long_term_memories())
 
 
-def render_long_term_memory_markdown(include_evidence: bool = False) -> str:
+def _render_memory_record_markdown(record: dict) -> str:
+    lines = [
+        f"## {record.get('id', '')}",
+        f"- Category: {record.get('category', '')}",
+        f"- Updated at: {record.get('updated_at', '')}",
+        f"- Insight: {record.get('insight', '')}",
+        f"- Reuse condition: {record.get('reuse_condition', '')}",
+    ]
+    return "\n".join(lines)
+
+
+def render_long_term_memory_markdown() -> str:
     records = _sorted_active_memory_records()
     if not records:
         return ""
 
-    parts = []
-    for record in records:
-        lines = [
-            f"## {record.get('id', '')}",
-            f"- Category: {record.get('category', '')}",
-            f"- Updated at: {record.get('updated_at', '')}",
-            f"- Insight: {record.get('insight', '')}",
-        ]
-        if include_evidence:
-            lines.append(f"- Evidence: {record.get('evidence', '')}")
-        lines.append(f"- Reuse condition: {record.get('reuse_condition', '')}")
-        parts.append("\n".join(lines))
-    return "\n\n".join(parts)
+    return "\n\n".join(_render_memory_record_markdown(record) for record in records)
 
 
 def build_memory_recall_candidates(agent_id: str = ORCHESTRATOR_AGENT_ID) -> str:
@@ -706,18 +705,10 @@ def render_selected_memory_context(memory_ids: list[str]) -> str:
         return ""
 
     active_records = _active_memory_map()
-    parts = []
-    for memory_id in selected_ids:
-        record = active_records[memory_id]
-        lines = [
-            f"## {record.get('id', '')}",
-            f"- Category: {record.get('category', '')}",
-            f"- Updated at: {record.get('updated_at', '')}",
-            f"- Insight: {record.get('insight', '')}",
-            f"- Reuse condition: {record.get('reuse_condition', '')}",
-        ]
-        parts.append("\n".join(lines))
-    return "\n\n".join(parts)
+    return "\n\n".join(
+        _render_memory_record_markdown(active_records[memory_id])
+        for memory_id in selected_ids
+    )
 
 
 def prepend_recalled_memory_to_query(query: str, memory_context: str) -> str:
