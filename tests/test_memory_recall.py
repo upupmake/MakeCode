@@ -67,13 +67,19 @@ def build_memory_store(records: list[dict]) -> tuple[MemoryStore, tempfile.Tempo
 
 
 def install_memory_store(test_case, records: list[dict]) -> MemoryStore:
-    """构造临时 store 并通过 patch 接到 memory._MEMORY_STORE，测试结束自动还原/清理。"""
+    """构造临时 store 并通过 patch 接到 memory._MEMORY_STORE，测试结束自动还原/清理。
+
+    addCleanup 按 LIFO 执行，所以必须先注册 tmp_dir.cleanup 再注册 store.close：
+    这样实际执行时 store.close 会在 tmp_dir.cleanup 之前运行，确保 SQLite 连接
+    在删除临时目录前已关闭。若顺序反过来，Windows 上会因文件仍被进程打开而
+    报 PermissionError（macOS/Linux 对打开中的文件删除更宽容，不会暂露这个问题）。
+    """
     store, tmp_dir = build_memory_store(records)
     patcher = patch.object(memory, "_MEMORY_STORE", store)
     patcher.start()
     test_case.addCleanup(patcher.stop)
-    test_case.addCleanup(store.close)
     test_case.addCleanup(tmp_dir.cleanup)
+    test_case.addCleanup(store.close)
     memory._invalidate_document_frequency_cache()
     return store
 
