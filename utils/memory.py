@@ -899,13 +899,15 @@ def select_relevant_memory_ids(
         return []
 
     match_query = _build_match_query(terms, active_record_count)
-    excluded_ids = _get_recent_recalled_memory_ids(agent_id)
-    scored_ids = [
-        (memory_id, score)
-        for memory_id, score in store.search_fts(match_query)
-        if not excluded_ids or memory_id not in excluded_ids
-    ]
+    scored_ids = store.search_fts(match_query)
+    # 相对阈值的 top1 基准必须用排除前的全量结果计算，再对通过阈值的结果执行纯 id 剔除。
+    # 若在计算阈值前就剔除召回窗口里最近已召回的 id，而那正巧是全局 top1，
+    # 则 top1 会被替换成更低分的候选，阈值基准跟着下滑，让本来远远不足格的弱关联记忆
+    # 被误放行；连续多轮召回同一个 agent 的同类 query 时该问题会持续放大（已模拟验证）。
     selected_ids = _filter_by_relative_threshold(scored_ids)
+    excluded_ids = _get_recent_recalled_memory_ids(agent_id)
+    if excluded_ids:
+        selected_ids = [memory_id for memory_id in selected_ids if memory_id not in excluded_ids]
     _append_memory_recall_window(agent_id, selected_ids)
     return selected_ids
 
