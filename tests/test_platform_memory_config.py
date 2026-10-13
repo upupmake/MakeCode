@@ -3202,11 +3202,12 @@ async def test_memory_panel_requires_confirmation_before_delete():
     provider = Mock()
     provider.list_long_term_memories.side_effect = lambda: list(records)
 
-    def delete_memory(memory_id):
+    def delete_memory(memory_ids):
+        memory_id = memory_ids[0]
         records[:] = [record for record in records if record["id"] != memory_id]
-        return True
+        return {"deleted_ids": [memory_id], "missing_ids": []}
 
-    provider.delete_long_term_memory.side_effect = delete_memory
+    provider.delete_long_term_memories.side_effect = delete_memory
     modal = MemoryPanelModal(provider)
     app = ChoiceModalHost(modal)
 
@@ -3215,7 +3216,7 @@ async def test_memory_panel_requires_confirmation_before_delete():
         await pilot.press("d")
         await pilot.pause()
         assert "确认删除长期记忆" in str(modal.query_one("#memory-title", Label).render())
-        provider.delete_long_term_memory.assert_not_called()
+        provider.delete_long_term_memories.assert_not_called()
 
         await pilot.press("n")
         await pilot.press("d")
@@ -3223,7 +3224,7 @@ async def test_memory_panel_requires_confirmation_before_delete():
         await pilot.pause()
         await pilot.pause()
 
-        provider.delete_long_term_memory.assert_called_once_with("mem_delete")
+        provider.delete_long_term_memories.assert_called_once_with(["mem_delete"])
         assert "共 0 条 active 记忆" in str(modal.query_one("#memory-summary", Label).render())
         assert modal._deleted_ids == ["mem_delete"]
         assert app.status_refreshes == 1
@@ -3247,11 +3248,12 @@ async def test_memory_panel_selects_next_then_previous_memory_after_delete():
     provider = Mock()
     provider.list_long_term_memories.side_effect = lambda: list(records)
 
-    def delete_memory(memory_id):
+    def delete_memory(memory_ids):
+        memory_id = memory_ids[0]
         records[:] = [record for record in records if record["id"] != memory_id]
-        return True
+        return {"deleted_ids": [memory_id], "missing_ids": []}
 
-    provider.delete_long_term_memory.side_effect = delete_memory
+    provider.delete_long_term_memories.side_effect = delete_memory
     modal = MemoryPanelModal(provider)
     app = ChoiceModalHost(modal)
 

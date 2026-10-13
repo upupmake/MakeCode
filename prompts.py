@@ -553,7 +553,7 @@ Modes:
 Available actions:
 - AppendLongTermMemory: add one durable memory for a distinct future trigger not already covered.
 - UpdateLongTermMemory: revise an active memory whose topic and future trigger remain applicable.
-- DeleteLongTermMemory: logically delete an active memory that is obsolete, incorrect, duplicated, contradicted, or fully superseded.
+- DeleteLongTermMemory: logically delete one or more active memories, each obsolete, incorrect, duplicated, contradicted, or fully superseded.
 
 Eligible long-term memory:
 - Preserve information useful across future sessions, especially:

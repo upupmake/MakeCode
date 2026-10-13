@@ -4504,7 +4504,8 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         if self._pending_delete_id is None:
             return
         selected_index = self._pending_delete_index if self._pending_delete_index is not None else self._selected_index()
-        deleted = self._memory_provider.delete_long_term_memory(self._pending_delete_id)
+        result = self._memory_provider.delete_long_term_memories([self._pending_delete_id])
+        deleted = bool(result["deleted_ids"])
         if deleted:
             self._deleted_ids.append(self._pending_delete_id)
         self._reload_rows(selected_index)

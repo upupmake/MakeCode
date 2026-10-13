@@ -130,9 +130,13 @@ class AppendLongTermMemory(ToolArgumentsModel):
 
 
 class DeleteLongTermMemory(ToolArgumentsModel):
-    """Delete an active durable memory by ID only when it should no longer be recalled because it is obsolete, wrong, duplicated, or superseded."""
+    """Delete one or more active durable memories by ID only when each should no longer be recalled because it is obsolete, wrong, duplicated, or superseded."""
 
-    memory_id: str = Field(..., description="The active memory ID to delete after deciding it should no longer be recalled.")
+    memory_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Active memory IDs to delete after deciding each should no longer be recalled.",
+    )
 
 
 class UpdateLongTermMemory(ToolArgumentsModel):
@@ -240,20 +244,23 @@ def append_long_term_memory(
         return {**record, "path": MEMORY_JSONL_FILE.as_posix(), "deleted_overflow_ids": deleted_ids}
 
 
-def delete_long_term_memory(memory_id: str) -> bool:
+def delete_long_term_memories(memory_ids: list[str]) -> dict:
     with _MEMORY_RECORDS_LOCK:
         records = _read_memory_records(include_deleted=True)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        found = False
+        remaining_ids = set(memory_ids)
+        deleted_ids = []
         for record in records:
-            if record.get("id") == memory_id and record.get("status") == "active":
+            record_id = record.get("id")
+            if record_id in remaining_ids and record.get("status") == "active":
                 record["status"] = "deleted"
                 record["updated_at"] = now
-                found = True
-                break
-        if found:
+                deleted_ids.append(record_id)
+                remaining_ids.discard(record_id)
+        if deleted_ids:
             _write_memory_records(records)
-        return found
+        missing_ids = [memory_id for memory_id in memory_ids if memory_id in remaining_ids]
+        return {"deleted_ids": deleted_ids, "missing_ids": missing_ids}
 
 
 def update_long_term_memory(
@@ -281,10 +288,7 @@ def update_long_term_memory(
 
 LONG_TERM_MEMORY_TOOL_HANDLERS = {
     "AppendLongTermMemory": append_long_term_memory,
-    "DeleteLongTermMemory": lambda memory_id, **kwargs: {
-        "memory_id": memory_id,
-        "deleted": delete_long_term_memory(memory_id),
-    },
+    "DeleteLongTermMemory": lambda memory_ids, **kwargs: delete_long_term_memories(memory_ids),
     "UpdateLongTermMemory": update_long_term_memory,
 }
 
@@ -992,8 +996,8 @@ async def memory_agent_loop(
                         elif tool_name == "AppendLongTermMemory" and isinstance(output, dict):
                             tool_changed = True
                         elif tool_name == "DeleteLongTermMemory" and isinstance(output, dict):
-                            tool_changed = bool(output.get("deleted"))
-                            tool_error = not tool_changed
+                            tool_changed = bool(output.get("deleted_ids"))
+                            tool_error = bool(output.get("missing_ids")) and not tool_changed
                         elif tool_name == "UpdateLongTermMemory" and isinstance(output, dict):
                             tool_changed = True
                         memory_changed = memory_changed or tool_changed

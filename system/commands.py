@@ -35,7 +35,7 @@ from utils.mcp_config import parse_mcp_add_query
 from utils.memory_catalog import sort_memory_records
 from utils.plan_mode import toggle_plan_mode
 from utils.memory import (
-    delete_long_term_memory,
+    delete_long_term_memories,
     get_active_memory_count,
     get_compaction_thresholds,
     get_context_length,
@@ -1138,13 +1138,9 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             self.console.print("\n[bold yellow]用法：/memory-delete <memory_id> [memory_id ...][/bold yellow]")
             return current_conversation
 
-        deleted_ids = []
-        missing_ids = []
-        for memory_id in parts[1:]:
-            if delete_long_term_memory(memory_id):
-                deleted_ids.append(memory_id)
-            else:
-                missing_ids.append(memory_id)
+        result = delete_long_term_memories(parts[1:])
+        deleted_ids = result["deleted_ids"]
+        missing_ids = result["missing_ids"]
 
         conversation_path = current_conversation
         if deleted_ids:
