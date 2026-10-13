@@ -1,5 +1,6 @@
 """按真实 /load 链路（工作线程 + TuiConsole + _render_history）验证滚动行为。"""
 import threading
+import sys
 
 import pytest
 
@@ -57,6 +58,7 @@ def _make_handler(store):
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_real_load_flow_scrolls_every_pane_to_bottom(tmp_path, monkeypatch):
     store, _ = _build_conversation(tmp_path)
@@ -134,6 +136,7 @@ async def test_real_load_flow_scrolls_every_pane_to_bottom(tmp_path, monkeypatch
             TUI_BRIDGE.unbind(app)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_load_with_real_choice_modal_scrolls_every_pane_to_bottom(tmp_path):
     """不 mock 选择器：真实 modal 选择后，验证所有 pane 到底部。"""

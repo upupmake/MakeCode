@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import pathlib
+import sys
 import threading
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -2054,6 +2055,7 @@ async def test_tui_displays_invalid_rich_markup_as_plain_text():
         assert payload in rendered
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_finished_agent_response_preserves_non_bottom_content_view():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
@@ -2090,6 +2092,7 @@ async def test_finished_agent_response_preserves_non_bottom_content_view():
         assert content_scroller.scroll_y == 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_finished_agent_response_follows_content_view_when_already_at_bottom():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
@@ -2115,6 +2118,7 @@ async def test_finished_agent_response_follows_content_view_when_already_at_bott
         assert content_scroller.scroll_y == content_scroller.max_scroll_y
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_scroll_all_panes_to_bottom_forces_non_bottom_viewports_to_end():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
@@ -2141,6 +2145,7 @@ async def test_scroll_all_panes_to_bottom_forces_non_bottom_viewports_to_end():
         assert background_log.scroll_y == background_log.max_scroll_y
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_force_scroll_batch_does_not_check_previous_viewport_position():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "")

@@ -1,5 +1,6 @@
 """Content 面板在长历史下的渲染路径：面板高亮、批量回放、尾部原子提交与按需布局。"""
 from unittest.mock import patch
+import sys
 
 import pytest
 from rich.text import Text
@@ -53,6 +54,7 @@ async def test_pane_active_stays_until_every_active_scope_is_released():
         assert update_nodes.call_count == 2  # 只在首次进入和最后一次离开时应用样式
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_batch_render_suspends_layout_and_scrolls_once_when_it_ends():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "")

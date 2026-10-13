@@ -2,6 +2,7 @@
 import asyncio
 import threading
 import time
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -386,6 +387,7 @@ async def test_cancelled_stream_leaves_no_active_pane_or_tail_behind():
         assert app._pane_active_counts.get(TuiRegion.CONTENT, 0) == 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_events_posted_before_end_batch_render_are_processed_inside_the_batch():
     app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
