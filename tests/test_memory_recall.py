@@ -1,4 +1,3 @@
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -13,7 +12,6 @@ from prompts import get_orchestrator_system_prompt, get_sub_agent_system_prompt
 from utils import text_tokens
 from utils.common import truncate_output
 from utils.teams import build_sub_agent_recall_query, prepend_recalled_memory_to_sub_agent_prompt
-from utils import paths
 
 
 MEMORY_RECORDS = [
@@ -41,21 +39,6 @@ MEMORY_RECORDS = [
 def reset_recall_index():
     memory._MEMORY_FTS5_INDEX = None
     memory._MEMORY_FTS5_INDEX_SIGNATURE = None
-
-
-def load_real_active_memory_records() -> list[dict]:
-    """读取当前工作区真实的 .makecode/memory/memory.jsonl，仅用于只读集成测试断言，
-    不做任何写操作。"""
-    records = []
-    with paths.workspace_memory_jsonl_file().open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            record = json.loads(line)
-            if record.get("status") == "active":
-                records.append(record)
-    return records
 
 
 class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
@@ -210,24 +193,36 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
     # ---- recall_long_term_memories 整体流程（纯本地计算，无模型调用） ----
 
     async def test_recall_long_term_memories_returns_matching_ids_without_any_model_call(self):
-        records = load_real_active_memory_records()
+        records = [
+            {"id": "mem_old", "category": "workflow", "updated_at": "2026-01-01 00:00:00",
+             "insight": "old insight about legacy workflow handling with unrelated filler words filler words filler words",
+             "evidence": "old evidence should not be in candidates",
+             "reuse_condition": "when handling old workflow filler words filler words", "status": "active"},
+            {"id": "mem_new", "category": "project-convention", "updated_at": "2026-02-01 00:00:00",
+             "insight": "new insight should be injected about foo_bar_baz foo_bar_baz foo_bar_baz handling",
+             "evidence": "new evidence should not be injected",
+             "reuse_condition": "when handling new convention foo_bar_baz foo_bar_baz", "status": "active"},
+        ] + [
+            {"id": f"mem_bg_{i}", "category": "workflow", "updated_at": "2026-01-01 00:00:00",
+             "insight": f"some background note number {i} about routine maintenance tasks",
+             "reuse_condition": f"when doing routine task {i}", "status": "active"}
+            for i in range(10)
+        ]
         with patch.object(memory, "list_long_term_memories", return_value=records), \
                 patch.object(memory, "create_memory_management_llm_client") as create_client, \
                 patch.object(memory, "_touch_recalled_memories"):
-            result = await memory.recall_long_term_memories("memory_recall_model")
+            result = await memory.recall_long_term_memories("foo_bar_baz")
 
         self.assertIsNone(result.get("error"))
-        self.assertIn("mem_20261012_120144_de8a6759", result["ids"])
-        self.assertIn("mem_20261012_120144_de8a6759", result["content"])
-        self.assertIn("记忆配置面板", result["content"])
-        for record in records:
-            if record["id"] in result["ids"]:
-                self.assertNotIn(record.get("evidence", "__no_evidence_marker__"), result["content"])
+        self.assertIn("mem_new", result["ids"])
+        self.assertNotIn("mem_old", result["ids"])
+        self.assertIn("mem_new", result["content"])
+        self.assertIn("new insight should be injected about foo_bar_baz foo_bar_baz foo_bar_baz handling", result["content"])
+        self.assertNotIn("new evidence should not be injected", result["content"])
         create_client.assert_not_called()
 
     async def test_recall_long_term_memories_returns_empty_for_unrelated_query(self):
-        records = load_real_active_memory_records()
-        with patch.object(memory, "list_long_term_memories", return_value=records), \
+        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
                 patch.object(memory, "create_memory_management_llm_client") as create_client, \
                 patch.object(memory, "_touch_recalled_memories"):
             result = await memory.recall_long_term_memories("区块链 blockchain")
