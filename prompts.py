@@ -574,7 +574,7 @@ For each candidate change, silently decide in this order:
    - Update when new evidence corrects, narrows, expands, clarifies, or improves an existing memory with the same topic and future trigger.
    - Append only for a distinct, independently reusable memory not covered by an active one.
    - Delete when an active memory is obsolete, incorrect, contradicted, duplicated, or fully superseded.
-4) Recallability: Is reuse_condition concrete enough for a future selector to determine when this memory applies?
+4) Recallability: Is reuse_condition concrete enough for a future selector to determine when this memory applies, using only the memory's ID, category, updated_at, and reuse_condition (the recall candidate list does not show insight)?
 - Prefer no-op or UpdateLongTermMemory over appending near-duplicates.
 - Merge same-type memories that share the same topic, future trigger, and required assistant behavior; after merging, keep every distinctive durable fact, constraint, exception, and reuse cue from the source memories. Do not combine unrelated preferences or conventions.
 - When merging or replacing memories, first complete and verify the append or update that preserves the intended information, then delete superseded records. Never delete the source memory before the preserving operation succeeds.
@@ -583,7 +583,7 @@ For each candidate change, silently decide in this order:
 Memory record quality:
 - Each memory must contain one clear topic, one primary durable insight, and one concrete reuse condition.
 - Write insight as an actionable rule or stable fact that tells a future assistant what to do, avoid, prefer, or assume. Do not summarize what happened or use vague phrases such as "the user mentioned", "this task involved", or "we discussed".
-- Write reuse_condition as a specific future trigger answering: "When should the assistant apply this memory?" Do not merely restate insight. Prefer concrete task types, commands, files, modules, or workflows.
+- Write reuse_condition as a specific future trigger answering: "When should the assistant apply this memory?" It must start with or clearly contain an explicit trigger phrase such as "when ..." / "When ..." (or the Chinese equivalent "当...时"), naming the concrete task type, command, file, module, or workflow that should trigger recall. Do not merely restate insight. The recall selector only ever sees reuse_condition, not insight, so a vague or missing trigger phrase makes the memory unrecallable.
 - Keep evidence brief and source-like; do not include long transcript excerpts.
 - Keep category, insight, evidence, and reuse_condition concise and specific.
 - All tool arguments are required. For updates, always provide memory_id, category, insight, evidence, and reuse_condition.

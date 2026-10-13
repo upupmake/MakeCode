@@ -83,8 +83,9 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Category: workflow", candidates)
         self.assertIn("Updated at: 2026-01-01 00:00:00", candidates)
         self.assertIn("Reuse condition: when handling new convention", candidates)
-        self.assertIn("Insight: old insight should not be in candidates", candidates)
-        self.assertIn("Insight: new insight should be injected", candidates)
+        self.assertNotIn("Insight", candidates)
+        self.assertNotIn("old insight should not be in candidates", candidates)
+        self.assertNotIn("new insight should be injected", candidates)
         self.assertNotIn("evidence", candidates.lower())
         self.assertLess(candidates.index("mem_old"), candidates.index("mem_new"))
 
@@ -206,7 +207,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
     def test_memory_recall_message_places_user_request_at_bottom(self):
         messages = memory._get_memory_recall_messages(
             "本次用户请求",
-            "### mem_new\n- Insight: new insight",
+            "### mem_new\n- Reuse condition: when handling new convention",
             "上一轮 assistant 回复",
         )
 
@@ -216,7 +217,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             "## Previous Assistant Content\n\n"
             "上一轮 assistant 回复\n\n"
             "## Candidate Memories\n\n"
-            "### mem_new\n- Insight: new insight\n\n"
+            "### mem_new\n- Reuse condition: when handling new convention\n\n"
             "## Current User Request\n\n"
             "本次用户请求"
         )
@@ -224,7 +225,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
     def test_memory_recall_message_omits_empty_previous_assistant_content(self):
         messages = memory._get_memory_recall_messages(
             "本次用户请求",
-            "### mem_new\n- Insight: new insight",
+            "### mem_new\n- Reuse condition: when handling new convention",
             "",
         )
 
@@ -254,7 +255,8 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         first_user_payload = fake_client.messages_seen[0][1]["content"]
         self.assertIn("## Candidate Memories", first_user_payload)
         self.assertIn("mem_new", first_user_payload)
-        self.assertIn("new insight should be injected", first_user_payload)
+        self.assertIn("when handling new convention", first_user_payload)
+        self.assertNotIn("new insight should be injected", first_user_payload)
         self.assertNotIn("new evidence should not be injected", first_user_payload)
         self.assertIn("You did not call SelectRelevantMemories", fake_client.messages_seen[1][-1]["content"])
 
@@ -548,56 +550,6 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(memory._MEMORY_RECALL_WINDOWS["agent_a"], [["mem_new"], ["mem_old", "mem_new"]])
         memory._MEMORY_RECALL_WINDOWS = {}
 
-    def test_truncate_insight_short_text_not_truncated(self):
-        self.assertEqual(memory._truncate_insight("short insight"), "short insight")
-        self.assertEqual(memory._truncate_insight(""), "")
-        self.assertEqual(memory._truncate_insight(None), "")
-
-    def test_truncate_insight_long_text_truncated(self):
-        long_text = "甲" * 50 + "乙" * 50 + "丙" * 50  # 150 tokens
-        result = memory._truncate_insight(long_text)
-        self.assertIn("甲" * 50, result)
-        self.assertIn("丙", result)
-        self.assertIn("[...内容截断...]", result)
-        self.assertNotIn("乙", result)
-
-    def test_truncate_insight_boundary(self):
-        exact_100 = "甲" * 100
-        self.assertEqual(memory._truncate_insight(exact_100), exact_100)
-        over_100 = "甲" * 50 + "乙" * 51  # 101 tokens
-        result = memory._truncate_insight(over_100)
-        self.assertIn("[...内容截断...]", result)
-
-    def test_truncate_insight_uses_tokens_and_preserves_utf8_boundaries(self):
-        text = "𐍈" * 80 + "甲" * 80 + "𐍈" * 80
-        encoder = tiktoken.get_encoding("o200k_base")
-        tokens = encoder.encode(text, disallowed_special=())
-
-        result = memory._truncate_insight(text)
-        head, tail = result.split(" [...内容截断...] ")
-
-        self.assertEqual(
-            head,
-            encoder.decode_bytes(tokens[:50]).decode("utf-8", errors="ignore"),
-        )
-        self.assertEqual(
-            tail,
-            encoder.decode_bytes(tokens[-50:]).decode("utf-8", errors="ignore"),
-        )
-        self.assertNotIn("�", result)
-        self.assertLessEqual(memory.estimate_text_tokens(head), 50)
-        self.assertLessEqual(memory.estimate_text_tokens(tail), 50)
-        self.assertEqual(memory._truncate_insight(result), result)
-
-    def test_truncate_insight_does_not_count_existing_marker_tokens(self):
-        text = "甲" * 50 + " [...内容截断...] " + "乙" * 50
-        self.assertEqual(memory._truncate_insight(text), text)
-
-        over_limit = "甲" * 70 + " [...内容截断...] " + "乙" * 70
-        retruncated = memory._truncate_insight(over_limit)
-        self.assertEqual(retruncated, "甲" * 50 + " [...内容截断...] " + "乙" * 50)
-        self.assertEqual(retruncated.count("[...内容截断...]"), 1)
-
     def test_truncate_output_uses_exact_token_boundary(self):
         exact = "甲" * 12000
         over = "甲" * 6000 + "乙" * 6001
@@ -682,23 +634,6 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(head, "甲" * 6000)
         self.assertEqual(tail, "乙" * 6000)
         self.assertEqual(result.count("[...此处省略"), 1)
-
-    def test_recall_candidates_truncate_long_insight(self):
-        records = [
-            {
-                "id": "mem_long",
-                "category": "workflow",
-                "updated_at": "2026-01-01 00:00:00",
-                "insight": "甲" * 80 + "乙" * 80,  # 160 tokens
-                "reuse_condition": "test",
-                "status": "active",
-            },
-        ]
-        with patch.object(memory, "list_long_term_memories", return_value=records):
-            candidates = memory.build_memory_recall_candidates()
-        self.assertIn("甲" * 50, candidates)
-        self.assertIn("乙", candidates)
-        self.assertIn("[...内容截断...]", candidates)
 
     async def test_recall_tool_handler_returns_selected_context_without_real_model(self):
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
