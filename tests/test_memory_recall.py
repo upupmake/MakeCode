@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -8,6 +9,7 @@ import tiktoken
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import utils.memory as memory
+from utils.memory_catalog import MemoryStore
 from prompts import get_orchestrator_system_prompt, get_sub_agent_system_prompt
 from utils import text_tokens
 from utils.common import truncate_output
@@ -36,19 +38,54 @@ MEMORY_RECORDS = [
 ]
 
 
-def reset_recall_index():
-    memory._MEMORY_FTS5_INDEX = None
-    memory._MEMORY_FTS5_INDEX_SIGNATURE = None
+def build_memory_store(records: list[dict]) -> tuple[MemoryStore, tempfile.TemporaryDirectory]:
+    """构造一个临时磁盘 SQLite store 并写入给定 records，供测试直接对接新的
+    store 原语，不再 mock `list_long_term_memories` 或构造旧的内存 FTS5Index。"""
+    tmp_dir = tempfile.TemporaryDirectory()
+    store = MemoryStore(Path(tmp_dir.name) / "memory.db")
+    for record in records:
+        full_record = {
+            "id": record["id"],
+            "created_at": record.get("created_at", record.get("updated_at", "")),
+            "updated_at": record.get("updated_at", ""),
+            "category": record.get("category", ""),
+            "insight": record.get("insight", ""),
+            "evidence": record.get("evidence", ""),
+            "reuse_condition": record.get("reuse_condition", ""),
+            "status": record.get("status", "active"),
+        }
+        if full_record["status"] == "active":
+            store.insert_memory(full_record, fts_text=memory._memory_fts_text(full_record))
+        else:
+            # 直接插入后立刻软删，保留 deleted 记录在 memories 表但不进入 FTS。
+            store.insert_memory(
+                {**full_record, "status": "active"},
+                fts_text=memory._memory_fts_text(full_record),
+            )
+            store.soft_delete_memories([full_record["id"]], updated_at=full_record["updated_at"])
+    return store, tmp_dir
+
+
+def install_memory_store(test_case, records: list[dict]) -> MemoryStore:
+    """构造临时 store 并通过 patch 接到 memory._MEMORY_STORE，测试结束自动还原/清理。"""
+    store, tmp_dir = build_memory_store(records)
+    patcher = patch.object(memory, "_MEMORY_STORE", store)
+    patcher.start()
+    test_case.addCleanup(patcher.stop)
+    test_case.addCleanup(store.close)
+    test_case.addCleanup(tmp_dir.cleanup)
+    memory._invalidate_document_frequency_cache()
+    return store
 
 
 class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         memory._MEMORY_RECALL_WINDOWS = {}
-        reset_recall_index()
+        memory._invalidate_document_frequency_cache()
 
     def tearDown(self):
         memory._MEMORY_RECALL_WINDOWS = {}
-        reset_recall_index()
+        memory._invalidate_document_frequency_cache()
 
     # ---- 分词 ----
 
@@ -118,8 +155,13 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             {"id": "mem_2", "insight": "测试 其他", "reuse_condition": "when other"},
             {"id": "mem_3", "insight": "无关内容", "reuse_condition": "when unrelated"},
         ]
-        index = memory._MemoryFts5Index(records)
-        self.assertEqual(index.document_frequency.get("测试"), 2)
+        for record in records:
+            record.setdefault("category", "workflow")
+            record.setdefault("updated_at", "2026-01-01 00:00:00")
+            record.setdefault("evidence", "")
+        install_memory_store(self, records)
+        document_frequency = memory._get_document_frequency()
+        self.assertEqual(document_frequency.get("测试"), 2)
 
     def test_high_frequency_token_is_excluded_from_match_but_rare_term_still_hits(self):
         records = [
@@ -127,11 +169,16 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             for i in range(8)
         ]
         records.append({"id": "mem_target", "insight": "测试 独有关键字", "reuse_condition": "when 测试"})
-        index = memory._MemoryFts5Index(records)
+        for record in records:
+            record.setdefault("category", "workflow")
+            record.setdefault("updated_at", "2026-01-01 00:00:00")
+            record.setdefault("evidence", "")
+        store = install_memory_store(self, records)
         # “测试”在 9 条中全部出现，占比 100% > 0.4，应被排除出触发集合；
         # “独有关键字”被 jieba 切分为 [独有,关键,关键字]，这些 token 均只在 mem_target 出现，仍应命中。
         query_terms = memory._query_terms("独有关键字")
-        results = index.search(memory._query_terms("测试") + query_terms)
+        match_query = memory._build_match_query(memory._query_terms("测试") + query_terms, len(records))
+        results = store.search_fts(match_query)
         hit_ids = [memory_id for memory_id, _ in results]
         self.assertIn("mem_target", hit_ids)
         self.assertNotEqual(len(hit_ids), len(records))
@@ -141,9 +188,16 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             {"id": f"mem_{i}", "insight": "测试 商品", "reuse_condition": "when 测试"}
             for i in range(5)
         ]
-        index = memory._MemoryFts5Index(records)
+        for record in records:
+            record.setdefault("category", "workflow")
+            record.setdefault("updated_at", "2026-01-01 00:00:00")
+            record.setdefault("evidence", "")
+        store = install_memory_store(self, records)
         # 查询词全部是高频词时，兜底全部保留参与匹配，而不是查询直接落空。
-        results = index.search(memory._query_terms("测试") + memory._query_terms("商品"))
+        match_query = memory._build_match_query(
+            memory._query_terms("测试") + memory._query_terms("商品"), len(records)
+        )
+        results = store.search_fts(match_query)
         self.assertEqual(len(results), len(records))
 
     # ---- 筛选阈值 ----
@@ -183,9 +237,9 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
              "reuse_condition": f"when doing routine task {i}", "status": "active"}
             for i in range(10)
         ]
-        with patch.object(memory, "list_long_term_memories", return_value=records + background_records):
-            first = memory.select_relevant_memory_ids("foo_bar_baz", agent_id="agent_a")
-            second = memory.select_relevant_memory_ids("foo_bar_baz", agent_id="agent_a")
+        install_memory_store(self, records + background_records)
+        first = memory.select_relevant_memory_ids("foo_bar_baz", agent_id="agent_a")
+        second = memory.select_relevant_memory_ids("foo_bar_baz", agent_id="agent_a")
 
         self.assertEqual(first, ["mem_a"])
         self.assertEqual(second, [])
@@ -208,8 +262,8 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
              "reuse_condition": f"when doing routine task {i}", "status": "active"}
             for i in range(10)
         ]
-        with patch.object(memory, "list_long_term_memories", return_value=records), \
-                patch.object(memory, "create_memory_management_llm_client") as create_client, \
+        install_memory_store(self, records)
+        with patch.object(memory, "create_memory_management_llm_client") as create_client, \
                 patch.object(memory, "_touch_recalled_memories"):
             result = await memory.recall_long_term_memories("foo_bar_baz")
 
@@ -222,8 +276,8 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         create_client.assert_not_called()
 
     async def test_recall_long_term_memories_returns_empty_for_unrelated_query(self):
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_management_llm_client") as create_client, \
+        install_memory_store(self, MEMORY_RECORDS)
+        with patch.object(memory, "create_memory_management_llm_client") as create_client, \
                 patch.object(memory, "_touch_recalled_memories"):
             result = await memory.recall_long_term_memories("区块链 blockchain")
 
@@ -281,12 +335,12 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"ids": [], "content": "", "error": "boom"})
 
     def test_select_relevant_memory_ids_returns_empty_for_blank_query(self):
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS):
-            self.assertEqual(memory.select_relevant_memory_ids("   "), [])
+        install_memory_store(self, MEMORY_RECORDS)
+        self.assertEqual(memory.select_relevant_memory_ids("   "), [])
 
     def test_select_relevant_memory_ids_returns_empty_when_no_active_memories(self):
-        with patch.object(memory, "list_long_term_memories", return_value=[]):
-            self.assertEqual(memory.select_relevant_memory_ids("foo_bar_baz"), [])
+        install_memory_store(self, [])
+        self.assertEqual(memory.select_relevant_memory_ids("foo_bar_baz"), [])
 
     # ---- 子代理场景：TF-IDF 关键词提取 + 剥离模板包装 ----
 
@@ -316,8 +370,8 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("测试", terms)
 
     async def test_sub_agent_recall_path_uses_keyword_extraction(self):
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "_tokenize_query", return_value=["foo_bar_baz"]) as tokenize, \
+        install_memory_store(self, MEMORY_RECORDS)
+        with patch.object(memory, "_tokenize_query", return_value=["foo_bar_baz"]) as tokenize, \
                 patch.object(memory, "create_memory_management_llm_client") as create_client:
             query = build_sub_agent_recall_query("7", "Backend Developer", "实际的任务内容")
             await memory.recall_long_term_memories(query, agent_id="#7 - Backend Developer", use_keyword_extraction=True)
@@ -328,9 +382,9 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
     # ---- 其余保留行为 ----
 
     def test_selected_memory_context_filters_ids_and_excludes_evidence(self):
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS):
-            selected_ids = memory.normalize_memory_ids(["mem_new", "missing", "mem_new", "mem_old"])
-            context = memory.render_selected_memory_context(["mem_new", "missing", "mem_new"])
+        install_memory_store(self, MEMORY_RECORDS)
+        selected_ids = memory.normalize_memory_ids(["mem_new", "missing", "mem_new", "mem_old"])
+        context = memory.render_selected_memory_context(["mem_new", "missing", "mem_new"])
 
         self.assertEqual(selected_ids, ["mem_new", "mem_old"])
         self.assertIn("mem_new", context)
@@ -342,22 +396,29 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
     def test_touch_recalled_memories_updates_selected_active_records_only(self):
         records = [
-            {"id": "mem_selected", "status": "active", "updated_at": "old-selected"},
-            {"id": "mem_other", "status": "active", "updated_at": "old-other"},
-            {"id": "mem_deleted", "status": "deleted", "updated_at": "old-deleted"},
+            {"id": "mem_selected", "category": "workflow", "status": "active",
+             "created_at": "old-selected", "updated_at": "old-selected",
+             "insight": "selected insight", "evidence": "", "reuse_condition": "when selected"},
+            {"id": "mem_other", "category": "workflow", "status": "active",
+             "created_at": "old-other", "updated_at": "old-other",
+             "insight": "other insight", "evidence": "", "reuse_condition": "when other"},
+            {"id": "mem_deleted", "category": "workflow", "status": "deleted",
+             "created_at": "old-deleted", "updated_at": "old-deleted",
+             "insight": "deleted insight", "evidence": "", "reuse_condition": "when deleted"},
         ]
+        store = install_memory_store(self, records)
 
         fixed_datetime = Mock()
         fixed_datetime.now.return_value.strftime.return_value = "2026-07-21 12:34:56"
-        with patch.object(memory, "_read_memory_records", return_value=records), \
-                patch.object(memory, "_write_memory_records") as write_records, \
-                patch.object(memory, "datetime", fixed_datetime):
+        with patch.object(memory, "datetime", fixed_datetime):
             memory._touch_recalled_memories(["mem_selected", "mem_deleted", "missing"])
 
-        self.assertEqual(records[0]["updated_at"], "2026-07-21 12:34:56")
-        self.assertEqual(records[1]["updated_at"], "old-other")
-        self.assertEqual(records[2]["updated_at"], "old-deleted")
-        write_records.assert_called_once_with(records)
+        all_records = {r["id"]: r for r in store.list_all_memories()}
+        # mem_selected 是唯一 active 且在选中列表里的记忆，应被 touch。
+        self.assertEqual(all_records["mem_selected"]["updated_at"], "2026-07-21 12:34:56")
+        # mem_other 未被选中，不受影响；mem_deleted 已非 active，normalize 阶段被过滤，不会被 touch。
+        self.assertEqual(all_records["mem_other"]["updated_at"], "old-other")
+        self.assertEqual(all_records["mem_deleted"]["updated_at"], "old-deleted")
 
     def test_prepend_recalled_memory_to_query_only_changes_query_when_context_exists(self):
         original = "请处理当前项目的测试。"

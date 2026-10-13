@@ -83,8 +83,8 @@ def workspace_memory_dir() -> Path:
     return workspace_makecode_dir() / "memory"
 
 
-def workspace_memory_jsonl_file() -> Path:
-    return workspace_memory_dir() / "memory.jsonl"
+def workspace_memory_db_file() -> Path:
+    return workspace_memory_dir() / "memory.db"
 
 
 def workspace_memory_config_file() -> Path:

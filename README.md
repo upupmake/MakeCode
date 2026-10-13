@@ -200,9 +200,8 @@ Team 模块支持：
 - **决策消息生成**：当摘要为空时，记忆决策消息会省略 Summary 段落，而不是渲染空的 Summary 区块。
 - **全局上下文长度**：`memory_config.json` 中的 `context_length` 统一控制所有模型的上下文阈值，单位为千 tokens，默认 `350`；运行时每次使用前都会重新读取配置文件，超过阈值后自动压缩上下文。
 - **容量与淘汰策略**：长期记忆容量可配置；超出上限时，系统会按时间顺序淘汰较旧的 active 记忆。
-- **存储位置**：长期记忆保存于 `.makecode/memory/memory.jsonl`，记忆及全局上下文配置保存于 `.makecode/memory/memory_config.json`。
-- **容错读取**：读取记忆 JSONL 时会跳过无效行，并保持原文件内容不被重写。
-- **渲染顺序**：长期记忆渲染与 `/memory-panel` 面板均按 `updated_at` 升序排列（缺失时回退 `created_at`），只影响展示层，不改变 JSONL 存储顺序和增删改查逻辑。
+- **存储位置**：长期记忆保存于 SQLite 数据库 `.makecode/memory/memory.db`，记忆及全局上下文配置保存于 `.makecode/memory/memory_config.json`。数据库内含记录表 `memories` 和 FTS5 索引表 `memories_fts`（按 `insight`/`reuse_condition` 预分词建立的常驻全文索引），记忆的增删改查与召回检索均直接操作该文件，不再使用 JSONL。
+- **渲染顺序**：长期记忆渲染与 `/memory-panel` 面板均按 `updated_at` 升序排列（缺失时回退 `created_at`），只影响展示层，不改变数据库存储顺序和增删改查逻辑。
 
 #### 长期记忆命令
 
@@ -511,7 +510,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
     - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 以及内置技能目录 `skills/` 均位于对应的共享配置目录。
     - macOS 打包版的语法校验缓存位于 `~/Library/Application Support/MakeCode/ts_cache/`；Windows、Linux 与源码运行仍使用 `install_dir/ts_cache/`。
 - **工作区目录（Workdir）**：用户当前交互选择的工程目录，存放会话/任务相关的状态。
-    - `conversations/`、`memory/memory.jsonl`、`memory/memory_config.json` 和 `transcripts/` 均位于 `workdir/.makecode/`。
+    - `conversations/`、`memory/memory.db`、`memory/memory_config.json` 和 `transcripts/` 均位于 `workdir/.makecode/`。
     - 用户技能默认位于 `workdir/.makecode/skills/`，旧路径 `workdir/skills/` 仍兼容。
 
 #### 核心 API
@@ -523,7 +522,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 - `paths.install_ts_cache_dir()`：返回语法校验缓存目录；Windows、Linux 与源码运行为 `install_dir/ts_cache/`，macOS 打包版为 `~/Library/Application Support/MakeCode/ts_cache/`。
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`：分别返回 `workdir/.makecode/skills/` 与兼容旧路径 `workdir/skills/`。
 - `paths.workspace_disabled_skills_file()`：返回项目级 Skills 禁用列表 `workdir/.makecode/disabled_skills.json`。
-- 面向会话/记忆/转录/MCP/模型配置的各级 getter（如 `workspace_conversations_dir()`、`workspace_memory_jsonl_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
+- 面向会话/记忆/转录/MCP/模型配置的各级 getter（如 `workspace_conversations_dir()`、`workspace_memory_db_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
 
 #### 设计收益
 
@@ -654,7 +653,7 @@ flowchart TD
 
     S --> SK["install/workdir .makecode/skills\nlegacy workdir/skills"]
     MM --> TR[".makecode/transcripts/"]
-    MM --> LTM[".makecode/memory/memory.jsonl"]
+    MM --> LTM[".makecode/memory/memory.db"]
     TM --> TP[".makecode/conversations/<id>/task_plan.json"]
     T --> TH[".makecode/conversations/<id>/sub_agents/"]
     MCP --> MC["mcp_config.json\nshared config dir"]
