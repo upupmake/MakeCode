@@ -534,7 +534,7 @@ def test_responses_preserves_strict_for_all_builtin_tools():
              + main_module.MEMORY_SELF_MANAGEMENT_TOOLS + main_module.SKILL_TOOLS
              + main_module.TASK_MANAGER_TOOLS + main_module.TEAM_TOOLS + main_module.ASK_USER_TOOLS
              + main_module.UNDERSTAND_IMAGE_TOOLS + main_module.TITLE_GENERATION_TOOLS
-             + memory.LONG_TERM_MEMORY_TOOLS + memory.MEMORY_RECALL_SELECTION_TOOLS + TODO_TOOLS)
+             + memory.LONG_TERM_MEMORY_TOOLS + TODO_TOOLS)
 
     definitions = [candidate for tool in tools
                    for candidate in (tool["tools"] if tool.get("type") == "namespace" else [tool])]
@@ -2433,14 +2433,14 @@ def assert_auxiliary_tool_continuation(first, second):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("operation", ["title", "recall", "memory"])
+@pytest.mark.parametrize("operation", ["title", "memory"])
 async def test_auxiliary_tool_loops_use_real_protocol_adapters(operation, auxiliary_gateway, monkeypatch):
     import main as main_module
     from utils import memory
 
     gateway = auxiliary_gateway
-    names = {"title": "GenerateConversationTitle", "recall": "SelectRelevantMemories", "memory": "AppendLongTermMemory"}
-    valid = {"title": {"title": "Test title"}, "recall": {"memory_ids": ["mem_test"]},
+    names = {"title": "GenerateConversationTitle", "memory": "AppendLongTermMemory"}
+    valid = {"title": {"title": "Test title"},
              "memory": {"category": "workflow", "insight": "rule", "evidence": "test", "reuse_condition": "trigger"}}
     for arguments in ({**valid[operation], "unexpected": True}, valid[operation]):
         gateway.replies.append({"calls": [{"id": "call_aux", "name": names[operation], "arguments": arguments}]})
@@ -2452,8 +2452,6 @@ async def test_auxiliary_tool_loops_use_real_protocol_adapters(operation, auxili
                                           {"type": "image", "data": b"private-image"}]},
         ])
         assert await main_module.generate_title(source) == "Test title"
-    elif operation == "recall":
-        assert await memory.select_relevant_memory_ids("recall input") == ["mem_test"]
     else:
         gateway.replies.append({"text": "memory done"})
         result = await memory.manual_memory_update("save rule", [{"role": "user", "content": "memory input"}])
@@ -2537,7 +2535,7 @@ async def test_understand_image_uses_real_dedicated_protocol(failure, auxiliary_
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("operation", ["title", "recall", "memory", "summary", "partial_memory"])
+@pytest.mark.parametrize("operation", ["title", "memory", "summary", "partial_memory"])
 async def test_auxiliary_request_failures_close_clients_without_committing_history(
     operation, auxiliary_gateway, auxiliary_history, monkeypatch,
 ):
@@ -2550,9 +2548,6 @@ async def test_auxiliary_request_failures_close_clients_without_committing_histo
     gateway.replies.append({"error": True})
     if operation == "title":
         assert await main_module.generate_title("test") is None
-    elif operation == "recall":
-        result = await memory.recall_long_term_memories("test")
-        assert result["ids"] == [] and "auxiliary failure" in result["error"]
     elif operation == "memory":
         assert await memory.manual_memory_update("test", auxiliary_history) == []
     elif operation == "summary":

@@ -39,46 +39,6 @@ def test_render_current_workdir_preserves_windows_drive_root():
     assert Text.from_markup(payload).plain == "📂 当前工作目录: D:\\"
 
 
-MEMORY_RECORDS = [
-    {
-        "id": "mem_a",
-        "category": "workflow",
-        "updated_at": "2026-01-01 00:00:00",
-        "insight": "a",
-        "reuse_condition": "when a",
-        "status": "active",
-    }
-]
-
-
-class FakeRecallClient:
-    def __init__(self, selected_ids=None):
-        self.selected_ids = selected_ids or ["mem_a"]
-        self.generate_calls = 0
-        self.messages = []
-
-    def format_tools(self, tools):
-        return tools
-
-    async def generate_stream(self, messages, tools):
-        self.generate_calls += 1
-        self.messages.append(list(messages))
-        tool_calls = [{
-            "id": "call_1",
-            "name": "SelectRelevantMemories",
-            "arguments": json.dumps({"memory_ids": self.selected_ids}),
-            "raw": {},
-        }]
-        yield {
-            "type": "done",
-            "result": SimpleNamespace(
-                text="",
-                tool_calls=tool_calls,
-                assistant_message={"role": "assistant", "content": ""},
-            ),
-        }
-
-
 def test_model_manager_persists_and_updates_model_alias(tmp_path):
     manager = ModelManager(tmp_path)
     models = manager.add_model(
@@ -394,19 +354,6 @@ def test_create_memory_management_llm_client_uses_configured_model_and_falls_bac
     mock_manager3.get_current_model.return_value = None
     with patch("utils.llm_client.get_model_manager", return_value=mock_manager3):
         assert create_memory_management_llm_client() is None
-
-
-@pytest.mark.anyio
-async def test_select_relevant_memory_ids_uses_dedicated_recall_client():
-    recall_client = FakeRecallClient()
-
-    with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-            patch.object(memory, "create_memory_management_llm_client", return_value=recall_client):
-        selected = await memory.select_relevant_memory_ids("query")
-
-    assert selected == ["mem_a"]
-    assert recall_client.generate_calls == 1
-    memory._MEMORY_RECALL_WINDOWS = {}
 
 
 def test_append_long_term_memory_evicts_least_recently_updated(tmp_path, monkeypatch):
@@ -4873,20 +4820,6 @@ async def test_async_chat_stream_builds_unified_result_and_usage():
         "tools",
     }
     assert raw_stream.closed is True
-
-
-@pytest.mark.anyio
-async def test_select_relevant_memory_ids_closes_temporary_recall_client():
-    recall_client = FakeRecallClient()
-    recall_client.client = Mock()
-
-    with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-            patch.object(memory, "create_memory_management_llm_client", return_value=recall_client):
-        selected = await memory.select_relevant_memory_ids("query")
-
-    assert selected == ["mem_a"]
-    recall_client.client.close.assert_called_once_with()
-    memory._MEMORY_RECALL_WINDOWS = {}
 
 
 def test_previous_assistant_content_is_selected_for_user_pre_recall():
