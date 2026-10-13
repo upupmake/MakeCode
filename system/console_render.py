@@ -8,7 +8,7 @@ from typing import Any
 
 from markdown_it import MarkdownIt
 from rich import box
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
@@ -17,6 +17,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
+from system.tui_mode import is_simple_mode
 from system.tool_render import (
     format_tool_arguments,
     format_tool_call_block,
@@ -142,17 +143,25 @@ def render_preview_user_message(text: str) -> CopyablePanel:
     )
 
 
+# 解析器实例复用：原先每解析一段都新建并重新配置一次 MarkdownIt，
+# 实测占单次解析耗时的约 60%（0.587ms → 0.234ms/段）。
+# markdown-it-py 的 parse() 自身不持有状态（每次新建 StateCore），可安全复用。
+_MODEL_MARKDOWN_PARSER = (
+    MarkdownIt()
+    .disable(["html_block", "html_inline"])
+    .enable("strikethrough")
+    .enable("table")
+)
+
+
 def _parse_model_markdown(text: str):
-    return (
-        MarkdownIt()
-        .disable(["html_block", "html_inline"])
-        .enable("strikethrough")
-        .enable("table")
-        .parse(text)
-    )
+    return _MODEL_MARKDOWN_PARSER.parse(text)
 
 
-def render_model_markdown(text: str) -> Markdown:
+def render_model_markdown(text: str) -> RenderableType:
+    # simple 模式跳过 markdown-it 解析与 Markdown 渲染，直接输出纯文本。
+    if is_simple_mode():
+        return Text(text)
     markdown = Markdown(text)
     markdown.parsed = _parse_model_markdown(text)
     return markdown
@@ -168,7 +177,18 @@ class CopyableMarkdown(Markdown):
         self.parsed = _parse_model_markdown(text)
 
 
-def render_copyable_markdown(text: str, copy_text: str | None = None) -> CopyableMarkdown:
+class CopyableText(Text):
+    """simple 模式下的纯文本正文块，接口与 CopyableMarkdown 保持一致。"""
+
+    def __init__(self, text: str, copy_text: str | None = None) -> None:
+        super().__init__(text)
+        self.copy_text = text if copy_text is None else copy_text
+        self.group_stream_blocks = True
+
+
+def render_copyable_markdown(text: str, copy_text: str | None = None) -> RenderableType:
+    if is_simple_mode():
+        return CopyableText(text, copy_text=copy_text)
     return CopyableMarkdown(text, copy_text=copy_text)
 
 

@@ -29,6 +29,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Collapsible, Footer, Input, Label, RichLog, Static, TextArea
 
 from system.clipboard import copy_to_system_clipboard, strip_invisible_characters
+from system.tui_mode import is_simple_mode
 from utils.vision import image_reference_marker
 from system.tui_types import (
     TuiEvent,
@@ -66,6 +67,25 @@ from utils.terminal import set_terminal_title
 
 COMPACT_WIDTH = 140
 CUSTOM_CONVERSATION_TITLE_PREFIX = "\x00makecode-custom-title:"
+
+# 状态栏刷新合并窗口：流式输出期间每个内容块都会请求刷新状态栏，
+# 这里合并成一次刷新，避免每块都做一次 provider 调用和 DOM 更新。
+RUNTIME_REFRESH_INTERVAL = 0.25
+
+# CONTENT 区挂载块上限。超过后把最旧的一批块压实成单个纯文本归档块，
+# 避免 VerticalScroll 子控件无限增长导致每次布局都要遍历全部子控件。
+CONTENT_BLOCK_LIMIT = 160
+# 压实目标：一次压到这个块数以下，而不是每轮只清固定块数。
+# 原先「固定清 80 块 × 最多 8 轮」意味着单次压实最多只能清 640 块，
+# 遇到一次性投递的长会话（/load 走 begin_tui_batch_render，是同步突发）
+# 会追不上、压不干净且不再自我修正。
+CONTENT_COMPACT_TARGET = 80
+# 安全上限：正常情况下一次压实即可达标，这个循环只兜底异常情况。
+CONTENT_COMPACT_MAX_PASSES = 8
+
+# 右侧 RichLog 面板保留的条目上限，超出后丢弃最旧的条目。
+# 条目有上限后，resize 触发的全量重排成本也被限制在上限之内。
+RICHLOG_MAX_ENTRIES = 400
 
 
 def _log_bridge_error(exc: Exception) -> None:
@@ -646,6 +666,17 @@ class TuiBridge:
         else:
             app.call_from_thread(app.open_directory_picker_for_input, True)
 
+    def apply_simple_mode(self) -> None:
+        """把当前的 simple 模式状态套用到已挂载的界面上。"""
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return
+        if self._is_app_thread():
+            app.apply_simple_mode()
+        else:
+            app.call_from_thread(app.apply_simple_mode)
+
 
 TUI_BRIDGE = TuiBridge()
 
@@ -884,6 +915,52 @@ ReasoningCollapsible = InlineCollapsible
 ToolsCollapsible = InlineCollapsible
 
 
+def _static_renderable(widget: Widget) -> Any:
+    """取 Static 系列控件持有的渲染对象（不同 Textual 版本属性名不同）。
+
+    属性名沿革（实测）：
+      * Textual 8.2.8 的 `Static` 把内容存在 name-mangled 的 `_Static__content`，
+        对外只通过 `content` 属性暴露；**没有** `renderable` / `_renderable`。
+      * 更早/更晚的版本用过 `renderable` 或 `_renderable`。
+    所以三个都要试，顺序无所谓——取到第一个非 None 即可。
+    """
+    for attr in ("renderable", "_renderable", "content"):
+        try:
+            value = getattr(widget, attr, None)
+        except Exception:
+            value = None
+        if value is not None:
+            return value
+    return None
+
+
+def _renderable_plain_text(renderable: Any) -> str:
+    """把渲染对象降级成纯文本，供旧块压实与归档使用。"""
+    if renderable is None:
+        return ""
+    if isinstance(renderable, str):
+        return renderable
+    if isinstance(renderable, Text):
+        return renderable.plain
+    markdown_source = getattr(renderable, "markup", None)
+    if isinstance(markdown_source, str):
+        return markdown_source
+    inner = getattr(renderable, "renderable", None)
+    if inner is not None and inner is not renderable:
+        return _renderable_plain_text(inner)
+    try:
+        return str(renderable)
+    except Exception:
+        return ""
+
+
+def _payload_plain_text(payload: Any) -> str:
+    copy_text = getattr(payload, "copy_text", None)
+    if isinstance(copy_text, str) and copy_text.strip():
+        return copy_text
+    return _renderable_plain_text(payload)
+
+
 class TuiRichLog(RichLog):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -899,11 +976,41 @@ class TuiRichLog(RichLog):
     def _can_render(self) -> bool:
         return self._size_known and self._content_width() > 0
 
+    def _is_at_bottom(self) -> bool:
+        return bool(self.is_vertical_scroll_end or self.scroll_y >= self.max_scroll_y - 1)
+
     def _schedule_reflow(self) -> None:
+        # 连续 resize 只会安排一次重排，下一次刷新时机统一执行。
         if self._reflow_scheduled:
             return
         self._reflow_scheduled = True
         self.call_after_refresh(self._reflow_if_needed)
+
+    def _trim_entries_if_needed(self) -> None:
+        """超出条目上限时丢弃最旧的一批并重建，避免历史无限累积。
+
+        重建后 resize 重排的成本被限制在上限之内，而不是随会话线性增长。
+        """
+        overflow = len(self._render_entries) - RICHLOG_MAX_ENTRIES
+        if overflow <= 0 or self._reflowing:
+            return
+        del self._render_entries[:overflow]
+        if not self._can_render():
+            self._rendered_entry_count = 0
+            self._last_render_width = None
+            return
+        was_at_bottom = self._is_at_bottom()
+        self._reflowing = True
+        try:
+            super().clear()
+            for content, entry_width, expand, shrink, _scroll_end, _animate in self._render_entries:
+                self._write_without_recording(content, entry_width, expand, shrink, False, False)
+            self._rendered_entry_count = len(self._render_entries)
+            self._last_render_width = self._content_width()
+        finally:
+            self._reflowing = False
+        if was_at_bottom:
+            self.scroll_end(animate=False, x_axis=False)
 
     def _write_without_recording(
         self,
@@ -952,6 +1059,8 @@ class TuiRichLog(RichLog):
             self._last_render_width = self._content_width()
         else:
             self._render_entries.append((stored_content, width, expand, shrink, scroll_end, animate))
+        if not self._reflowing:
+            self._trim_entries_if_needed()
         return self
 
     def clear(self) -> "TuiRichLog":
@@ -974,7 +1083,7 @@ class TuiRichLog(RichLog):
         if self._rendered_entry_count == len(self._render_entries) and self._last_render_width == width:
             return
 
-        was_at_bottom = self.is_vertical_scroll_end or self.scroll_y >= self.max_scroll_y - 1
+        was_at_bottom = self._is_at_bottom()
         old_scroll_y = self.scroll_y
         self._reflowing = True
         try:
@@ -1349,6 +1458,14 @@ class MakeCodeTuiApp(App[None]):
         self._batch_force_scroll = False
         self._batch_runtime_dirty = False
         self._batch_update: AbstractContextManager[None] | None = None
+        # 状态栏/用量条引用缓存：这两个控件在每次内容事件里都会被访问，
+        # 缓存后省掉重复的 CSS 选择器查询。
+        self._runtime_bar: Static | None = None
+        self._token_bar: TokenUsageBar | None = None
+        self._runtime_refresh_pending = False
+        self._runtime_last_refresh = 0.0
+        self._clock_timer = None
+        self._compaction_pending = False
         self._quick_panel_expanded = True
         self.title = "MakeCode"
         self.sub_title = "🎬 Act · Ready"
@@ -1444,12 +1561,16 @@ class MakeCodeTuiApp(App[None]):
         self._update_input_title()
         self._update_hitl_button()
         self.query_one("#quick-conversation-history", Button).disabled = self._agent_loop_active
+        self._runtime_bar = self.query_one("#runtime-info-bar", Static)
+        self._token_bar = self.query_one("#token-usage-bar", TokenUsageBar)
         self._update_runtime_info()
         self.refresh_token_usage()
         self._update_clock()
         self._update_responsive_layout()
         self.set_interval(0.5, self._check_responsive_layout)
-        self.set_interval(1.0, self._update_clock)
+        # simple 模式不再每秒强制刷新一次时钟。
+        if not is_simple_mode():
+            self._clock_timer = self.set_interval(1.0, self._update_clock)
         TUI_BRIDGE.bind(self)
         from utils.tasks import render_task_pane
 
@@ -1521,6 +1642,15 @@ class MakeCodeTuiApp(App[None]):
 
     def _apply_responsive_layout(self) -> None:
         left_column = self.query_one("#left-column", Vertical)
+        if is_simple_mode():
+            # simple 模式：只保留对话区与输入框，其余面板全部隐藏。
+            left_column.set_class(False, "hidden")
+            self.query_one("#right-column", Vertical).set_class(True, "hidden")
+            self.query_one("#quick-panel-shell", Vertical).set_class(True, "hidden")
+            self.query_one("#quick-panel-toggle", Button).set_class(True, "hidden")
+            self.query_one("#compact-pane-toggle", Button).set_class(True, "hidden")
+            self._update_conversation_title()
+            return
         right_column = self.query_one("#right-column", Vertical)
         toggle = self.query_one("#compact-pane-toggle", Button)
         compact = self._last_responsive_width < COMPACT_WIDTH
@@ -1542,6 +1672,35 @@ class MakeCodeTuiApp(App[None]):
         right_column.set_class(not self._right_column_visible, "hidden")
         toggle.set_class(False, "hidden")
         toggle.label = "隐藏运行面板 F6" if self._right_column_visible else "运行面板 F6"
+
+    def apply_simple_mode(self) -> None:
+        """应用当前的 simple 模式状态到界面（面板可见性、日志清理、定时器）。"""
+        simple = is_simple_mode()
+        if simple:
+            # 隐藏面板里的日志已不再写入，先清掉已有内容，避免它们继续占用重排成本。
+            for log in self._logs.values():
+                try:
+                    log.clear()
+                except Exception:
+                    pass
+            # 进入 simple 模式时清掉可能残留的尾部预览内容。
+            for region in self._tails:
+                self._update_tail(region, "")
+        self._apply_responsive_layout()
+        if not simple:
+            # 回到完整模式时补一次状态，避免状态栏停在旧值。
+            self._update_runtime_info()
+            self.refresh_token_usage()
+            if self._clock_timer is None:
+                self._clock_timer = self.set_interval(1.0, self._update_clock)
+        else:
+            if self._clock_timer is not None:
+                self._clock_timer.stop()
+                self._clock_timer = None
+        try:
+            self.query_one("#input-box", MakeCodeInput).focus()
+        except Exception:
+            pass
 
     def action_toggle_compact_panes(self) -> None:
         if self.size.width >= COMPACT_WIDTH:
@@ -1714,8 +1873,30 @@ class MakeCodeTuiApp(App[None]):
     def _mark_runtime_dirty(self) -> None:
         if self._batch_render_depth > 0:
             self._batch_runtime_dirty = True
-        else:
-            self._update_runtime_info()
+            return
+        self._schedule_runtime_refresh()
+
+    def _schedule_runtime_refresh(self) -> None:
+        """合并高频状态栏刷新请求。
+
+        流式输出期间每个内容块都会调用一次，这里合并成一个刷新窗口，
+        避免每块都做一次 provider 调用和控件更新。
+        """
+        if self._runtime_refresh_pending:
+            return
+        now = time.monotonic()
+        elapsed = now - self._runtime_last_refresh
+        if elapsed < RUNTIME_REFRESH_INTERVAL:
+            self._runtime_refresh_pending = True
+            self.set_timer(RUNTIME_REFRESH_INTERVAL - elapsed, self._flush_runtime_refresh)
+            return
+        self._runtime_last_refresh = now
+        self._update_runtime_info()
+
+    def _flush_runtime_refresh(self) -> None:
+        self._runtime_refresh_pending = False
+        self._runtime_last_refresh = time.monotonic()
+        self._update_runtime_info()
 
     def handle_tui_event(self, event: TuiEvent) -> None:
         if event.region == TuiRegion.STATUS:
@@ -1725,10 +1906,19 @@ class MakeCodeTuiApp(App[None]):
                 self._update_runtime_info()
             return
         if event.region == TuiRegion.RUNTIME_INFO:
-            runtime_info = self.query_one("#runtime-info-bar", Static)
+            runtime_info = self._runtime_info_bar()
             value = str(event.payload)
-            if runtime_info.content != value:
+            if runtime_info is not None and runtime_info.content != value:
                 runtime_info.update(value, layout=False)
+            return
+        if is_simple_mode() and event.region in {
+            TuiRegion.TASK,
+            TuiRegion.BACKGROUND,
+            TuiRegion.SUB_AGENT,
+        }:
+            # simple 模式下这三个面板已隐藏，写入只是白白付出渲染成本。
+            if event.clear:
+                self._update_tail(event.region, "")
             return
 
         log = self._logs.get(event.region)
@@ -1839,10 +2029,113 @@ class MakeCodeTuiApp(App[None]):
                 )
             )
         else:
+            # 记录纯文本，供后续旧块压实时还原内容。
+            block.copy_text = _payload_plain_text(event.payload)
             container.mount(block)
         if was_at_bottom:
             self._defer_or_scroll_now(event.region, container)
+        self._schedule_content_compaction(container)
         self._mark_runtime_dirty()
+
+    def _child_plain_text(self, child: Widget) -> str:
+        """取一个顶层内容控件的纯文本表示（含折叠容器内部的所有块）。"""
+        copy_text = getattr(child, "copy_text", None)
+        if isinstance(copy_text, str) and copy_text.strip():
+            return copy_text
+        pieces: list[str] = []
+        for block in child.query(ContentBlock):
+            text = getattr(block, "copy_text", None)
+            if not isinstance(text, str) or not text.strip():
+                text = _renderable_plain_text(_static_renderable(block))
+            if text and text.strip():
+                pieces.append(text.rstrip())
+        if pieces:
+            return "\n\n".join(pieces)
+        return _renderable_plain_text(_static_renderable(child))
+
+    def _schedule_content_compaction(self, container: Widget) -> None:
+        """必要时安排一次内容块压实（真正的移除需要 await，必须异步执行）。"""
+        if container is None or self._compaction_pending:
+            return
+        if len(container.children) <= CONTENT_BLOCK_LIMIT:
+            return
+        self._compaction_pending = True
+        self.run_worker(
+            self._compact_content_blocks(container),
+            group="content-compaction",
+            exclusive=True,
+        )
+
+    async def _compact_content_blocks(self, container: Widget) -> None:
+        """把最旧的内容块反复压实，直到数量回到上限以内。
+
+        VerticalScroll 会对容器内所有子控件重新布局，子控件数量随会话线性增长时
+        每次追加的成本也随之增长。压实把数量压在上限附近，代价是最旧的内容
+        从 Markdown 排版降级为纯文本（原文保留，仍可复制）。
+        """
+        try:
+            # 一次性突发写入可能远超上限，多压几轮直到回到上限内。
+            for _ in range(CONTENT_COMPACT_MAX_PASSES):
+                if not await self._compact_content_once(container):
+                    break
+        finally:
+            self._compaction_pending = False
+
+    async def _compact_content_once(self, container: Widget) -> bool:
+        """压实最旧的一批块，返回是否真的压实了。"""
+        children = list(container.children)
+        if len(children) <= CONTENT_BLOCK_LIMIT:
+            return False
+        # 一次清到目标以下：突发写入多少块都能一次追上，
+        # 不像固定批量那样受「每轮上限 × 轮数」的硬天花板限制。
+        remove_count = max(len(children) - CONTENT_COMPACT_TARGET, 1)
+        oldest = children[:remove_count]
+        active_widgets = (
+            self._active_content_copy_group,
+            self._active_reasoning_collapsible,
+            self._active_tools_collapsible,
+        )
+        if any(widget is not None and widget in oldest for widget in active_widgets):
+            return False
+        pieces = [
+            text.rstrip()
+            for text in (self._child_plain_text(child) for child in oldest)
+            if text.strip()
+        ]
+        if not pieces:
+            return False
+        old_scroll_y = container.scroll_y
+        old_max_scroll_y = container.max_scroll_y
+        archive_text = "\n\n".join(pieces)
+        archive = ContentBlock(
+            Text(
+                f"… 早期内容已折叠为纯文本（{len(oldest)} 块）\n\n{archive_text}",
+                style="white",
+            ),
+            classes="content-block archived-block",
+        )
+        archive.copy_text = archive_text
+        container.mount(archive, before=oldest[0])
+        # Widget.remove() 返回 awaitable，必须等待才能真正从 DOM 摘除；
+        # 否则下一轮压实会把还没移除的旧块再算一遍，归档文本指数膨胀。
+        for child in oldest:
+            await child.remove()
+
+        def _restore_scroll() -> None:
+            # 从顶部摘除内容会让视口里的内容整体上移，按高度差把滚动位置拉回去，
+            # 这样正在翻阅历史的用户不会被打断。
+            delta = old_max_scroll_y - container.max_scroll_y
+            if delta <= 0:
+                return
+            container.scroll_to(
+                x=0,
+                y=max(0, old_scroll_y - delta),
+                animate=False,
+                immediate=True,
+            )
+
+        self.call_after_refresh(_restore_scroll)
+        return True
 
     def _handle_inline_collapsible_event(self, event: TuiEvent) -> None:
         container = self._content_scroller
@@ -1892,6 +2185,8 @@ class MakeCodeTuiApp(App[None]):
                     )
                 )
             )
+        if container is not None:
+            self._schedule_content_compaction(container)
         self._mark_runtime_dirty()
 
 
@@ -2701,7 +2996,9 @@ class MakeCodeTuiApp(App[None]):
             self._token_usage_refresh_pending = True
             return
         self._token_usage_refresh_pending = False
-        token_usage = self.query_one("#token-usage-bar", TokenUsageBar)
+        token_usage = self._token_usage_bar()
+        if token_usage is None:
+            return
         try:
             breakdown, threshold = self._token_usage_provider()
         except Exception:
@@ -2715,6 +3012,22 @@ class MakeCodeTuiApp(App[None]):
             return
         self._token_usage = (dict(breakdown), threshold)
         token_usage.update_usage(breakdown, threshold)
+
+    def _runtime_info_bar(self) -> Static | None:
+        if self._runtime_bar is None:
+            try:
+                self._runtime_bar = self.query_one("#runtime-info-bar", Static)
+            except NoMatches:
+                return None
+        return self._runtime_bar
+
+    def _token_usage_bar(self) -> TokenUsageBar | None:
+        if self._token_bar is None:
+            try:
+                self._token_bar = self.query_one("#token-usage-bar", TokenUsageBar)
+            except NoMatches:
+                return None
+        return self._token_bar
 
     def _update_runtime_info(self) -> None:
         if self._runtime_info_provider is None:
@@ -2733,8 +3046,8 @@ class MakeCodeTuiApp(App[None]):
                     f"RETRY {self._client_retry_count}/{self._client_max_retries}"
                 )
             value = f"{' · '.join(client_parts)}  | {value}"
-        runtime_info = self.query_one("#runtime-info-bar", Static)
-        if runtime_info.content != value:
+        runtime_info = self._runtime_info_bar()
+        if runtime_info is not None and runtime_info.content != value:
             runtime_info.update(value, layout=False)
 
     def _get_slash_matches(self, text: str) -> list[tuple[str, str]]:
@@ -3042,6 +3355,10 @@ def end_tui_batch_render() -> None:
 
 def scroll_all_panes_to_bottom() -> None:
     TUI_BRIDGE.scroll_all_panes_to_bottom()
+
+
+def apply_tui_simple_mode() -> None:
+    TUI_BRIDGE.apply_simple_mode()
 
 
 def choose_model_panel_tui(title: str, options: list[str]) -> str:

@@ -2,7 +2,19 @@ import json
 
 import pytest
 
+from system import tui_mode
 from utils import memory
+
+
+@pytest.fixture(autouse=True)
+def reset_tui_simple_mode():
+    """simple 模式是进程级状态，必须逐测试复位。
+
+    有测试会遍历执行所有已注册斜杠命令（含 /simple），不复位会污染后续用例。
+    """
+    tui_mode.set_simple_mode(False)
+    yield
+    tui_mode.set_simple_mode(False)
 
 
 @pytest.fixture(autouse=True)
