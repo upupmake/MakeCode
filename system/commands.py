@@ -27,8 +27,7 @@ from tools.extra_tools import (
     is_understand_image_enabled,
     set_understand_image_config,
 )
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom, apply_tui_simple_mode
-from system.tui_mode import toggle_simple_mode
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationListItem, ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -1497,23 +1496,6 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             status = "开启" if new_state else "关闭"
             status_color = "green" if new_state else "yellow"
             self.console.print(f"\n[bold]📊 Sub-Agent 输出状态: [{status_color}]{status}[/{status_color}][/bold]")
-            return CommandResult(action=CommandAction.CONTINUE)
-
-        # /simple - 切换简单模式（低渲染开销，仅本次会话有效）
-        if query == "/simple":
-            new_state = toggle_simple_mode()
-            apply_tui_simple_mode()
-            status = "开启" if new_state else "关闭"
-            status_color = "green" if new_state else "yellow"
-            self.console.print(f"\n[bold]⚡ 简单模式: [{status_color}]{status}[/{status_color}][/bold]")
-            if new_state:
-                self.console.print(
-                    "[#aaaaaa]已隐藏右侧面板与快捷面板、关闭逐字实时刷新和 Markdown 排版；"
-                    "仅本次会话有效，重启后回到完整模式。[/#aaaaaa]"
-                )
-            else:
-                self.console.print("[#aaaaaa]已恢复完整渲染模式。[/#aaaaaa]")
-                render_current_task_plan(self.console)
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /update - 检查更新

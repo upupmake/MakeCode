@@ -10,8 +10,6 @@ from version import CURRENT_VERSION
 
 STARTUP_LOAD_REQUESTED = False
 STARTUP_LOAD_ID: str | None = None
-# 以简单模式启动（低渲染开销）；仅影响本次启动，不写入任何配置文件。
-SIMPLE_MODE_REQUESTED = False
 
 
 COMMAND_DESCRIPTIONS = {
@@ -41,7 +39,6 @@ COMMAND_DESCRIPTIONS = {
     "/copy": "打开只读对话导出面板，仅查看用户提问、LLM 正文回答及终端命令输入输出，支持选择文本、按钮或快捷键复制。",
     "/plan": "进入或退出 Plan Mode；规划阶段只允许只读和任务规划工具。",
     "/sub-agent-console": "切换 Sub-Agent 的控制台输出状态，默认开启。",
-    "/simple": "切换简单模式：隐藏右侧面板、关闭逐字实时渲染与 Markdown 排版，降低渲染开销；仅本次会话有效。",
     "/help": "显示帮助信息和所有可用命令。",
     "/new": "清空当前对话历史，并开启当前工作区的全新对话。",
     "/pwd": "显示当前工作目录。",
@@ -70,7 +67,6 @@ def _build_parser() -> argparse.ArgumentParser:
     commands.add_argument("--update", action="store_true", help="检查、下载并安装最新版本")
     commands.add_argument("--load", nargs="?", const="", metavar="CONVERSATION_ID", help="启动后加载会话；可指定会话 ID")
     parser.add_argument("-y", "--yes", action="store_true", help="与 --update 配合使用，跳过安装确认")
-    parser.add_argument("--simple", action="store_true", help="以简单模式启动：隐藏右侧面板、关闭逐字实时渲染与 Markdown 排版")
     return parser
 
 
@@ -376,10 +372,9 @@ def _update(*, assume_yes: bool) -> int:
 
 
 def run_external_cli(argv: Sequence[str]) -> int | None:
-    global STARTUP_LOAD_REQUESTED, STARTUP_LOAD_ID, SIMPLE_MODE_REQUESTED
+    global STARTUP_LOAD_REQUESTED, STARTUP_LOAD_ID
     STARTUP_LOAD_REQUESTED = False
     STARTUP_LOAD_ID = None
-    SIMPLE_MODE_REQUESTED = False
     if not argv:
         return None
     if argv[0] == "--mcp-add":
@@ -412,8 +407,5 @@ def run_external_cli(argv: Sequence[str]) -> int | None:
     if args.load is not None:
         STARTUP_LOAD_REQUESTED = True
         STARTUP_LOAD_ID = args.load or None
-        return None
-    if args.simple:
-        SIMPLE_MODE_REQUESTED = True
         return None
     return None

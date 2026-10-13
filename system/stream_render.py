@@ -6,32 +6,6 @@ from rich.text import Text
 from system.console_render import render_copyable_markdown, render_model_markdown
 from system.stream_cancel import is_cancelled
 from system.tui_app import TuiRegion, post_tui
-from system.tui_mode import is_simple_mode
-
-
-# simple 模式下尾部预览最多显示的行数，对应 `.pane-tail` 的 max-height: 8。
-# 尾部是贴着内容区底部的固定条，溢出的行会被裁掉，而且裁的是「开头的行」。
-# 因此必须自己取末尾几行，否则长段落 / 长代码块在整段提交前只会显示最开始那几行，
-# 看起来就像界面卡死了。
-SIMPLE_TAIL_MAX_LINES = 6
-# 再兜一层字数上限：万一模型吐出一整面没有换行的文字，按行截断等于没截断，
-# 预览条照样只会显示这行最开头的内容。6 行 × 约 100 列 ≈ 600。
-SIMPLE_TAIL_MAX_CHARS = 600
-
-
-def _simple_tail_preview(buffer: str) -> str:
-    """取缓冲区末尾的一小段，作为 simple 模式的尾部预览文本。
-
-    先按行取末尾若干行，再按字数兜底。两级都是为了「预览条上显示的必须是
-    最新内容」，而不是这一段的开头。
-    """
-    if not buffer:
-        return ""
-    lines = buffer.splitlines() or [buffer]
-    preview = "\n".join(lines[-SIMPLE_TAIL_MAX_LINES:])
-    if len(preview) > SIMPLE_TAIL_MAX_CHARS:
-        preview = preview[-SIMPLE_TAIL_MAX_CHARS:]
-    return preview
 
 
 class StreamRenderer:
@@ -290,13 +264,7 @@ class StreamRenderer:
 
         # 提交的段落与新的尾部放进同一个事件，UI 线程一次处理完，
         # 不再“先清尾部、再挂载、再显示尾部”造成多次布局失效。
-        # simple 模式下尾部预览同样要截断（与 _update_tail 保持一致），
-        # 否则整段剩余缓冲会被原样贴进预览条。
-        if is_simple_mode():
-            tail_text = _simple_tail_preview(remaining_buffer)
-        else:
-            tail_text = remaining_buffer
-        tail_text = tail_text if tail_text.strip() else ""
+        tail_text = remaining_buffer if remaining_buffer.strip() else ""
         self._tail_texts[self._tail_slot(region)] = tail_text
         self._last_tail_update_at[region] = time.perf_counter()
         post_tui(
@@ -330,16 +298,7 @@ class StreamRenderer:
         return TuiRegion.CONTENT if region == TuiRegion.REASONING else region
 
     def _update_tail(self, buffer: str, region: TuiRegion = TuiRegion.CONTENT, force: bool = False):
-        if is_simple_mode():
-            # simple 模式不做逐字 Markdown 刷新（正文整段提交即可），
-            # 但尾部预览必须继续更新：否则长段落 / 长代码块在整段提交前一个字都不显示，
-            # 用户会以为程序卡死了。这里只贴纯文本末尾几行，成本有界。
-            preview = _simple_tail_preview(buffer)
-            tail_text = preview if preview.strip() else ""
-        else:
-            tail_text = buffer if buffer.strip() else ""
-
-        # 去重必须比对「真正要投递的文本」，所以放在 simple 模式截断之后。
+        tail_text = buffer if buffer.strip() else ""
         slot = self._tail_slot(region)
         if self._tail_texts.get(slot) == tail_text:
             return

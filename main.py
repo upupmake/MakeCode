@@ -14,11 +14,6 @@ if __name__ == "__main__":
     if external_cli_exit_code is not None:
         raise SystemExit(external_cli_exit_code)
 
-    if cli_module.SIMPLE_MODE_REQUESTED:
-        from system.tui_mode import set_simple_mode
-
-        set_simple_mode(True)
-
 
 from rich.console import Console
 from rich.markup import escape
