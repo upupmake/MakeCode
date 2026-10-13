@@ -366,6 +366,7 @@ class TeammateManager:
                     recall_query,
                     source="Sub-Agent 任务预召回",
                     agent_id=f"#{plan_task_id} - {role}",
+                    use_keyword_extraction=True,
                 )
                 prompt = prepend_recalled_memory_to_sub_agent_prompt(
                     original_prompt,

@@ -1,7 +1,7 @@
+import json
 import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import tiktoken
@@ -13,6 +13,7 @@ from prompts import get_orchestrator_system_prompt, get_sub_agent_system_prompt
 from utils import text_tokens
 from utils.common import truncate_output
 from utils.teams import build_sub_agent_recall_query, prepend_recalled_memory_to_sub_agent_prompt
+from utils import paths
 
 
 MEMORY_RECORDS = [
@@ -20,7 +21,7 @@ MEMORY_RECORDS = [
         "id": "mem_old",
         "category": "workflow",
         "updated_at": "2026-01-01 00:00:00",
-        "insight": "old insight should not be in candidates",
+        "insight": "old insight about legacy workflow handling",
         "evidence": "old evidence should not be in candidates",
         "reuse_condition": "when handling old workflow",
         "status": "active",
@@ -29,65 +30,307 @@ MEMORY_RECORDS = [
         "id": "mem_new",
         "category": "project-convention",
         "updated_at": "2026-02-01 00:00:00",
-        "insight": "new insight should be injected",
+        "insight": "new insight should be injected about foo_bar_baz handling",
         "evidence": "new evidence should not be injected",
-        "reuse_condition": "when handling new convention",
+        "reuse_condition": "when handling new convention foo_bar_baz",
         "status": "active",
     },
 ]
 
 
-class FakeRecallLLMClient:
-    def __init__(self, tool_calls_by_round):
-        self.tool_calls_by_round = list(tool_calls_by_round)
-        self.messages_seen = []
-        self.generate_calls = 0
+def reset_recall_index():
+    memory._MEMORY_FTS5_INDEX = None
+    memory._MEMORY_FTS5_INDEX_SIGNATURE = None
 
-    def format_tools(self, tools):
-        return tools
 
-    def format_tool_result(self, tool_id, tool_name, output):
-        return {
-            "role": "tool",
-            "tool_call_id": tool_id,
-            "name": tool_name,
-            "content": output,
-        }
-
-    async def generate_stream(self, messages, tools):
-        self.messages_seen.append(list(messages))
-        self.generate_calls += 1
-        index = self.generate_calls - 1
-        tool_calls = self.tool_calls_by_round[index]
-        assistant_message = {"role": "assistant", "content": "", "tool_calls": tool_calls}
-        yield {
-            "type": "done",
-            "result": SimpleNamespace(
-                text="",
-                tool_calls=tool_calls,
-                assistant_message=assistant_message,
-            ),
-        }
+def load_real_active_memory_records() -> list[dict]:
+    """读取当前工作区真实的 .makecode/memory/memory.jsonl，仅用于只读集成测试断言，
+    不做任何写操作。"""
+    records = []
+    with paths.workspace_memory_jsonl_file().open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if record.get("status") == "active":
+                records.append(record)
+    return records
 
 
 class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         memory._MEMORY_RECALL_WINDOWS = {}
+        reset_recall_index()
 
-    def test_recall_candidates_only_include_lightweight_fields(self):
+    def tearDown(self):
+        memory._MEMORY_RECALL_WINDOWS = {}
+        reset_recall_index()
+
+    # ---- 分词 ----
+
+    def test_tokenize_for_index_filters_short_cjk_tokens_but_keeps_english(self):
+        tokens = memory._tokenize_for_index("子代理委派 memory_recall_model 测试")
+        self.assertNotIn("子", tokens)
+        self.assertIn("代理", tokens)
+        self.assertIn("委派", tokens)
+        self.assertIn("memory_recall_model", tokens)
+        self.assertIn("测试", tokens)
+
+    def test_tokenize_for_index_merges_single_char_token_with_neighbors(self):
+        # "子"被 jieba 切成单字，不再单独保留，而是分别与前后完整 token 拼接出
+        # "子代理"这个完整复合词，让它可以作为精确短语参与匹配。
+        tokens = memory._tokenize_for_index("子代理委派")
+        self.assertNotIn("子", tokens)
+        self.assertIn("子代理", tokens)
+        self.assertIn("代理", tokens)
+        self.assertIn("委派", tokens)
+
+    def test_tokenize_for_index_merges_single_char_token_at_text_boundary(self):
+        # 单字出现在开头/结尾且只有一侧有邻词时，只拼接有效的一侧。
+        tokens = memory._tokenize_for_index("长期记忆库")
+        self.assertNotIn("库", tokens)
+        self.assertIn("记忆库", tokens)
+        self.assertIn("长期", tokens)
+        self.assertIn("记忆", tokens)
+
+    def test_segment_text_for_index_joins_tokens_with_space(self):
+        segmented = memory._segment_text_for_index("记忆召回测试")
+        self.assertEqual(segmented, " ".join(memory._tokenize_for_index("记忆召回测试")))
+
+    def test_tokenize_query_deduplicates_terms_across_keywords(self):
+        # 查询里包含重复关键词或关键词分词后产生重复 token 时，最终 term 列表应该去重，
+        # 避免在 FTS5 MATCH 表达式里带着重复的 OR 分支（不影响正确性，但浪费计算）。
+        terms = memory._tokenize_query("子代理 子代理委派", False)
+        self.assertEqual(len(terms), len(set(terms)))
+        self.assertIn("子代理", terms)
+        self.assertIn("委派", terms)
+
+    def test_query_terms_keeps_pure_ascii_keyword_whole(self):
+        terms = memory._query_terms("memory_recall_model")
+        self.assertEqual(terms, ["memory_recall_model"])
+
+    def test_query_terms_splits_and_filters_chinese_keyword(self):
+        terms = memory._query_terms("子代理委派")
+        self.assertNotIn("子", terms)
+        self.assertIn("代理", terms)
+        self.assertIn("委派", terms)
+
+    def test_query_terms_merges_single_char_keyword_with_neighbors(self):
+        terms = memory._query_terms("子代理委派")
+        self.assertIn("子代理", terms)
+
+    def test_ascii_proper_nouns_stay_intact_without_custom_dictionary(self):
+        # 纯 ASCII 的专有名词不依赖自定义词典：_tokenize_for_index 对纯 ASCII 片段
+        # 按空白整体保留，不交给 jieba 切分字符，所以 jieba 默认行为已经不会把它们切碎。
+        for term in ["MakeCode", "TaskManager", "FilePatch", "DelegateTasks"]:
+            tokens = memory._tokenize_for_index(f"关于{term}的说明")
+            self.assertIn(term, tokens)
+
+    # ---- DF 上限机制 ----
+
+    def test_document_frequency_counts_token_presence_per_record(self):
+        records = [
+            {"id": "mem_1", "insight": "测试 测试 测试", "reuse_condition": "when 测试"},
+            {"id": "mem_2", "insight": "测试 其他", "reuse_condition": "when other"},
+            {"id": "mem_3", "insight": "无关内容", "reuse_condition": "when unrelated"},
+        ]
+        index = memory._MemoryFts5Index(records)
+        self.assertEqual(index.document_frequency.get("测试"), 2)
+
+    def test_high_frequency_token_is_excluded_from_match_but_rare_term_still_hits(self):
+        records = [
+            {"id": f"mem_{i}", "insight": "测试 商品", "reuse_condition": "when 测试"}
+            for i in range(8)
+        ]
+        records.append({"id": "mem_target", "insight": "测试 独有关键字", "reuse_condition": "when 测试"})
+        index = memory._MemoryFts5Index(records)
+        # “测试”在 9 条中全部出现，占比 100% > 0.4，应被排除出触发集合；
+        # “独有关键字”被 jieba 切分为 [独有,关键,关键字]，这些 token 均只在 mem_target 出现，仍应命中。
+        query_terms = memory._query_terms("独有关键字")
+        results = index.search(memory._query_terms("测试") + query_terms)
+        hit_ids = [memory_id for memory_id, _ in results]
+        self.assertIn("mem_target", hit_ids)
+        self.assertNotEqual(len(hit_ids), len(records))
+
+    def test_all_high_frequency_terms_fallback_to_full_match(self):
+        records = [
+            {"id": f"mem_{i}", "insight": "测试 商品", "reuse_condition": "when 测试"}
+            for i in range(5)
+        ]
+        index = memory._MemoryFts5Index(records)
+        # 查询词全部是高频词时，兜底全部保留参与匹配，而不是查询直接落空。
+        results = index.search(memory._query_terms("测试") + memory._query_terms("商品"))
+        self.assertEqual(len(results), len(records))
+
+    # ---- 筛选阈值 ----
+
+    def test_filter_by_relative_threshold_empty_input_returns_empty(self):
+        self.assertEqual(memory._filter_by_relative_threshold([]), [])
+
+    def test_filter_by_relative_threshold_keeps_single_candidate(self):
+        self.assertEqual(memory._filter_by_relative_threshold([("mem_a", 3.0)]), ["mem_a"])
+
+    def test_filter_by_relative_threshold_uses_relative_cutoff_when_top_score_is_high(self):
+        scored = [("mem_a", 10.0), ("mem_b", 4.0), ("mem_c", 1.0)]
+        selected = memory._filter_by_relative_threshold(scored)
+        self.assertEqual(selected, ["mem_a", "mem_b"])
+
+    def test_filter_by_relative_threshold_scales_with_small_pool_low_scores(self):
+        # 小记忆池下 BM25 绝对分数本身会偏低（IDF 随候选总数 N 浮动），相对阈值只看
+        # 与 top1 的比例，不受绝对分数尺度影响，所以低分池子里同样能正确筛出相关记忆。
+        scored = [("mem_a", 2.0), ("mem_b", 1.6), ("mem_c", 0.5)]
+        selected = memory._filter_by_relative_threshold(scored)
+        self.assertEqual(selected, ["mem_a", "mem_b"])
+
+    # ---- 召回窗口排除 ----
+
+    def test_recall_window_excludes_recently_recalled_ids_for_same_agent(self):
+        records = [
+            {"id": "mem_a", "category": "workflow", "updated_at": "2026-01-01 00:00:00",
+             "insight": "the foo_bar_baz module needs refactoring for the new recall pipeline",
+             "reuse_condition": "when working on foo_bar_baz module changes", "status": "active"},
+            {"id": "mem_b", "category": "workflow", "updated_at": "2026-01-02 00:00:00",
+             "insight": "completely unrelated content about something else entirely", "status": "active",
+             "reuse_condition": "when doing unrelated work"},
+        ]
+        background_records = [
+            {"id": f"mem_bg_{i}", "category": "workflow", "updated_at": "2026-01-01 00:00:00",
+             "insight": f"some background note number {i} about routine maintenance tasks",
+             "reuse_condition": f"when doing routine task {i}", "status": "active"}
+            for i in range(10)
+        ]
+        with patch.object(memory, "list_long_term_memories", return_value=records + background_records):
+            first = memory.select_relevant_memory_ids("foo_bar_baz", agent_id="agent_a")
+            second = memory.select_relevant_memory_ids("foo_bar_baz", agent_id="agent_a")
+
+        self.assertEqual(first, ["mem_a"])
+        self.assertEqual(second, [])
+
+    # ---- recall_long_term_memories 整体流程（纯本地计算，无模型调用） ----
+
+    async def test_recall_long_term_memories_returns_matching_ids_without_any_model_call(self):
+        records = load_real_active_memory_records()
+        with patch.object(memory, "list_long_term_memories", return_value=records), \
+                patch.object(memory, "create_memory_management_llm_client") as create_client, \
+                patch.object(memory, "_touch_recalled_memories"):
+            result = await memory.recall_long_term_memories("memory_recall_model")
+
+        self.assertIsNone(result.get("error"))
+        self.assertIn("mem_20261012_120144_de8a6759", result["ids"])
+        self.assertIn("mem_20261012_120144_de8a6759", result["content"])
+        self.assertIn("记忆配置面板", result["content"])
+        for record in records:
+            if record["id"] in result["ids"]:
+                self.assertNotIn(record.get("evidence", "__no_evidence_marker__"), result["content"])
+        create_client.assert_not_called()
+
+    async def test_recall_long_term_memories_returns_empty_for_unrelated_query(self):
+        records = load_real_active_memory_records()
+        with patch.object(memory, "list_long_term_memories", return_value=records), \
+                patch.object(memory, "create_memory_management_llm_client") as create_client, \
+                patch.object(memory, "_touch_recalled_memories"):
+            result = await memory.recall_long_term_memories("区块链 blockchain")
+
+        self.assertEqual(result["ids"], [])
+        self.assertEqual(result["content"], "")
+        create_client.assert_not_called()
+
+    async def test_recall_touches_selected_memories_before_rendering_context(self):
+        events = []
+
+        def render_context(memory_ids):
+            events.append(("render", memory_ids))
+            return "selected context"
+
+        with patch.object(memory, "select_relevant_memory_ids", return_value=["mem_new"]), \
+                patch.object(memory, "_touch_recalled_memories", side_effect=lambda ids: events.append(("touch", ids))), \
+                patch.object(memory, "render_selected_memory_context", side_effect=render_context), \
+                patch.object(memory, "post_tui"), \
+                patch.object(memory, "Markdown"):
+            result = await memory.recall_long_term_memories("query")
+
+        self.assertEqual(result["content"], "selected context")
+        self.assertEqual(events, [("touch", ["mem_new"]), ("render", ["mem_new"])])
+
+    async def test_recall_background_places_ids_and_details_on_following_lines(self):
+        memory_context = "## mem_new\n- Insight: selected context"
+
+        with patch.object(memory, "select_relevant_memory_ids", return_value=["mem_new", "mem_old"]), \
+                patch.object(memory, "_touch_recalled_memories"), patch.object(
+                    memory,
+                    "render_selected_memory_context",
+                    return_value=memory_context,
+                ), patch.object(memory, "post_tui") as post_tui, patch.object(
+                    memory,
+                    "Markdown",
+                    side_effect=lambda content: ("markdown", content),
+                ):
+            await memory.recall_long_term_memories("query")
+
+        payloads = [call.args[1] for call in post_tui.call_args_list if len(call.args) > 1]
+        summary_index = next(
+            index for index, payload in enumerate(payloads)
+            if isinstance(payload, str) and "记忆召回命中" in payload
+        )
+        self.assertEqual(
+            payloads[summary_index],
+            "[bold green]🧠 记忆召回命中 2 条：\nmem_new, mem_old\n[/bold green]",
+        )
+        self.assertEqual(payloads[summary_index + 1], ("markdown", memory_context))
+
+    async def test_recall_long_term_memories_downgrades_internal_exception_to_error_result(self):
+        with patch.object(memory, "select_relevant_memory_ids", side_effect=RuntimeError("boom")):
+            result = await memory.recall_long_term_memories("query")
+
+        self.assertEqual(result, {"ids": [], "content": "", "error": "boom"})
+
+    def test_select_relevant_memory_ids_returns_empty_for_blank_query(self):
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS):
-            candidates = memory.build_memory_recall_candidates()
+            self.assertEqual(memory.select_relevant_memory_ids("   "), [])
 
-        self.assertIn("mem_old", candidates)
-        self.assertIn("mem_new", candidates)
-        self.assertIn("Category: workflow", candidates)
-        self.assertIn("Updated at: 2026-01-01 00:00:00", candidates)
-        self.assertIn("Reuse condition: when handling new convention", candidates)
-        self.assertNotIn("Insight", candidates)
-        self.assertNotIn("old insight should not be in candidates", candidates)
-        self.assertNotIn("new insight should be injected", candidates)
-        self.assertNotIn("evidence", candidates.lower())
-        self.assertLess(candidates.index("mem_old"), candidates.index("mem_new"))
+    def test_select_relevant_memory_ids_returns_empty_when_no_active_memories(self):
+        with patch.object(memory, "list_long_term_memories", return_value=[]):
+            self.assertEqual(memory.select_relevant_memory_ids("foo_bar_baz"), [])
+
+    # ---- 子代理场景：TF-IDF 关键词提取 + 剥离模板包装 ----
+
+    def test_strip_sub_agent_task_wrapper_removes_template_before_context_prompt(self):
+        query = build_sub_agent_recall_query("7", "Backend Developer", "实际的任务内容 foo_bar_baz")
+        stripped = memory._strip_sub_agent_task_wrapper(query)
+        self.assertNotIn("Task ID", stripped)
+        self.assertNotIn("Backend Developer", stripped)
+        self.assertIn("实际的任务内容 foo_bar_baz", stripped)
+
+    def test_tokenize_query_uses_extraction_path_for_sub_agent_and_strips_wrapper(self):
+        query = build_sub_agent_recall_query("7", "Backend Developer", "实际的任务内容 foo_bar_baz")
+        with patch.object(memory, "_extract_query_terms_from_text", return_value=["foo_bar_baz"]) as extract:
+            terms = memory._tokenize_query(query, use_keyword_extraction=True)
+
+        self.assertEqual(terms, ["foo_bar_baz"])
+        called_with_text = extract.call_args.args[0]
+        self.assertNotIn("Task ID", called_with_text)
+        self.assertNotIn("Backend Developer", called_with_text)
+
+    def test_tokenize_query_uses_full_segmentation_path_when_not_extraction(self):
+        with patch.object(memory, "_extract_query_terms_from_text") as extract:
+            terms = memory._tokenize_query("memory_recall_model 测试", use_keyword_extraction=False)
+
+        extract.assert_not_called()
+        self.assertIn("memory_recall_model", terms)
+        self.assertIn("测试", terms)
+
+    async def test_sub_agent_recall_path_uses_keyword_extraction(self):
+        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
+                patch.object(memory, "_tokenize_query", return_value=["foo_bar_baz"]) as tokenize, \
+                patch.object(memory, "create_memory_management_llm_client") as create_client:
+            query = build_sub_agent_recall_query("7", "Backend Developer", "实际的任务内容")
+            await memory.recall_long_term_memories(query, agent_id="#7 - Backend Developer", use_keyword_extraction=True)
+
+        tokenize.assert_called_once_with(query, True)
+        create_client.assert_not_called()
+
+    # ---- 其余保留行为 ----
 
     def test_selected_memory_context_filters_ids_and_excludes_evidence(self):
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS):
@@ -96,8 +339,8 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(selected_ids, ["mem_new", "mem_old"])
         self.assertIn("mem_new", context)
-        self.assertIn("Insight: new insight should be injected", context)
-        self.assertIn("Reuse condition: when handling new convention", context)
+        self.assertIn("Insight: new insight should be injected about foo_bar_baz handling", context)
+        self.assertIn("Reuse condition: when handling new convention foo_bar_baz", context)
         self.assertNotIn("new evidence should not be injected", context)
         self.assertNotIn("mem_old", context)
         self.assertNotIn("missing", context)
@@ -121,52 +364,6 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records[2]["updated_at"], "old-deleted")
         write_records.assert_called_once_with(records)
 
-    async def test_recall_touches_selected_memories_before_rendering_context(self):
-        events = []
-
-        def render_context(memory_ids):
-            events.append(("render", memory_ids))
-            return "selected context"
-
-        with patch.object(memory, "select_relevant_memory_ids", AsyncMock(return_value=["mem_new"])), \
-                patch.object(memory, "_touch_recalled_memories", side_effect=lambda ids: events.append(("touch", ids))), \
-                patch.object(memory, "render_selected_memory_context", side_effect=render_context), \
-                patch.object(memory, "post_tui"), \
-                patch.object(memory, "Markdown"):
-            result = await memory.recall_long_term_memories("query")
-
-        self.assertEqual(result["content"], "selected context")
-        self.assertEqual(events, [("touch", ["mem_new"]), ("render", ["mem_new"])])
-
-    async def test_recall_background_places_ids_and_details_on_following_lines(self):
-        memory_context = "## mem_new\n- Insight: selected context"
-
-        with patch.object(
-                memory,
-                "select_relevant_memory_ids",
-                AsyncMock(return_value=["mem_new", "mem_old"]),
-        ), patch.object(memory, "_touch_recalled_memories"), patch.object(
-                memory,
-                "render_selected_memory_context",
-                return_value=memory_context,
-        ), patch.object(memory, "post_tui") as post_tui, patch.object(
-                memory,
-                "Markdown",
-                side_effect=lambda content: ("markdown", content),
-        ):
-            await memory.recall_long_term_memories("query")
-
-        payloads = [call.args[1] for call in post_tui.call_args_list if len(call.args) > 1]
-        summary_index = next(
-            index for index, payload in enumerate(payloads)
-            if isinstance(payload, str) and "记忆召回命中" in payload
-        )
-        self.assertEqual(
-            payloads[summary_index],
-            "[bold green]🧠 记忆召回命中 2 条：\nmem_new, mem_old\n[/bold green]",
-        )
-        self.assertEqual(payloads[summary_index + 1], ("markdown", memory_context))
-
     def test_prepend_recalled_memory_to_query_only_changes_query_when_context_exists(self):
         original = "请处理当前项目的测试。"
         self.assertEqual(memory.prepend_recalled_memory_to_query(original, ""), original)
@@ -189,7 +386,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("delegated sub-agent task", injected)
         self.assertIn("not as new user instructions", injected)
         self.assertIn("# Delegated Task", injected)
-        self.assertIn("new insight should be injected", injected)
+        self.assertIn("new insight should be injected about foo_bar_baz handling", injected)
         self.assertNotIn("new evidence should not be injected", injected)
         self.assertTrue(injected.endswith(original))
 
@@ -203,149 +400,6 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("## Role\nTester", query)
         self.assertIn("## Context Prompt\nRun memory tests", query)
         self.assertNotIn(relay_context, query)
-
-    def test_memory_recall_message_places_user_request_at_bottom(self):
-        messages = memory._get_memory_recall_messages(
-            "本次用户请求",
-            "### mem_new\n- Reuse condition: when handling new convention",
-            "上一轮 assistant 回复",
-        )
-
-        payload = messages[1]["content"]
-        assert payload == (
-            "# Memory Recall Request\n\n"
-            "## Previous Assistant Content\n\n"
-            "上一轮 assistant 回复\n\n"
-            "## Candidate Memories\n\n"
-            "### mem_new\n- Reuse condition: when handling new convention\n\n"
-            "## Current User Request\n\n"
-            "本次用户请求"
-        )
-
-    def test_memory_recall_message_omits_empty_previous_assistant_content(self):
-        messages = memory._get_memory_recall_messages(
-            "本次用户请求",
-            "### mem_new\n- Reuse condition: when handling new convention",
-            "",
-        )
-
-        payload = messages[1]["content"]
-        assert "## Previous Assistant Content" not in payload
-        assert payload.endswith("## Current User Request\n\n本次用户请求")
-
-    async def test_select_relevant_memory_ids_uses_tool_call_and_retries_until_called(self):
-        fake_client = FakeRecallLLMClient([
-            [],
-            [
-                {
-                    "id": "call_1",
-                    "name": "SelectRelevantMemories",
-                    "arguments": '{"memory_ids": ["mem_new", "missing", "mem_old", "mem_new"]}',
-                    "raw": {},
-                }
-            ],
-        ])
-
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_management_llm_client", return_value=fake_client):
-            selected = await memory.select_relevant_memory_ids("需要处理新约定", max_iterations=3)
-
-        self.assertEqual(selected, ["mem_new", "mem_old"])
-        self.assertEqual(fake_client.generate_calls, 2)
-        first_user_payload = fake_client.messages_seen[0][1]["content"]
-        self.assertIn("## Candidate Memories", first_user_payload)
-        self.assertIn("mem_new", first_user_payload)
-        self.assertIn("when handling new convention", first_user_payload)
-        self.assertNotIn("new insight should be injected", first_user_payload)
-        self.assertNotIn("new evidence should not be injected", first_user_payload)
-        self.assertIn("You did not call SelectRelevantMemories", fake_client.messages_seen[1][-1]["content"])
-
-    async def test_select_relevant_memory_ids_returns_validation_error_to_model_and_retries(self):
-        fake_client = FakeRecallLLMClient([
-            [{
-                "id": "call_invalid",
-                "name": "SelectRelevantMemories",
-                "arguments": '{"memory_ids": ["mem_new"], "unexpected": true}',
-            }],
-            [{
-                "id": "call_valid",
-                "name": "SelectRelevantMemories",
-                "arguments": '{"memory_ids": ["mem_new"]}',
-            }],
-        ])
-
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_management_llm_client", return_value=fake_client):
-            selected = await memory.select_relevant_memory_ids("query", max_iterations=2)
-
-        self.assertEqual(selected, ["mem_new"])
-        self.assertEqual(fake_client.generate_calls, 2)
-        tool_result = fake_client.messages_seen[1][-1]
-        self.assertEqual(tool_result["role"], "tool")
-        self.assertTrue(tool_result["is_error"])
-        self.assertIn("unexpected", tool_result["content"])
-        self.assertIn("extra_forbidden", tool_result["content"])
-
-    async def test_select_relevant_memory_ids_raises_after_final_validation_error(self):
-        fake_client = FakeRecallLLMClient([[
-            {
-                "id": "call_invalid",
-                "name": "SelectRelevantMemories",
-                "arguments": '{"memory_ids": [], "unexpected": true}',
-            },
-        ]])
-
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_management_llm_client", return_value=fake_client):
-            with self.assertRaisesRegex(memory.ToolArgumentValidationError, "unexpected"):
-                await memory.select_relevant_memory_ids("query", max_iterations=1)
-
-    async def test_select_relevant_memory_ids_resumes_pause_turn_without_inserting_user_prompt(self):
-        class PauseRecallClient:
-            def __init__(self):
-                self.calls = 0
-                self.messages_seen = []
-
-            def format_tools(self, tools):
-                return tools
-
-            async def generate_stream(self, messages, tools):
-                self.messages_seen.append(list(messages))
-                self.calls += 1
-                if self.calls == 1:
-                    result = SimpleNamespace(
-                        text="",
-                        tool_calls=[],
-                        stop_reason="pause_turn",
-                        assistant_message={
-                            "role": "assistant",
-                            "content": "",
-                            "stop_reason": "pause_turn",
-                        },
-                    )
-                else:
-                    tool_calls = [{
-                        "id": "call_1",
-                        "name": "SelectRelevantMemories",
-                        "arguments": '{"memory_ids": ["mem_new"]}',
-                    }]
-                    result = SimpleNamespace(
-                        text="",
-                        tool_calls=tool_calls,
-                        stop_reason="tool_use",
-                        assistant_message={"role": "assistant", "content": "", "tool_calls": tool_calls},
-                    )
-                yield {"type": "done", "result": result}
-
-        fake_client = PauseRecallClient()
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_management_llm_client", return_value=fake_client):
-            selected = await memory.select_relevant_memory_ids("query", max_iterations=2)
-
-        self.assertEqual(selected, ["mem_new"])
-        self.assertEqual(fake_client.calls, 2)
-        self.assertEqual(fake_client.messages_seen[1][-1]["role"], "assistant")
-        self.assertEqual(fake_client.messages_seen[1][-1]["stop_reason"], "pause_turn")
 
     async def test_memory_agent_resumes_pause_turn_and_marks_unknown_tool_as_error(self):
         initial_messages = [
@@ -431,7 +485,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(memory, "LONG_TERM_MEMORY_TOOL_HANDLERS", {"AppendLongTermMemory": handler}), \
                  patch.object(memory, "post_tui"), \
                  patch.object(memory, "_render_agent_response_message"):
-             outputs = await memory.memory_agent_loop(
+            outputs = await memory.memory_agent_loop(
                 conversation_text="[]",
                 summary="",
                 reason="test",
@@ -487,58 +541,6 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                     max_iterations=1,
                     raise_on_error=True,
                 )
-
-    def test_recall_window_filters_only_current_agent_candidates(self):
-        memory._MEMORY_RECALL_WINDOWS = {
-            "Orchestrator": [["mem_new"]],
-            "#1 - Tester": [["mem_old"]],
-        }
-
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS):
-            orchestrator_candidates = memory.build_memory_recall_candidates(agent_id="Orchestrator")
-            tester_candidates = memory.build_memory_recall_candidates(agent_id="#1 - Tester")
-
-        self.assertNotIn("mem_new", orchestrator_candidates)
-        self.assertIn("mem_old", orchestrator_candidates)
-        self.assertIn("mem_new", tester_candidates)
-        self.assertNotIn("mem_old", tester_candidates)
-        memory._MEMORY_RECALL_WINDOWS = {}
-
-    async def test_select_relevant_memory_ids_updates_per_agent_window_only_when_non_empty(self):
-        selected_client = FakeRecallLLMClient([
-            [
-                {
-                    "id": "call_1",
-                    "name": "SelectRelevantMemories",
-                    "arguments": '{"memory_ids": ["mem_new"]}',
-                    "raw": {},
-                }
-            ],
-        ])
-        empty_client = FakeRecallLLMClient([
-            [
-                {
-                    "id": "call_2",
-                    "name": "SelectRelevantMemories",
-                    "arguments": '{"memory_ids": []}',
-                    "raw": {},
-                }
-            ],
-        ])
-
-        memory._MEMORY_RECALL_WINDOWS = {}
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_management_llm_client", return_value=selected_client):
-            selected = await memory.select_relevant_memory_ids("query", agent_id="agent_a")
-
-        with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_management_llm_client", return_value=empty_client):
-            empty = await memory.select_relevant_memory_ids("query", agent_id="agent_b")
-
-        self.assertEqual(selected, ["mem_new"])
-        self.assertEqual(empty, [])
-        self.assertEqual(memory._MEMORY_RECALL_WINDOWS, {"agent_a": [["mem_new"]]})
-        memory._MEMORY_RECALL_WINDOWS = {}
 
     def test_recall_window_drops_oldest_round_when_over_limit(self):
         memory._MEMORY_RECALL_WINDOWS = {"agent_a": [["mem_old"], ["mem_new"]]}
@@ -637,12 +639,12 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recall_tool_handler_returns_selected_context_without_real_model(self):
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "select_relevant_memory_ids", AsyncMock(return_value=["mem_new"])):
+                patch.object(memory, "select_relevant_memory_ids", return_value=["mem_new"]):
             result = await memory.MEMORY_RECALL_TOOLS_HANDLERS["RecallLongTermMemory"]("当前任务")
 
         self.assertEqual(result["ids"], ["mem_new"])
         self.assertIn("mem_new", result["content"])
-        self.assertIn("new insight should be injected", result["content"])
+        self.assertIn("new insight should be injected about foo_bar_baz handling", result["content"])
         self.assertNotIn("new evidence should not be injected", result["content"])
 
     def test_system_prompts_do_not_embed_full_user_memory(self):
@@ -651,7 +653,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             sub_agent_prompt = get_sub_agent_system_prompt("Tester", "D:/workspace", "pwsh")
 
         self.assertNotIn("# User Memory", orchestrator_prompt)
-        self.assertNotIn("old insight should not be in candidates", orchestrator_prompt)
+        self.assertNotIn("old insight about legacy workflow handling", orchestrator_prompt)
         self.assertIn("# Long-Term Memory Actions", orchestrator_prompt)
         self.assertIn("RecallLongTermMemory", orchestrator_prompt)
         self.assertIn("ManageLongTermMemory", orchestrator_prompt)
@@ -662,7 +664,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("RecallLongTermMemory", sub_agent_prompt)
         self.assertNotIn("ManageLongTermMemory", sub_agent_prompt)
         self.assertNotIn("RememberLongTermMemory", sub_agent_prompt)
-        self.assertNotIn("old insight should not be in candidates", sub_agent_prompt)
+        self.assertNotIn("old insight about legacy workflow handling", sub_agent_prompt)
 
     def test_memory_agent_tools_stay_independent_from_orchestrator_memory_tools(self):
         long_term_tool_names = [tool["function"]["name"] for tool in memory.LONG_TERM_MEMORY_TOOLS]
