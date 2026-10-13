@@ -297,39 +297,37 @@ def test_skill_list_uses_existing_directory_priority(tmp_path, monkeypatch, caps
 
 def test_memory_list_reads_active_records_in_updated_order(tmp_path, monkeypatch, capsys):
     makecode_dir = tmp_path / ".makecode"
-    memory_file = makecode_dir / "memory" / "memory.jsonl"
+    memory_file = makecode_dir / "memory" / "memory.db"
     memory_file.parent.mkdir(parents=True)
-    memory_file.write_text(
-        "\n".join(
-            [
-                json.dumps({
-                    "id": "newer",
-                    "status": "active",
-                    "category": "workflow",
-                    "updated_at": "2026-07-30 12:00:00",
-                    "insight": "newer insight",
-                    "reuse_condition": "newer reuse",
-                }),
-                json.dumps({
-                    "id": "deleted",
-                    "status": "deleted",
-                    "category": "workflow",
-                    "updated_at": "2026-07-30 10:00:00",
-                    "insight": "deleted insight",
-                    "reuse_condition": "deleted reuse",
-                }),
-                json.dumps({
-                    "id": "older",
-                    "status": "active",
-                    "category": "preference",
-                    "created_at": "2026-07-30 11:00:00",
-                    "insight": "older\ninsight",
-                    "reuse_condition": "older\treuse",
-                }),
-            ]
-        ) + "\n",
-        encoding="utf-8",
+    from utils.memory_catalog import MemoryStore
+
+    store = MemoryStore(memory_file)
+    store.insert_memory(
+        {
+            "id": "newer", "status": "active", "category": "workflow",
+            "created_at": "2026-07-30 12:00:00", "updated_at": "2026-07-30 12:00:00",
+            "insight": "newer insight", "evidence": "", "reuse_condition": "newer reuse",
+        },
+        fts_text={"insight": "newer insight", "reuse_condition": "newer reuse"},
     )
+    store.insert_memory(
+        {
+            "id": "deleted", "status": "active", "category": "workflow",
+            "created_at": "2026-07-30 10:00:00", "updated_at": "2026-07-30 10:00:00",
+            "insight": "deleted insight", "evidence": "", "reuse_condition": "deleted reuse",
+        },
+        fts_text={"insight": "deleted insight", "reuse_condition": "deleted reuse"},
+    )
+    store.soft_delete_memories(["deleted"], updated_at="2026-07-30 10:00:00")
+    store.insert_memory(
+        {
+            "id": "older", "status": "active", "category": "preference",
+            "created_at": "2026-07-30 11:00:00", "updated_at": "2026-07-30 11:00:00",
+            "insight": "older\ninsight", "evidence": "", "reuse_condition": "older\treuse",
+        },
+        fts_text={"insight": "older insight", "reuse_condition": "older reuse"},
+    )
+    store.close()
     monkeypatch.setattr(
         "utils.paths.workspace_makecode_dir",
         lambda *, create=True: makecode_dir,

@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import tempfile
 import threading
 import uuid
@@ -27,7 +26,7 @@ from system.console_render import (
 from system.models import get_current_model_config
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion, post_tui
-from utils.memory_catalog import read_memory_records, sort_memory_records
+from utils.memory_catalog import MemoryStore, sort_memory_records
 from utils.llm_client import (
     close_async_llm_client,
     create_memory_management_llm_client,
@@ -69,11 +68,12 @@ _TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
     r"(?:\n\n)?\.\.\.\[该工具执行结果已被压缩 \d+ tokens\]\.\.\.(?:\n\n)?"
 )
 _MEMORY_RECALL_WINDOWS: dict[str, list[list[str]]] = {}
-_MEMORY_RECORDS_LOCK = threading.RLock()
 _MEMORY_CONFIG_CACHE_LOCK = threading.RLock()
 _MEMORY_CONFIG_CACHE_PATH: str | None = None
 _MEMORY_CONFIG_CACHE_SIGNATURE: tuple[int, int, int] | None = None
 _MEMORY_CONFIG_CACHE_DATA: dict | None = None
+_MEMORY_STORE: MemoryStore | None = None
+_MEMORY_DOCUMENT_FREQUENCY_CACHE: dict | None = None
 
 
 def _reset_memory_config_cache() -> None:
@@ -93,13 +93,28 @@ def _memory_config_file_signature() -> tuple[int, int, int] | None:
 
 
 def refresh_workspace_paths() -> None:
-    global MAKECODE_DIR, MEMORY_DIR, MEMORY_JSONL_FILE, MEMORY_CONFIG_FILE, _MEMORY_RECALL_WINDOWS
+    global MAKECODE_DIR, MEMORY_DIR, MEMORY_DB_FILE, MEMORY_CONFIG_FILE, _MEMORY_RECALL_WINDOWS
     MAKECODE_DIR = paths.workspace_makecode_dir()
     MEMORY_DIR = paths.workspace_memory_dir()
-    MEMORY_JSONL_FILE = paths.workspace_memory_jsonl_file()
+    MEMORY_DB_FILE = paths.workspace_memory_db_file()
     MEMORY_CONFIG_FILE = paths.workspace_memory_config_file()
+    _reopen_memory_store(MEMORY_DB_FILE)
     _reset_memory_config_cache()
     reset_memory_recall_windows()
+
+
+def _reopen_memory_store(db_path) -> None:
+    """切换工作区时调用：关闭旧连接、按新 db 路径重新打开，并清除 DF 缓存。
+
+    之前的实现只替换一个 Path 变量，不会清理内存里缓存的 FTS 索引，/cd 切换
+    工作区后仍可能读到旧工作区的召回结果；这里连接替换和缓存清除是同一步。
+    """
+    global _MEMORY_STORE, _MEMORY_DOCUMENT_FREQUENCY_CACHE
+    if _MEMORY_STORE is None:
+        _MEMORY_STORE = MemoryStore(db_path)
+    else:
+        _MEMORY_STORE.reopen(db_path)
+    _MEMORY_DOCUMENT_FREQUENCY_CACHE = None
 
 
 def reset_memory_recall_windows() -> None:
@@ -231,41 +246,33 @@ def append_long_term_memory(
         reuse_condition: str,
         **kwargs,
 ) -> dict:
-    with _MEMORY_RECORDS_LOCK:
-        records = _read_memory_records(include_deleted=True)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        active_records = [record for record in records if record.get("status") == "active"]
-        overflow_count = len(active_records) + 1 - get_memory_size()
-        deleted_ids = []
-        if overflow_count > 0:
-            for record in sorted(active_records, key=_memory_sort_key)[:overflow_count]:
-                record["status"] = "deleted"
-                record["updated_at"] = now
-                deleted_ids.append(record.get("id", ""))
+    store = _get_memory_store()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    active_records = store.list_active_memories()
+    overflow_count = len(active_records) + 1 - get_memory_size()
+    deleted_ids = []
+    if overflow_count > 0:
+        overflow_ids = [
+            record.get("id", "")
+            for record in sorted(active_records, key=_memory_sort_key)[:overflow_count]
+        ]
+        deleted_ids = store.soft_delete_memories(overflow_ids, updated_at=now)
+        _invalidate_document_frequency_cache()
 
-        record = _new_memory_record(category, insight, evidence, reuse_condition)
-        records.append(record)
-        _write_memory_records(records)
-        return {**record, "path": MEMORY_JSONL_FILE.as_posix(), "deleted_overflow_ids": deleted_ids}
+    record = _new_memory_record(category, insight, evidence, reuse_condition)
+    store.insert_memory(record, fts_text=_memory_fts_text(record))
+    _invalidate_document_frequency_cache()
+    return {**record, "deleted_overflow_ids": deleted_ids}
 
 
 def delete_long_term_memories(memory_ids: list[str]) -> dict:
-    with _MEMORY_RECORDS_LOCK:
-        records = _read_memory_records(include_deleted=True)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        remaining_ids = set(memory_ids)
-        deleted_ids = []
-        for record in records:
-            record_id = record.get("id")
-            if record_id in remaining_ids and record.get("status") == "active":
-                record["status"] = "deleted"
-                record["updated_at"] = now
-                deleted_ids.append(record_id)
-                remaining_ids.discard(record_id)
-        if deleted_ids:
-            _write_memory_records(records)
-        missing_ids = [memory_id for memory_id in memory_ids if memory_id in remaining_ids]
-        return {"deleted_ids": deleted_ids, "missing_ids": missing_ids}
+    store = _get_memory_store()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    deleted_ids = store.soft_delete_memories(memory_ids, updated_at=now)
+    if deleted_ids:
+        _invalidate_document_frequency_cache()
+    missing_ids = [memory_id for memory_id in memory_ids if memory_id not in deleted_ids]
+    return {"deleted_ids": deleted_ids, "missing_ids": missing_ids}
 
 
 def update_long_term_memory(
@@ -276,19 +283,24 @@ def update_long_term_memory(
         reuse_condition: str,
         **kwargs,
 ) -> dict:
-    with _MEMORY_RECORDS_LOCK:
-        records = _read_memory_records(include_deleted=True)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for record in records:
-            if record.get("id") == memory_id and record.get("status") == "active":
-                record["updated_at"] = now
-                record["category"] = category.strip()
-                record["insight"] = insight.strip()
-                record["evidence"] = evidence.strip()
-                record["reuse_condition"] = reuse_condition.strip()
-                _write_memory_records(records)
-                return {**record, "path": MEMORY_JSONL_FILE.as_posix()}
+    store = _get_memory_store()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated_record = {
+        "updated_at": now,
+        "category": category.strip(),
+        "insight": insight.strip(),
+        "evidence": evidence.strip(),
+        "reuse_condition": reuse_condition.strip(),
+    }
+    ok = store.update_memory_fields(
+        memory_id,
+        updated_record,
+        fts_text=_memory_fts_text(updated_record),
+    )
+    if not ok:
         return {"error": f"active memory not found: {memory_id}"}
+    _invalidate_document_frequency_cache()
+    return {"id": memory_id, "status": "active", **updated_record}
 
 
 LONG_TERM_MEMORY_TOOL_HANDLERS = {
@@ -583,36 +595,37 @@ def get_active_memory_count() -> int:
     return len(list_long_term_memories())
 
 
-def _read_memory_records(include_deleted: bool = False) -> list[dict]:
-    return read_memory_records(MEMORY_JSONL_FILE, include_deleted=include_deleted)
+def _get_memory_store() -> MemoryStore:
+    global _MEMORY_STORE
+    if _MEMORY_STORE is None:
+        _MEMORY_STORE = MemoryStore(MEMORY_DB_FILE)
+    return _MEMORY_STORE
 
 
-def _write_memory_records(records: list[dict]) -> None:
-    MEMORY_JSONL_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(MEMORY_JSONL_FILE, "w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+def _memory_fts_text(record: dict) -> dict[str, str]:
+    return {
+        "insight": _segment_text_for_index(str(record.get("insight", "") or "")),
+        "reuse_condition": _segment_text_for_index(str(record.get("reuse_condition", "") or "")),
+    }
+
+
+def _invalidate_document_frequency_cache() -> None:
+    global _MEMORY_DOCUMENT_FREQUENCY_CACHE
+    _MEMORY_DOCUMENT_FREQUENCY_CACHE = None
 
 
 def _touch_recalled_memories(memory_ids: list[str]) -> None:
-    selected_ids = set(memory_ids)
+    selected_ids = normalize_memory_ids(memory_ids)
     if not selected_ids:
         return
-
-    with _MEMORY_RECORDS_LOCK:
-        records = _read_memory_records(include_deleted=True)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        touched = False
-        for record in records:
-            if record.get("status") == "active" and record.get("id") in selected_ids:
-                record["updated_at"] = now
-                touched = True
-        if touched:
-            _write_memory_records(records)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    store = _get_memory_store()
+    for memory_id in selected_ids:
+        store.touch_memory(memory_id, now)
 
 
 def list_long_term_memories() -> list[dict]:
-    return _read_memory_records(include_deleted=False)
+    return _get_memory_store().list_active_memories()
 
 
 def _sorted_active_memory_records() -> list[dict]:
@@ -710,10 +723,6 @@ def prepend_recalled_memory_to_query(query: str, memory_context: str) -> str:
     )
 
 
-_MEMORY_FTS5_INDEX = None
-_MEMORY_FTS5_INDEX_SIGNATURE = None
-
-_RECALL_INDEX_FIELDS = ("insight", "reuse_condition")
 _RECALL_HIGH_FREQUENCY_DF_RATIO = 0.4
 _RECALL_RELATIVE_SCORE_THRESHOLD = 0.3
 _RECALL_EXTRACT_TAGS_TOP_K = 15
@@ -830,79 +839,26 @@ def _tokenize_query(query: str, use_keyword_extraction: bool) -> list[str]:
     return terms
 
 
-class _MemoryFts5Index:
-    """SQLite FTS5 + BM25 检索：jieba 预分词写入 FTS5 表，用内置 bm25() 排序。"""
-
-    def __init__(self, records: list, fields: tuple = _RECALL_INDEX_FIELDS):
-        self.records = list(records)
-        self.fields = fields
-        self.conn = sqlite3.connect(":memory:")
-        columns = ", ".join(fields)
-        self.conn.execute(
-            f"CREATE VIRTUAL TABLE memories USING fts5({columns}, tokenize='unicode61')"
-        )
-        placeholders = ", ".join("?" for _ in fields)
-        insert_sql = f"INSERT INTO memories(rowid, {columns}) VALUES (?, {placeholders})"
-        for rowid, record in enumerate(self.records, start=1):
-            values = [_segment_text_for_index(str(record.get(field, "") or "")) for field in fields]
-            self.conn.execute(insert_sql, (rowid, *values))
-        self.conn.commit()
-        self.document_frequency = self._compute_document_frequency()
-
-    def _compute_document_frequency(self) -> dict:
-        df = {}
-        for record in self.records:
-            text = " ".join(str(record.get(field, "") or "") for field in self.fields)
-            tokens = set(_tokenize_for_index(text))
-            for token in tokens:
-                df[token] = df.get(token, 0) + 1
-        return df
-
-    def _build_match_query(self, terms: list) -> str:
-        if not terms:
-            return ""
-        high_frequency_cutoff = len(self.records) * _RECALL_HIGH_FREQUENCY_DF_RATIO
-        rare_terms = [t for t in terms if self.document_frequency.get(t, 0) <= high_frequency_cutoff]
-        effective_terms = rare_terms if rare_terms else terms
-        quoted = ['"{}"'.format(t.replace('"', '""')) for t in effective_terms]
-        return " OR ".join(quoted)
-
-    def search(self, terms: list, excluded_ids=None) -> list:
-        """返回 (memory_id, score) 列表，按 score 降序，不设数量上限。"""
-        match_query = self._build_match_query(terms)
-        if not match_query:
-            return []
-        rows = self.conn.execute(
-            "SELECT rowid, -bm25(memories) AS score FROM memories WHERE memories MATCH ? ORDER BY score DESC",
-            (match_query,),
-        ).fetchall()
-        if not rows:
-            return []
-        results = []
-        for rowid, score in rows:
-            record = self.records[rowid - 1]
-            memory_id = record.get("id", "")
-            if excluded_ids and memory_id in excluded_ids:
-                continue
-            results.append((memory_id, score))
-        return results
-
-
-def _memory_index_signature(records: list) -> tuple:
-    return tuple((record.get("id", ""), record.get("updated_at", "")) for record in records)
-
-
-def _get_memory_fts5_index(records: list) -> "_MemoryFts5Index":
-    """按内容签名缓存 FTS5 索引，避免每次召回都重建（jieba 字典加载是主要耗时）。
-    记忆库发生任何写变更（append/update/delete/touch）都会改变 updated_at 或记录集合，
-    签名随之变化，自动触发重建。
+def _get_document_frequency() -> dict:
+    """DF 统计直接扫磁盘 `memories` 表的 active 行，按内容缓存，写操作
+    （append/update/delete）后通过 `_invalidate_document_frequency_cache`
+    主动失效，不随每次召回重新扫表。
     """
-    global _MEMORY_FTS5_INDEX, _MEMORY_FTS5_INDEX_SIGNATURE
-    signature = _memory_index_signature(records)
-    if _MEMORY_FTS5_INDEX is None or _MEMORY_FTS5_INDEX_SIGNATURE != signature:
-        _MEMORY_FTS5_INDEX = _MemoryFts5Index(records)
-        _MEMORY_FTS5_INDEX_SIGNATURE = signature
-    return _MEMORY_FTS5_INDEX
+    global _MEMORY_DOCUMENT_FREQUENCY_CACHE
+    if _MEMORY_DOCUMENT_FREQUENCY_CACHE is None:
+        _MEMORY_DOCUMENT_FREQUENCY_CACHE = _get_memory_store().get_document_frequency(_tokenize_for_index)
+    return _MEMORY_DOCUMENT_FREQUENCY_CACHE
+
+
+def _build_match_query(terms: list, active_record_count: int) -> str:
+    if not terms:
+        return ""
+    document_frequency = _get_document_frequency()
+    high_frequency_cutoff = active_record_count * _RECALL_HIGH_FREQUENCY_DF_RATIO
+    rare_terms = [t for t in terms if document_frequency.get(t, 0) <= high_frequency_cutoff]
+    effective_terms = rare_terms if rare_terms else terms
+    quoted = ['"{}"'.format(t.replace('"', '""')) for t in effective_terms]
+    return " OR ".join(quoted)
 
 
 def _filter_by_relative_threshold(
@@ -933,17 +889,22 @@ def select_relevant_memory_ids(
     if not query:
         return []
 
-    records = _sorted_active_memory_records()
-    if not records:
+    store = _get_memory_store()
+    active_record_count = len(store.list_active_memories())
+    if active_record_count == 0:
         return []
 
     terms = _tokenize_query(query, use_keyword_extraction)
     if not terms:
         return []
 
-    index = _get_memory_fts5_index(records)
+    match_query = _build_match_query(terms, active_record_count)
     excluded_ids = _get_recent_recalled_memory_ids(agent_id)
-    scored_ids = index.search(terms, excluded_ids=excluded_ids)
+    scored_ids = [
+        (memory_id, score)
+        for memory_id, score in store.search_fts(match_query)
+        if not excluded_ids or memory_id not in excluded_ids
+    ]
     selected_ids = _filter_by_relative_threshold(scored_ids)
     _append_memory_recall_window(agent_id, selected_ids)
     return selected_ids

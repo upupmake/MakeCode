@@ -536,8 +536,8 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #memory-dialog {
         width: 88%;
-        height: 86%;
-        min-height: 18;
+        height: 90%;
+        min-height: 20;
         border: round #f59e0b;
         background: $surface;
         padding: 1 2;
@@ -579,13 +579,18 @@ class ChoiceModal(ClosableModalScreen[str]):
 
     #memory-summary {
         height: auto;
-        margin-top: 1;
+        margin-top: 0;
+    }
+
+    #memory-search {
+        margin-top: 0;
+        height: 3;
     }
 
     #memory-list {
         height: 1fr;
         min-height: 5;
-        margin-top: 1;
+        margin-top: 0;
         padding: 0 1;
         border: round #334155;
     }
@@ -4309,6 +4314,7 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
     def __init__(self, memory_provider: Any) -> None:
         super().__init__()
         self._memory_provider = memory_provider
+        self._all_memories: list[dict[str, Any]] = []
         self._memories: list[dict[str, Any]] = []
         self._last_clicked_index: int | None = None
         self._pending_delete_id: str | None = None
@@ -4320,9 +4326,10 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         with Vertical(id="memory-dialog"):
             yield ModalHeader(self._title_text(), title_id="memory-title", markup=False)
             yield Label(self._summary_text(), id="memory-summary", markup=False)
+            yield Input(placeholder="搜索记忆内容或复用条件…", id="memory-search")
             yield ListView(id="memory-list")
             yield Label(
-                "↑↓ 选择记忆 · 再次点击或 Enter/Space 弹窗查看详情 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 关闭",
+                "↑↓ 选择记忆 · 再次点击或 Enter/Space 弹窗查看详情 · / 搜索 · a 添加 · d 删除 · Tab 切换到操作按钮 · q 关闭",
                 id="memory-help",
                 markup=False,
             )
@@ -4337,6 +4344,26 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
     def _selected_index(self) -> int:
         choice_list = self.query_one("#memory-list", ListView)
         return choice_list.index if choice_list.index is not None else 0
+
+    def _search_query(self) -> str:
+        try:
+            return self.query_one("#memory-search", Input).value.strip()
+        except Exception:
+            return ""
+
+    def _filter_memories(self) -> list[dict[str, Any]]:
+        tokens = self._search_query().casefold().split()
+        if not tokens:
+            return list(self._all_memories)
+        filtered = []
+        for item in self._all_memories:
+            haystack = " ".join((
+                str(item.get("insight", "")),
+                str(item.get("reuse_condition", "")),
+            )).casefold()
+            if all(token in haystack for token in tokens):
+                filtered.append(item)
+        return filtered
 
     def _memory_label(self, item: dict[str, Any]) -> Text:
         memory_id = str(item.get("id", ""))
@@ -4355,15 +4382,16 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         label.append(f"\n   ID: {memory_id}")
         return label
 
-    def _reload_rows(self, selected_index: int | None = None, selected_id: str | None = None) -> None:
+    def _reload_rows(self, selected_index: int | None = None, selected_id: str | None = None, focus_list: bool = True) -> None:
         self._last_clicked_index = None
         self._pending_delete_id = None
         self._pending_delete_index = None
-        self._memories = sorted(
+        self._all_memories = sorted(
             self._memory_provider.list_long_term_memories(),
             key=lambda item: item.get("updated_at") or item.get("created_at") or "",
             reverse=True,
         )
+        self._memories = self._filter_memories()
         if selected_id is not None:
             selected_index = next(
                 (index for index, item in enumerate(self._memories) if item.get("id") == selected_id),
@@ -4376,7 +4404,10 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
 
         labels = [self._memory_label(item) for item in self._memories]
         if not labels:
-            labels = [Text("暂无长期记忆。点击“添加记忆”或按 a 创建第一条记忆。")]
+            if self._all_memories:
+                labels = [Text("没有匹配搜索条件的记忆。")]
+            else:
+                labels = [Text("暂无长期记忆。点击“添加记忆”或按 a 创建第一条记忆。")]
 
         async def _mount_rows() -> None:
             if reload_generation != self._row_reload_generation:
@@ -4389,6 +4420,8 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
                 return
             max_index = max(len(labels) - 1, 0)
             choice_list.index = min(selected_index or 0, max_index)
+            if not focus_list:
+                return
             if self._memories:
                 choice_list.focus()
             else:
@@ -4401,8 +4434,13 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         return "🧠 长期记忆管理"
 
     def _summary_text(self) -> str:
-        categories = len({str(item.get("category", "")) for item in self._memories})
-        return f"共 {len(self._memories)} 条 active 记忆 · {categories} 个分类 · 新增和删除会立即写入当前工作区"
+        categories = len({str(item.get("category", "")) for item in self._all_memories})
+        if self._search_query():
+            return (
+                f"匹配 {len(self._memories)} / {len(self._all_memories)} 条 active 记忆 · "
+                f"{categories} 个分类 · 新增和删除会立即写入当前工作区"
+            )
+        return f"共 {len(self._all_memories)} 条 active 记忆 · {categories} 个分类 · 新增和删除会立即写入当前工作区"
 
     def _reset_header(self) -> None:
         self.query_one("#memory-title", Label).update(self._title_text())
@@ -4416,6 +4454,11 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
             return None
         return self._memories[index]
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "memory-search":
+            return
+        self._reload_rows(0, focus_list=False)
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id != "memory-list":
             return
@@ -4427,10 +4470,11 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
 
     def _on_key(self, event: Key) -> None:
         if event.key == "q":
-            self.action_close()
-            event.stop()
-            event.prevent_default()
-            return
+            if not isinstance(self.focused, Input):
+                self.action_close()
+                event.stop()
+                event.prevent_default()
+                return
         if event.key == "y" and self._pending_delete_id is not None:
             self.action_confirm_delete()
             event.stop()
@@ -4441,7 +4485,22 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
             event.stop()
             event.prevent_default()
             return
-        if event.key == "a":
+        if event.key in {"/", "slash"} and not isinstance(self.focused, Input):
+            self.query_one("#memory-search", Input).focus()
+            event.stop()
+            event.prevent_default()
+            return
+        if (
+            event.key == "down"
+            and isinstance(self.focused, Input)
+            and self.focused.id == "memory-search"
+            and self._memories
+        ):
+            self.query_one("#memory-list", ListView).focus()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "a" and not isinstance(self.focused, Input):
             self.action_add()
             event.stop()
             event.prevent_default()

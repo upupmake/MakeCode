@@ -240,8 +240,8 @@ def _memory_list() -> int:
     from utils import paths
     from utils.memory_catalog import read_memory_records, sort_memory_records
 
-    memory_file = paths.workspace_makecode_dir(create=False) / "memory" / "memory.jsonl"
-    print(f"长期记忆文件: {memory_file}")
+    memory_file = paths.workspace_makecode_dir(create=False) / "memory" / "memory.db"
+    print(f"长期记忆数据库: {memory_file}")
     try:
         memories = sort_memory_records(read_memory_records(memory_file))
     except (OSError, UnicodeError) as exc:

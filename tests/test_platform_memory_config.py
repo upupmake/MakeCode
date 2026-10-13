@@ -357,8 +357,11 @@ def test_create_memory_management_llm_client_uses_configured_model_and_falls_bac
 
 
 def test_append_long_term_memory_evicts_least_recently_updated(tmp_path, monkeypatch):
-    memory_file = tmp_path / "long_term_memory.jsonl"
-    records = [
+    from utils.memory_catalog import MemoryStore
+
+    db_path = tmp_path / "memory.db"
+    store = MemoryStore(db_path)
+    store.insert_memory(
         {
             "id": "mem_created_first",
             "created_at": "2026-01-01 00:00:00",
@@ -369,6 +372,9 @@ def test_append_long_term_memory_evicts_least_recently_updated(tmp_path, monkeyp
             "reuse_condition": "test",
             "status": "active",
         },
+        fts_text={"insight": "recently updated", "reuse_condition": "test"},
+    )
+    store.insert_memory(
         {
             "id": "mem_updated_first",
             "created_at": "2026-01-02 00:00:00",
@@ -379,24 +385,19 @@ def test_append_long_term_memory_evicts_least_recently_updated(tmp_path, monkeyp
             "reuse_condition": "test",
             "status": "active",
         },
-    ]
-    memory_file.write_text(
-        "".join(json.dumps(record) + "\n" for record in records),
-        encoding="utf-8",
+        fts_text={"insight": "least recently updated", "reuse_condition": "test"},
     )
-    monkeypatch.setattr(memory, "MEMORY_JSONL_FILE", memory_file)
+    monkeypatch.setattr(memory, "_MEMORY_STORE", store)
+    memory._invalidate_document_frequency_cache()
     monkeypatch.setattr(memory, "get_memory_size", lambda: 2)
 
     result = memory.append_long_term_memory("workflow", "new", "test", "test")
 
-    saved_records = [
-        json.loads(line)
-        for line in memory_file.read_text(encoding="utf-8").splitlines()
-    ]
-    saved_by_id = {record["id"]: record for record in saved_records}
+    saved_by_id = {record["id"]: record for record in store.list_all_memories()}
     assert saved_by_id["mem_created_first"]["status"] == "active"
     assert saved_by_id["mem_updated_first"]["status"] == "deleted"
     assert result["deleted_overflow_ids"] == ["mem_updated_first"]
+    store.close()
 
 
 def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tmp_path, monkeypatch):

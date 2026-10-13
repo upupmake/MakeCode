@@ -214,8 +214,8 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - **Selection policy**: stores only stable information with reuse value across future sessions, such as user preferences, project conventions, workflow rules, repeated pitfalls, and confirmed release norms. It does not store one-off task progress, temporary implementation details, or facts that can be directly re-read from the repository.
 - **Global context length**: `context_length` in `memory_config.json` controls the context threshold for all models in thousands of tokens and defaults to `350`; the runtime rereads the configuration file before each use and automatically compacts history after the threshold is exceeded.
 - **Capacity and eviction policy**: long-term memory capacity is configurable; when the limit is exceeded, older active memories are evicted in chronological order.
-- **Storage paths**: long-term memories are stored in `.makecode/memory/memory.jsonl`, while memory and global context settings are stored in `.makecode/memory/memory_config.json`. JSONL reads skip invalid lines without rewriting the file.
-- **Rendering order**: long-term memory rendering and the `/memory-panel` view are both sorted by `updated_at` ascending (falling back to `created_at` when missing); this affects only the display layer and never changes the JSONL storage order or CRUD logic.
+- **Storage paths**: long-term memories are stored in the SQLite database `.makecode/memory/memory.db`, while memory and global context settings are stored in `.makecode/memory/memory_config.json`. The database holds a `memories` record table plus a `memories_fts` FTS5 index table (a persistent full-text index pre-tokenized over `insight`/`reuse_condition`); all memory CRUD and recall search operate directly on this file, with no JSONL involved.
+- **Rendering order**: long-term memory rendering and the `/memory-panel` view are both sorted by `updated_at` ascending (falling back to `created_at` when missing); this affects only the display layer and never changes the database storage order or CRUD logic.
 
 #### Long-Term Memory Commands
 
@@ -532,7 +532,7 @@ To centrally manage workspace paths and install-directory global configuration, 
     - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, `error.log`, and bundled skills under `skills/` live in the corresponding shared configuration directory.
     - Packaged macOS builds extract the syntax-validation cache to `~/Library/Application Support/MakeCode/ts_cache/`; Windows, Linux, and source runs still use `install_dir/ts_cache/`.
 - **Workspace Directory (Workdir)**: The user's chosen working directory. Session- and task-related state lives here.
-    - `conversations/`, `memory/memory.jsonl`, `memory/memory_config.json`, and `transcripts/` reside under `workdir/.makecode/`.
+    - `conversations/`, `memory/memory.db`, `memory/memory_config.json`, and `transcripts/` reside under `workdir/.makecode/`.
     - User skills default to `workdir/.makecode/skills/`; legacy `workdir/skills/` remains supported.
 
 #### Core API
@@ -544,7 +544,7 @@ To centrally manage workspace paths and install-directory global configuration, 
 - `paths.install_ts_cache_dir()`: return the syntax-validation cache directory; `install_dir/ts_cache/` on Windows, Linux, and source runs, and `~/Library/Application Support/MakeCode/ts_cache/` in packaged macOS builds.
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`: return `workdir/.makecode/skills/` and the legacy `workdir/skills/` respectively.
 - `paths.workspace_disabled_skills_file()`: return the project-level disabled Skills list at `workdir/.makecode/disabled_skills.json`.
-- Conversation/memory/transcript/MCP/model-config getters are all unified here (`workspace_conversations_dir()`, `workspace_memory_jsonl_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
+- Conversation/memory/transcript/MCP/model-config getters are all unified here (`workspace_conversations_dir()`, `workspace_memory_db_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
 
 #### Design Benefits
 
@@ -675,7 +675,7 @@ flowchart TD
 
     S --> SK["install/workdir .makecode/skills\nlegacy workdir/skills"]
     MM --> TR[".makecode/transcripts/"]
-    MM --> LTM[".makecode/memory/memory.jsonl"]
+    MM --> LTM[".makecode/memory/memory.db"]
     TM --> TP[".makecode/conversations/<id>/task_plan.json"]
     T --> TH[".makecode/conversations/<id>/sub_agents/"]
     MCP --> MC["mcp_config.json\nshared config dir"]
