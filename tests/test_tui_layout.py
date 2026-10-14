@@ -202,9 +202,11 @@ async def test_temporary_query_shortcut_accepts_and_replaces_pending_query():
 
     async with app.run_test(size=(180, 40)) as pilot:
         await pilot.pause()
-        assert "Ctrl+G 运行时介入" in str(app.query_one("#input-box").border_title)
+        assert "Ctrl+G 运行时介入" not in str(app.query_one("#input-box").border_title)
         app.set_agent_loop_active(True)
         app.set_temporary_query_enabled(True)
+        await pilot.pause()
+        assert "Ctrl+G 运行时介入" in str(app.query_one("#input-box").border_title)
 
         await pilot.press("ctrl+g")
         await pilot.pause()

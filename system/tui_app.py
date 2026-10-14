@@ -696,12 +696,14 @@ class MakeCodeInput(ImageAwareTextArea):
             event.prevent_default()
             return
         if event.key == "ctrl+n":
-            app.action_insert_newline()
+            if not app._agent_loop_active:
+                app.action_insert_newline()
             event.stop()
             event.prevent_default()
             return
         if event.key == "ctrl+p":
-            app.action_toggle_plan_mode()
+            if not app._agent_loop_active:
+                app.action_toggle_plan_mode()
             event.stop()
             event.prevent_default()
             return
@@ -1281,12 +1283,12 @@ class MakeCodeTuiApp(App[None]):
     """
 
     BINDINGS = [
-        Binding("ctrl+p", "toggle_plan_mode", "Toggle Plan/Act", priority=True),
-        Binding("ctrl+c", "cancel_response", "Cancel", priority=True),
+        Binding("ctrl+p", "toggle_plan_mode", "切换计划/执行", priority=True),
+        Binding("ctrl+c", "cancel_response", "取消回复", priority=True),
         Binding("escape", "cancel_response", "Cancel", priority=True),
-        Binding("ctrl+n", "insert_newline", "New line", priority=True),
+        Binding("ctrl+n", "insert_newline", "换行", priority=True),
         Binding("f6", "toggle_compact_panes", "切换面板", priority=True, show=False),
-        Binding("ctrl+g", "open_temporary_query", "追加临时指令", priority=True, show=False),
+        Binding("ctrl+g", "open_temporary_query", "追加临时指令", priority=True),
     ]
 
     def __init__(
@@ -1463,6 +1465,9 @@ class MakeCodeTuiApp(App[None]):
         self.set_interval(0.5, self._check_responsive_layout)
         self.set_interval(1.0, self._update_clock)
         TUI_BRIDGE.bind(self)
+        from system.stream_cancel import add_cancel_available_callback
+
+        add_cancel_available_callback(self._refresh_cancel_binding)
         from utils.tasks import render_task_pane
 
         render_task_pane()
@@ -1596,6 +1601,9 @@ class MakeCodeTuiApp(App[None]):
         self._apply_layout_ratios()
 
     def on_unmount(self) -> None:
+        from system.stream_cancel import remove_cancel_available_callback
+
+        remove_cancel_available_callback(self._refresh_cancel_binding)
         TUI_BRIDGE.unbind(self)
 
     def call_from_thread(self, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -2010,6 +2018,8 @@ class MakeCodeTuiApp(App[None]):
                 self.screen.dismiss(None)
         if future is not None and not future.done():
             future.set_result(None)
+        self.refresh_bindings()
+        self._update_input_title()
 
     def action_open_temporary_query(self) -> None:
         self.open_temporary_query_modal()
@@ -2262,11 +2272,37 @@ class MakeCodeTuiApp(App[None]):
 
         new_state = toggle_plan_mode()
         self._mode_label = "PLAN" if new_state else "ACT"
+        self.refresh_bindings()
         self._update_header_status()
         self._update_input_title()
         self._update_runtime_info()
         self.refresh_token_usage()
         self.handle_tui_event(TuiEvent(TuiRegion.STATUS, f"{self._mode_label} mode"))
+
+    def _refresh_cancel_binding(self) -> None:
+        if not self._is_mounted:
+            return
+        if threading.get_ident() == self._thread_id:
+            self._apply_cancel_binding_change()
+            return
+        self.call_from_thread(self._apply_cancel_binding_change)
+
+    def _apply_cancel_binding_change(self) -> None:
+        if not self._is_mounted:
+            return
+        self.refresh_bindings()
+        self._update_input_title()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in {"toggle_plan_mode", "insert_newline"}:
+            return not self._agent_loop_active
+        if action == "cancel_response":
+            from system.stream_cancel import is_cancel_available
+
+            return is_cancel_available()
+        if action == "open_temporary_query":
+            return self._agent_loop_active and self._temporary_query_enabled
+        return True
 
     def action_insert_newline(self) -> None:
         if isinstance(self.screen, TemporaryQueryModal):
@@ -2351,12 +2387,14 @@ class MakeCodeTuiApp(App[None]):
         if self._modal_active:
             return
         if event.key == "ctrl+p":
-            self.action_toggle_plan_mode()
+            if not self._agent_loop_active:
+                self.action_toggle_plan_mode()
             event.stop()
             event.prevent_default()
             return
         if event.key == "ctrl+n":
-            self.action_insert_newline()
+            if not self._agent_loop_active:
+                self.action_insert_newline()
             event.stop()
             event.prevent_default()
             return
@@ -2490,6 +2528,8 @@ class MakeCodeTuiApp(App[None]):
             self.set_temporary_query_enabled(False)
         self._update_header_status()
         self._update_input_visibility()
+        self.refresh_bindings()
+        self._update_input_title()
         if should_scroll_content:
             self._scroll_content_end_after_layout()
         self._update_runtime_info()
@@ -2613,7 +2653,19 @@ class MakeCodeTuiApp(App[None]):
             self._update_runtime_info()
 
     def _update_input_title(self) -> None:
-        self.query_one("#input-box", MakeCodeInput).border_title = f"MakeCode · {self._mode_label} · Enter 发送/选择 · Ctrl+C 取消回复 · Ctrl+N 换行 · Ctrl+P 切换 · Ctrl+G 运行时介入 · ↑↓ 选择命令"
+        from system.stream_cancel import is_cancel_available
+
+        hints = ["Enter 发送/选择"]
+        if is_cancel_available():
+            hints.append("Ctrl+C 取消回复")
+        if not self._agent_loop_active:
+            hints.extend(["Ctrl+N 换行", "Ctrl+P 切换"])
+        if self._agent_loop_active and self._temporary_query_enabled:
+            hints.append("Ctrl+G 运行时介入")
+        hints.append("↑↓ 选择命令")
+        self.query_one("#input-box", MakeCodeInput).border_title = (
+            f"MakeCode · {self._mode_label} · " + " · ".join(hints)
+        )
 
     def action_cancel_response(self) -> None:
         if isinstance(self.screen, TemporaryQueryModal):

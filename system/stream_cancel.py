@@ -14,6 +14,24 @@ _response_active = False
 _terminal_active_count = 0
 _terminal_cancel_event = threading.Event()
 _terminal_lock = threading.Lock()
+_cancel_available_callbacks: list = []
+
+
+def _notify_cancel_available_changed() -> None:
+    for callback in list(_cancel_available_callbacks):
+        callback()
+
+
+def add_cancel_available_callback(callback) -> None:
+    if callback not in _cancel_available_callbacks:
+        _cancel_available_callbacks.append(callback)
+
+
+def remove_cancel_available_callback(callback) -> None:
+    try:
+        _cancel_available_callbacks.remove(callback)
+    except ValueError:
+        pass
 
 
 def cancel_current_response():
@@ -38,6 +56,7 @@ def start_terminal_command() -> None:
         if _terminal_active_count == 0:
             _terminal_cancel_event.clear()
         _terminal_active_count += 1
+    _notify_cancel_available_changed()
 
 
 def stop_terminal_command() -> None:
@@ -46,6 +65,7 @@ def stop_terminal_command() -> None:
         _terminal_active_count = max(_terminal_active_count - 1, 0)
         if _terminal_active_count == 0:
             _terminal_cancel_event.clear()
+    _notify_cancel_available_changed()
 
 
 def is_terminal_cancelled() -> bool:
@@ -57,6 +77,7 @@ def start_cancel_listener():
     global _cancel_requested, _response_active
     _cancel_requested = False
     _response_active = True
+    _notify_cancel_available_changed()
 
 
 def stop_cancel_listener():
@@ -64,6 +85,7 @@ def stop_cancel_listener():
     global _cancel_requested, _response_active
     _response_active = False
     _cancel_requested = False
+    _notify_cancel_available_changed()
 
 
 def is_cancelled() -> bool:
@@ -71,10 +93,20 @@ def is_cancelled() -> bool:
     return _cancel_requested
 
 
+def is_cancel_available() -> bool:
+    """是否存在可以被 Ctrl+C 或 Escape 取消的响应或终端命令。"""
+    if _response_active:
+        return True
+    with _terminal_lock:
+        return _terminal_active_count > 0
+
+
 def reset_cancel():
     """重置取消标志。"""
-    global _cancel_requested, _terminal_active_count
+    global _cancel_requested, _terminal_active_count, _response_active
     _cancel_requested = False
+    _response_active = False
     with _terminal_lock:
         _terminal_active_count = 0
         _terminal_cancel_event.clear()
+    _notify_cancel_available_changed()
