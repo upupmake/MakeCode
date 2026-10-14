@@ -646,6 +646,18 @@ class TuiBridge:
         else:
             app.call_from_thread(app.open_directory_picker_for_input, True)
 
+    def prompt_workdir(self) -> str:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "abort"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_workdir_modal(future)
+        else:
+            app.call_from_thread(app.open_workdir_modal, future)
+        return future.result()
+
 
 TUI_BRIDGE = TuiBridge()
 
@@ -1362,13 +1374,13 @@ class MakeCodeTuiApp(App[None]):
             yield Static("", id="top-clock")
         with Vertical(id="quick-panel-shell"):
             with Grid(id="quick-panel-buttons"):
+                yield Button("✨ 新对话", id="quick-new", classes="quick-panel-button")
                 yield Button("💬 对话历史", id="quick-conversation-history", classes="quick-panel-button")
                 yield Button("🧠 记忆", id="quick-memory", classes="quick-panel-button")
                 yield Button("📚 技能", id="quick-skills", classes="quick-panel-button")
                 yield Button("🛠️ 命令", id="quick-commands", classes="quick-panel-button")
                 yield Button("🤖 模型", id="quick-models", classes="quick-panel-button")
                 yield Button("⚙️ 记忆配置", id="quick-memory-config", classes="quick-panel-button")
-                yield Button("🧩 布局", id="quick-layout", classes="quick-panel-button")
                 yield Button("🔀 MCP配置", id="quick-mcp-config", classes="quick-panel-button")
                 yield Button("🔧 额外工具", id="quick-extra-tools", classes="quick-panel-button")
                 yield Button("📝 复制", id="quick-copy", classes="quick-panel-button")
@@ -1443,7 +1455,7 @@ class MakeCodeTuiApp(App[None]):
         self._update_header_status()
         self._update_input_title()
         self._update_hitl_button()
-        self.query_one("#quick-conversation-history", Button).disabled = self._agent_loop_active
+        self._set_quick_session_buttons_disabled(self._agent_loop_active)
         self._update_runtime_info()
         self.refresh_token_usage()
         self._update_clock()
@@ -1487,8 +1499,20 @@ class MakeCodeTuiApp(App[None]):
             self._startup_workdir_handler(value or "abort")
             self.query_one("#input-box", MakeCodeInput).focus()
 
+        self._push_workdir_modal(_done)
+
+    def open_workdir_modal(self, future: Future[str]) -> None:
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "abort")
+            self.query_one("#input-box", MakeCodeInput).focus()
+
+        self._push_workdir_modal(_done)
+
+    def _push_workdir_modal(self, done: Callable[[str | None], None]) -> None:
         self._modal_active = True
-        self.push_screen(StartupWorkdirModal(self._startup_workdir_provider()), _done)
+        self.push_screen(StartupWorkdirModal(paths.workdir()), done)
 
     def update_input_height(self) -> None:
         input_box = self.query_one("#input-box", MakeCodeInput)
@@ -2460,7 +2484,7 @@ class MakeCodeTuiApp(App[None]):
             and self._is_scroller_at_bottom(self._content_scroller)
         )
         self._agent_loop_active = active
-        self.query_one("#quick-conversation-history", Button).disabled = active
+        self._set_quick_session_buttons_disabled(active)
         if was_active and not active:
             self.restore_temporary_query_to_input()
             self.set_temporary_query_enabled(False)
@@ -2469,6 +2493,10 @@ class MakeCodeTuiApp(App[None]):
         if should_scroll_content:
             self._scroll_content_end_after_layout()
         self._update_runtime_info()
+
+    def _set_quick_session_buttons_disabled(self, disabled: bool) -> None:
+        for button_id in ("#quick-new", "#quick-conversation-history"):
+            self.query_one(button_id, Button).disabled = disabled
 
     def set_client_request_active(
         self, active: bool, retry_count: int = 0, max_retries: int = 0
@@ -2653,16 +2681,16 @@ class MakeCodeTuiApp(App[None]):
         if button_id == "compact-pane-toggle":
             self.action_toggle_compact_panes()
             return
-        if button_id == "quick-conversation-history" and self._agent_loop_active:
+        if button_id in {"quick-new", "quick-conversation-history"} and self._agent_loop_active:
             return
         quick_commands = {
+            "quick-new": "/new",
             "quick-conversation-history": "/load",
             "quick-memory": "/memory-panel",
             "quick-skills": "/skills-list",
             "quick-commands": "/cmds",
             "quick-models": "/models",
             "quick-memory-config": "/memory-config",
-            "quick-layout": "/layout",
             "quick-mcp-config": "/mcp-switch",
             "quick-extra-tools": "/extra-tools",
             "quick-copy": "/copy",
@@ -3042,6 +3070,10 @@ def end_tui_batch_render() -> None:
 
 def scroll_all_panes_to_bottom() -> None:
     TUI_BRIDGE.scroll_all_panes_to_bottom()
+
+
+def prompt_workdir_tui() -> str:
+    return TUI_BRIDGE.prompt_workdir()
 
 
 def choose_model_panel_tui(title: str, options: list[str]) -> str:

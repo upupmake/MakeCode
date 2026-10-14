@@ -1382,6 +1382,7 @@ def test_new_resets_conversation_task_and_team_bindings(tmp_path, monkeypatch):
     monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
     monkeypatch.setattr("system.commands.render_current_workdir", Mock())
     monkeypatch.setattr("system.commands.refresh_status", Mock())
+    monkeypatch.setattr("system.commands.prompt_workdir_tui", lambda: "abort")
     handler = make_handler(store)
     handler.console = Mock()
     history = [
@@ -1395,6 +1396,66 @@ def test_new_resets_conversation_task_and_team_bindings(tmp_path, monkeypatch):
     assert tasks_module.TASK_MANAGER.conversation_id is None
     assert teams_module.TEAM.conversation_id is None
     assert history == [{"role": "system", "content": ""}]
+
+
+def test_new_prompts_workdir_and_switches_when_choice_differs(tmp_path, monkeypatch):
+    from utils import tasks as tasks_module
+    from utils import teams as teams_module
+
+    current = tmp_path / "current"
+    selected = tmp_path / "selected"
+    current.mkdir()
+    selected.mkdir()
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "system"}])
+    task_manager = tasks_module.TaskManager(conversation.parent, conversation.parent.name)
+    team = teams_module.TeammateManager(conversation.parent, conversation.parent.name, [])
+    monkeypatch.setattr(tasks_module, "TASK_MANAGER", task_manager)
+    monkeypatch.setattr(teams_module, "TEAM", team)
+    monkeypatch.setattr(tasks_module, "render_task_pane", Mock())
+    monkeypatch.setattr("system.commands.post_tui", Mock())
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+    monkeypatch.setattr("system.commands.render_current_workdir", Mock())
+    monkeypatch.setattr("system.commands.refresh_status", Mock())
+    monkeypatch.setattr("system.commands.prompt_workdir_tui", lambda: f"custom:{selected}")
+    monkeypatch.setattr("utils.paths._WORKDIR", current)
+    handler = make_handler(store)
+    handler.console = Mock()
+    handler.handle_cd = Mock(return_value=True)
+    history = [{"role": "system", "content": "old system"}]
+
+    handler.handle_new(history, conversation)
+
+    handler.handle_cd.assert_called_once_with(f'/cd "{selected.resolve()}"', history)
+
+
+def test_new_keeps_current_workdir_when_prompt_aborts(tmp_path, monkeypatch):
+    from utils import tasks as tasks_module
+    from utils import teams as teams_module
+
+    current = tmp_path / "current"
+    current.mkdir()
+    store = ConversationStore(tmp_path / "conversations")
+    conversation = store.save_messages([{"role": "system", "content": "system"}])
+    task_manager = tasks_module.TaskManager(conversation.parent, conversation.parent.name)
+    team = teams_module.TeammateManager(conversation.parent, conversation.parent.name, [])
+    monkeypatch.setattr(tasks_module, "TASK_MANAGER", task_manager)
+    monkeypatch.setattr(teams_module, "TEAM", team)
+    monkeypatch.setattr(tasks_module, "render_task_pane", Mock())
+    monkeypatch.setattr("system.commands.post_tui", Mock())
+    monkeypatch.setattr("system.commands.render_current_task_plan", Mock())
+    monkeypatch.setattr("system.commands.render_current_workdir", Mock())
+    monkeypatch.setattr("system.commands.refresh_status", Mock())
+    monkeypatch.setattr("system.commands.prompt_workdir_tui", lambda: "abort")
+    monkeypatch.setattr("utils.paths._WORKDIR", current)
+    handler = make_handler(store)
+    handler.console = Mock()
+    handler.handle_cd = Mock(return_value=True)
+    history = [{"role": "system", "content": "old system"}]
+
+    handler.handle_new(history, conversation)
+
+    handler.handle_cd.assert_not_called()
 
 
 def test_tasks_command_opens_task_management_panel(monkeypatch):

@@ -27,7 +27,7 @@ from tools.extra_tools import (
     is_understand_image_enabled,
     set_understand_image_config,
 )
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
+from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, prompt_workdir_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationListItem, ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -1017,7 +1017,18 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
         )
         render_current_workdir()
         refresh_status()
+        self._prompt_workdir_after_new(history)
         return True, None
+
+    def _prompt_workdir_after_new(self, history: list) -> None:
+        from init import resolve_chosen_workdir
+
+        choice = prompt_workdir_tui()
+        current = Path(paths.workdir()).resolve()
+        selected = resolve_chosen_workdir(choice, current)
+        if selected == current:
+            return
+        self.handle_cd(f'/cd "{selected}"', history)
 
     def handle_cd(self, query: str, history: list) -> bool:
         """处理 /cd 命令，打开选择器或切换当前工作目录。"""

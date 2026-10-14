@@ -3,6 +3,7 @@ import json
 import sys
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -13,8 +14,8 @@ from textual.events import Paste
 
 from system.console_render import _render_startup_banner
 from system.tui_app import MakeCodeTuiApp, TuiBridge
-from system.tui_types import TuiEvent, TuiRegion
-from system.tui_modals import ChoiceModal, TokenUsageModal
+from system.tui_types import LAYOUT_DEFAULT_RATIOS, TuiEvent, TuiRegion, normalize_layout_ratios
+from system.tui_modals import ChoiceModal, StartupWorkdirModal, TokenUsageModal
 from utils.skills import SkillLoader
 from utils.vision import image_reference_marker, parse_image_placeholders, store_image_bytes_attachment
 
@@ -970,6 +971,46 @@ async def test_quick_panel_conversation_history_is_disabled_during_agent_loop():
         assert app.query_one("#input-box").has_class("hidden")
 
 
+@pytest.mark.anyio
+async def test_quick_panel_new_button_routes_to_new_command():
+    app = MakeCodeTuiApp()
+    app._run_quick_command = Mock()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+
+        button = app.query_one("#quick-new")
+        assert "新对话" in str(button.label)
+        assert not app.query("#quick-layout")
+
+        await pilot.click("#quick-new")
+        await pilot.pause()
+
+        app._run_quick_command.assert_called_once_with("/new")
+
+
+@pytest.mark.anyio
+async def test_quick_panel_new_is_disabled_during_agent_loop():
+    app = MakeCodeTuiApp()
+    app._run_quick_command = Mock()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        app.set_agent_loop_active(True)
+        await pilot.pause()
+
+        button = app.query_one("#quick-new")
+        assert button.disabled
+        assert app.query_one("#quick-conversation-history").disabled
+        assert app.query_one("#input-box").has_class("hidden")
+
+        await pilot.click("#quick-new")
+        await pilot.pause()
+
+        app._run_quick_command.assert_not_called()
+        assert app.query_one("#input-box").has_class("hidden")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_quick_panel_extra_tools_and_mcp_config_buttons_route_to_commands():
@@ -993,6 +1034,46 @@ async def test_quick_panel_extra_tools_and_mcp_config_buttons_route_to_commands(
             "/extra-tools",
             "/mcp-switch",
         ]
+
+
+def test_layout_default_ratios_are_task_background_sub_agent_3_4_2():
+    assert LAYOUT_DEFAULT_RATIOS == {
+        "task": 3,
+        "background": 4,
+        "sub_agent": 2,
+    }
+    assert normalize_layout_ratios({}) == LAYOUT_DEFAULT_RATIOS
+
+
+@pytest.mark.anyio
+async def test_new_workdir_modal_uses_current_workdir(tmp_path, monkeypatch):
+    current = tmp_path / "current-workspace"
+    current.mkdir()
+    monkeypatch.setattr("system.tui_app.paths.workdir", lambda: current)
+    captured = {}
+
+    def fake_push_screen(modal, callback=None):
+        captured["cwd"] = modal.cwd
+        captured["modal"] = modal
+        if callback is not None:
+            callback("abort")
+        return modal
+
+    app = MakeCodeTuiApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen = fake_push_screen
+        app.open_workdir_modal(Future())
+        await pilot.pause()
+        captured["new_cwd"] = captured["cwd"]
+        app._startup_workdir_provider = lambda: tmp_path / "stale-launch-cwd"
+        app._startup_workdir_handler = lambda choice: None
+        app._open_startup_workdir_modal()
+        await pilot.pause()
+
+    assert captured["new_cwd"] == current
+    assert captured["cwd"] == current
+    assert isinstance(captured["modal"], StartupWorkdirModal)
 
 
 @pytest.mark.anyio
