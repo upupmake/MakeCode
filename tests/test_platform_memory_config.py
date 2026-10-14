@@ -16,7 +16,7 @@ from rich.text import Text
 from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
-from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryDetailModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, EditModelModal, TaskPanelModal, filter_choice_options
+from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryDetailModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, ModelPanelModal, EditModelModal, TaskPanelModal, filter_choice_options
 from utils import llm_client as llm_client_module, memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
@@ -2014,6 +2014,193 @@ async def test_choice_modal_deletes_only_after_confirmation():
 
 
 @pytest.mark.anyio
+async def test_conversation_picker_click_selects_before_loading(tmp_path):
+    from system.commands import interactive_choose_conversation
+    from system.tui_app import MakeCodeTuiApp
+
+    store = ConversationStore(tmp_path / "conversations")
+    for content in ("会话A", "会话B"):
+        store.save_messages([{"role": "user", "content": content}])
+        store.reset()
+    conversations = store.list_conversations()
+    results = []
+    failures = []
+    done = threading.Event()
+
+    def choose():
+        try:
+            results.append(interactive_choose_conversation(conversations))
+        except Exception as exc:
+            failures.append(exc)
+        finally:
+            done.set()
+
+    app = MakeCodeTuiApp(runtime_info_provider=lambda: "")
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        worker = threading.Thread(target=choose, daemon=True)
+        worker.start()
+        try:
+            await pump_until(pilot, lambda: isinstance(app.screen, ChoiceModal) or done.is_set())
+            assert not failures
+            modal = app.screen
+            assert isinstance(modal, ChoiceModal)
+            choice_list = modal.query_one("#choice-list", ListView)
+            await pump_until(
+                pilot,
+                lambda: str(modal.query_one("#choice-search-status", Label).render()) == "显示 2 / 2"
+                and choice_list.has_focus,
+            )
+
+            await pilot.click(choice_list.children[1])
+            await pilot.pause()
+            assert app.screen is modal
+            assert not done.is_set()
+            assert_list_selection(choice_list, 1)
+
+            await pilot.click(choice_list.children[1])
+            await pump_until(pilot, done.is_set)
+            assert not failures
+            assert results == [str(conversations[1].path)]
+        finally:
+            if isinstance(app.screen, ChoiceModal):
+                app.screen.action_cancel()
+                await pilot.pause()
+            await pump_until(pilot, done.is_set)
+            worker.join(timeout=1)
+            assert not worker.is_alive()
+
+
+@pytest.mark.anyio
+async def test_choice_modal_click_selects_before_confirming():
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    modal = ChoiceModal("测试", ["选项A", "选项B"])
+    app = ChoiceModalHost(modal, on_dismiss)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        choice_list = modal.query_one("#choice-list", ListView)
+        assert_list_selection(choice_list, 0)
+
+        await pilot.click(choice_list.children[1])
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert result is None
+        assert_list_selection(choice_list, 1)
+
+        await pilot.click(choice_list.children[1])
+        await pilot.pause()
+
+    assert result == "选项B"
+
+
+@pytest.mark.anyio
+async def test_choice_modal_click_after_search_selects_filtered_item_before_confirming():
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    modal = ChoiceModal(
+        "测试",
+        ["会话A", "会话B", "会话C"],
+        search_texts=["alpha shared", "beta unique", "gamma shared"],
+    )
+    app = ChoiceModalHost(modal, on_dismiss)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        search = modal.query_one("#choice-search", Input)
+        search.focus()
+        search.value = "shared"
+        await pump_until(
+            pilot,
+            lambda: str(modal.query_one("#choice-search-status", Label).render()) == "显示 2 / 3"
+            and len(modal.query_one("#choice-list", ListView).children) == 2,
+        )
+
+        choice_list = modal.query_one("#choice-list", ListView)
+        assert modal._filtered_options == ["会话A", "会话C"]
+        assert choice_list.index == 0
+        assert choice_list.children[0].has_class("-highlight")
+
+        assert search.has_focus
+        await pilot.click(choice_list.children[1])
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert result is None
+        assert_list_selection(choice_list, 1)
+
+        await pilot.click(choice_list.children[1])
+        await pilot.pause()
+
+    assert result == "会话C"
+
+
+@pytest.mark.anyio
+async def test_choice_modal_enter_confirms_highlighted_item_on_first_press():
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    modal = ChoiceModal("测试", ["选项A", "选项B"])
+    app = ChoiceModalHost(modal, on_dismiss)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        choice_list = modal.query_one("#choice-list", ListView)
+        choice_list.index = 1
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert result == "选项B"
+
+
+@pytest.mark.parametrize("modal_class, args", [
+    (RecallModelPickerModal, (["同主模型", "other-model"],)),
+    (ImageUnderstandingModelPickerModal, (["同主模型", "other-model"],)),
+    (ModelPanelModal, ("选择模型", ["current-model", "other-model"])),
+])
+@pytest.mark.anyio
+async def test_model_picker_click_selects_before_confirming(modal_class, args):
+    result = None
+
+    def on_dismiss(value):
+        nonlocal result
+        result = value
+
+    modal = modal_class(*args)
+    app = ChoiceModalHost(modal, on_dismiss)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        choice_list = modal.query_one("#choice-list", ListView)
+        assert_list_selection(choice_list, 0)
+
+        await pilot.click(choice_list.children[1])
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert result is None
+        assert_list_selection(choice_list, 1)
+
+        await pilot.click(choice_list.children[1])
+        await pilot.pause()
+
+    assert result == "select:1"
+
+
+@pytest.mark.anyio
 async def test_choice_modal_selects_next_then_previous_option_after_delete():
     deleted = []
     modal = ChoiceModal(
@@ -2522,6 +2709,60 @@ async def test_model_manager_modal_selects_displayed_model_and_refreshes_runtime
     assert manager.get_current_model().reasoning_effort == "medium"
     assert results and results[0].startswith("selected:other")
     assert app.status_refreshes == 1
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_click_selects_before_switching_current(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["current", "other"])
+    current_key = manager.get_current_model().key
+    other_key = next(model.key for model in manager.models if model.key != current_key)
+    results = []
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal, results.append)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        other_index = next(index for index, key in enumerate(modal._model_keys) if key == other_key)
+        other_item = model_list.children[other_index]
+
+        await pilot.click(other_item)
+        await pilot.pause()
+
+        assert app.screen is modal
+        assert results == []
+        assert manager.get_current_model().key == current_key
+        assert_list_selection(model_list, other_index)
+        assert "再次点击或 Enter 切换并关闭" in str(modal.query_one("#model-manager-help", Label).render())
+
+        await pilot.click(other_item)
+        await pilot.pause()
+
+    assert manager.get_current_model().key == other_key
+    assert results and results[0].startswith("selected:other")
+    assert app.status_refreshes == 1
+
+
+@pytest.mark.anyio
+async def test_model_manager_modal_click_on_already_highlighted_current_model_confirms(tmp_path):
+    manager = ModelManager(tmp_path)
+    manager.add_model("https://example.com", "key", ["current", "other"])
+    current_key = manager.get_current_model().key
+    results = []
+    modal = ModelManagerModal(manager)
+    app = ChoiceModalHost(modal, results.append)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        model_list = modal.query_one("#model-manager-list", ListView)
+        current_index = next(index for index, key in enumerate(modal._model_keys) if key == current_key)
+
+        await pilot.click(model_list.children[current_index])
+        await pilot.pause()
+
+    assert results and results[0].startswith("selected:current")
+    assert manager.get_current_model().key == current_key
 
 
 @pytest.mark.anyio

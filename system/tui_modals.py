@@ -1203,7 +1203,7 @@ class ChoiceModal(ClosableModalScreen[str]):
                 yield Input(placeholder="搜索标题、会话 ID 或对话内容…", id="choice-search")
                 yield Label("", id="choice-search-status")
             if self._options or self._search_enabled():
-                yield ListView(
+                yield SelectBeforeActivateListView(
                     *[ListItem(Label(option, markup=False)) for option in self._options],
                     id="choice-list",
                 )
@@ -3759,7 +3759,7 @@ class ModelPanelModal(ClosableModalScreen[str]):
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-dialog"):
             yield ModalHeader(self._title, title_id="choice-title")
-            yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
+            yield SelectBeforeActivateListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
 
     def on_mount(self) -> None:
         choice_list = self.query_one("#choice-list", ListView)
@@ -3824,9 +3824,9 @@ class ModelManagerModal(ClosableModalScreen[str]):
             yield ModalHeader(self._title_text(), title_id="model-manager-title", markup=False)
             yield Label(self._summary_text(), id="model-manager-summary", markup=False)
             yield Label("", id="model-manager-error", markup=False)
-            yield ListView(id="model-manager-list")
+            yield SelectBeforeActivateListView(id="model-manager-list")
             yield Label(
-                "↑↓ 选择模型 · Enter 切换并关闭 · ←/→ 调整 effort · f 常用 · a 添加 · c 复制当前项添加 · e 修改配置 · d 删除 · q 关闭",
+                "↑↓ 选择模型 · 再次点击或 Enter 切换并关闭 · ←/→ 调整 effort · f 常用 · a 添加 · c 复制当前项添加 · e 修改配置 · d 删除 · q 关闭",
                 id="model-manager-help",
                 markup=False,
             )
@@ -4987,7 +4987,7 @@ class RecallModelPickerModal(ClosableModalScreen[str]):
         with Vertical(id="choice-dialog"):
             yield ModalHeader(self._header_title, title_id="choice-title")
 
-            yield ListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
+            yield SelectBeforeActivateListView(*[ListItem(Label(option)) for option in self._options], id="choice-list")
 
     def on_mount(self) -> None:
         choice_list = self.query_one("#choice-list", ListView)
