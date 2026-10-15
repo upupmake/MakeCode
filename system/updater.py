@@ -69,23 +69,11 @@ def check_update(*, raise_errors: bool = False) -> dict | None:
 
     有更新返回版本信息字典，无更新返回 None。默认静默吞掉检查错误；raise_errors=True 时抛出异常。
     """
-    try:
-        req = urllib.request.Request(VERSION_CHECK_URL, headers={"User-Agent": "MakeCode-Updater/1.0"})
-        with urllib.request.urlopen(req, timeout=15, context=_create_ssl_context()) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
-        logger.warning("检查更新失败: %s", exc)
-        if raise_errors:
-            raise RuntimeError(f"检查更新失败: {exc}") from exc
+    data = fetch_latest_version_info(raise_errors=raise_errors)
+    if data is None:
         return None
 
     remote_version = data.get("version", "")
-    if not remote_version:
-        logger.warning("version.json 缺少 version 字段")
-        if raise_errors:
-            raise ValueError("version.json 缺少 version 字段")
-        return None
-
     try:
         if _parse_version(remote_version) > _parse_version(CURRENT_VERSION):
             return data
@@ -95,6 +83,37 @@ def check_update(*, raise_errors: bool = False) -> dict | None:
             raise ValueError(f"版本号解析失败: {exc}") from exc
 
     return None
+
+
+def fetch_latest_version_info(*, raise_errors: bool = False) -> dict | None:
+    """Fetch version.json from VERSION_CHECK_URL without comparing versions."""
+    try:
+        req = urllib.request.Request(VERSION_CHECK_URL, headers={"User-Agent": "MakeCode-Updater/1.0"})
+        with urllib.request.urlopen(req, timeout=15, context=_create_ssl_context()) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, UnicodeError) as exc:
+        logger.warning("检查更新失败: %s", exc)
+        if raise_errors:
+            raise RuntimeError(f"检查更新失败: {exc}") from exc
+        return None
+
+    try:
+        if not isinstance(data, dict):
+            raise ValueError("version.json 必须是 JSON 对象")
+        remote_version = data.get("version", "")
+        if not remote_version:
+            raise ValueError("version.json 缺少 version 字段")
+        if not isinstance(remote_version, str):
+            raise ValueError("version.json 的 version 字段必须是字符串")
+        _parse_version(remote_version)
+        if not isinstance(data.get("release_log", ""), str):
+            raise ValueError("version.json 的 release_log 字段必须是字符串")
+    except ValueError as exc:
+        logger.warning("版本信息无效: %s", exc)
+        if raise_errors:
+            raise
+        return None
+    return data
 
 
 def _get_platform_asset(version_info: dict) -> dict:

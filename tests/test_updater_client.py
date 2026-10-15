@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -46,6 +47,82 @@ def test_check_update_uses_trusted_ca_context():
         assert updater.check_update(raise_errors=True) == {"version": "999.0.0"}
 
     assert urlopen.call_args.kwargs["context"] is ssl_context
+
+
+def test_fetch_latest_version_info_returns_manifest_even_when_current():
+    ssl_context = object()
+    response = _Response(b'{"version":"1.0.0","release_log":"## Notes"}')
+
+    with (
+        patch.object(updater, "_create_ssl_context", return_value=ssl_context),
+        patch.object(updater.urllib.request, "urlopen", return_value=response) as urlopen,
+        patch.object(updater, "CURRENT_VERSION", "1.0.0"),
+    ):
+        assert updater.fetch_latest_version_info(raise_errors=True) == {
+            "version": "1.0.0",
+            "release_log": "## Notes",
+        }
+
+    with (
+        patch.object(updater, "_create_ssl_context", return_value=ssl_context),
+        patch.object(
+            updater.urllib.request,
+            "urlopen",
+            return_value=_Response(b'{"version":"1.0.0","release_log":"## Notes"}'),
+        ),
+        patch.object(updater, "CURRENT_VERSION", "1.0.0"),
+    ):
+        assert updater.check_update(raise_errors=True) is None
+
+    assert urlopen.call_args.kwargs["context"] is ssl_context
+
+
+@pytest.mark.parametrize("payload", [
+    [], None, {}, {"version": 123}, {"version": "invalid"}, {"version": ""},
+    {"version": "1.0.0", "release_log": ["not Markdown text"]},
+])
+@pytest.mark.parametrize("raise_errors", [False, True])
+def test_fetch_latest_version_info_rejects_malformed_manifest(payload, raise_errors):
+    with (
+        patch.object(updater, "_create_ssl_context", return_value=object()),
+        patch.object(
+            updater.urllib.request,
+            "urlopen",
+            return_value=_Response(json.dumps(payload).encode("utf-8")),
+        ),
+    ):
+        if raise_errors:
+            with pytest.raises(ValueError):
+                updater.fetch_latest_version_info(raise_errors=True)
+        else:
+            assert updater.fetch_latest_version_info() is None
+
+
+@pytest.mark.parametrize("body", [b"{invalid", b"\xff"])
+@pytest.mark.parametrize("raise_errors", [False, True])
+def test_fetch_latest_version_info_handles_invalid_response_body(body, raise_errors):
+    with (
+        patch.object(updater, "_create_ssl_context", return_value=object()),
+        patch.object(updater.urllib.request, "urlopen", return_value=_Response(body)),
+    ):
+        if raise_errors:
+            with pytest.raises(RuntimeError, match="检查更新失败"):
+                updater.fetch_latest_version_info(raise_errors=True)
+        else:
+            assert updater.fetch_latest_version_info() is None
+
+
+@pytest.mark.parametrize("raise_errors", [False, True])
+def test_fetch_latest_version_info_handles_network_failure(raise_errors):
+    with (
+        patch.object(updater, "_create_ssl_context", return_value=object()),
+        patch.object(updater.urllib.request, "urlopen", side_effect=TimeoutError("timed out")),
+    ):
+        if raise_errors:
+            with pytest.raises(RuntimeError, match="timed out"):
+                updater.fetch_latest_version_info(raise_errors=True)
+        else:
+            assert updater.fetch_latest_version_info() is None
 
 
 def test_linux_asset_requires_platform_manifest():
