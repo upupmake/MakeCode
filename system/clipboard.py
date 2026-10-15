@@ -1,5 +1,6 @@
 import base64
 import mimetypes
+import shlex
 import shutil
 import struct
 import subprocess
@@ -319,15 +320,8 @@ def _file_paths_from_uri_list(data: bytes | None) -> list[str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        parsed = urlparse(line)
-        if parsed.scheme != "file":
-            continue
-        path = unquote(parsed.path)
-        if parsed.netloc:
-            path = f"//{parsed.netloc}{path}"
-        if sys.platform == "win32" and path.startswith("/") and len(path) > 2 and path[2] == ":":
-            path = path[1:]
-        if path in seen:
+        path = _local_path_from_file_uri(line)
+        if path is None or path in seen:
             continue
         seen.add(path)
         paths.append(path)
@@ -389,6 +383,9 @@ def read_image_files_from_system_clipboard() -> list[tuple[bytes, str, str]]:
 
 
 def _clipboard_item_from_path(path_text: str) -> dict[str, object] | None:
+    path_text = _normalize_local_path_text(path_text)
+    if path_text is None:
+        return None
     image = _read_image_file(path_text)
     if image is not None:
         return {"kind": "image", "image": image}
@@ -401,18 +398,57 @@ def _clipboard_item_from_path(path_text: str) -> dict[str, object] | None:
     return {"kind": "path", "path": str(path)}
 
 
-def _path_name_candidates(value: str) -> list[str]:
-    raw = value.strip().strip("\"'")
+def _local_path_from_file_uri(value: str) -> str | None:
+    if not value.lower().startswith("file:"):
+        return None
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+    path = unquote(parsed.path)
+    if parsed.netloc:
+        path = f"//{parsed.netloc}{path}"
+    if sys.platform == "win32" and path.startswith("/") and len(path) > 2 and path[2] == ":":
+        path = path[1:]
+    return path or None
+
+
+def _normalize_local_path_text(value: str) -> str | None:
+    raw = value.strip()
+    if len(raw) >= 2 and raw[0] in "\"'" and raw[-1] == raw[0]:
+        raw = raw[1:-1]
     if not raw:
+        return None
+    uri_path = _local_path_from_file_uri(raw)
+    return uri_path if uri_path is not None else raw
+
+
+def _looks_like_local_path(value: str) -> bool:
+    if value.startswith(("/", "~/")):
+        return True
+    if len(value) >= 3 and value[1] == ":" and value[0].isalpha() and value[2] in "\\/":
+        return True
+    return value.startswith("\\\\") or (sys.platform == "win32" and value.startswith(("\\", "~\\")))
+
+
+def _split_paste_text_tokens(paste_text: str) -> list[str]:
+    tokens = []
+    for line in paste_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        try:
+            parts = shlex.split(line, posix=sys.platform != "win32")
+        except ValueError:
+            parts = []
+        if parts and all(_looks_like_local_path(_normalize_local_path_text(part) or "") for part in parts):
+            tokens.extend(parts)
+        elif line:
+            tokens.append(line)
+    return tokens
+
+
+def _path_name_candidates(value: str) -> list[str]:
+    raw = _normalize_local_path_text(value)
+    if raw is None:
         return []
-    parsed = urlparse(raw)
-    if parsed.scheme == "file":
-        path = unquote(parsed.path)
-        if parsed.netloc:
-            path = f"//{parsed.netloc}{path}"
-        if path.startswith("/") and len(path) > 2 and path[2] == ":":
-            path = path[1:]
-        raw = path or raw
     normalized = raw.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
@@ -443,8 +479,11 @@ def _paste_text_names(paste_text: str | None) -> list[str]:
         return []
     names = []
     seen = set()
-    for line in paste_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
-        for name in _path_name_candidates(line):
+    for token in _split_paste_text_tokens(paste_text):
+        path = _normalize_local_path_text(token)
+        if path is None or (("/" in path or "\\" in path) and not _looks_like_local_path(path)):
+            continue
+        for name in _path_name_candidates(token):
             if name not in seen:
                 seen.add(name)
                 names.append(name)
@@ -452,22 +491,37 @@ def _paste_text_names(paste_text: str | None) -> list[str]:
 
 
 def read_clipboard_file_items(paste_text: str | None = None) -> list[dict[str, object]]:
-    items = []
-    for path_text in _read_system_clipboard_file_paths():
+    items_by_path = {}
+    for path_text in (
+        *_read_system_clipboard_file_paths(),
+        *_paste_text_local_paths(paste_text),
+    ):
+        normalized = _normalize_local_path_text(path_text)
+        if normalized is None:
+            continue
+        key = normalized.replace("\\", "/") if sys.platform == "win32" else normalized
+        if key in items_by_path:
+            continue
         item = _clipboard_item_from_path(path_text)
         if item is not None:
-            items.append(item)
-    names = _paste_text_names(paste_text)
-    if not names:
+            items_by_path[key] = item
+    items = list(items_by_path.values())
+    if not paste_text:
         return items
     matched = []
-    remaining = list(items)
-    for name in names:
-        for index, item in enumerate(remaining):
-            if name in _clipboard_item_names(item):
-                matched.append(item)
-                del remaining[index]
-                break
+    for token in _split_paste_text_tokens(paste_text):
+        path = _normalize_local_path_text(token)
+        if path is None:
+            continue
+        if _looks_like_local_path(path):
+            key = path.replace("\\", "/") if sys.platform == "win32" else path
+        else:
+            names = set(_paste_text_names(token))
+            key = next((key for key, item in items_by_path.items() if names & _clipboard_item_names(item)), None)
+        item = items_by_path.pop(key, None)
+        if item is None:
+            return []
+        matched.append(item)
     if _is_truncated_file_list_paste(paste_text, matched, items):
         return items
     return matched
@@ -479,7 +533,7 @@ def _is_truncated_file_list_paste(
     items: list[dict[str, object]],
 ) -> bool:
     # Windows Terminal 把多文件剪贴板转成粘贴文本时只保留第一个路径。
-    # macOS/Linux 终端会按文件拆成多次 Paste，第一次匹配第一项不能展开成整组。
+    # 其他终端可能拆成多次 Paste，也可能空格拼接路径，均按当前事件逐项匹配。
     if sys.platform != "win32":
         return False
     if len(matched) != 1 or len(items) <= 1:
@@ -490,13 +544,21 @@ def _is_truncated_file_list_paste(
 
 
 def clipboard_paste_text_matches_file_items(paste_text: str | None) -> bool:
-    names = set(_paste_text_names(paste_text))
-    if not names:
-        return False
-    for item in read_clipboard_file_items():
-        if names & _clipboard_item_names(item):
-            return True
-    return False
+    return bool(paste_text) and bool(read_clipboard_file_items(paste_text))
+
+
+def _paste_text_local_paths(paste_text: str | None) -> list[str]:
+    if not paste_text:
+        return []
+    paths = []
+    seen = set()
+    for token in _split_paste_text_tokens(paste_text):
+        path = _normalize_local_path_text(token)
+        if path is None or path in seen or not _looks_like_local_path(path):
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
 
 
 def _read_image_from_macos_clipboard() -> tuple[bytes, str] | None:

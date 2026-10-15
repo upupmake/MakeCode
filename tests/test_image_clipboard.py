@@ -1,5 +1,6 @@
 import base64
 import random
+import shlex
 import struct
 import subprocess
 import sys
@@ -10,6 +11,9 @@ import pytest
 
 import main
 from system.clipboard import (
+    _normalize_local_path_text,
+    _paste_text_local_paths,
+    clipboard_paste_text_matches_file_items,
     read_clipboard_file_items,
     read_image_file_from_system_clipboard,
     read_image_files_from_system_clipboard,
@@ -508,6 +512,189 @@ def test_read_clipboard_file_items_keeps_non_image_paths(tmp_path):
     ]
 
 
+def test_read_clipboard_file_items_reads_quoted_paste_path_when_clipboard_is_empty(tmp_path):
+    image, _, _, _ = _random_png(60)
+    source = tmp_path / "pasted-image-20261015-175552.png"
+    source.write_bytes(image)
+    expected = [{"kind": "image", "image": (image, source.name, "image/png")}]
+
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=[]):
+        quoted = read_clipboard_file_items(f'"{source}"')
+        single_quoted = read_clipboard_file_items(f"'{source}'")
+        uri = read_clipboard_file_items(source.as_uri())
+        quoted_uri = read_clipboard_file_items(f'"{source.as_uri()}"')
+        unquoted = read_clipboard_file_items(str(source))
+        ordinary = read_clipboard_file_items('"hello world"')
+        missing = read_clipboard_file_items(f'"{tmp_path / "missing.png"}"')
+
+    assert quoted == expected
+    assert single_quoted == expected
+    assert uri == expected
+    assert quoted_uri == expected
+    assert unquoted == expected
+    assert ordinary == []
+    assert missing == []
+
+
+def test_read_clipboard_file_items_reads_space_separated_quoted_paths(tmp_path):
+    first, _, _, _ = _random_png(63)
+    second, _, _, _ = _random_png(64)
+    first_source = tmp_path / "2d3d20d80b0026f5e8361d274.png"
+    second_source = tmp_path / "jietu-1791953158697.png"
+    folder = tmp_path / "图片"
+    code = tmp_path / "Code"
+    first_source.write_bytes(first)
+    second_source.write_bytes(second)
+    folder.mkdir()
+    code.mkdir()
+    paste_text = f'"{folder}" "{first_source}" "{code}" "{second_source}"'
+
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=[]):
+        empty_clipboard = read_clipboard_file_items(paste_text)
+
+    with (
+        patch("system.clipboard._read_system_clipboard_file_paths",
+              return_value=[str(path) for path in (folder, first_source, code, second_source)]),
+    ):
+        matched = read_clipboard_file_items(paste_text)
+
+    expected = [
+        {"kind": "path", "path": str(folder)},
+        {"kind": "image", "image": (first, first_source.name, "image/png")},
+        {"kind": "path", "path": str(code)},
+        {"kind": "image", "image": (second, second_source.name, "image/png")},
+    ]
+    assert empty_clipboard == expected
+    assert matched == expected
+
+
+def test_read_clipboard_file_items_ignores_relative_paste_paths(tmp_path, monkeypatch):
+    image, _, _, _ = _random_png(62)
+    source = tmp_path / "src"
+    source.mkdir()
+    photo = source / "foo.png"
+    photo.write_bytes(image)
+    monkeypatch.chdir(tmp_path)
+
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=[]):
+        relative = read_clipboard_file_items("src/foo.png")
+        quoted_relative = read_clipboard_file_items('"src/foo.png"')
+        filename = read_clipboard_file_items("foo.png")
+
+    assert relative == []
+    assert quoted_relative == []
+    assert filename == []
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "screen shot.png",
+        "screen's shot.png",
+        pytest.param('screen "shot".png', marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows forbids quotes in filenames")),
+    ],
+)
+@pytest.mark.parametrize("paste_format", ["raw", "shell", "uri", "filename"])
+def test_image_paste_preserves_spaces_and_quotes(tmp_path, filename, paste_format):
+    image, _, _, _ = _random_png(67)
+    source = tmp_path / filename
+    source.write_bytes(image)
+    paste_text = {
+        "raw": str(source),
+        "shell": shlex.quote(str(source)),
+        "uri": source.as_uri(),
+        "filename": source.name,
+    }[paste_format]
+
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=[str(source)]):
+        items = read_clipboard_file_items(paste_text)
+
+    assert items == [{"kind": "image", "image": (image, filename, "image/png")}]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell escaping")
+def test_image_paste_resolves_shell_escaped_spaces_without_clipboard_files(tmp_path):
+    image, _, _, _ = _random_png(68)
+    source = tmp_path / "screen shot.png"
+    source.write_bytes(image)
+    paste_text = str(source).replace(" ", "\\ ")
+
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=[]):
+        items = read_clipboard_file_items(paste_text)
+
+    assert items == [{"kind": "image", "image": (image, source.name, "image/png")}]
+
+
+@pytest.mark.parametrize("clipboard_has_file", [False, True])
+def test_text_containing_a_quoted_path_does_not_become_an_attachment(tmp_path, clipboard_has_file):
+    image, _, _, _ = _random_png(69)
+    source = tmp_path / "photo.png"
+    source.write_bytes(image)
+    clipboard_paths = [str(source)] if clipboard_has_file else []
+
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=clipboard_paths):
+        assert read_clipboard_file_items(f'请检查 "{source}"') == []
+        assert read_clipboard_file_items(f'cat "{source}"') == []
+        assert read_clipboard_file_items(f'print("{source}")') == []
+        assert read_clipboard_file_items(f'请检查\n"{source}"') == []
+        assert read_clipboard_file_items(f'"{source}"\n请检查') == []
+        assert read_clipboard_file_items("https://example.com/photo.png") == []
+        assert not clipboard_paste_text_matches_file_items(f'cat "{source}"')
+
+
+def test_explicit_image_path_does_not_match_a_different_clipboard_file_with_the_same_name(tmp_path):
+    old_image, _, _, _ = _random_png(70)
+    new_image, _, _, _ = _random_png(71)
+    old_folder = tmp_path / "old"
+    new_folder = tmp_path / "new"
+    old_folder.mkdir()
+    new_folder.mkdir()
+    old_source = old_folder / "photo.png"
+    new_source = new_folder / "photo.png"
+    old_source.write_bytes(old_image)
+    new_source.write_bytes(new_image)
+
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=[str(old_source)]):
+        items = read_clipboard_file_items(f'"{new_source}"')
+
+    assert items == [{"kind": "image", "image": (new_image, new_source.name, "image/png")}]
+
+
+@pytest.mark.parametrize(
+    ("paste_text", "expected"),
+    [
+        (r'"C:\Users\me\one file.png" "D:\two.jpg"', [r"C:\Users\me\one file.png", r"D:\two.jpg"]),
+        (r'"\\server\share\one file.png"', [r"\\server\share\one file.png"]),
+    ],
+)
+def test_windows_paste_paths_keep_backslashes(paste_text, expected):
+    with patch("system.clipboard.sys.platform", "win32"):
+        assert _paste_text_local_paths(paste_text) == expected
+
+
+def test_path_normalization_only_removes_matching_outer_quotes():
+    assert _normalize_local_path_text("/tmp/folder'") == "/tmp/folder'"
+    assert _normalize_local_path_text('"/tmp/folder\'"') == "/tmp/folder'"
+    assert _normalize_local_path_text("'/tmp/folder\"") == "'/tmp/folder\""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX path handling")
+def test_invalid_urls_and_foreign_home_paths_remain_text():
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=[]):
+        for text in ("http://[invalid", "file://[invalid", "~no_such_user_for_makecode/photo.png", r"~\photo.png"):
+            assert read_clipboard_file_items(text) == []
+
+
+def test_read_clipboard_file_items_reads_quoted_non_image_paste_path(tmp_path):
+    notes = tmp_path / "notes.txt"
+    notes.write_text("hello", encoding="utf-8")
+
+    with patch("system.clipboard._read_system_clipboard_file_paths", return_value=[]):
+        items = read_clipboard_file_items(f'"{notes}"')
+
+    assert items == [{"kind": "path", "path": str(notes)}]
+
+
 def test_read_clipboard_file_items_matches_windows_and_linux_paste_text(tmp_path):
     first, _, _, _ = _random_png(48)
     second, _, _, _ = _random_png(49)
@@ -706,6 +893,54 @@ def test_main_clipboard_callback_matches_single_filename_from_paste_text(tmp_pat
     assert second_marker.startswith("[[image:id=img_")
     assert first_marker != second_marker
     assert folder == str(notes)
+
+
+def test_main_clipboard_callback_stores_quoted_local_image_path(tmp_path):
+    image, _, _, _ = _random_png(61)
+    source = tmp_path / "pasted-image-20261015-175552.png"
+    source.write_bytes(image)
+    store = ConversationStore(tmp_path / "conversations")
+
+    with (
+        patch.object(main, "CONVERSATION_STORE", store),
+        patch("system.clipboard._read_system_clipboard_file_paths", return_value=[]),
+        patch.object(main, "read_image_from_system_clipboard", return_value=None),
+    ):
+        marker = main._paste_image_from_system_clipboard(f'"{source}"')
+
+    assert marker.startswith("[[image:id=img_")
+    attachment = next((store.active_root / "attachments").iterdir())
+    assert attachment.name.endswith("_pasted-image-20261015-175552.png")
+    assert attachment.read_bytes() == image
+
+
+def test_main_clipboard_callback_stores_space_separated_quoted_image_paths(tmp_path):
+    first, _, _, _ = _random_png(65)
+    second, _, _, _ = _random_png(66)
+    first_source = tmp_path / "2d3d20d80b0026f5e8361d274.png"
+    second_source = tmp_path / "jietu-1791953158697.png"
+    folder = tmp_path / "图片"
+    code = tmp_path / "Code"
+    first_source.write_bytes(first)
+    second_source.write_bytes(second)
+    folder.mkdir()
+    code.mkdir()
+    store = ConversationStore(tmp_path / "conversations")
+    paste_text = f'"{folder}" "{first_source}" "{code}" "{second_source}"'
+
+    with (
+        patch.object(main, "CONVERSATION_STORE", store),
+        patch("system.clipboard._read_system_clipboard_file_paths", return_value=[]),
+        patch.object(main, "read_image_from_system_clipboard", return_value=None),
+    ):
+        marker = main._paste_image_from_system_clipboard(paste_text)
+
+    assert marker.count("[[image:id=img_") == 2
+    assert marker.startswith(str(folder))
+    assert str(code) in marker
+    attachments = list((store.active_root / "attachments").iterdir())
+    names = {path.name.split("_", 2)[-1] for path in attachments}
+    assert names == {first_source.name, second_source.name}
 
 
 def test_main_clipboard_callback_swallows_unmatched_clipboard_filename(tmp_path):

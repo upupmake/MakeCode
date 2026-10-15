@@ -1,10 +1,14 @@
+import base64
+import sys
 from concurrent.futures import Future
 
 import pytest
 from textual.events import Paste
 from textual.widgets import Input
 
+import main
 from system.tui_app import MakeCodeTuiApp
+from utils.conversations import ConversationStore
 from utils.vision import IMAGE_PLACEHOLDER_PATTERN
 
 
@@ -301,6 +305,106 @@ async def test_finder_file_path_paste_stays_text(tmp_path):
         input_box.on_paste(Paste(str(source)))
 
         assert input_box.text == str(source)
+
+
+@pytest.mark.anyio
+async def test_quoted_local_image_path_paste_uses_clipboard_handler(tmp_path):
+    source = tmp_path / "pasted-image-20261015-175552.png"
+    marker = "[[image:id=img_99999999999999999999999999999999]]"
+    block = {
+        "type": "image",
+        "attachment_id": "img_99999999999999999999999999999999",
+        "filename": source.name,
+        "media_type": "image/png",
+    }
+    seen: list[str] = []
+
+    def clipboard_handler(paste_text):
+        seen.append(paste_text)
+        return marker if paste_text == f'"{source}"' else None
+
+    app = MakeCodeTuiApp(
+        image_placeholder_handler=lambda value: (f"[图片：{source.name}]", [block]),
+        image_clipboard_handler=clipboard_handler,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.on_paste(Paste(f'"{source}"'))
+
+        assert seen == [f'"{source}"']
+        assert input_box.text == f"[图片：{source.name}]"
+        assert app._serialize_input_text(input_box.text) == marker
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("paste_format", "clipboard_has_files"),
+    [("quoted", True), ("escaped", True), ("filenames", True), ("quoted", False), ("escaped", False)],
+)
+async def test_real_multi_file_paste_round_trips_through_submit(tmp_path, monkeypatch, paste_format, clipboard_has_files):
+    if sys.platform == "win32" and paste_format == "escaped":
+        pytest.skip("POSIX shell escaping")
+    image = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    first = tmp_path / "one screen.png"
+    second = tmp_path / "two's screen.png"
+    folder = tmp_path / "图片 目录"
+    code = tmp_path / "Code"
+    first.write_bytes(image)
+    second.write_bytes(image)
+    folder.mkdir()
+    code.mkdir()
+    paths = [folder, first, code, second]
+    if paste_format == "quoted":
+        paste_text = " ".join(f'"{path}"' for path in paths)
+    elif paste_format == "escaped":
+        paste_text = " ".join(str(path).replace(" ", "\\ ").replace("'", "\\'") for path in paths)
+    else:
+        paste_text = "\r".join(path.name for path in paths)
+    store = ConversationStore(tmp_path / "conversations")
+    monkeypatch.setattr(main, "CONVERSATION_STORE", store)
+    monkeypatch.setattr(main, "_ensure_active_conversation", store.ensure_active)
+    monkeypatch.setattr(
+        "system.clipboard._read_system_clipboard_file_paths",
+        lambda: [str(path) for path in paths] if clipboard_has_files else [],
+    )
+    submitted = []
+
+    async def submit(text):
+        submitted.append(text)
+
+    app = MakeCodeTuiApp(
+        submit_handler=submit,
+        image_placeholder_handler=main._parse_input_images,
+        image_clipboard_handler=main._paste_image_from_system_clipboard,
+    )
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        input_box = app.query_one("#input-box")
+        input_box.focus()
+        input_box.insert("请看：")
+        app.post_message(Paste(paste_text))
+        await pilot.pause()
+
+        assert input_box.text == f"请看：{folder}[图片：{first.name}]{code}[图片：{second.name}]"
+        serialized = app._serialize_input_text(input_box.text)
+        assert len(IMAGE_PLACEHOLDER_PATTERN.findall(serialized)) == 2
+        attachments = list((store.active_root / "attachments").iterdir())
+        assert len(attachments) == 2
+        assert all(path.read_bytes() == image for path in attachments)
+
+        await pilot.press("enter")
+        for _ in range(20):
+            if submitted:
+                break
+            await pilot.pause()
+
+        assert submitted == [serialized]
+        assert app._input_history == [serialized]
 
 
 @pytest.mark.anyio
