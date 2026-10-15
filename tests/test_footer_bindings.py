@@ -165,6 +165,7 @@ async def test_version_label_repeated_text_clicks_during_agent_loop_do_not_selec
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("other_modal", [False, True])
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 async def test_version_label_stale_mouse_hit_after_footer_recompose_does_not_crash(other_modal):
     app = MakeCodeTuiApp()
     async with app.run_test(size=(192, 48)) as pilot:

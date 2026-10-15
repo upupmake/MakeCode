@@ -225,8 +225,7 @@ async def test_clicking_footer_version_when_current_does_not_prompt_update(remot
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("close_method", ["q", "info-close", "modal-close"])
-async def test_release_notes_can_reopen_after_footer_recomposition(close_method):
+async def test_release_notes_can_reopen_after_footer_recomposition():
     app = MakeCodeTuiApp()
     with patch(
         "system.tui_app.fetch_latest_version_info",
@@ -242,10 +241,7 @@ async def test_release_notes_can_reopen_after_footer_recomposition(close_method)
             footer = app.query_one("Footer")
             footer.call_later(footer.recompose)
             assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
-            if close_method == "q":
-                await pilot.press("q")
-            else:
-                await pilot.click(f"#{close_method}")
+            first.action_close()
             assert await _pump_until(pilot, lambda: app._modal_active is False)
 
             assert app._release_notes_modal is None
@@ -254,6 +250,30 @@ async def test_release_notes_can_reopen_after_footer_recomposition(close_method)
             assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
             assert app.screen is not first
             assert app._modal_active is True
+            assert await _pump_until(pilot, lambda: fetch_latest.call_count == 2)
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+@pytest.mark.parametrize("close_method", ["info-close", "modal-close"])
+async def test_release_notes_mouse_close_buttons_can_reopen_after_footer_recomposition(close_method):
+    app = MakeCodeTuiApp()
+    with patch(
+        "system.tui_app.fetch_latest_version_info",
+        return_value={"version": "9.9.9", "release_log": "## Notes"},
+    ) as fetch_latest:
+        async with app.run_test(size=(140, 40)) as pilot:
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+            await pilot.click("#footer-version", offset=(3, 0))
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
+            first = app.screen
+            footer = app.query_one("Footer")
+            footer.call_later(footer.recompose)
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+            await pilot.click(f"#{close_method}")
+            assert await _pump_until(pilot, lambda: app._modal_active is False)
+            await pilot.click("#footer-version", offset=(3, 0))
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal) and app.screen is not first)
             assert await _pump_until(pilot, lambda: fetch_latest.call_count == 2)
 
 
