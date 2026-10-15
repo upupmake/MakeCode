@@ -2364,9 +2364,21 @@ class InfoPanelModal(ClosableModalScreen[str]):
                 yield Button("关闭", id="info-close", variant="primary")
 
     def on_mount(self) -> None:
+        self._render_content()
+        self.query_one("#info-content", RichLog).focus()
+
+    def update_panel(self, title: str, content: RenderableType) -> None:
+        self._title = title
+        self._content = content
+        if not self.is_mounted:
+            return
+        self.query_one("#choice-title", Label).update(f"{self._title}\nq 关闭。")
+        self._render_content()
+
+    def _render_content(self) -> None:
         content = self.query_one("#info-content", RichLog)
+        content.clear()
         content.write(self._content, expand=True, shrink=True, scroll_end=False)
-        content.focus()
 
     def _on_key(self, event: Key) -> None:
         if event.key == "q":

@@ -15,7 +15,7 @@ from textual.events import Paste
 from system.console_render import _render_startup_banner
 from system.tui_app import MakeCodeTuiApp, TuiBridge
 from system.tui_types import LAYOUT_DEFAULT_RATIOS, TuiEvent, TuiRegion, normalize_layout_ratios
-from system.tui_modals import ChoiceModal, StartupWorkdirModal, TokenUsageModal
+from system.tui_modals import ChoiceModal, InfoPanelModal, StartupWorkdirModal, TokenUsageModal
 from utils.skills import SkillLoader
 from utils.vision import image_reference_marker, parse_image_placeholders, store_image_bytes_attachment
 
@@ -96,6 +96,290 @@ async def test_top_bar_displays_and_refreshes_conversation_title():
 
         assert str(title.render()) == "MakeCode"
         assert title.tooltip is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("width", [86, 140, 180])
+async def test_footer_shows_current_version_at_bottom_right(width):
+    from version import CURRENT_VERSION
+
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(width, 40)) as pilot:
+        await pilot.pause()
+        footer = app.query_one("Footer")
+        version_label = app.query_one("#footer-version")
+        expected = f"v{CURRENT_VERSION}"
+
+        assert str(version_label.render()) == expected
+        assert version_label.region.y == footer.region.y
+        assert version_label.region.right == footer.region.right
+        assert version_label.region.x > footer.region.x
+        assert version_label.content_region.right == footer.content_region.right
+
+
+@pytest.mark.anyio
+async def test_clicking_footer_version_shows_latest_release_log_without_updating():
+    from version import CURRENT_VERSION
+    from rich.markdown import Markdown
+
+    started = threading.Event()
+    release = threading.Event()
+    submitted: list[str] = []
+    download = Mock(side_effect=AssertionError("should not download"))
+
+    def fetch_latest_version_info(*, raise_errors: bool = False):
+        started.set()
+        assert release.wait(5)
+        return {
+            "version": "9.9.9",
+            "release_log": "## New\n- item",
+        }
+
+    async def submit_handler(query: str) -> str | None:
+        submitted.append(query)
+        return None
+
+    app = MakeCodeTuiApp(submit_handler=submit_handler)
+    with (
+        patch("system.tui_app.fetch_latest_version_info", side_effect=fetch_latest_version_info),
+        patch("system.updater.download_update", download),
+        patch("system.commands.download_update", download),
+    ):
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await pilot.click("#footer-version", offset=(3, 0))
+            await pilot.pause()
+            assert isinstance(app.screen, InfoPanelModal)
+            modal = app.screen
+            assert CURRENT_VERSION in modal._title
+            assert "正在获取" in str(modal._content)
+            assert await asyncio.to_thread(started.wait, 1)
+            assert "## New" not in str(modal._content)
+
+            release.set()
+            for _ in range(30):
+                await pilot.pause()
+                if "## New" in getattr(modal._content, "markup", ""):
+                    break
+
+            assert isinstance(app.screen, InfoPanelModal)
+            assert CURRENT_VERSION in modal._title
+            assert "9.9.9" in modal._title
+            assert isinstance(modal._content, Markdown)
+            assert "## New" in modal._content.markup
+            assert "/update" in modal._content.markup
+            assert "请在对话窗口执行 `/update` 命令" in modal._content.markup
+            assert "请输入" not in modal._content.markup
+            download.assert_not_called()
+            assert submitted == []
+
+            modal.action_close()
+            await pilot.pause()
+            assert not isinstance(app.screen, InfoPanelModal)
+            download.assert_not_called()
+            assert submitted == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("remote_is_older", [False, True])
+async def test_clicking_footer_version_when_current_does_not_prompt_update(remote_is_older):
+    from version import CURRENT_VERSION
+
+    latest = "0.0.0" if remote_is_older else CURRENT_VERSION
+    app = MakeCodeTuiApp()
+    with patch(
+        "system.tui_app.fetch_latest_version_info",
+        return_value={"version": latest, "release_log": "## Same"},
+    ):
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await pilot.click("#footer-version")
+            await pilot.pause()
+
+            assert isinstance(app.screen, InfoPanelModal)
+            modal = app.screen
+            status = "当前版本高于最新发布版本" if remote_is_older else "当前已是最新版本"
+            assert status in modal._content.markup
+            assert "/update" not in modal._content.markup
+            assert "## Same" in modal._content.markup
+
+            modal.action_close()
+            await pilot.pause()
+            assert not isinstance(app.screen, InfoPanelModal)
+            assert app._modal_active is False
+
+            await pilot.click("#footer-version")
+            await pilot.pause()
+            assert isinstance(app.screen, InfoPanelModal)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("close_method", ["q", "info-close", "modal-close"])
+async def test_release_notes_can_reopen_after_footer_recomposition(close_method):
+    app = MakeCodeTuiApp()
+    with patch(
+        "system.tui_app.fetch_latest_version_info",
+        return_value={"version": "9.9.9", "release_log": "## Notes"},
+    ) as fetch_latest:
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.click("#footer-version")
+            await pilot.pause()
+            first = app.screen
+            assert isinstance(first, InfoPanelModal)
+
+            footer = app.query_one("Footer")
+            footer.call_later(footer.recompose)
+            await pilot.pause()
+            if close_method == "q":
+                await pilot.press("q")
+            else:
+                await pilot.click(f"#{close_method}")
+            await pilot.pause()
+
+            assert app._modal_active is False
+            assert app._release_notes_modal is None
+            await pilot.click("#footer-version")
+            await pilot.pause()
+            assert isinstance(app.screen, InfoPanelModal)
+            assert app.screen is not first
+            assert app._modal_active is True
+            assert fetch_latest.call_count == 2
+
+
+@pytest.mark.anyio
+async def test_release_notes_old_request_does_not_overwrite_reopened_modal():
+    started = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    finished = [threading.Event(), threading.Event()]
+    requests = []
+
+    def fetch_latest_version_info(*, raise_errors=False):
+        index = len(requests)
+        requests.append(index)
+        started[index].set()
+        try:
+            assert release[index].wait(5)
+            return {"version": "9.9.9", "release_log": f"## Request {index}"}
+        finally:
+            finished[index].set()
+
+    app = MakeCodeTuiApp()
+    with patch("system.tui_app.fetch_latest_version_info", side_effect=fetch_latest_version_info):
+        async with app.run_test(size=(140, 40)) as pilot:
+            try:
+                await pilot.click("#footer-version")
+                assert await asyncio.to_thread(started[0].wait, 2)
+                first = app.screen
+                await pilot.press("q")
+                await pilot.click("#footer-version")
+                assert await asyncio.to_thread(started[1].wait, 2)
+                second = app.screen
+                assert second is not first
+                assert isinstance(second, InfoPanelModal)
+
+                release[0].set()
+                assert await asyncio.to_thread(finished[0].wait, 2)
+                await pilot.pause()
+                assert "正在获取" in str(second._content)
+
+                release[1].set()
+                assert await asyncio.to_thread(finished[1].wait, 2)
+                for _ in range(30):
+                    await pilot.pause()
+                    if "Request 1" in getattr(second._content, "markup", ""):
+                        break
+                assert "Request 1" in second._content.markup
+                assert "Request 0" not in second._content.markup
+            finally:
+                for gate in release:
+                    gate.set()
+
+
+@pytest.mark.anyio
+async def test_release_notes_does_not_cancel_unrelated_app_worker():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def background_task():
+        started.set()
+        await release.wait()
+
+    app = MakeCodeTuiApp()
+    with patch(
+        "system.tui_app.fetch_latest_version_info",
+        return_value={"version": "9.9.9", "release_log": "## Notes"},
+    ):
+        async with app.run_test(size=(140, 40)) as pilot:
+            worker = app.run_worker(background_task())
+            await asyncio.wait_for(started.wait(), 2)
+            try:
+                await pilot.click("#footer-version")
+                await pilot.pause()
+                assert not worker.is_cancelled
+            finally:
+                release.set()
+
+
+@pytest.mark.anyio
+async def test_release_notes_failure_is_displayed_and_can_be_retried():
+    app = MakeCodeTuiApp()
+    with patch(
+        "system.tui_app.fetch_latest_version_info",
+        side_effect=[
+            RuntimeError("connection failed [not-markup]"),
+            {"version": "9.9.9", "release_log": "## Retry"},
+        ],
+    ):
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.click("#footer-version")
+            for _ in range(30):
+                await pilot.pause()
+                if "获取发布日志失败" in str(app.screen._content):
+                    break
+            assert "connection failed [not-markup]" in str(app.screen._content)
+            assert "connection failed [not-markup]" in _region_text(app.screen.query_one("#info-content"))
+            await pilot.press("q")
+            await pilot.click("#footer-version")
+            for _ in range(30):
+                await pilot.pause()
+                if "Retry" in getattr(app.screen._content, "markup", ""):
+                    break
+            assert "## Retry" in app.screen._content.markup
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("blocked_by", ["agent_loop", "directory_picker", "submit"])
+async def test_release_notes_does_not_interrupt_active_operation(blocked_by):
+    app = MakeCodeTuiApp()
+    with patch("system.tui_app.fetch_latest_version_info") as fetch_latest:
+        async with app.run_test(size=(140, 40)) as pilot:
+            if blocked_by == "agent_loop":
+                app.set_agent_loop_active(True)
+            elif blocked_by == "directory_picker":
+                app._directory_picker_active = True
+            else:
+                app._submit_lock.acquire()
+            try:
+                await pilot.click("#footer-version")
+                await pilot.pause()
+                assert not isinstance(app.screen, InfoPanelModal)
+                fetch_latest.assert_not_called()
+            finally:
+                if blocked_by == "submit":
+                    app._submit_lock.release()
+
+
+@pytest.mark.anyio
+async def test_clicking_footer_bindings_does_not_open_release_notes():
+    app = MakeCodeTuiApp()
+    with patch("system.tui_app.fetch_latest_version_info") as fetch_latest:
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            await pilot.click("Footer")
+            await pilot.pause()
+            fetch_latest.assert_not_called()
+            assert not isinstance(app.screen, InfoPanelModal)
 
 
 @pytest.mark.anyio
@@ -571,9 +855,9 @@ async def test_title_keeps_header_status_visible_on_compact_layout():
         title = app.query_one("#top-title")
         status = app.query_one("#top-status")
         assert title.region.width > 0
-        assert status.region.width > title.region.width
         assert title.tooltip == "这是一个很长的对话标题用于验证窄屏省略展示"
         assert "workspace · status" in str(status.render())
+        assert status.region.width == len("workspace · status")
 
 
 @pytest.mark.anyio
@@ -596,7 +880,10 @@ async def test_clicking_workdir_status_submits_cd_command_and_is_ignored_during_
         submitted_event.set()
         return None
 
-    app = MakeCodeTuiApp(submit_handler=submit_handler)
+    app = MakeCodeTuiApp(
+        submit_handler=submit_handler,
+        header_info_provider=lambda: "workspace · status",
+    )
     with (
         patch("system.tui_app.sys.platform", "darwin"),
         patch("system.tui_app.paths.workdir", return_value=tmp_path),
@@ -629,7 +916,9 @@ async def test_clicking_workdir_status_submits_cd_command_and_is_ignored_during_
 
 @pytest.mark.anyio
 async def test_clicking_workdir_status_is_ignored_on_linux(tmp_path):
-    app = MakeCodeTuiApp()
+    app = MakeCodeTuiApp(
+        header_info_provider=lambda: "workspace · status",
+    )
     with (
         patch("system.tui_app.sys.platform", "linux"),
         patch("system.tui_app.choose_directory") as picker,
@@ -640,6 +929,30 @@ async def test_clicking_workdir_status_is_ignored_on_linux(tmp_path):
             picker.assert_not_called()
             input_box = app.query_one("#input-box")
             assert not input_box.has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_clicking_top_bar_gap_does_not_open_directory_picker():
+    app = MakeCodeTuiApp(
+        header_info_provider=lambda: "workspace · status",
+    )
+    with (
+        patch("system.tui_app.sys.platform", "darwin"),
+        patch("system.tui_app.choose_directory") as picker,
+    ):
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            status = app.query_one("#top-status")
+            compact_toggle = app.query_one("#compact-pane-toggle")
+            clock = app.query_one("#top-clock")
+
+            assert compact_toggle.region.right < status.region.x
+            assert status.region.right <= clock.region.x
+
+            gap_offset = compact_toggle.region.right - compact_toggle.region.x + 1
+            await pilot.click("#compact-pane-toggle", offset=(gap_offset, 0))
+            await pilot.pause()
+            picker.assert_not_called()
 
 
 @pytest.mark.anyio

@@ -17,6 +17,7 @@ from rich.console import RenderableType
 from rich.cells import cell_len
 from rich.errors import MarkupError
 from rich.markup import escape
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -38,6 +39,7 @@ from system.tui_types import (
     save_layout_ratios,
 )
 from system.image_input import ImageAwareTextArea
+from system.updater import _parse_version, fetch_latest_version_info
 from system.tui_modals import (
     AddModelModal,
     ChoiceModal,
@@ -769,6 +771,25 @@ class ConversationTitle(Static):
         event.stop()
 
 
+class FooterVersionLabel(Label):
+    ALLOW_SELECT = False
+
+    def on_click(self, event: Click) -> None:
+        app = self.app
+        if not isinstance(app, MakeCodeTuiApp):
+            return
+        app.call_later(app.open_release_notes_modal)
+        event.stop()
+
+
+class MakeCodeFooter(Footer):
+    def compose(self) -> ComposeResult:
+        yield from super().compose()
+        from version import CURRENT_VERSION
+
+        yield FooterVersionLabel(f"v{CURRENT_VERSION}", id="footer-version")
+
+
 class WorkdirStatus(Static):
     def on_click(self, event: Click) -> None:
         app = self.app
@@ -1044,10 +1065,18 @@ class MakeCodeTuiApp(App[None]):
     }
 
     #top-status {
-        width: 2fr;
+        width: auto;
+        max-width: 1fr;
+        min-width: 0;
         height: 1;
         color: #e5e7eb;
         content-align: right middle;
+    }
+
+    #top-status-spacer {
+        width: 1fr;
+        min-width: 0;
+        height: 1;
     }
 
     #top-clock {
@@ -1280,6 +1309,20 @@ class MakeCodeTuiApp(App[None]):
     #input-box.hidden {
         display: none;
     }
+
+    Footer #footer-version {
+        dock: right;
+        width: auto;
+        height: 1;
+        padding: 0 0 0 1;
+        color: $footer-description-foreground;
+        background: $footer-background;
+    }
+
+    Footer #footer-version:hover {
+        color: $footer-key-foreground;
+        text-style: bold;
+    }
     """
 
     BINDINGS = [
@@ -1353,6 +1396,7 @@ class MakeCodeTuiApp(App[None]):
         self._input_history_index: int | None = None
         self._input_history_draft = ""
         self._modal_active = False
+        self._release_notes_modal = None
         self._right_column_visible = True
         self._compact_show_runtime = False
         self._last_responsive_width = 0
@@ -1372,6 +1416,7 @@ class MakeCodeTuiApp(App[None]):
             yield ConversationTitle("MakeCode", id="top-title")
             yield Button("▾ 快捷面板", id="quick-panel-toggle")
             yield Button("运行面板 F6", id="compact-pane-toggle")
+            yield Static("", id="top-status-spacer")
             yield WorkdirStatus("", id="top-status")
             yield Static("", id="top-clock")
         with Vertical(id="quick-panel-shell"):
@@ -1417,7 +1462,7 @@ class MakeCodeTuiApp(App[None]):
             yield Static(self._runtime_info, id="runtime-info-bar")
             yield TokenUsageBar("📈 Tokens", id="token-usage-bar")
             yield Button("🛡️ HITL", id="hitl-toggle")
-        yield Footer()
+        yield MakeCodeFooter()
 
     async def on_event(self, event: Event) -> None:
         # 事件转发给控件之前清洗，覆盖主输入框和所有弹窗里的输入控件。
@@ -2676,6 +2721,82 @@ class MakeCodeTuiApp(App[None]):
 
         if cancel_current_response():
             self.query_one("#input-box", MakeCodeInput).focus()
+
+    async def open_release_notes_modal(self) -> None:
+        if (
+            self._modal_active
+            or self._agent_loop_active
+            or self._directory_picker_active
+            or self._submit_lock.locked()
+        ):
+            return
+
+        from version import CURRENT_VERSION
+
+        def _done(value: str | None) -> None:
+            if self._release_notes_modal is modal:
+                self._release_notes_modal = None
+                self._modal_active = False
+                self.query_one("#input-box", MakeCodeInput).focus()
+
+        modal = InfoPanelModal(
+            f"发布日志 · 当前 v{CURRENT_VERSION}",
+            "正在获取最新发布日志...",
+        )
+        self._release_notes_modal = modal
+        self._modal_active = True
+        await self.push_screen(modal, _done)
+
+        async def _fetch() -> None:
+            try:
+                version_info = await asyncio.to_thread(fetch_latest_version_info, raise_errors=True)
+                error = None
+            except Exception as exc:
+                version_info = None
+                error = str(exc)
+            self._finish_release_notes_modal(modal, version_info, error)
+
+        modal.call_after_refresh(modal.run_worker, _fetch, group="release-notes", exclusive=True)
+
+    def _finish_release_notes_modal(
+        self, modal: InfoPanelModal, version_info: dict | None, error: str | None,
+    ) -> None:
+        from version import CURRENT_VERSION
+
+        if modal is not self._release_notes_modal or not modal.is_mounted:
+            return
+        if error:
+            modal.update_panel(
+                f"发布日志 · 当前 v{CURRENT_VERSION}",
+                Text(f"获取发布日志失败：{error}"),
+            )
+            return
+        if not version_info:
+            modal.update_panel(
+                f"发布日志 · 当前 v{CURRENT_VERSION}",
+                "未能获取最新版本信息。",
+            )
+            return
+
+        latest_version = version_info["version"]
+        release_log = version_info.get("release_log", "").strip() or "暂无发布日志。"
+        latest = _parse_version(latest_version)
+        current = _parse_version(CURRENT_VERSION)
+
+        sections = [release_log]
+        if latest > current:
+            sections.append(
+                f"发现新版本 `v{latest_version}`。如需更新，请在对话窗口执行 `/update` 命令。此面板不会执行更新。"
+            )
+        elif latest == current:
+            sections.append("当前已是最新版本。")
+        else:
+            sections.append("当前版本高于最新发布版本，无需更新。")
+
+        modal.update_panel(
+            f"发布日志 · 当前 v{CURRENT_VERSION} · 最新 v{latest_version}",
+            Markdown("\n\n".join(sections)),
+        )
 
     def open_token_usage_modal(self) -> None:
         if self._modal_active or self._token_usage is None:
