@@ -431,14 +431,23 @@ def _looks_like_local_path(value: str) -> bool:
     return value.startswith("\\\\") or (sys.platform == "win32" and value.startswith(("\\", "~\\")))
 
 
+def _split_local_path_line(line: str) -> list[str]:
+    posix_modes = (True,) if sys.platform != "win32" else (False, True)
+    for posix in posix_modes:
+        try:
+            parts = shlex.split(line, posix=posix)
+        except ValueError:
+            continue
+        if parts and all(_looks_like_local_path(_normalize_local_path_text(part) or "") for part in parts):
+            return parts
+    return []
+
+
 def _split_paste_text_tokens(paste_text: str) -> list[str]:
     tokens = []
     for line in paste_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
-        try:
-            parts = shlex.split(line, posix=sys.platform != "win32")
-        except ValueError:
-            parts = []
-        if parts and all(_looks_like_local_path(_normalize_local_path_text(part) or "") for part in parts):
+        parts = _split_local_path_line(line)
+        if parts:
             tokens.extend(parts)
         elif line:
             tokens.append(line)

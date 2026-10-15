@@ -672,6 +672,21 @@ def test_windows_paste_paths_keep_backslashes(paste_text, expected):
         assert _paste_text_local_paths(paste_text) == expected
 
 
+def test_windows_accepts_posix_quoted_paths_with_apostrophes(tmp_path):
+    image, _, _, _ = _random_png(73)
+    source = tmp_path / "screen's shot.png"
+    source.write_bytes(image)
+    paste_text = shlex.quote(str(source))
+
+    with (
+        patch("system.clipboard.sys.platform", "win32"),
+        patch("system.clipboard._read_system_clipboard_file_paths", return_value=[str(source)]),
+    ):
+        items = read_clipboard_file_items(paste_text)
+
+    assert items == [{"kind": "image", "image": (image, source.name, "image/png")}]
+
+
 def test_path_normalization_only_removes_matching_outer_quotes():
     assert _normalize_local_path_text("/tmp/folder'") == "/tmp/folder'"
     assert _normalize_local_path_text('"/tmp/folder\'"') == "/tmp/folder'"
