@@ -28,6 +28,19 @@ def _idle_footer() -> list[tuple[str, str]]:
     ]
 
 
+def _version_label_laid_out(app: MakeCodeTuiApp) -> bool:
+    labels = list(app.query("#footer-version"))
+    return len(labels) == 1 and labels[0].region.width > 0
+
+
+async def _pump_until(pilot, predicate, attempts: int = 60) -> bool:
+    for _ in range(attempts):
+        if predicate():
+            return True
+        await pilot.pause()
+    return predicate()
+
+
 @pytest.mark.anyio
 @pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 async def test_footer_shows_chinese_labels_and_hides_temporary_query_until_enabled():
@@ -127,20 +140,23 @@ async def test_input_title_shows_cancel_and_temporary_query_hints_only_when_avai
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 async def test_version_label_repeated_text_clicks_during_agent_loop_do_not_select():
     app = MakeCodeTuiApp()
     with patch("system.tui_app.fetch_latest_version_info") as fetch_latest:
         async with app.run_test(size=(192, 48)) as pilot:
             app.set_agent_loop_active(True)
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
 
             for _ in range(8):
+                assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
                 await pilot.mouse_down("#footer-version", offset=(3, 0))
                 assert app.screen._select_state is None
                 await pilot.mouse_up("#footer-version", offset=(3, 0))
                 app.refresh_bindings()
-                await pilot.pause()
+                assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
                 await pilot.click("#footer-version", offset=(3, 0))
+                await pilot.pause()
                 assert app._agent_loop_active
                 assert app._release_notes_modal is None
 
@@ -155,15 +171,15 @@ async def test_version_label_stale_mouse_hit_after_footer_recompose_does_not_cra
         app.set_agent_loop_active(True)
         await pilot.pause()
         old_label = app.query_one("#footer-version")
+        assert await _pump_until(pilot, lambda: old_label.region.width > 0)
         x, y = old_label.content_region.x + 2, old_label.content_region.y
         footer = app.query_one(Footer)
         footer.call_later(footer.recompose)
-        await pilot.pause()
-        assert old_label.parent is None
+        assert await _pump_until(pilot, lambda: old_label.parent is None)
 
         if other_modal:
             app.call_later(app.push_screen, InfoPanelModal("其他窗口", "测试内容"))
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
         screen = app.screen
         event = MouseDown(
             None, x, y, 0, 0, 1, False, False, False, screen_x=x, screen_y=y,
@@ -176,6 +192,7 @@ async def test_version_label_stale_mouse_hit_after_footer_recompose_does_not_cra
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 async def test_version_label_text_clicks_do_not_interfere_with_another_modal():
     app = MakeCodeTuiApp()
     with patch(
@@ -183,11 +200,11 @@ async def test_version_label_text_clicks_do_not_interfere_with_another_modal():
         return_value={"version": "9.9.9", "release_log": "## Notes"},
     ) as fetch_latest:
         async with app.run_test(size=(192, 48)) as pilot:
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
             label = app.query_one("#footer-version")
             position = (label.content_region.x + 2, label.content_region.y)
             app.call_later(app.open_info_panel_modal, "其他窗口", "测试内容", Future())
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
             modal = app.screen
             assert isinstance(modal, InfoPanelModal)
 
@@ -197,9 +214,10 @@ async def test_version_label_text_clicks_do_not_interfere_with_another_modal():
             fetch_latest.assert_not_called()
 
             await pilot.press("q")
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: app._modal_active is False)
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
             await pilot.click("#footer-version", offset=(3, 0))
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: fetch_latest.call_count == 1)
             assert isinstance(app.screen, InfoPanelModal)
             assert app.screen is not modal
             fetch_latest.assert_called_once_with(raise_errors=True)

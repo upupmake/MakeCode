@@ -46,6 +46,19 @@ def _region_rendered_height(widget) -> int:
     return sum(child.region.height for child in widget.children)
 
 
+def _version_label_laid_out(app: MakeCodeTuiApp) -> bool:
+    labels = list(app.query("#footer-version"))
+    return len(labels) == 1 and labels[0].region.width > 0
+
+
+async def _pump_until(pilot, predicate, attempts: int = 60) -> bool:
+    for _ in range(attempts):
+        if predicate():
+            return True
+        await pilot.pause()
+    return predicate()
+
+
 @pytest.fixture(autouse=True)
 def isolate_tui_layout_config(monkeypatch):
     monkeypatch.setattr("system.tui_app.load_layout_ratios", lambda: dict(TEST_LAYOUT_RATIOS))
@@ -106,7 +119,7 @@ async def test_footer_shows_current_version_at_bottom_right(width):
     app = MakeCodeTuiApp()
 
     async with app.run_test(size=(width, 40)) as pilot:
-        await pilot.pause()
+        assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
         footer = app.query_one("Footer")
         version_label = app.query_one("#footer-version")
         expected = f"v{CURRENT_VERSION}"
@@ -147,10 +160,9 @@ async def test_clicking_footer_version_shows_latest_release_log_without_updating
         patch("system.commands.download_update", download),
     ):
         async with app.run_test(size=(140, 40)) as pilot:
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
             await pilot.click("#footer-version", offset=(3, 0))
-            await pilot.pause()
-            assert isinstance(app.screen, InfoPanelModal)
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
             modal = app.screen
             assert CURRENT_VERSION in modal._title
             assert "正在获取" in str(modal._content)
@@ -193,25 +205,23 @@ async def test_clicking_footer_version_when_current_does_not_prompt_update(remot
         return_value={"version": latest, "release_log": "## Same"},
     ):
         async with app.run_test(size=(140, 40)) as pilot:
-            await pilot.pause()
-            await pilot.click("#footer-version")
-            await pilot.pause()
-
-            assert isinstance(app.screen, InfoPanelModal)
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+            await pilot.click("#footer-version", offset=(3, 0))
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
             modal = app.screen
             status = "当前版本高于最新发布版本" if remote_is_older else "当前已是最新版本"
+            assert await _pump_until(pilot, lambda: hasattr(modal._content, "markup"))
             assert status in modal._content.markup
             assert "/update" not in modal._content.markup
             assert "## Same" in modal._content.markup
 
             modal.action_close()
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: app._modal_active is False)
             assert not isinstance(app.screen, InfoPanelModal)
-            assert app._modal_active is False
 
-            await pilot.click("#footer-version")
-            await pilot.pause()
-            assert isinstance(app.screen, InfoPanelModal)
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+            await pilot.click("#footer-version", offset=(3, 0))
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
 
 
 @pytest.mark.anyio
@@ -223,28 +233,28 @@ async def test_release_notes_can_reopen_after_footer_recomposition(close_method)
         return_value={"version": "9.9.9", "release_log": "## Notes"},
     ) as fetch_latest:
         async with app.run_test(size=(140, 40)) as pilot:
-            await pilot.click("#footer-version")
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+            await pilot.click("#footer-version", offset=(3, 0))
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
             first = app.screen
             assert isinstance(first, InfoPanelModal)
 
             footer = app.query_one("Footer")
             footer.call_later(footer.recompose)
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
             if close_method == "q":
                 await pilot.press("q")
             else:
                 await pilot.click(f"#{close_method}")
-            await pilot.pause()
+            assert await _pump_until(pilot, lambda: app._modal_active is False)
 
-            assert app._modal_active is False
             assert app._release_notes_modal is None
-            await pilot.click("#footer-version")
-            await pilot.pause()
-            assert isinstance(app.screen, InfoPanelModal)
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+            await pilot.click("#footer-version", offset=(3, 0))
+            assert await _pump_until(pilot, lambda: isinstance(app.screen, InfoPanelModal))
             assert app.screen is not first
             assert app._modal_active is True
-            assert fetch_latest.call_count == 2
+            assert await _pump_until(pilot, lambda: fetch_latest.call_count == 2)
 
 
 @pytest.mark.anyio
@@ -268,11 +278,15 @@ async def test_release_notes_old_request_does_not_overwrite_reopened_modal():
     with patch("system.tui_app.fetch_latest_version_info", side_effect=fetch_latest_version_info):
         async with app.run_test(size=(140, 40)) as pilot:
             try:
-                await pilot.click("#footer-version")
+                assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+                await pilot.click("#footer-version", offset=(3, 0))
                 assert await asyncio.to_thread(started[0].wait, 2)
                 first = app.screen
+                assert isinstance(first, InfoPanelModal)
                 await pilot.press("q")
-                await pilot.click("#footer-version")
+                assert await _pump_until(pilot, lambda: app._modal_active is False)
+                assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+                await pilot.click("#footer-version", offset=(3, 0))
                 assert await asyncio.to_thread(started[1].wait, 2)
                 second = app.screen
                 assert second is not first
@@ -314,8 +328,9 @@ async def test_release_notes_does_not_cancel_unrelated_app_worker():
             worker = app.run_worker(background_task())
             await asyncio.wait_for(started.wait(), 2)
             try:
-                await pilot.click("#footer-version")
-                await pilot.pause()
+                assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+                await pilot.click("#footer-version", offset=(3, 0))
+                assert await _pump_until(pilot, lambda: app._release_notes_modal is not None)
                 assert not worker.is_cancelled
             finally:
                 release.set()
@@ -332,19 +347,20 @@ async def test_release_notes_failure_is_displayed_and_can_be_retried():
         ],
     ):
         async with app.run_test(size=(140, 40)) as pilot:
-            await pilot.click("#footer-version")
-            for _ in range(30):
-                await pilot.pause()
-                if "获取发布日志失败" in str(app.screen._content):
-                    break
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+            await pilot.click("#footer-version", offset=(3, 0))
+            assert await _pump_until(
+                pilot, lambda: "获取发布日志失败" in str(app.screen._content),
+            )
             assert "connection failed [not-markup]" in str(app.screen._content)
             assert "connection failed [not-markup]" in _region_text(app.screen.query_one("#info-content"))
             await pilot.press("q")
-            await pilot.click("#footer-version")
-            for _ in range(30):
-                await pilot.pause()
-                if "Retry" in getattr(app.screen._content, "markup", ""):
-                    break
+            assert await _pump_until(pilot, lambda: app._modal_active is False)
+            assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+            await pilot.click("#footer-version", offset=(3, 0))
+            assert await _pump_until(
+                pilot, lambda: "Retry" in getattr(app.screen._content, "markup", ""),
+            )
             assert "## Retry" in app.screen._content.markup
 
 
@@ -361,7 +377,8 @@ async def test_release_notes_does_not_interrupt_active_operation(blocked_by):
             else:
                 app._submit_lock.acquire()
             try:
-                await pilot.click("#footer-version")
+                assert await _pump_until(pilot, lambda: _version_label_laid_out(app))
+                await pilot.click("#footer-version", offset=(3, 0))
                 await pilot.pause()
                 assert not isinstance(app.screen, InfoPanelModal)
                 fetch_latest.assert_not_called()
@@ -376,7 +393,7 @@ async def test_clicking_footer_bindings_does_not_open_release_notes():
     with patch("system.tui_app.fetch_latest_version_info") as fetch_latest:
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
-            await pilot.click("Footer")
+            await pilot.click("Footer", offset=(3, 0))
             await pilot.pause()
             fetch_latest.assert_not_called()
             assert not isinstance(app.screen, InfoPanelModal)
