@@ -91,6 +91,8 @@ def _cautious_actions_section(is_orchestrator: bool = True) -> str:
 
 Carefully consider reversibility and blast radius. Reading, local edits, tests, and builds are allowed in Act Mode, though configured tool policies may still require approval.
 
+In Act Mode, if a required runtime dependency is not installed, you may install it as needed and report the installation to the Orchestrator. If an existing dependency conflicts or needs reinstallation, report it to the Orchestrator instead of reinstalling or changing it on your own.
+
 Do not perform destructive, hard-to-reverse, externally visible, or shared-infrastructure actions unless the task instructions explicitly authorize them and the configured tool approval permits them. Otherwise report the blocker clearly. Never use destructive actions as a shortcut; investigate root causes and preserve existing work."""
     return """# Executing Actions with Care
 
@@ -108,6 +110,8 @@ MUST confirm with the user first:
  - Hard-to-reverse operations: force-pushing, git reset --hard, amending published commits
  - Actions visible to others: pushing code, creating/closing PRs or issues, sending messages
  - Modifying shared infrastructure, permissions, or CI/CD pipelines
+
+In Act Mode, if a required runtime dependency is missing during execution, ask the user whether to install it and proceed with installation only after receiving explicit consent.
 
 When you encounter an obstacle, do NOT use destructive actions as a shortcut.
 Investigate root causes. Resolve merge conflicts rather than discarding changes.

@@ -41,6 +41,37 @@ class PromptPolicyTests(unittest.TestCase):
         self.assertNotIn("MUST confirm with the user first", prompt)
         self.assertIn("Otherwise report the blocker clearly", prompt)
 
+    def test_orchestrator_requires_consent_for_runtime_dependency_installation(self):
+        expected = (
+            "In Act Mode, if a required runtime dependency is missing during execution, "
+            "ask the user whether to install it and proceed with installation only after "
+            "receiving explicit consent."
+        )
+        for plan_mode in (False, True):
+            with self.subTest(plan_mode=plan_mode):
+                prompt = self._orchestrator_prompt(plan_mode=plan_mode)
+                self.assertIn(expected, prompt)
+                self.assertIn("Plan Mode remains read-only", prompt)
+
+    def test_sub_agent_can_install_absent_runtime_dependencies_and_report(self):
+        prompt = self._sub_agent_prompt()
+
+        self.assertIn(
+            "In Act Mode, if a required runtime dependency is not installed, you may "
+            "install it as needed and report the installation to the Orchestrator.",
+            prompt,
+        )
+        self.assertNotIn("obtain the user's explicit consent before installation", prompt)
+
+    def test_sub_agent_reports_existing_dependency_conflicts_or_reinstallation(self):
+        prompt = self._sub_agent_prompt()
+
+        self.assertIn(
+            "If an existing dependency conflicts or needs reinstallation, report it to "
+            "the Orchestrator instead of reinstalling or changing it on your own.",
+            prompt,
+        )
+
     def test_prompts_omit_search_tool_names_and_detailed_terminal_search_formatting(self):
         for prompt in (
             self._orchestrator_prompt(plan_mode=False),
