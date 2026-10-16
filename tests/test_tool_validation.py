@@ -59,6 +59,45 @@ def test_normalize_tool_messages_pairs_results_without_duplicates_or_mutation():
     assert messages == original
 
 
+@pytest.mark.parametrize("tool_calls", [None, []])
+def test_normalize_tool_messages_falls_back_to_content_blocks_for_empty_tool_calls(tool_calls):
+    from utils.tool_validation import normalize_tool_messages
+
+    messages = [{
+        "role": "assistant",
+        "tool_calls": tool_calls,
+        "content_blocks": [{"type": "tool_call", "id": "call_1", "name": "Read"}],
+    }]
+    original = copy.deepcopy(messages)
+
+    assert normalize_tool_messages(messages) == [messages[0], {
+        "role": "tool", "tool_call_id": "call_1", "name": "Read", "content": "",
+    }]
+    assert messages == original
+
+
+def test_normalize_tool_messages_ignores_malformed_tool_calls():
+    from utils.tool_validation import normalize_tool_messages
+
+    messages = [
+        {"role": "system", "content": "malformed"},
+        {"role": "assistant", "tool_calls": 1},
+        {"role": "assistant", "content_blocks": 2},
+        {"role": "assistant", "tool_calls": ["not-a-dict", {"id": "call_1", "name": "Read"}]},
+        {"role": "tool", "tool_call_id": "call_1", "name": "Read", "content": None},
+    ]
+    original = copy.deepcopy(messages)
+
+    assert normalize_tool_messages(messages) == [
+        messages[0],
+        messages[1],
+        messages[2],
+        messages[3],
+        {**messages[4], "content": ""},
+    ]
+    assert messages == original
+
+
 def test_parse_tool_arguments_accepts_dict_and_json_object():
     assert parse_tool_arguments("ContentSearch", {"content_regex": "needle"}) == {
         "content_regex": "needle"

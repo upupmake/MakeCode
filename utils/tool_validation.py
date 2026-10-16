@@ -50,16 +50,23 @@ def normalize_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
             pending = {}
 
         if role == "assistant":
-            tool_calls = message.get("tool_calls") or [
-                block
-                for block in message.get("content_blocks") or []
-                if isinstance(block, dict) and block.get("type") == "tool_call"
-            ]
-            for tool_call in tool_calls:
+            raw_tool_calls = message.get("tool_calls")
+            if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+                content_blocks = message.get("content_blocks")
+                raw_tool_calls = [
+                    block
+                    for block in content_blocks
+                    if isinstance(block, dict) and block.get("type") == "tool_call"
+                ] if isinstance(content_blocks, list) else []
+            for tool_call in raw_tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
                 call_id = tool_call.get("id") or tool_call.get("call_id")
                 if not call_id:
                     continue
-                function = tool_call.get("function") or {}
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    function = {}
                 pending[call_id] = {
                     "role": "tool",
                     "tool_call_id": call_id,
