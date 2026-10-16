@@ -4485,6 +4485,11 @@ def test_openai_message_sanitizer_preserves_reasoning_content_and_strips_private
             "type": "function",
             "function": {"name": "Read", "arguments": '{"path":"README.md"}'},
         }],
+    }, {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "Read",
+        "content": "",
     }]
 
 

@@ -131,6 +131,91 @@ class _FailingAnthropicByteStream(httpx.AsyncByteStream):
         pass
 
 
+@pytest.mark.parametrize("output, expected", [
+    (None, ""),
+    ("", ""),
+    (0, "0"),
+    (False, "false"),
+    ({"value": None}, '{"value": null}'),
+    (["结果"], '["结果"]'),
+    ("null", "null"),
+    ("None", "None"),
+])
+def test_format_tool_result_normalizes_empty_output_without_losing_values(output, expected):
+    result = AsyncBaseLLMClient.format_tool_result(
+        None, "call_1", "AskUser", output, is_error=True,
+    )
+
+    assert result == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "AskUser",
+        "content": expected,
+        "is_error": True,
+    }
+
+
+@pytest.mark.parametrize("project, content_key", [
+    (lambda messages: sanitize_openai_messages(messages)[-1], "content"),
+    (lambda messages: build_openai_responses_request(messages)[1][-1], "output"),
+    (lambda messages: build_anthropic_request_messages(messages)[1][-1]["content"][0], "content"),
+], ids=["chat", "responses", "anthropic"])
+@pytest.mark.parametrize("tool_message", [
+    {"role": "tool", "tool_call_id": "call_1", "content": None},
+    {"role": "tool", "tool_call_id": "call_1"},
+    {"role": "tool", "tool_call_id": "call_1", "content": ""},
+], ids=["none", "missing-content", "empty"])
+def test_request_builders_normalize_empty_tool_content(project, content_key, tool_message):
+    messages = [copy.deepcopy(tool_message)]
+    original = copy.deepcopy(messages)
+
+    assert project(messages)[content_key] == ""
+    assert messages == original
+
+
+@pytest.mark.parametrize("source_format", ["openai_chat", "openai_responses", "anthropic"])
+@pytest.mark.parametrize("project, expected_result", [
+    (sanitize_openai_messages, {
+        "role": "tool", "tool_call_id": "call_1", "name": "AskUser", "content": "",
+    }),
+    (lambda messages: build_openai_responses_request(messages)[1], {
+        "type": "function_call_output", "call_id": "call_1", "output": "",
+    }),
+    (lambda messages: build_anthropic_request_messages(messages)[1], {
+        "role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "call_1", "content": ""},
+        ],
+    }),
+], ids=["chat", "responses", "anthropic"])
+def test_request_builders_fill_missing_tool_results(source_format, project, expected_result):
+    native_blocks = {
+        "openai_chat": None,
+        "openai_responses": [{
+            "type": "function_call", "id": "fc_1", "call_id": "call_1",
+            "name": "AskUser", "arguments": "{}",
+        }],
+        "anthropic": [{
+            "type": "tool_use", "id": "call_1", "name": "AskUser", "input": {},
+        }],
+    }
+    message = build_llm_result(
+        tool_calls=[{"id": "call_1", "name": "AskUser", "arguments": "{}"}],
+        source_format=source_format,
+        source_model="test-model",
+        native_blocks=native_blocks[source_format],
+    ).assistant_message
+    messages = [message]
+    original = copy.deepcopy(messages)
+
+    projected = project(messages)
+    assert projected[-1] == expected_result
+    continued = project(messages + [{"role": "user", "content": "continue"}])
+    assert continued[:-1] == projected
+    assert messages == original
+    if native_blocks[source_format] is not None:
+        assert message["message_metadata"]["native_blocks"] == native_blocks[source_format]
+
+
 def test_anthropic_message_conversion_extracts_system_and_groups_parallel_tool_results():
     messages = [
         {"role": "system", "content": "system one"},
@@ -448,6 +533,7 @@ def test_openai_responses_never_replays_foreign_native_blocks():
             "name": "Read",
             "arguments": '{"path":"a.py"}',
         },
+        {"type": "function_call_output", "call_id": "call_1", "output": ""},
     ]
     assert "encrypted_content" not in json.dumps(rebuilt)
 
@@ -892,6 +978,9 @@ def test_cross_model_rebuild_uses_normalized_content_blocks_when_legacy_fields_a
                 "input": {"path": "a.py"},
             },
         ],
+    }, {
+        "role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": ""}],
     }]
     assert sanitize_openai_messages([message]) == [{
         "role": "assistant",
@@ -902,6 +991,8 @@ def test_cross_model_rebuild_uses_normalized_content_blocks_when_legacy_fields_a
             "type": "function",
             "function": {"name": "Read", "arguments": '{"path": "a.py"}'},
         }],
+    }, {
+        "role": "tool", "tool_call_id": "call_1", "name": "Read", "content": "",
     }]
     _, responses_items = build_openai_responses_request([message])
     assert responses_items == [
@@ -916,6 +1007,7 @@ def test_cross_model_rebuild_uses_normalized_content_blocks_when_legacy_fields_a
             "name": "Read",
             "arguments": '{"path": "a.py"}',
         },
+        {"type": "function_call_output", "call_id": "call_1", "output": ""},
     ]
 
 

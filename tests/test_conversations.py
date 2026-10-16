@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 
@@ -49,6 +50,55 @@ def test_conversation_store_saves_and_loads_bound_history(tmp_path):
     assert snapshot.sub_agent_history == [
         {"conversation_id": store.active_id, "plan_task_id": "1", "status": "completed"}
     ]
+
+
+@pytest.mark.parametrize("result_messages", [
+    [],
+    [{"role": "tool", "tool_call_id": "call_1", "name": "AskUser", "content": None}],
+    [{"role": "tool", "tool_call_id": "call_1", "name": "AskUser"}],
+    [{"role": "tool", "tool_call_id": "call_1", "name": "AskUser", "content": ""}],
+], ids=["missing-result", "none", "missing-content", "empty"])
+@pytest.mark.parametrize("continued", [False, True])
+def test_conversation_store_saves_empty_tool_results_without_mutating_live_history(
+    tmp_path, result_messages, continued,
+):
+    store = ConversationStore(tmp_path / "conversations")
+    assistant = {
+        "role": "assistant", "content": None,
+        "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "AskUser", "arguments": "{}"},
+        }],
+    }
+    following = [{"role": "user", "content": "continue"}] if continued else []
+    messages = [assistant, *copy.deepcopy(result_messages), *following]
+    original = copy.deepcopy(messages)
+    expected = [assistant, {
+        "role": "tool", "tool_call_id": "call_1", "name": "AskUser", "content": "",
+    }, *following]
+
+    path = store.save_messages(messages)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["messages"] == expected
+    assert store.load(path).messages == expected
+    assert messages == original
+
+
+def test_conversation_store_replaces_empty_placeholder_when_tool_returns(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    messages = [{
+        "role": "assistant", "content": None,
+        "tool_calls": [{"id": "call_1", "name": "AskUser", "arguments": "{}"}],
+    }]
+    path = store.save_messages(messages)
+    messages.append({
+        "role": "tool", "tool_call_id": "call_1", "name": "AskUser",
+        "content": '{"choice": "继续"}',
+    })
+
+    assert store.save_messages(messages) == path
+    assert store.load(path).messages == messages
+    assert len(messages) == 2
 
 
 def test_conversation_store_saves_image_attachment_as_optional_artifact(tmp_path):

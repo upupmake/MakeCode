@@ -9,6 +9,7 @@ from typing import Any
 
 from utils import paths
 from utils.common import sanitize_title
+from utils.tool_validation import normalize_tool_messages
 from utils.vision import image_blocks_from_content, resolve_image_attachment
 
 
@@ -170,6 +171,7 @@ class ConversationStore:
         self._validate_sidecar_paths(path.parent)
         if path.exists():
             self._validate_manifest(path)
+        messages = normalize_tool_messages(messages)
         now = _now()
         artifacts = {
             "task_plan": TASK_PLAN_FILE,

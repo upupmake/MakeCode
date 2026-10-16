@@ -33,6 +33,48 @@ def is_tool_error_output(output: Any) -> bool:
     return False
 
 
+def format_tool_content(output: Any) -> str:
+    if output is None:
+        return ""
+    return output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+
+
+def normalize_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project complete tool-result pairs without changing live execution history."""
+    normalized = []
+    pending = {}
+    for message in messages:
+        role = message.get("role")
+        if role != "tool":
+            normalized.extend(pending.values())
+            pending = {}
+
+        if role == "assistant":
+            tool_calls = message.get("tool_calls") or [
+                block
+                for block in message.get("content_blocks") or []
+                if isinstance(block, dict) and block.get("type") == "tool_call"
+            ]
+            for tool_call in tool_calls:
+                call_id = tool_call.get("id") or tool_call.get("call_id")
+                if not call_id:
+                    continue
+                function = tool_call.get("function") or {}
+                pending[call_id] = {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": tool_call.get("name") or function.get("name", ""),
+                    "content": "",
+                }
+        elif role == "tool":
+            pending.pop(message.get("tool_call_id"), None)
+            message = {**message, "content": format_tool_content(message.get("content"))}
+        normalized.append(message)
+
+    normalized.extend(pending.values())
+    return normalized
+
+
 def _format_location(location: tuple[Any, ...]) -> str:
     if not location:
         return "$"

@@ -1,3 +1,4 @@
+import copy
 import traceback
 
 import pytest
@@ -16,6 +17,46 @@ from utils.tool_validation import (
     parse_tool_arguments,
     validate_builtin_tool_arguments,
 )
+
+
+def test_normalize_tool_messages_pairs_results_without_duplicates_or_mutation():
+    from utils.tool_validation import normalize_tool_messages
+
+    messages = [
+        {
+            "role": "assistant", "content": None,
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "Read", "arguments": "{}"}},
+                {"id": "call_2", "name": "AskUser", "arguments": "{}"},
+                {"id": "call_3", "name": "Search", "arguments": "{}"},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_3", "name": "Search", "content": False},
+        {
+            "role": "tool", "tool_call_id": "call_1", "name": "Read",
+            "content": None, "is_error": True,
+        },
+        {
+            "role": "assistant", "content": "next round",
+            "content_blocks": [{"type": "tool_call", "id": "call_4", "name": "Read"}],
+        },
+        {"role": "user", "content": "continue"},
+    ]
+    original = copy.deepcopy(messages)
+
+    normalized = normalize_tool_messages(messages)
+
+    assert normalized == [
+        messages[0],
+        {**messages[1], "content": "false"},
+        {**messages[2], "content": ""},
+        {"role": "tool", "tool_call_id": "call_2", "name": "AskUser", "content": ""},
+        messages[3],
+        {"role": "tool", "tool_call_id": "call_4", "name": "Read", "content": ""},
+        messages[4],
+    ]
+    assert normalize_tool_messages(normalized) == normalized
+    assert messages == original
 
 
 def test_parse_tool_arguments_accepts_dict_and_json_object():

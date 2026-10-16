@@ -20,6 +20,7 @@ from openai import APIError, AsyncOpenAI
 from openai._streaming import ServerSentEvent, SSEDecoder
 
 from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
+from utils.tool_validation import format_tool_content, normalize_tool_messages
 from utils.vision import SUPPORTED_IMAGE_TYPES, image_data_uri, resolve_image_attachment
 
 
@@ -425,9 +426,7 @@ class AsyncBaseLLMClient(ABC):
             "role": "tool",
             "tool_call_id": tool_call_id,
             "name": tool_name,
-            "content": json.dumps(output, ensure_ascii=False)
-            if not isinstance(output, str)
-            else output,
+            "content": format_tool_content(output),
         }
         if is_error:
             result["is_error"] = True
@@ -696,7 +695,7 @@ def sanitize_openai_messages(
     conversation_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     sanitized = []
-    for message in messages:
+    for message in normalize_tool_messages(messages):
         role = message.get("role")
         clean_message: dict[str, Any] = {"role": role}
         if "content" in message:
@@ -1046,6 +1045,7 @@ def build_anthropic_request_messages(
     messages: list[dict[str, Any]],
     conversation_root: Path | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
+    messages = normalize_tool_messages(messages)
     system_parts = []
     request_messages = []
     index = 0
@@ -1228,13 +1228,10 @@ def _openai_responses_assistant_items(message: dict[str, Any]) -> list[dict[str,
 
 
 def _openai_responses_tool_output(message: dict[str, Any]) -> dict[str, Any]:
-    content = message.get("content", "")
-    if not isinstance(content, str):
-        content = json.dumps(content, ensure_ascii=False)
     return {
         "type": "function_call_output",
         "call_id": message.get("tool_call_id") or message.get("call_id", ""),
-        "output": content,
+        "output": format_tool_content(message.get("content")),
     }
 
 
@@ -1244,7 +1241,7 @@ def build_openai_responses_request(
 ) -> tuple[str, list[dict[str, Any]]]:
     system_parts = []
     request_items = []
-    for message in messages:
+    for message in normalize_tool_messages(messages):
         role = message.get("role")
         if role == "system":
             text = _content_text(message.get("content"))
