@@ -13,7 +13,7 @@ from rich.text import Text
 from textual.events import Paste
 
 from system.console_render import _render_startup_banner
-from system.tui_app import MakeCodeTuiApp, TuiBridge
+from system.tui_app import MakeCodeTuiApp, TuiBridge, TUI_BRIDGE
 from system.tui_types import LAYOUT_DEFAULT_RATIOS, TuiEvent, TuiRegion, normalize_layout_ratios
 from system.tui_modals import ChoiceModal, InfoPanelModal, StartupWorkdirModal, TokenUsageModal
 from utils.skills import SkillLoader
@@ -568,6 +568,33 @@ async def test_temporary_query_shortcut_accepts_and_replaces_pending_query():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("pending_query", [None, "pending instruction"])
+@pytest.mark.parametrize("text", ["", " \n\t "])
+@pytest.mark.parametrize("submit", ["enter", "button"])
+async def test_empty_temporary_query_submission_withdraws_pending_instruction(pending_query, text, submit):
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        app._load_input_text("main input draft")
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+        app._temporary_query = pending_query
+
+        await pilot.press("ctrl+g")
+        app.screen.query_one("#temporary-query-input").load_text(text)
+        if submit == "enter":
+            await pilot.press("enter")
+        else:
+            app.screen.query_one("#temporary-query-submit").press()
+        assert await _pump_until(pilot, lambda: not app._modal_active)
+
+        assert app._temporary_query is None
+        assert app.consume_temporary_query() is None
+        app.set_agent_loop_active(False)
+        assert app.query_one("#input-box").serialize_text() == "main input draft"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("state", ["draft", "pending", "editing", "cancelled_edit", "consumed"])
 async def test_temporary_query_images_round_trip_through_editing_and_loop_end(tmp_path, state):
     markers = [
@@ -823,6 +850,37 @@ async def test_temporary_query_restores_pending_input_when_agent_loop_ends():
 
         input_box = app.query_one("#input-box")
         assert input_box.text == "pending\nsecond line"
+        assert input_box.cursor_location == input_box.document.end
+        assert app._temporary_query is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["failed_request", "pending", "draft"])
+async def test_temporary_query_restore_prefers_current_draft_and_pending_over_failed_request(tmp_path, source):
+    image = store_image_bytes_attachment(tmp_path, b"image", "diagram.png", "image/png")
+    failed_query = f"failed instruction\n{image_reference_marker(image)}"
+    expected = failed_query if source == "failed_request" else f"{source} instruction\n{image_reference_marker(image)}"
+    app = MakeCodeTuiApp(image_placeholder_handler=lambda text: parse_image_placeholders(text, tmp_path))
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        app.set_agent_loop_active(True)
+        app.set_temporary_query_enabled(True)
+        app._temporary_query = failed_query
+        assert app.consume_temporary_query() == failed_query
+        if source == "pending":
+            app._temporary_query = expected
+        elif source == "draft":
+            app._temporary_query = "older pending instruction"
+            await pilot.press("ctrl+g")
+            app.screen.query_one("#temporary-query-input").load_serialized_text(expected)
+
+        TUI_BRIDGE.restore_temporary_query_to_input(failed_query)
+        app.set_agent_loop_active(False)
+        assert await _pump_until(pilot, lambda: not app._modal_active)
+
+        input_box = app.query_one("#input-box")
+        assert input_box.serialize_text() == expected
+        assert input_box.text == parse_image_placeholders(expected, tmp_path)[0]
         assert input_box.cursor_location == input_box.document.end
         assert app._temporary_query is None
 

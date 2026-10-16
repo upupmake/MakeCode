@@ -5480,7 +5480,7 @@ async def test_agent_loop_injects_temporary_query_images_with_intact_wrapper(tmp
 
 
 @pytest.mark.anyio
-async def test_agent_loop_discards_pending_temporary_query_when_final_round_ends():
+async def test_agent_loop_clears_pending_temporary_query_state_when_final_round_ends():
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -5599,6 +5599,87 @@ async def test_agent_loop_removes_injected_temporary_query_when_cancelled():
     save_messages.assert_not_called()
     generate_title.assert_not_awaited()
     assert clear.call_count >= 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["cancelled", "request_error", "no_model", "success"])
+@pytest.mark.parametrize("stage", ["pending", "injected"])
+@pytest.mark.parametrize("with_image", [False, True])
+async def test_agent_loop_restores_interrupted_temporary_query_to_real_input(tmp_path, outcome, stage, with_image):
+    from system.tui_app import MakeCodeTuiApp
+    from utils.vision import parse_image_placeholders
+
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    store = ConversationStore(tmp_path / "conversations")
+    store.ensure_active()
+    body = "supplemental instruction\nsecond line"
+    if with_image:
+        image = store_image_bytes_attachment(store.active_root, b"image", "diagram.png", "image/png")
+        body += f"\n{image_reference_marker(image)}"
+    submit_handler = AsyncMock()
+    app = MakeCodeTuiApp(
+        submit_handler=submit_handler,
+        image_placeholder_handler=lambda text: parse_image_placeholders(text, store.active_root),
+    )
+    requests = []
+
+    class FakeClient:
+        def append_assistant_message(self, history, raw_message):
+            history.append(raw_message)
+
+    async def stream_with_render(history, tools, client):
+        requests.append(list(history))
+        if len(requests) == 1:
+            app.call_from_thread(setattr, app, "_temporary_query", body)
+            if stage == "injected":
+                return "working", [], {"role": "assistant", "content": "working", "stop_reason": "pause_turn"}, False
+        if outcome == "cancelled":
+            return "partial", [], None, True
+        if outcome == "request_error":
+            raise RuntimeError("request failed")
+        if outcome == "no_model":
+            raise RuntimeError("No model configured")
+        return "done", [], {"role": "assistant", "content": "done", "stop_reason": "end_turn"}, False
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        app._load_input_text("main input draft")
+        app.set_agent_loop_active(True)
+        with patch.object(main_module, "get_dynamic_system_prompt", return_value="system"), \
+                patch.object(main_module, "get_current_tools_definition", return_value=[]), \
+                patch.object(main_module, "_render_token_usage"), \
+                patch.object(main_module, "refresh_token_usage"), \
+                patch.object(main_module, "post_tui"), \
+                patch.object(main_module, "_stream_with_render", side_effect=stream_with_render), \
+                patch.object(main_module.GLOBAL_MCP_MANAGER, "get_registry_snapshot", return_value=([], {})), \
+                patch.object(main_module, "CONVERSATION_STORE", store), \
+                patch.object(main_module, "_ensure_active_conversation"), \
+                patch.object(main_module, "log_error_traceback"), \
+                patch.object(main_module.console, "print"), \
+                patch.object(main_module, "_generate_title_if_missing", new_callable=AsyncMock, return_value=False), \
+                patch.object(main_module, "_apply_pending_title"):
+            committed = await asyncio.to_thread(
+                lambda: asyncio.run(main_module.agent_loop(messages, llm_client=FakeClient(), skip_compaction=True))
+            )
+        app.set_agent_loop_active(False)
+        await pilot.pause()
+
+        expected = "main input draft" if stage == "injected" and outcome == "success" else body
+        input_box = app.query_one("#input-box")
+        assert input_box.serialize_text() == expected
+        assert input_box.text == parse_image_placeholders(expected, store.active_root)[0]
+        assert main_module.TEMPORARY_INSTRUCTION_START not in input_box.text
+        assert app._temporary_query is None
+        assert not app._temporary_query_enabled
+        assert not app._modal_active
+        submit_handler.assert_not_awaited()
+
+    assert committed is (stage == "injected" or outcome == "success")
+    temporary_messages = [message for message in messages if message.get("message_metadata", {}).get("temporary_query")]
+    assert len(temporary_messages) == int(stage == "injected" and outcome == "success")
+    assert len(requests) == (2 if stage == "injected" else 1)
 
 
 @pytest.mark.anyio

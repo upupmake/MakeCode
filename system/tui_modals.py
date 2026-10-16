@@ -1522,7 +1522,7 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
                 image_error_handler=self._image_error_handler,
             )
             yield Label(
-                "支持粘贴图片；Enter 提交；Ctrl+N 换行；Esc 取消。",
+                "支持粘贴图片；Enter 提交；空提交撤销待处理指令；Ctrl+N 换行；Esc 关闭。",
                 id="temporary-query-hint",
                 markup=False,
             )
@@ -1543,8 +1543,7 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
 
     def action_submit(self) -> None:
         value = self.query_one("#temporary-query-input", ImageAwareTextArea).serialize_text().strip()
-        if value:
-            self.dismiss(value)
+        self.dismiss(value)
 
     def current_text(self) -> str:
         return self.query_one("#temporary-query-input", ImageAwareTextArea).serialize_text()

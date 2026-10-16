@@ -413,15 +413,15 @@ class TuiBridge:
         app.call_from_thread(app.consume_temporary_query, future)
         return future.result()
 
-    def restore_temporary_query_to_input(self) -> None:
+    def restore_temporary_query_to_input(self, fallback_query: str | None = None) -> None:
         with self._app_lock:
             app = self._app
         if app is None:
             return
         if self._is_app_thread():
-            app.restore_temporary_query_to_input()
+            app.restore_temporary_query_to_input(fallback_query)
         else:
-            app.call_from_thread(app.restore_temporary_query_to_input)
+            app.call_from_thread(app.restore_temporary_query_to_input, fallback_query)
 
     def _dispatch_event_locked(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
         self._dispatch_event(app, event)
@@ -2025,7 +2025,7 @@ class MakeCodeTuiApp(App[None]):
                 and self._agent_loop_active
                 and self._temporary_query_enabled
             ):
-                self._temporary_query = value
+                self._temporary_query = value or None
 
         self._modal_active = True
         self.push_screen(modal, _done)
@@ -2039,8 +2039,8 @@ class MakeCodeTuiApp(App[None]):
             future.set_result(query)
         return query
 
-    def restore_temporary_query_to_input(self) -> None:
-        query = self._temporary_query
+    def restore_temporary_query_to_input(self, fallback_query: str | None = None) -> None:
+        query = self._temporary_query if self._temporary_query is not None else fallback_query
         if isinstance(self.screen, TemporaryQueryModal):
             query = self.screen.current_text()
         if query is not None:
@@ -3205,8 +3205,8 @@ def consume_temporary_query() -> str | None:
     return TUI_BRIDGE.consume_temporary_query()
 
 
-def restore_temporary_query_to_input() -> None:
-    TUI_BRIDGE.restore_temporary_query_to_input()
+def restore_temporary_query_to_input(fallback_query: str | None = None) -> None:
+    TUI_BRIDGE.restore_temporary_query_to_input(fallback_query)
 
 
 def clear_temporary_query() -> None:

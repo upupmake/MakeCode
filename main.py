@@ -519,8 +519,7 @@ async def _agent_loop_with_client(
                     memory_context,
                 )
 
-    def _append_temporary_query() -> dict | None:
-        temporary_query = consume_temporary_query()
+    def _append_temporary_query(temporary_query: str | None) -> dict | None:
         if temporary_query is None:
             return None
         message = {
@@ -547,7 +546,8 @@ async def _agent_loop_with_client(
 
     set_temporary_query_enabled(True)
     while True:
-        temporary_query_message = _append_temporary_query()
+        temporary_query = consume_temporary_query()
+        temporary_query_message = _append_temporary_query(temporary_query)
         # Update system prompt to reflect current plan mode state
         messages[0] = {"role": "system", "content": get_dynamic_system_prompt()}
         context_token_limit = get_context_token_limit()
@@ -572,14 +572,14 @@ async def _agent_loop_with_client(
                 )
                 if temporary_query_message is not None and messages and messages[-1] is temporary_query_message:
                     messages.pop()
-                clear_temporary_query()
+                    restore_temporary_query_to_input(temporary_query)
                 break
             log_error_traceback("Orchestrator generation error", e)
             error_msg = f"智能体执行出错: {e}."
             console.print(f"[bold red]⚠️ {escape(error_msg)}[/bold red]")
             if temporary_query_message is not None and messages and messages[-1] is temporary_query_message:
                 messages.pop()
-            clear_temporary_query()
+                restore_temporary_query_to_input(temporary_query)
             break
 
         # 用户取消：丢弃部分模型回复，不执行工具调用，回到输入等待
@@ -587,7 +587,7 @@ async def _agent_loop_with_client(
             was_cancelled = True
             if temporary_query_message is not None and messages and messages[-1] is temporary_query_message:
                 messages.pop()
-            clear_temporary_query()
+                restore_temporary_query_to_input(temporary_query)
             break
 
         llm_client.append_assistant_message(messages, raw_message)
