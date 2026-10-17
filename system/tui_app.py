@@ -2355,6 +2355,8 @@ class MakeCodeTuiApp(App[None]):
             return
         input_box = self.query_one("#input-box", MakeCodeInput)
         input_box.insert("\n")
+        # 等布局更新可滚动范围后，再把光标滚入视口。
+        input_box.call_after_refresh(input_box.scroll_cursor_visible)
 
     def tokenize_image_placeholders(self, text: str) -> str:
         if self._image_placeholder_handler is None:

@@ -527,6 +527,76 @@ async def test_clicking_conversation_title_does_not_open_modal_while_agent_is_ac
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("width", [86, 180])
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+async def test_newline_keeps_cursor_visible_as_input_reaches_maximum_height(width):
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(width, 40)) as pilot:
+        input_box = app.query_one("#input-box")
+        text = "first\nsecond\nthird"
+        input_box.load_text(text)
+        input_box.cursor_location = input_box.document.end
+        await pilot.pause()
+
+        for _ in range(5):
+            text += "\n"
+            await pilot.press("ctrl+n")
+
+            assert input_box.text == text
+            assert input_box.cursor_location == input_box.document.end
+            assert await _pump_until(
+                pilot,
+                lambda: input_box.cursor_screen_offset in input_box.scrollable_content_region,
+            )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("temporary", [False, True], ids=["main", "temporary"])
+@pytest.mark.parametrize("position", ["end", "wrapped_end", "middle"])
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+async def test_newline_keeps_cursor_visible_in_overflowing_input(temporary, position):
+    app = MakeCodeTuiApp()
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        if temporary:
+            app.set_agent_loop_active(True)
+            app.set_temporary_query_enabled(True)
+            await pilot.press("ctrl+g")
+        await pilot.pause()
+        selector = "#temporary-query-input" if temporary else "#input-box"
+        input_box = app.screen.query_one(selector)
+        text = (
+            "中" * input_box.wrap_width * input_box.scrollable_content_region.height
+            if position == "wrapped_end"
+            else "\n".join(f"line {index}" for index in range(20))
+        )
+        input_box.load_text(text)
+        input_box.cursor_location = (6, 2) if position == "middle" else input_box.document.end
+        await pilot.pause()
+        assert input_box.max_scroll_y > 0
+        assert await _pump_until(
+            pilot,
+            lambda: input_box.cursor_screen_offset in input_box.scrollable_content_region,
+        )
+
+        for _ in range(3):
+            cursor_index = input_box.document.get_index_from_location(input_box.cursor_location)
+            expected_text = input_box.text[:cursor_index] + "\n" + input_box.text[cursor_index:]
+            expected_cursor = (input_box.cursor_location[0] + 1, 0)
+            await pilot.press("ctrl+n")
+
+            assert input_box.text == expected_text
+            assert input_box.cursor_location == expected_cursor
+            assert await _pump_until(
+                pilot,
+                lambda: input_box.cursor_screen_offset in input_box.scrollable_content_region,
+            )
+            if position == "middle":
+                assert input_box.scroll_y < input_box.max_scroll_y
+
+
+@pytest.mark.anyio
 async def test_temporary_query_shortcut_accepts_and_replaces_pending_query():
     app = MakeCodeTuiApp()
 

@@ -291,7 +291,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["content"], "")
         create_client.assert_not_called()
 
-    async def test_recall_touches_selected_memories_before_rendering_context(self):
+    async def test_recall_renders_context_before_touching_selected_memories(self):
         events = []
 
         def render_context(memory_ids):
@@ -306,7 +306,26 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             result = await memory.recall_long_term_memories("query")
 
         self.assertEqual(result["content"], "selected context")
-        self.assertEqual(events, [("touch", ["mem_new"]), ("render", ["mem_new"])])
+        self.assertEqual(events, [("render", ["mem_new"]), ("touch", ["mem_new"])])
+
+    async def test_recall_preserves_previous_timestamp_in_context_and_updates_store(self):
+        store = install_memory_store(self, MEMORY_RECORDS)
+        recalled_at = "2026-07-21 12:34:56"
+        fixed_datetime = Mock()
+        fixed_datetime.now.return_value.strftime.return_value = recalled_at
+
+        with patch.object(memory, "datetime", fixed_datetime), \
+                patch.object(memory, "post_tui"):
+            result = await memory.recall_long_term_memories("foo_bar_baz")
+
+        self.assertIsNone(result.get("error"))
+        self.assertEqual(result["ids"], ["mem_new"])
+        self.assertIn("- Updated at: 2026-02-01 00:00:00", result["content"])
+        self.assertNotIn(recalled_at, result["content"])
+        records = {record["id"]: record for record in store.list_active_memories()}
+        self.assertEqual(records["mem_new"]["updated_at"], recalled_at)
+        self.assertEqual(records["mem_new"]["created_at"], "2026-02-01 00:00:00")
+        self.assertEqual(records["mem_old"]["updated_at"], "2026-01-01 00:00:00")
 
     async def test_recall_background_places_ids_and_details_on_following_lines(self):
         memory_context = "## mem_new\n- Insight: selected context"

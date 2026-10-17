@@ -1549,7 +1549,9 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
         return self.query_one("#temporary-query-input", ImageAwareTextArea).serialize_text()
 
     def action_insert_newline(self) -> None:
-        self.query_one("#temporary-query-input", ImageAwareTextArea).insert("\n")
+        query_input = self.query_one("#temporary-query-input", ImageAwareTextArea)
+        query_input.insert("\n")
+        query_input.call_after_refresh(query_input.scroll_cursor_visible)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

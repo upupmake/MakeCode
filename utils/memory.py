@@ -938,8 +938,8 @@ async def recall_long_term_memories(
             post_tui(TuiRegion.BACKGROUND, f"[bold red]🧠 记忆召回失败：{escape(str(exc))}[/bold red]")
             return {"ids": [], "content": "", "error": str(exc)}
 
-        _touch_recalled_memories(selected_ids)
         memory_context = render_selected_memory_context(selected_ids)
+        _touch_recalled_memories(selected_ids)
         if selected_ids:
             recalled_ids = escape(", ".join(selected_ids))
             post_tui(
