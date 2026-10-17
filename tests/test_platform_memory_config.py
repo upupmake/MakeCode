@@ -400,6 +400,87 @@ def test_append_long_term_memory_evicts_least_recently_updated(tmp_path, monkeyp
     store.close()
 
 
+def test_memory_config_file_lives_beside_model_and_mcp_config(tmp_path, monkeypatch):
+    from utils import paths
+
+    install_dir = tmp_path / "install" / ".makecode"
+    workspace_dir = tmp_path / "workspace"
+    monkeypatch.setattr(paths, "_INSTALL_MAKECODE_DIR", install_dir)
+    monkeypatch.setattr(paths, "_WORKDIR", workspace_dir)
+
+    config_file = paths.memory_config_file()
+
+    assert config_file == install_dir / "memory_config.json"
+    assert config_file.parent == paths.mcp_config_file().parent
+    assert config_file.parent == paths.layout_config_file().parent
+    assert config_file != paths.workspace_memory_dir() / "memory_config.json"
+
+
+def test_refresh_workspace_paths_keeps_shared_memory_config_file(tmp_path, monkeypatch):
+    from utils import paths
+
+    install_dir = tmp_path / "install" / ".makecode"
+    first_workspace = tmp_path / "workspace-a"
+    second_workspace = tmp_path / "workspace-b"
+    monkeypatch.setattr(paths, "_INSTALL_MAKECODE_DIR", install_dir)
+    monkeypatch.setattr(paths, "_WORKDIR", first_workspace)
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", paths.memory_config_file())
+    memory.MEMORY_CONFIG_FILE.write_text(
+        json.dumps({"context_length": 222}),
+        encoding="utf-8",
+    )
+    legacy_config = first_workspace / ".makecode" / "memory" / "memory_config.json"
+    legacy_config.parent.mkdir(parents=True, exist_ok=True)
+    legacy_config.write_text(json.dumps({"context_length": 111}), encoding="utf-8")
+    memory._reset_memory_config_cache()
+
+    assert memory.get_context_length() == 222
+
+    with (
+        patch.object(memory, "MAKECODE_DIR"),
+        patch.object(memory, "MEMORY_DIR"),
+        patch.object(memory, "MEMORY_DB_FILE"),
+        patch.object(memory, "_MEMORY_RECALL_WINDOWS"),
+        patch.object(memory, "_reopen_memory_store") as reopen_store,
+    ):
+        memory.refresh_workspace_paths()
+        assert memory.MEMORY_DB_FILE == first_workspace / ".makecode" / "memory" / "memory.db"
+
+        monkeypatch.setattr(paths, "_WORKDIR", second_workspace)
+        memory.refresh_workspace_paths()
+        assert memory.MEMORY_DB_FILE == second_workspace / ".makecode" / "memory" / "memory.db"
+        reopen_store.assert_called_with(memory.MEMORY_DB_FILE)
+
+    assert memory.MEMORY_CONFIG_FILE == install_dir / "memory_config.json"
+    assert memory.get_context_length() == 222
+    memory.set_context_length(333)
+    monkeypatch.setattr(paths, "_WORKDIR", first_workspace)
+    assert memory.get_context_length() == 333
+    assert json.loads(legacy_config.read_text(encoding="utf-8")) == {"context_length": 111}
+
+
+def test_memory_config_ignores_legacy_workspace_file_when_shared_file_is_missing(tmp_path, monkeypatch):
+    from utils import paths
+
+    install_dir = tmp_path / "install" / ".makecode"
+    workspace_dir = tmp_path / "workspace"
+    monkeypatch.setattr(paths, "_INSTALL_MAKECODE_DIR", install_dir)
+    monkeypatch.setattr(paths, "_WORKDIR", workspace_dir)
+    monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", paths.memory_config_file())
+
+    legacy_config = workspace_dir / ".makecode" / "memory" / "memory_config.json"
+    legacy_config.parent.mkdir(parents=True, exist_ok=True)
+    legacy_config.write_text(json.dumps({"context_length": 111}), encoding="utf-8")
+    memory._reset_memory_config_cache()
+
+    assert memory.get_context_length() == memory.DEFAULT_CONTEXT_LENGTH
+    assert memory.get_partial_compact_percentages() == (60, 99)
+    saved = json.loads(memory.MEMORY_CONFIG_FILE.read_text(encoding="utf-8"))
+    assert saved["context_length"] == memory.DEFAULT_CONTEXT_LENGTH
+    assert saved["partial_compact_min_percent"] == 60
+    assert json.loads(legacy_config.read_text(encoding="utf-8")) == {"context_length": 111}
+
+
 def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tmp_path, monkeypatch):
     config_file = tmp_path / "memory_config.json"
     monkeypatch.setattr(memory, "MEMORY_CONFIG_FILE", config_file)
@@ -411,7 +492,7 @@ def test_memory_config_reads_latest_disk_values_and_preserves_existing_fields(tm
     assert memory.get_context_token_limit() == 350 * 1024
     assert memory.get_compaction_thresholds() == (70, 90)
     assert memory.get_tool_output_compact_tokens() == 1500
-    assert memory.get_partial_compact_percentages() == (50, 99)
+    assert memory.get_partial_compact_percentages() == (60, 99)
     assert memory.set_context_length(300) == 300
     assert memory.set_compaction_thresholds(65, 85) == (65, 85)
     assert memory.set_tool_output_compact_tokens(2400) == 2400

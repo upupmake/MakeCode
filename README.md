@@ -69,7 +69,7 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
     - `openai_chat`（OpenAI Chat Completions 消息格式）
     - `openai_responses`（OpenAI Responses 协议）
     - `anthropic`（Anthropic Messages 协议）
-- **路径集中管理**：工作区路径、安装目录路径、`.makecode/` 子目录（`conversations/`、`memory/`、`transcripts/` 等）及安装目录下的 `model_config.json`、`mcp_config.json`、`layout_config.json`、`error.log` 均由 `utils/paths.py` 统一提供。
+- **路径集中管理**：工作区路径、安装目录路径、`.makecode/` 子目录（`conversations/`、`memory/`、`transcripts/` 等）及安装目录下的 `model_config.json`、`mcp_config.json`、`memory_config.json`、`layout_config.json`、`error.log` 均由 `utils/paths.py` 统一提供。
 - **模型配置**：通过内置的 `/models` 命令进行管理（详见 2.15 节）
 
 ### 2.3 文件与终端工具（`utils/common.py`）与文件访问控制（`utils/file_access.py`）
@@ -200,7 +200,7 @@ Team 模块支持：
 - **决策消息生成**：当摘要为空时，记忆决策消息会省略 Summary 段落，而不是渲染空的 Summary 区块。
 - **全局上下文长度**：`memory_config.json` 中的 `context_length` 统一控制所有模型的上下文阈值，单位为千 tokens，默认 `350`；运行时每次使用前都会重新读取配置文件，超过阈值后自动压缩上下文。
 - **容量与淘汰策略**：长期记忆容量可配置；超出上限时，系统会按时间顺序淘汰较旧的 active 记忆。
-- **存储位置**：长期记忆保存于 SQLite 数据库 `.makecode/memory/memory.db`，记忆及全局上下文配置保存于 `.makecode/memory/memory_config.json`。数据库内含记录表 `memories` 和 FTS5 索引表 `memories_fts`（按 `insight`/`reuse_condition` 预分词建立的常驻全文索引），记忆的增删改查与召回检索均直接操作该文件，不再使用 JSONL。
+- **存储位置**：长期记忆保存于当前工作区 SQLite 数据库 `.makecode/memory/memory.db`；记忆及全局上下文配置保存于共享配置目录的 `memory_config.json`（与 `model_config.json`、`mcp_config.json` 同级，所有工作区共用）。数据库内含记录表 `memories` 和 FTS5 索引表 `memories_fts`（按 `insight`/`reuse_condition` 预分词建立的常驻全文索引），记忆的增删改查与召回检索均直接操作该文件，不再使用 JSONL。不读取旧工作区 `.makecode/memory/memory_config.json`。
 - **渲染顺序**：长期记忆渲染与 `/memory-panel` 面板均按 `updated_at` 升序排列（缺失时回退 `created_at`），只影响展示层，不改变数据库存储顺序和增删改查逻辑。
 
 #### 长期记忆命令
@@ -322,7 +322,7 @@ MakeCode 提供可视化的模型配置管理功能，支持多模型切换和�
 
 #### 核心功能
 
-- **磁盘持久化**：模型配置自动保存到平台共享配置目录的 `model_config.json`，跨会话保留。模型配置、MCP 配置、面板布局配置（`layout_config.json`）及错误日志均不存放在工作区，路径由 `utils/paths.py` 统一提供：Windows 与源码运行使用 `install_dir/.makecode/`，macOS 打包版使用 `~/Library/Application Support/MakeCode/`，确保多项目共享同一套配置。
+- **磁盘持久化**：模型配置自动保存到平台共享配置目录的 `model_config.json`，跨会话保留。模型配置、MCP 配置、记忆配置（`memory_config.json`）、面板布局配置（`layout_config.json`）及错误日志均不存放在工作区，路径由 `utils/paths.py` 统一提供：Windows 与源码运行使用 `install_dir/.makecode/`，macOS 打包版使用 `~/Library/Application Support/MakeCode/`，确保多项目共享同一套配置。
 - **多模型支持**：可同时管理多个 API 端点和模型 ID
 - **收藏管理**：支持标记收藏模型，优先排序显示
 - **推理强度配置**：每个模型可独立设置 `reasoning_effort`（`low` / `medium` / `high` / `xhigh` / `max`，默认 `medium`）；模型面板使用左右方向键调整，模型显示文本同步展示当前值
@@ -507,10 +507,10 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 - **安装目录（Install Dir）**：Windows 下为 `MakeCode.exe` 所在目录，macOS/Linux 打包版为 `MakeCode/MakeCode` 所在目录；源码运行时为源码根目录。
     - Windows、Linux 与源码运行时的共享配置位于 `install_dir/.makecode/`。
     - macOS 打包版的共享运行时目录位于 `~/Library/Application Support/MakeCode/`，避免写入或升级替换解压目录。
-    - `model_config.json`、`mcp_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 以及内置技能目录 `skills/` 均位于对应的共享配置目录。
+    - `model_config.json`、`mcp_config.json`、`memory_config.json`、`mcp_stderr.log`、`layout_config.json`、`error.log` 以及内置技能目录 `skills/` 均位于对应的共享配置目录。
     - macOS 打包版的语法校验缓存位于 `~/Library/Application Support/MakeCode/ts_cache/`；Windows、Linux 与源码运行仍使用 `install_dir/ts_cache/`。
 - **工作区目录（Workdir）**：用户当前交互选择的工程目录，存放会话/任务相关的状态。
-    - `conversations/`、`memory/memory.db`、`memory/memory_config.json` 和 `transcripts/` 均位于 `workdir/.makecode/`。
+    - `conversations/`、`memory/memory.db` 和 `transcripts/` 均位于 `workdir/.makecode/`。
     - 用户技能默认位于 `workdir/.makecode/skills/`，旧路径 `workdir/skills/` 仍兼容。
 
 #### 核心 API
@@ -522,7 +522,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 - `paths.install_ts_cache_dir()`：返回语法校验缓存目录；Windows、Linux 与源码运行为 `install_dir/ts_cache/`，macOS 打包版为 `~/Library/Application Support/MakeCode/ts_cache/`。
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`：分别返回 `workdir/.makecode/skills/` 与兼容旧路径 `workdir/skills/`。
 - `paths.workspace_disabled_skills_file()`：返回项目级 Skills 禁用列表 `workdir/.makecode/disabled_skills.json`。
-- 面向会话/记忆/转录/MCP/模型配置的各级 getter（如 `workspace_conversations_dir()`、`workspace_memory_db_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
+- 面向会话/记忆/转录/MCP/模型配置的各级 getter（如 `workspace_conversations_dir()`、`workspace_memory_db_file()`、`memory_config_file()`、`mcp_config_file()`、`layout_config_file()`）统一提供。
 
 #### 设计收益
 
@@ -608,7 +608,7 @@ Agent/
 
 - `.makecode/conversations/`：按不可变 `conversation_id` 聚合会话消息、任务计划、Sub-Agent 历史与 trace
 - `.makecode/transcripts/`：压缩前会话转录
-- `.makecode/memory/`：长期记忆数据与容量配置
+- `.makecode/memory/`：当前工作区的长期记忆数据库
 - `.makecode/skills/`：当前工作区的用户技能（兼容工作区根目录旧 `skills/`）
 - `.makecode/disabled_skills.json`：项目级 Skills 禁用名称列表，仅保存禁用项
 
@@ -616,6 +616,7 @@ Agent/
 
 - `<install_dir>/.makecode/model_config.json`：模型配置
 - `<install_dir>/.makecode/mcp_config.json`：MCP 服务配置
+- `<install_dir>/.makecode/memory_config.json`：记忆及全局上下文配置（所有工作区共用）
 - `<install_dir>/.makecode/layout_config.json`：面板布局比例
 - `<install_dir>/.makecode/skills/`：随安装提供的内置技能
 - `<install_dir>/.makecode/mcp_stderr.log`、`error.log`：MCP/系统错误日志

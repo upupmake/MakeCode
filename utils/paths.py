@@ -87,10 +87,6 @@ def workspace_memory_db_file() -> Path:
     return workspace_memory_dir() / "memory.db"
 
 
-def workspace_memory_config_file() -> Path:
-    return workspace_memory_dir() / "memory_config.json"
-
-
 def install_skills_dir(*, create: bool = True) -> Path:
     path = install_makecode_dir(create=create) / "skills"
     if create:
@@ -115,6 +111,10 @@ def workspace_disabled_skills_file(*, create: bool = True) -> Path:
 
 def layout_config_file() -> Path:
     return install_makecode_dir() / "layout_config.json"
+
+
+def memory_config_file() -> Path:
+    return install_makecode_dir() / "memory_config.json"
 
 
 def mcp_config_file(*, create: bool = True) -> Path:

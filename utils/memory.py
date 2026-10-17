@@ -61,7 +61,7 @@ DEFAULT_MEMORY_PRE_RECALL = False
 DEFAULT_TOOL_OUTPUT_COMPACT_THRESHOLD = 70
 DEFAULT_PARTIAL_COMPACT_THRESHOLD = 90
 DEFAULT_TOOL_OUTPUT_COMPACT_TOKENS = 1500
-DEFAULT_PARTIAL_COMPACT_MIN_PERCENT = 50
+DEFAULT_PARTIAL_COMPACT_MIN_PERCENT = 60
 DEFAULT_PARTIAL_COMPACT_MAX_PERCENT = 99
 TOOL_OUTPUT_COMPACT_MARKER = "\n\n...[该工具执行结果已被压缩 {omitted_tokens} tokens]...\n\n"
 _TOOL_OUTPUT_COMPACT_MARKER_PATTERN = re.compile(
@@ -93,13 +93,11 @@ def _memory_config_file_signature() -> tuple[int, int, int] | None:
 
 
 def refresh_workspace_paths() -> None:
-    global MAKECODE_DIR, MEMORY_DIR, MEMORY_DB_FILE, MEMORY_CONFIG_FILE, _MEMORY_RECALL_WINDOWS
+    global MAKECODE_DIR, MEMORY_DIR, MEMORY_DB_FILE
     MAKECODE_DIR = paths.workspace_makecode_dir()
     MEMORY_DIR = paths.workspace_memory_dir()
     MEMORY_DB_FILE = paths.workspace_memory_db_file()
-    MEMORY_CONFIG_FILE = paths.workspace_memory_config_file()
     _reopen_memory_store(MEMORY_DB_FILE)
-    _reset_memory_config_cache()
     reset_memory_recall_windows()
 
 
@@ -122,6 +120,7 @@ def reset_memory_recall_windows() -> None:
     _MEMORY_RECALL_WINDOWS = {}
 
 
+MEMORY_CONFIG_FILE = paths.memory_config_file()
 refresh_workspace_paths()
 
 

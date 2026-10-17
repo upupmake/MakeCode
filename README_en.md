@@ -70,7 +70,7 @@ chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode sou
     - `openai_chat` (OpenAI Chat Completions message format)
     - `openai_responses` (OpenAI Responses protocol)
     - `anthropic` (Anthropic Messages protocol)
-- **Centralized Paths**: workspace paths, install-directory paths, `.makecode/` subdirectories (`conversations/`, `memory/`, `transcripts/`, etc.), as well as `model_config.json`, `mcp_config.json`, `layout_config.json`, and `error.log` under the install directory are all provided by `utils/paths.py`.
+- **Centralized Paths**: workspace paths, install-directory paths, `.makecode/` subdirectories (`conversations/`, `memory/`, `transcripts/`, etc.), as well as `model_config.json`, `mcp_config.json`, `memory_config.json`, `layout_config.json`, and `error.log` under the install directory are all provided by `utils/paths.py`.
 - **Model Configuration**: Managed via the built-in `/models` command (see section 2.14)
 
 ### 2.3 File and Terminal Tools (`utils/common.py`) & File Access Control (`utils/file_access.py`)
@@ -214,7 +214,7 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - **Selection policy**: stores only stable information with reuse value across future sessions, such as user preferences, project conventions, workflow rules, repeated pitfalls, and confirmed release norms. It does not store one-off task progress, temporary implementation details, or facts that can be directly re-read from the repository.
 - **Global context length**: `context_length` in `memory_config.json` controls the context threshold for all models in thousands of tokens and defaults to `350`; the runtime rereads the configuration file before each use and automatically compacts history after the threshold is exceeded.
 - **Capacity and eviction policy**: long-term memory capacity is configurable; when the limit is exceeded, older active memories are evicted in chronological order.
-- **Storage paths**: long-term memories are stored in the SQLite database `.makecode/memory/memory.db`, while memory and global context settings are stored in `.makecode/memory/memory_config.json`. The database holds a `memories` record table plus a `memories_fts` FTS5 index table (a persistent full-text index pre-tokenized over `insight`/`reuse_condition`); all memory CRUD and recall search operate directly on this file, with no JSONL involved.
+- **Storage paths**: long-term memories are stored in the current workspace SQLite database `.makecode/memory/memory.db`; memory and global context settings are stored in `memory_config.json` in the shared configuration directory (same level as `model_config.json` and `mcp_config.json`, shared by all workspaces). The database holds a `memories` record table plus a `memories_fts` FTS5 index table (a persistent full-text index pre-tokenized over `insight`/`reuse_condition`); all memory CRUD and recall search operate directly on this file, with no JSONL involved. Legacy workspace `.makecode/memory/memory_config.json` files are not read.
 - **Rendering order**: long-term memory rendering and the `/memory-panel` view are both sorted by `updated_at` ascending (falling back to `created_at` when missing); this affects only the display layer and never changes the database storage order or CRUD logic.
 
 #### Long-Term Memory Commands
@@ -344,7 +344,7 @@ MakeCode provides a visual model configuration management interface with multi-m
 
 #### Core Features
 
-- **Disk Persistence**: Model configuration is saved to `model_config.json` in the platform-specific shared configuration directory and persists across sessions. Model configuration, MCP configuration, pane layout configuration (`layout_config.json`), and error logs stay outside the workspace, with paths supplied uniformly by `utils/paths.py`: Windows and source runs use `install_dir/.makecode/`, while packaged macOS builds use `~/Library/Application Support/MakeCode/`, allowing multiple projects to share one configuration set.
+- **Disk Persistence**: Model configuration is saved to `model_config.json` in the platform-specific shared configuration directory and persists across sessions. Model configuration, MCP configuration, memory configuration (`memory_config.json`), pane layout configuration (`layout_config.json`), and error logs stay outside the workspace, with paths supplied uniformly by `utils/paths.py`: Windows and source runs use `install_dir/.makecode/`, while packaged macOS builds use `~/Library/Application Support/MakeCode/`, allowing multiple projects to share one configuration set.
 - **Multi-Model Support**: Can manage multiple API endpoints and model IDs simultaneously
 - **Favorite Management**: Supports marking favorite models with priority sorting
 - **Reasoning Effort Configuration**: Each model can independently set `reasoning_effort` (`low` / `medium` / `high` / `xhigh` / `max`, default `medium`); use the left and right arrow keys in the model panel to adjust it, and the model display text shows the current value
@@ -529,10 +529,10 @@ To centrally manage workspace paths and install-directory global configuration, 
 - **Install Directory**: On Windows, this is the directory containing `MakeCode.exe`; in packaged macOS/Linux releases, it is the directory containing `MakeCode/MakeCode`; for source runs, it is the source root.
     - On Windows, Linux, and source runs, shared configuration lives under `install_dir/.makecode/`.
     - In the packaged macOS release, the shared runtime directory is `~/Library/Application Support/MakeCode/`, so the unzipped app directory is not written to during upgrades or normal use.
-    - `model_config.json`, `mcp_config.json`, `mcp_stderr.log`, `layout_config.json`, `error.log`, and bundled skills under `skills/` live in the corresponding shared configuration directory.
+    - `model_config.json`, `mcp_config.json`, `memory_config.json`, `mcp_stderr.log`, `layout_config.json`, `error.log`, and bundled skills under `skills/` live in the corresponding shared configuration directory.
     - Packaged macOS builds extract the syntax-validation cache to `~/Library/Application Support/MakeCode/ts_cache/`; Windows, Linux, and source runs still use `install_dir/ts_cache/`.
 - **Workspace Directory (Workdir)**: The user's chosen working directory. Session- and task-related state lives here.
-    - `conversations/`, `memory/memory.db`, `memory/memory_config.json`, and `transcripts/` reside under `workdir/.makecode/`.
+    - `conversations/`, `memory/memory.db`, and `transcripts/` reside under `workdir/.makecode/`.
     - User skills default to `workdir/.makecode/skills/`; legacy `workdir/skills/` remains supported.
 
 #### Core API
@@ -544,7 +544,8 @@ To centrally manage workspace paths and install-directory global configuration, 
 - `paths.install_ts_cache_dir()`: return the syntax-validation cache directory; `install_dir/ts_cache/` on Windows, Linux, and source runs, and `~/Library/Application Support/MakeCode/ts_cache/` in packaged macOS builds.
 - `paths.workspace_skills_dir()` / `paths.workspace_legacy_skills_dir()`: return `workdir/.makecode/skills/` and the legacy `workdir/skills/` respectively.
 - `paths.workspace_disabled_skills_file()`: return the project-level disabled Skills list at `workdir/.makecode/disabled_skills.json`.
-- Conversation/memory/transcript/MCP/model-config getters are all unified here (`workspace_conversations_dir()`, `workspace_memory_db_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
+- `paths.memory_config_file()`: return the shared `memory_config.json` beside `model_config.json` and `mcp_config.json`.
+- Conversation/memory/transcript/MCP/model-config getters are all unified here (`workspace_conversations_dir()`, `workspace_memory_db_file()`, `memory_config_file()`, `mcp_config_file()`, `layout_config_file()`, etc.).
 
 #### Design Benefits
 
@@ -630,7 +631,7 @@ Runtime-generated directories:
 
 - `.makecode/conversations/`: messages, task plans, Sub-Agent history, and traces grouped by immutable `conversation_id`
 - `.makecode/transcripts/`: transcripts saved before compaction
-- `.makecode/memory/`: long-term memory data and capacity settings
+- `.makecode/memory/`: long-term memory database for the current workspace
 - `.makecode/skills/`: user skills for the current workspace (with legacy workspace-root `skills/` compatibility)
 - `.makecode/disabled_skills.json`: project-level list containing only disabled skill names
 
@@ -638,6 +639,7 @@ Additionally, under the install directory (cross-project shared):
 
 - `<install_dir>/.makecode/model_config.json`: model configuration
 - `<install_dir>/.makecode/mcp_config.json`: MCP service configuration
+- `<install_dir>/.makecode/memory_config.json`: memory and global context settings (shared across workspaces)
 - `<install_dir>/.makecode/layout_config.json`: pane layout ratios
 - `<install_dir>/.makecode/skills/`: bundled skills provided with the installation
 - `<install_dir>/.makecode/mcp_stderr.log`, `error.log`: MCP / system error logs
