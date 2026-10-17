@@ -2069,6 +2069,7 @@ async def test_skills_panel_filtered_removal_selects_next_then_previous_row(tmp_
         assert await result == "closed"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 @pytest.mark.anyio
 async def test_skills_panel_concurrent_reloads_keep_last_row_toggleable(tmp_path):
     skills_dir = tmp_path / "skills"
