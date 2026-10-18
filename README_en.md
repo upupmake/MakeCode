@@ -180,11 +180,11 @@ Supports:
 
 Skills are loaded from three directories in the following priority order (higher-priority directories override lower-priority skills with the same name):
 
-1. `install_makecode_dir/skills/<name>/SKILL.md` (bundled skills; `install_dir/.makecode/skills/` on Windows, Linux, and source runs, and `~/Library/Application Support/MakeCode/skills/` in packaged macOS builds)
-2. `workdir/.makecode/skills/<name>/SKILL.md` (default location for user skills)
+1. `install_makecode_dir/skills/<name>/SKILL.md` (the software-level default location for user skills; `install_dir/.makecode/skills/` on Windows, Linux, and source runs, and `~/Library/Application Support/MakeCode/skills/` in packaged macOS builds)
+2. `workdir/.makecode/skills/<name>/SKILL.md` (used only when the user explicitly requests a workspace-local installation)
 3. Legacy `workdir/skills/<name>/SKILL.md` (backward compatibility)
 
-After workspace startup, place custom skills in `workdir/.makecode/skills/` for automatic discovery. A `SKILL.md` frontmatter block must contain valid `name` and `description` fields before the skill is loaded.
+By default, place custom skills in the `skills/` directory under the shared configuration directory (that is, `paths.install_skills_dir()`) for automatic discovery; use `workdir/.makecode/skills/` only when the user explicitly requests workspace isolation. A `SKILL.md` frontmatter block must contain valid `name` and `description` fields before the skill is loaded.
 
 Project-level disabled state is stored in `workdir/.makecode/disabled_skills.json`, which contains only disabled skill names. Matching skills are omitted from orchestrator and sub-agent system prompts and cannot be loaded through `LoadSkill`. Use `/skills-list` to open the interactive panel and search by name or description or filter by enabled state. Panel changes stay in an in-memory draft; the confirmation button shows how many skills will be enabled and disabled, and the list is written once only after explicit confirmation. Canceling discards the draft.
 
@@ -533,7 +533,7 @@ To centrally manage workspace paths and install-directory global configuration, 
     - Packaged macOS builds extract the syntax-validation cache to `~/Library/Application Support/MakeCode/ts_cache/`; Windows, Linux, and source runs still use `install_dir/ts_cache/`.
 - **Workspace Directory (Workdir)**: The user's chosen working directory. Session- and task-related state lives here.
     - `conversations/`, `memory/memory.db`, and `transcripts/` reside under `workdir/.makecode/`.
-    - User skills default to `workdir/.makecode/skills/`; legacy `workdir/skills/` remains supported.
+    - User skills default to `skills/` under the shared configuration directory; workspace-isolated skills can be placed in `workdir/.makecode/skills/`, and legacy `workdir/skills/` remains supported.
 
 #### Core API
 

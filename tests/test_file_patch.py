@@ -577,7 +577,9 @@ def test_file_patch_does_not_normalize_unicode_punctuation(monkeypatch, tmp_path
 
     assert result.startswith("Error: FilePatch failed: 0 file(s) patched")
     assert "hunk 1 context was not found" in result
-    assert "file may have changed or this patch may already be applied" in result
+    assert "no block matching the hunk's context and removed lines exists in its search range" in result
+    assert "may have changed" not in result
+    assert "may already be applied" not in result
     assert target.read_text(encoding="utf-8") == original
 
 
@@ -651,10 +653,12 @@ def test_file_patch_identifies_first_ambiguous_hunk(monkeypatch, tmp_path):
     assert target.read_text(encoding="utf-8") == original
 
 
-def test_file_patch_stale_hunk_context_reports_reread_guidance(monkeypatch, tmp_path):
+@pytest.mark.parametrize("original", ["class Edited {}\n", "class Different {}\n"])
+def test_file_patch_missing_context_reports_facts_and_correction_guidance(
+    monkeypatch, tmp_path, original
+):
     _workspace(monkeypatch, tmp_path)
     target = tmp_path / "sample.java"
-    original = "class Edited {}\n"
     target.write_text(original, encoding="utf-8")
 
     result = common.file_patch(
@@ -665,9 +669,70 @@ def test_file_patch_stale_hunk_context_reports_reread_guidance(monkeypatch, tmp_
     )
 
     assert "hunk 1 context was not found" in result
-    assert "patch may already be applied" in result
-    assert "Re-read the file with FileRead" in result
+    assert "no block matching the hunk's context and removed lines exists in its search range" in result
+    assert "Re-read the affected code with FileRead" in result
+    assert "regenerate the complete ordered hunk sequence from the current content" in result
+    assert "retry the corrected entry with FilePatch" in result
+    assert "may have changed" not in result
+    assert "may already be applied" not in result
+    assert "do not resubmit" not in result
     assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("original,failed_hunks,corrected_hunks,expected", [
+    (
+        "before\n",
+        "@@\n-missing\n+after\n",
+        "@@\n-before\n+after\n",
+        "after\n",
+    ),
+    (
+        "before\nanchor\n",
+        "@@ -2,1 +2,1 @@\n-before\n+after\n",
+        "@@ -1,1 +1,1 @@\n-before\n+after\n",
+        "after\nanchor\n",
+    ),
+    (
+        "same\nvalue\n\nsame\nvalue\n",
+        "@@\n same\n-value\n+changed\n",
+        "@@ -4,2 +4,2 @@\n same\n-value\n+changed\n",
+        "same\nvalue\n\nsame\nchanged\n",
+    ),
+    (
+        "first\nsecond\n",
+        "@@\n-second\n+SECOND\n@@\n-first\n+FIRST\n",
+        "@@\n-first\n+FIRST\n@@\n-second\n+SECOND\n",
+        "FIRST\nSECOND\n",
+    ),
+    (
+        "first\nsecond\nthird\n",
+        "@@\n-first\n+FIRST\n second\n@@\n-second\n+SECOND\n third\n",
+        "@@\n-first\n-second\n+FIRST\n+SECOND\n third\n",
+        "FIRST\nSECOND\nthird\n",
+    ),
+], ids=["missing-context", "coordinate-range", "ambiguous", "backward", "overlap"])
+def test_file_patch_hunk_errors_allow_corrected_retry(
+    monkeypatch, tmp_path, original, failed_hunks, corrected_hunks, expected
+):
+    _workspace(monkeypatch, tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text(original, encoding="utf-8")
+
+    result = common.file_patch(f"*** Update File: sample.txt\n{failed_hunks}")
+
+    assert result.startswith("Error: FilePatch failed:")
+    assert "Hunk error:" in result
+    assert "Re-read the affected code with FileRead" in result
+    assert "retry the corrected entry with FilePatch" in result
+    assert "may have changed" not in result
+    assert "may already be applied" not in result
+    assert "do not resubmit" not in result
+    assert target.read_text(encoding="utf-8") == original
+
+    retry_result = common.file_patch(f"*** Update File: sample.txt\n{corrected_hunks}")
+
+    assert retry_result.startswith("Patched 1 file(s) atomically.")
+    assert target.read_text(encoding="utf-8") == expected
 
 
 def test_file_patch_applies_multiple_coordinate_hunks_against_original_lines(
@@ -728,7 +793,7 @@ def test_file_patch_commits_valid_file_when_another_fails(monkeypatch, tmp_path)
 
     assert result.startswith("Error: FilePatch completed partially:")
     assert "Successful entries are already committed" in result
-    assert "do not resubmit them" in result
+    assert "Fix and retry only the failed entries below." in result
     assert "[entry 2] Update missing.txt" in result
     assert "[entry 2] Update missing.txt: Preflight error: target not found: missing.txt" in result
     assert first.read_text(encoding="utf-8") == "after\n"
@@ -1171,8 +1236,10 @@ def test_file_patch_schema_is_agent_friendly():
         assert "ignores trailing whitespace" in normalized
         assert "ignores leading and trailing whitespace" in normalized
         assert "Unicode punctuation is not normalized" in normalized
-        assert "call FileRead before retrying" in normalized
-        assert "do not resubmit the same patch" in normalized
+        assert "call FileRead to inspect the current code" in normalized
+        assert "regenerate the complete ordered hunk sequence from that content" in normalized
+        assert "retry the corrected entry with FilePatch" in normalized
+        assert "do not resubmit the same patch" not in normalized
 
 
 @pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"])
@@ -1267,8 +1334,36 @@ def test_file_patch_reports_entry_numbers_and_retry_scope(monkeypatch, tmp_path)
 
     assert "completed partially" in result
     assert "[entry 2] Update missing.txt" in result
-    assert "Successful entries are already committed; do not resubmit them." in result
+    assert "Successful entries are already committed. Fix and retry only the failed entries below." in result
     assert first.read_text(encoding="utf-8") == "after\n"
+
+
+def test_file_patch_retries_only_corrected_failed_entries_after_partial_success(monkeypatch, tmp_path):
+    _workspace(monkeypatch, tmp_path)
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("before\n", encoding="utf-8")
+    second.write_text("current\n", encoding="utf-8")
+
+    result = common.file_patch(
+        "*** Update File: first.txt\n@@\n-before\n+after\n"
+        "*** Update File: second.txt\n@@\n-stale\n+updated\n"
+    )
+
+    assert result.startswith("Error: FilePatch completed partially:")
+    assert "Successful entries are already committed. Fix and retry only the failed entries below." in result
+    assert "[entry 2] Update second.txt: Hunk error:" in result
+    assert "retry the corrected entry with FilePatch" in result
+    assert "do not resubmit" not in result
+    assert first.read_text(encoding="utf-8") == "after\n"
+    assert second.read_text(encoding="utf-8") == "current\n"
+
+    retry_result = common.file_patch("*** Update File: second.txt\n@@\n-current\n+updated\n")
+
+    assert retry_result.startswith("Patched 1 file(s) atomically.")
+    assert "M first.txt" not in retry_result
+    assert first.read_text(encoding="utf-8") == "after\n"
+    assert second.read_text(encoding="utf-8") == "updated\n"
 
 
 def test_file_patch_adds_specific_hunk_repair_guidance(monkeypatch, tmp_path):

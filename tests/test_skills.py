@@ -75,22 +75,38 @@ class SkillLoaderTests(unittest.TestCase):
 
     def test_prompt_identifies_default_user_skill_installation_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            workspace_root = Path(temp_dir) / "workspace"
+            root = Path(temp_dir)
+            install_config = root / "install" / ".makecode"
+            workspace_root = root / "workspace"
+            skills_dir = workspace_root / ".makecode" / "skills"
 
-            with patch.object(paths, "_WORKDIR", workspace_root):
-                loader = SkillLoader(workspace_root / "empty-skills")
-                prompt = loader.render_prompt_block()
+            with (
+                patch.object(paths, "_INSTALL_MAKECODE_DIR", install_config),
+                patch.object(paths, "_WORKDIR", workspace_root),
+            ):
+                loader = SkillLoader(skills_dir)
+                for has_skills in (False, True):
+                    with self.subTest(has_skills=has_skills):
+                        if has_skills:
+                            self._write_skill(skills_dir, "demo", "demo description")
+                        prompt = loader.render_prompt_block()
 
-            expected = (workspace_root / ".makecode" / "skills").as_posix()
-            self.assertIn(
-                f"Default installation directory for user skills: `{expected}`",
-                prompt,
-            )
-            self.assertIn(
-                "move the complete directory containing its `SKILL.md`",
-                prompt,
-            )
-            self.assertIn("move the complete collection directory", prompt)
+                        expected = (install_config / "skills").as_posix()
+                        self.assertIn(
+                            f"Default installation directory for user skills: `{expected}`",
+                            prompt,
+                        )
+                        self.assertNotIn(
+                            f"Default installation directory for user skills: `{skills_dir.as_posix()}`",
+                            prompt,
+                        )
+                        self.assertIn("Unless the user explicitly requests a workspace-local installation", prompt)
+                        self.assertIn("Use the workspace `.makecode/skills/` directory only", prompt)
+                        self.assertIn(
+                            "move the complete directory containing its `SKILL.md`",
+                            prompt,
+                        )
+                        self.assertIn("move the complete collection directory", prompt)
 
     def test_creates_install_and_workspace_skill_directories_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -131,6 +147,8 @@ class SkillLoaderTests(unittest.TestCase):
             current_workspace = root / "current"
             self._write_skill(previous_workspace / "skills", "previous-only", "previous-only")
             self._write_skill(current_workspace / "skills", "current-only", "current-only")
+            expected = (install_root / ".makecode" / "skills").as_posix()
+            installation_hint = f"Default installation directory for user skills: `{expected}`"
 
             with (
                 patch.object(paths, "_INSTALL_DIR", install_root),
@@ -139,9 +157,11 @@ class SkillLoaderTests(unittest.TestCase):
             ):
                 loader = SkillLoader()
                 self.assertIn("previous-only", loader.skills)
+                self.assertIn(installation_hint, loader.render_prompt_block())
 
                 paths.set_workdir(current_workspace)
                 loader.refresh_workspace()
+                self.assertIn(installation_hint, loader.render_prompt_block())
 
             self.assertNotIn("previous-only", loader.skills)
             self.assertIn("current-only", loader.skills)
@@ -280,12 +300,18 @@ class InstallRuntimePathTests(unittest.TestCase):
                 patch.object(paths, "_is_frozen", True),
                 patch.object(paths, "_INSTALL_DIR", install_root),
                 patch.object(paths, "_INSTALL_MAKECODE_DIR", support_dir),
+                patch.object(paths, "_WORKDIR", root / "workspace"),
                 patch("sys.platform", "darwin"),
             ):
                 skills = paths.install_skills_dir()
                 cache = paths.install_ts_cache_dir()
+                prompt = SkillLoader().render_prompt_block()
 
             self.assertEqual(skills, support_dir / "skills")
+            self.assertIn(
+                f"Default installation directory for user skills: `{skills.as_posix()}`",
+                prompt,
+            )
             self.assertEqual(cache, support_dir / "ts_cache")
             self.assertTrue(skills.is_dir())
             self.assertTrue(cache.is_dir())

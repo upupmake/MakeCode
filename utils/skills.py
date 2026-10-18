@@ -213,8 +213,10 @@ class SkillLoader:
         skills_paths = "\n".join(
             f"  - `{skills_dir.absolute().as_posix()}`" for skills_dir in self.skills_dirs
         )
-        default_install_path = paths.workspace_skills_dir().absolute().as_posix()
+        default_install_path = paths.install_skills_dir().absolute().as_posix()
         installation_hint = (
+            "- Unless the user explicitly requests a workspace-local installation, use the software-level default directory above. "
+            "Use the workspace `.makecode/skills/` directory only when explicitly requested by the user.\n"
             "- To install one skill, move the complete directory containing its `SKILL.md`; for a skill group, "
             "move the complete collection directory, according to the user's requested scope.\n"
         )

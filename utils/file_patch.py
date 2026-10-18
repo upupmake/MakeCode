@@ -68,8 +68,9 @@ class FilePatch(ToolArgumentsModel):
     tries exact lines first, then ignores trailing whitespace, then ignores leading
     and trailing whitespace. The complete sequence must still be unique; Unicode
     punctuation is not normalized. If a hunk sequence fails because its context is
-    ambiguous or missing, call FileRead before retrying and do not resubmit the same
-    patch.
+    ambiguous or missing, call FileRead to inspect the current code, regenerate the
+    complete ordered hunk sequence from that content, and retry the corrected entry
+    with FilePatch.
 
     Examples:
     Example 1 (one file with multiple @@ hunks in one section)::
@@ -122,8 +123,9 @@ class FilePatch(ToolArgumentsModel):
             "Matching tries exact lines first, then ignores trailing whitespace, then "
             "ignores leading and trailing whitespace. The complete sequence must still "
             "be unique; Unicode punctuation is not normalized. If a hunk sequence "
-            "fails because its context is ambiguous or missing, call FileRead before "
-            "retrying and do not resubmit the same patch. "
+            "fails because its context is ambiguous or missing, call FileRead to inspect "
+            "the current code, regenerate the complete ordered hunk sequence from that "
+            "content, and retry the corrected entry with FilePatch. "
             "Each actual file may appear only once and is committed independently. If "
             "the result is partial, retry only the listed failed entries. See the tool "
             "description for complete examples."
@@ -190,17 +192,23 @@ def _format_input_error(exc: Exception) -> str:
 
 def _explain_failure(message: str) -> str:
     if "matches multiple locations" in message:
-        return f"{message}; Add enough unchanged context or coordinates to make the complete hunk sequence unique"
+        return (
+            f"{message}; Re-read the affected code with FileRead. Add enough unchanged "
+            "context or coordinates from that read to make the complete hunk sequence "
+            "unique, then retry the corrected entry with FilePatch."
+        )
     if "hunk sequence has no" in message:
         return (
-            f"{message}; re-read the current file with FileRead and regenerate the "
-            "complete ordered hunk sequence"
+            f"{message}; Re-read the affected code with FileRead, regenerate the "
+            "complete ordered hunk sequence in original-file order without overlaps, "
+            "and retry the corrected entry with FilePatch."
         )
     if "context was not found" in message:
         return (
-            f"{message}; the file may have changed or this patch may already be applied. "
-            "Re-read the file with FileRead before regenerating the patch; do not resubmit "
-            "the same patch"
+            f"{message}; no block matching the hunk's context and removed lines exists "
+            "in its search range. Re-read the affected code with FileRead, regenerate "
+            "the complete ordered hunk sequence from the current content, and retry "
+            "the corrected entry with FilePatch."
         )
     if "overlaps another hunk" in message:
         return f"{message}; Merge overlapping hunks into one non-overlapping change"
@@ -955,8 +963,8 @@ def file_patch(patch: str) -> str:
                         f"{len(failures)} patch entry(s) failed."
                     )
                     report.append(
-                        "Successful entries are already committed; do not resubmit them. "
-                        "Retry only the failed entries below."
+                        "Successful entries are already committed. "
+                        "Fix and retry only the failed entries below."
                     )
                 else:
                     report.append(

@@ -165,11 +165,11 @@ Team 模块支持：
 
 技能按以下优先级从三个目录加载（同名技能由高优先级目录覆盖）：
 
-1. 共享配置目录 `install_makecode_dir/skills/<name>/SKILL.md`（内置技能；Windows、Linux 与源码运行时为 `install_dir/.makecode/skills/`，macOS 打包版为 `~/Library/Application Support/MakeCode/skills/`）
-2. 工作区 `workdir/.makecode/skills/<name>/SKILL.md`（用户技能的默认安装位置）
+1. 共享配置目录 `install_makecode_dir/skills/<name>/SKILL.md`（软件级用户技能的默认安装位置；Windows、Linux 与源码运行时为 `install_dir/.makecode/skills/`，macOS 打包版为 `~/Library/Application Support/MakeCode/skills/`）
+2. 工作区 `workdir/.makecode/skills/<name>/SKILL.md`（仅在用户明确要求当前工作区安装时使用）
 3. 工作区旧路径 `workdir/skills/<name>/SKILL.md`（向后兼容）
 
-工作区启动后，将自定义技能放入 `workdir/.makecode/skills/` 即可被自动发现。`SKILL.md` 的 frontmatter 必须包含有效的 `name` 与 `description` 才会被加载。
+默认情况下，将自定义技能放入共享配置目录下的 `skills/`（即 `paths.install_skills_dir()`）即可被自动发现；只有用户明确要求当前工作区隔离时，才放入 `workdir/.makecode/skills/`。`SKILL.md` 的 frontmatter 必须包含有效的 `name` 与 `description` 才会被加载。
 
 项目级禁用配置保存在 `workdir/.makecode/disabled_skills.json`，文件中只记录禁用技能的名称。命中该列表的技能不会注入主智能体或子智能体的 system prompt，也不能通过 `LoadSkill` 加载。可使用 `/skills-list` 打开交互面板，按名称或描述搜索、按启用状态过滤；面板中的操作先写入内存草稿，确认按钮会显示本次启用和禁用数量，只有用户确认后才一次性落盘，取消则丢弃草稿。
 
@@ -511,7 +511,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
     - macOS 打包版的语法校验缓存位于 `~/Library/Application Support/MakeCode/ts_cache/`；Windows、Linux 与源码运行仍使用 `install_dir/ts_cache/`。
 - **工作区目录（Workdir）**：用户当前交互选择的工程目录，存放会话/任务相关的状态。
     - `conversations/`、`memory/memory.db` 和 `transcripts/` 均位于 `workdir/.makecode/`。
-    - 用户技能默认位于 `workdir/.makecode/skills/`，旧路径 `workdir/skills/` 仍兼容。
+    - 用户技能默认位于共享配置目录下的 `skills/`，需要工作区隔离时可放入 `workdir/.makecode/skills/`；旧路径 `workdir/skills/` 仍兼容。
 
 #### 核心 API
 
