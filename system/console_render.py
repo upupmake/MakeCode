@@ -13,7 +13,8 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.text import Text
+from rich.style import Style
+from rich.text import Span, Text
 from rich.theme import Theme
 
 from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
@@ -210,8 +211,31 @@ def _terminal_output_text(value: Any, style: str = "") -> Text:
         "",
         terminal_text,
     ).replace("\r", "\n")
-    plain = Text.from_ansi(terminal_text).plain.translate(_TERMINAL_CONTROL_TRANSLATION)
-    return Text(plain, style=style)
+    decoded = Text.from_ansi(terminal_text, style=style)
+    # OSC 超链接元数据也可能包含控制码，只保留颜色和文字样式。
+    decoded.spans = [
+        Span(span.start, span.end, span.style.update_link(None))
+        if isinstance(span.style, Style) and span.style.link else span
+        for span in decoded.spans
+    ]
+    plain = decoded.plain
+    cleaned_plain = plain.translate(_TERMINAL_CONTROL_TRANSLATION)
+    if cleaned_plain == plain:
+        return decoded
+
+    # 删除控制字符时同步移动样式区间，避免颜色错位。
+    offsets = [0]
+    for character in plain:
+        offsets.append(
+            offsets[-1] + (0 if ord(character) in _TERMINAL_CONTROL_TRANSLATION else 1)
+        )
+    decoded.spans = [
+        Span(offsets[span.start], offsets[span.end], span.style)
+        for span in decoded.spans
+        if offsets[span.start] < offsets[span.end]
+    ]
+    decoded.plain = cleaned_plain
+    return decoded
 
 
 def _extract_message_text(msg: dict) -> str:
@@ -340,7 +364,7 @@ def render_tool_result_block(
         status: str = "",
         error: str = "",
 ) -> Text:
-    return Text(
+    return _terminal_output_text(
         format_tool_result_block(output, status=status, error=error),
         style="white",
     )

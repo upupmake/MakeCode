@@ -814,6 +814,37 @@ def test_ts_validator_does_not_load_uncached_language(monkeypatch):
     get_parser_mock.assert_not_called()
 
 
+@pytest.mark.parametrize("path", ["schema.sql", "schema.SQL", "Component.vue", "Component.VuE"])
+def test_ts_validator_skips_sql_and_vue_files(monkeypatch, path):
+    detect_language_mock = Mock(return_value="sql")
+    get_parser_mock = Mock()
+    monkeypatch.setattr(ts_validator, "_TS_VALIDATOR_AVAILABLE", True)
+    monkeypatch.setattr(ts_validator, "_TS_CACHED_LANGUAGES", frozenset({"sql", "vue"}))
+    monkeypatch.setattr(ts_validator, "detect_language_from_path", detect_language_mock)
+    monkeypatch.setattr(ts_validator, "get_parser", get_parser_mock)
+    monkeypatch.setattr(ts_validator, "process", None)
+
+    assert ts_validator.validate_code(path, "invalid syntax") == (True, "")
+    detect_language_mock.assert_not_called()
+    get_parser_mock.assert_not_called()
+
+
+@pytest.mark.parametrize("has_error", [False, True])
+def test_ts_validator_still_validates_other_languages(monkeypatch, has_error):
+    parser = Mock()
+    parser.parse.return_value.root_node.has_error = has_error
+    monkeypatch.setattr(ts_validator, "_TS_VALIDATOR_AVAILABLE", True)
+    monkeypatch.setattr(ts_validator, "_TS_CACHED_LANGUAGES", frozenset({"python"}))
+    monkeypatch.setattr(ts_validator, "detect_language_from_path", Mock(return_value="python"))
+    monkeypatch.setattr(ts_validator, "get_parser", Mock(return_value=parser))
+    monkeypatch.setattr(ts_validator, "process", None)
+
+    assert ts_validator.validate_code("main.py", "value = 1") == (
+        not has_error, "检测到语言: python" if has_error else ""
+    )
+    parser.parse.assert_called_once_with(b"value = 1")
+
+
 def test_tui_modals_use_q_not_escape_for_cancel():
     for modal in [ChoiceModal, MemoryConfigModal, ExtraToolsModal, RecallModelPickerModal, ImageUnderstandingModelPickerModal, AddModelModal, EditModelModal, LayoutModal]:
         keys = {binding.key for binding in modal.BINDINGS}

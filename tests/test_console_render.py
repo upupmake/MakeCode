@@ -2,6 +2,7 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
+from rich.cells import cell_len
 from rich.console import Console
 import pytest
 
@@ -11,6 +12,7 @@ from system.console_render import (
     _terminal_output_text,
     render_content_assistant_message,
     render_model_markdown,
+    render_tool_result_block,
 )
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion
@@ -126,6 +128,126 @@ def test_terminal_output_preserves_text_before_carriage_return_control_sequences
     ).plain
 
     assert rendered == "session manager\nstarted\nshutting down"
+
+
+def test_content_tool_result_preserves_ansi_styles_without_layout_control_codes():
+    rendered = render_tool_result_block(
+        "normal-before\x1b[31mRED\x1b[0m / "
+        "\x1b[38;2;255;105;180mRGB\x1b[0m\x1b[2Jnormal-after"
+    )
+
+    assert rendered.plain == "Result\n─────────\nnormal-beforeRED / RGBnormal-after"
+    assert "\x1b" not in rendered.plain
+    assert rendered.split("\n")[-1].cell_len == cell_len("normal-beforeRED / RGBnormal-after")
+
+    console = Console()
+    red_style = rendered.get_style_at_offset(console, rendered.plain.index("RED"))
+    rgb_style = rendered.get_style_at_offset(console, rendered.plain.index("RGB"))
+    assert red_style.color.number == 1
+    assert rgb_style.color.triplet == (255, 105, 180)
+
+
+@pytest.mark.parametrize(
+    ("codes", "expected_style"),
+    [
+        ("31", "color(1)"),
+        ("92", "color(10)"),
+        ("1;32", "bold color(2)"),
+        ("4;36", "underline color(6)"),
+        ("7;33", "reverse color(3)"),
+        ("38;5;208", "color(208)"),
+        ("48;5;57;38;5;231", "color(231) on color(57)"),
+        ("38;2;255;105;180", "#ff69b4"),
+        ("48;2;11;22;33;38;2;211;222;233", "#d3dee9 on #0b1621"),
+    ],
+)
+def test_content_tool_result_preserves_ansi_attributes_and_resets(codes, expected_style):
+    rendered = render_tool_result_block(f"before\x1b[{codes}m颜色\x1b[0mafter")
+    console = Console()
+
+    assert rendered.plain == "Result\n─────────\nbefore颜色after"
+    assert rendered.get_style_at_offset(console, rendered.plain.index("颜色")) == (
+        console.get_style("white") + console.get_style(expected_style)
+    )
+    for word in ("before", "after"):
+        assert rendered.get_style_at_offset(console, rendered.plain.index(word)) == console.get_style("white")
+    assert all("\x1b" not in segment.text for segment in console.render(rendered))
+
+
+@pytest.mark.parametrize("link", ["https://example.invalid", "https://example.invalid\x1b[2J"])
+@pytest.mark.parametrize("controls", ["", "\x00\x7f"])
+def test_terminal_output_drops_osc_metadata_but_keeps_ansi_colors(link, controls):
+    rendered = _terminal_output_text(
+        f"{controls}\x1b]8;;{link}\x1b\\"
+        "\x1b[31mRED\x1b[0m"
+        "\x1b]8;;\x1b\\"
+    )
+    buffer = StringIO()
+    Console(file=buffer, force_terminal=True, color_system="truecolor").print(rendered)
+
+    assert rendered.plain == "RED"
+    assert rendered.spans[0].style.link is None
+    assert rendered.spans[0].style.color.number == 1
+    assert "\x1b]8;" not in buffer.getvalue()
+    assert "\x1b[2J" not in buffer.getvalue()
+
+
+@pytest.mark.parametrize("render", [_terminal_output_text, render_tool_result_block])
+def test_terminal_output_filters_controls_without_shifting_ansi_styles(render):
+    kwargs = {"style": "white"} if render is _terminal_output_text else {}
+    rendered = render(
+        "pre\x00\x7f\x1b[1;32m\x01\x1b[0m"
+        "\x1b[31mA\x80B\x9fC\x1b[0mtail\x1b",
+        **kwargs,
+    )
+    console = Console()
+
+    assert rendered.plain.endswith("preABCtail")
+    assert not any(
+        ord(character) < 0x20 or 0x7F <= ord(character) < 0xA0
+        for character in rendered.plain if character != "\n"
+    )
+    for character in "ABC":
+        style = rendered.get_style_at_offset(console, rendered.plain.index(character, rendered.plain.index("pre")))
+        assert style.color.number == 1
+        assert not style.bold
+    assert rendered.get_style_at_offset(console, rendered.plain.index("tail")) == console.get_style("white")
+    assert all(0 <= span.start < span.end <= len(rendered) for span in rendered.spans)
+
+
+@pytest.mark.parametrize("encoding", ["dict", "json"])
+def test_content_tool_result_sanitizes_structured_output_and_errors_without_mutation(encoding):
+    output = {"output": "before\x1b[31mRED\x1b[0m\x1b[2J\x1b[10;10Hafter"}
+    if encoding == "json":
+        output = json.dumps(output)
+    original = json.dumps(output)
+    rendered = render_tool_result_block(
+        output,
+        status="failed",
+        error="\x1b[1;33mWARNING\x1b[0m\x1b[?25l\x1b[2J",
+    )
+    console = Console()
+
+    assert "beforeREDafter" in rendered.plain
+    assert "Error\n─────\nWARNING" in rendered.plain
+    assert "\x1b" not in rendered.plain
+    assert rendered.get_style_at_offset(console, rendered.plain.index("RED")).color.number == 1
+    warning_style = rendered.get_style_at_offset(console, rendered.plain.index("WARNING"))
+    assert warning_style.bold
+    assert warning_style.color.number == 3
+    assert json.dumps(output) == original
+
+
+def test_content_tool_result_preserves_carriage_return_text_tabs_and_multiline_styles():
+    rendered = render_tool_result_block(
+        "start\r\n\t\x1b[31mred\r\x1b[2K\nred2\x1b[0m\rover"
+    )
+    console = Console()
+
+    assert rendered.plain == "Result\n─────────\nstart\n\tred\nred2\nover"
+    for word in ("red", "red2"):
+        assert rendered.get_style_at_offset(console, rendered.plain.index(word)).color.number == 1
+    assert rendered.get_style_at_offset(console, rendered.plain.index("over")) == console.get_style("white")
 
 
 def test_plain_tool_output_remains_plain_text():

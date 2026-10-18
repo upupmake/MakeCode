@@ -166,6 +166,12 @@ class ChoiceModal(ClosableModalScreen[str]):
         height: auto;
         margin-bottom: 0;
         text-wrap: nowrap;
+        link-color: #e5e7eb;
+        link-background: #263445;
+        link-style: bold;
+        link-color-hover: #ffffff;
+        link-background-hover: #075985;
+        link-style-hover: bold underline;
     }
 
     #startup-input {
@@ -1649,6 +1655,15 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
     def on_resize(self, event: Resize) -> None:
         self._fit_dialog()
 
+    def action_select_workdir(self, index: int) -> None:
+        if self._mode != "select":
+            return
+        self._selected_index = index
+        if index == 0:
+            self.dismiss("default")
+        else:
+            self._enter_custom_mode()
+
     def _on_key(self, event: Key) -> None:
         if event.key == "ctrl+c":
             event.stop()
@@ -1690,17 +1705,20 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             if self._selected_index == 0:
                 self.dismiss("default")
                 return
-            self._mode = "custom"
             self._ignore_initial_custom_submit = True
-            custom_input = self.query_one("#startup-input", Input)
-            custom_input.display = True
-            self._hide_completion_candidates()
-            custom_input.focus()
-            self.query_one("#startup-title", Label).update(
-                "📂 输入自定义工作区路径（Enter 确认）："
-            )
-            if sys.platform in {"darwin", "win32"}:
-                self.query_one("#startup-choose-directory", Button).display = False
+            self._enter_custom_mode()
+
+    def _enter_custom_mode(self) -> None:
+        self._mode = "custom"
+        custom_input = self.query_one("#startup-input", Input)
+        custom_input.display = True
+        self._hide_completion_candidates()
+        custom_input.focus()
+        self.query_one("#startup-title", Label).update(
+            "📂 输入自定义工作区路径（Enter 确认）："
+        )
+        if sys.platform in {"darwin", "win32"}:
+            self.query_one("#startup-choose-directory", Button).display = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "startup-choose-directory" or sys.platform not in {"darwin", "win32"}:
@@ -1884,14 +1902,20 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             f"当前目录 ({self.cwd})",
             "输入自定义路径...",
         ]
-        lines = ["📂 选择工作区", "", "使用 ↑/↓ 选择，Enter 确认", ""]
+        content = Text("📂 选择工作区\n\n使用 ↑/↓ 选择，Enter 确认\n\n")
+        option_width = max(Text(f"  ❯ {text} ").cell_len for text in options)
         for index, text in enumerate(options):
+            if index:
+                content.append("\n\n")
             marker = "❯" if index == self._selected_index else " "
-            lines.append(f"  {marker} {text}")
-            if index == 0:
-                lines.append("")
-        self.query_one("#startup-title", Label).update("\n".join(lines))
-        content_width = max(max(Text(line).cell_len for line in lines), 28)
+            option = Text(
+                f"  {marker} {text} ",
+                style=Style(meta={"@click": f"screen.select_workdir({index})"}),
+            )
+            option.pad_right(option_width - option.cell_len)
+            content.append(option)
+        self.query_one("#startup-title", Label).update(content)
+        content_width = max(max(Text(line).cell_len for line in content.plain.splitlines()), 28)
         self.query_one("#startup-dialog").styles.width = content_width + 10
         self._fit_dialog()
 

@@ -156,7 +156,7 @@ def validate_code(path: str, content: str) -> tuple[bool, str]:
         IGNORED_EXTS = {
             ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".adoc",
             ".gitignore", ".dockerignore", ".eslintignore", ".prettierignore",
-            ".env", ".ini", ".cfg", ".conf"
+            ".env", ".ini", ".cfg", ".conf", ".sql", ".vue"
         }
         if Path(path).suffix.lower() in IGNORED_EXTS:
             return True, ""

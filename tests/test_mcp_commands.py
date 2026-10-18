@@ -1643,6 +1643,132 @@ class StartupWorkdirModalHost(App):
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+@pytest.mark.parametrize("selected_index", [0, 1])
+async def test_startup_workdir_current_directory_can_be_clicked(selected_index):
+    modal = StartupWorkdirModal(pathlib.Path("/tmp/project"))
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        if selected_index == 1:
+            await pilot.press("down")
+
+        await pilot.click("#startup-title", offset=(6, 4))
+        await pilot.pause()
+
+        assert app.result == "default"
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+@pytest.mark.parametrize("selected_index", [0, 1])
+@pytest.mark.parametrize("empty_path", [False, True])
+async def test_startup_workdir_custom_path_can_be_clicked(tmp_path, selected_index, empty_path):
+    modal = StartupWorkdirModal(pathlib.Path("/tmp/project"))
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        if selected_index == 1:
+            await pilot.press("down")
+
+        await pilot.click("#startup-title", offset=(6, 6))
+        await pilot.pause()
+
+        custom_input = modal.query_one("#startup-input", Input)
+        assert custom_input.display
+        assert app.focused is custom_input
+        assert app.result is None
+        if sys.platform in {"darwin", "win32"}:
+            assert not modal.query_one("#startup-choose-directory", Button).display
+
+        custom_path = "" if empty_path else str(tmp_path / "selected workspace")
+        custom_input.value = custom_path
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.result == f"custom:{custom_path}"
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+@pytest.mark.parametrize("offset", [(6, 0), (6, 2), (6, 5)])
+async def test_startup_workdir_clicking_heading_or_gap_does_not_confirm(offset):
+    modal = StartupWorkdirModal(pathlib.Path("/tmp/project"))
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await pilot.click("#startup-title", offset=offset)
+        await pilot.pause()
+
+        assert app.result is None
+        assert not modal.query_one("#startup-input", Input).display
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+async def test_startup_workdir_options_look_clickable_without_mouse_instructions():
+    modal = StartupWorkdirModal(pathlib.Path("/tmp/project"))
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        title = modal.query_one("#startup-title", Label)
+        x, y = title.region.x + 6, title.region.y
+        heading_style = modal.get_style_at(x, y)
+        current_style = modal.get_style_at(x, y + 4)
+        custom_style = modal.get_style_at(x, y + 6)
+
+        assert current_style.bgcolor != heading_style.bgcolor
+        assert custom_style.bgcolor == current_style.bgcolor
+        assert current_style.bold and custom_style.bold
+        assert "鼠标" not in str(title.render())
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+@pytest.mark.parametrize("row", [4, 6])
+async def test_startup_workdir_hover_highlights_only_the_pointed_option(row):
+    modal = StartupWorkdirModal(pathlib.Path("/tmp/project"))
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        title = modal.query_one("#startup-title", Label)
+        x, y = title.region.x + 6, title.region.y
+        other_row = 6 if row == 4 else 4
+        normal_style = modal.get_style_at(x, y + row)
+        other_style = modal.get_style_at(x, y + other_row)
+
+        await pilot.hover("#startup-title", offset=(6, row))
+        await pilot.pause()
+
+        assert modal.get_style_at(x, y + row).bgcolor != normal_style.bgcolor
+        assert modal.get_style_at(x, y + other_row) == other_style
+        assert app.result is None
+        assert not modal.query_one("#startup-input", Input).display
+
+        await pilot.hover("#startup-title", offset=(6, 5))
+        await pilot.pause()
+
+        assert modal.get_style_at(x, y + row) == normal_style
+
+
+@pytest.mark.anyio
+async def test_startup_workdir_current_directory_can_be_confirmed_with_keyboard(tmp_path):
+    modal = StartupWorkdirModal(tmp_path)
+    app = StartupWorkdirModalHost(modal)
+
+    async with app.run_test() as pilot:
+        await pilot.press("down", "up", "enter")
+        await pilot.pause()
+
+        assert app.result == "default"
+
+
+@pytest.mark.anyio
 async def test_startup_workdir_picker_button_selects_directory_from_home_screen(tmp_path):
     selected = tmp_path / "selected"
     selected.mkdir()

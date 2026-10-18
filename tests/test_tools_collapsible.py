@@ -1,4 +1,7 @@
+import sys
+
 import pytest
+from rich.cells import cell_len
 from textual.containers import VerticalScroll
 from unittest.mock import AsyncMock, patch
 from textual.widgets import Collapsible
@@ -110,6 +113,61 @@ async def test_tool_completion_preserves_user_expansion_state():
 
         assert collapsible.collapsed is False
         assert app._active_tools_collapsible is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("history_replay", [False, True], ids=["live", "history"])
+@pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
+async def test_colored_tool_results_keep_screen_rows_aligned_when_scrolled_and_resized(history_replay, monkeypatch):
+    monkeypatch.setattr("system.tui_app.load_layout_ratios", lambda: {"task": 2, "background": 3, "sub_agent": 1})
+    app = MakeCodeTuiApp()
+    sample = (
+        "\x1b[31m红色\x1b[0m \x1b[1;32m绿色\x1b[0m "
+        "\x1b[38;5;208m橙色\x1b[0m \x1b[48;5;57;38;5;231m背景\x1b[0m "
+        "\x1b[38;2;255;105;180mRGB\x1b[0m\x1b[2J\x1b[10;10H"
+    )
+    output = "\n".join(f"{index:02d} {sample}" for index in range(60))
+
+    async with app.run_test(size=(180, 44)) as pilot:
+        await pilot.pause()
+        if history_replay:
+            _render_history([
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "call_color", "name": "RunTerminalCommand", "arguments": {}}],
+                },
+                {"role": "tool", "tool_call_id": "call_color", "content": output},
+            ])
+        else:
+            app.handle_tui_event(TuiEvent(
+                TuiRegion.CONTENT, None,
+                collapsible_title="Tool: RunTerminalCommand", collapsible_open=True, collapsible_kind="tools",
+            ))
+            app.handle_tui_event(TuiEvent(
+                TuiRegion.CONTENT, console_render.render_tool_result_block(output, status="succeeded"),
+            ))
+            app.handle_tui_event(TuiEvent(
+                TuiRegion.CONTENT, None,
+                collapsible_title="Tool: RunTerminalCommand", collapsible_close=True, collapsible_kind="tools",
+            ))
+        await pilot.pause()
+        collapsible = app.query_one("#content-log Collapsible", Collapsible)
+        collapsible.collapsed = False
+        await pilot.pause()
+        content = app.query_one("#content-log", VerticalScroll)
+        assert content.max_scroll_y > 0
+
+        for width in (180, 150, 220):
+            await pilot.resize_terminal(width, 44)
+            for at_bottom in (False, True):
+                content.scroll_to(y=content.max_scroll_y if at_bottom else 0, animate=False, immediate=True)
+                app.handle_tui_event(TuiEvent(TuiRegion.BACKGROUND, "[green]Orchestrator completed[/green]"))
+                await pilot.pause()
+                strips = app.screen._compositor.render_strips()
+
+                assert any("红色" in strip.text for strip in strips)
+                assert all("\x1b" not in strip.text for strip in strips)
+                assert all(strip.cell_length == cell_len(strip.text) == width for strip in strips)
 
 
 def test_history_replay_renders_main_agent_tools_round(monkeypatch):
