@@ -37,35 +37,70 @@ class SimpleRenderer:
         self._lock = threading.RLock()
         self._last_region: TuiRegion | None = None
         self._history: list[str] = []
+        self._input_redraw: Any = None
 
     def handle(self, event: TuiEvent) -> None:
         if event.region in _SUPPRESSED_REGIONS:
             return
 
         with self._lock:
-            if event.clear:
-                if event.region == TuiRegion.CONTENT:
-                    self.console.print("\n[dim]──────── 新对话 ────────[/dim]\n")
-                self._last_region = None
+            if not self._event_has_output(event):
+                if event.clear:
+                    self._last_region = None
                 return
 
-            if event.collapsible_title is not None:
-                if event.collapsible_open:
-                    self._print_region_label(event.region)
-                    self.console.print(Text(event.collapsible_title, style="bold"))
-                if event.payload not in (None, ""):
-                    self._print(event.payload)
-                return
+            redraw = self._input_redraw
+            if redraw is not None:
+                sys.stdout.write("\r\x1b[2K")
+                sys.stdout.flush()
+            self._render_event(event)
+            if redraw is not None:
+                try:
+                    redraw()
+                except Exception:
+                    self._input_redraw = None
 
-            # 流式尾部是尚未定型的增量文本，完整段落会单独提交，这里跳过避免重复输出。
-            if event.tail:
-                return
+    @staticmethod
+    def _event_has_output(event: TuiEvent) -> bool:
+        if event.clear:
+            return event.region == TuiRegion.CONTENT
+        if event.collapsible_title is not None:
+            return bool(
+                event.collapsible_open or event.payload not in (None, "")
+            )
+        if event.tail:
+            return False
+        return event.payload not in (None, "")
 
-            if event.payload is None or event.payload == "":
-                return
+    def _render_event(self, event: TuiEvent) -> None:
+        if event.clear:
+            if event.region == TuiRegion.CONTENT:
+                self.console.print("\n[dim]──────── 新对话 ────────[/dim]\n")
+            self._last_region = None
+            return
 
-            self._print_region_label(event.region)
-            self._print(event.payload)
+        if event.collapsible_title is not None:
+            if event.collapsible_open:
+                self._print_region_label(event.region)
+                self.console.print(Text(event.collapsible_title, style="bold"))
+            if event.payload not in (None, ""):
+                self._print(event.payload)
+            return
+
+        self._print_region_label(event.region)
+        self._print(event.payload)
+
+    def register_input_redraw(self, callback: Any) -> None:
+        with self._lock:
+            self._input_redraw = callback
+
+    def read_input(self, prompt: str, **kwargs: Any) -> str | None:
+        return simple_input.read_line(
+            prompt,
+            input_redraw_handler=self.register_input_redraw,
+            input_lock=self._lock,
+            **kwargs,
+        )
 
     def choose(
             self,

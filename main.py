@@ -72,6 +72,7 @@ from system.tui_app import (
     refresh_token_usage,
     scroll_all_panes_to_bottom,
     prompt_workdir_tui,
+    read_simple_input,
     consume_temporary_query,
     clear_temporary_query,
     restore_temporary_query_to_input,
@@ -1076,7 +1077,6 @@ def _run_simple_main(
     """纯终端模式：不启动 Textual，按顺序把事件渲染到 stdout。"""
     import signal
 
-    from system.simple_input import read_line
     from system.stream_cancel import cancel_current_response, is_cancel_available
 
     def _handle_sigint(signum, frame) -> None:
@@ -1130,7 +1130,7 @@ def _run_simple_main(
     history_inputs: list[str] = []
     while True:
         try:
-            raw_query = read_line(
+            raw_query = read_simple_input(
                 "\nYou> ",
                 history=history_inputs,
                 multiline=True,

@@ -678,6 +678,14 @@ def is_simple_mode() -> bool:
     return _SIMPLE_BACKEND is not None
 
 
+def read_simple_input(prompt: str, **kwargs):
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.read_input(prompt, **kwargs)
+    from system.simple_input import read_line
+
+    return read_line(prompt, **kwargs)
+
+
 class MakeCodeInput(ImageAwareTextArea):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         super().on_text_area_changed(event)

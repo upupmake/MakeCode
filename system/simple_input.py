@@ -6,6 +6,7 @@ import sys
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
 from rich.cells import cell_len
 
@@ -253,6 +254,10 @@ def read_line(
             [str], tuple[str, list[tuple[str, str]]]
         ] | None = None,
         paste_handler: Callable[[str], str | None] | None = None,
+        input_redraw_handler: Callable[
+            [Callable[[], None] | None], None
+        ] | None = None,
+        input_lock: Any = None,
 ) -> str | None:
     if not is_interactive():
         try:
@@ -260,26 +265,8 @@ def read_line(
         except EOFError:
             return None
 
-    if sys.platform == "win32":
-        return _edit_line(
-            prompt,
-            default,
-            history,
-            secret,
-            multiline,
-            continuation_prompt,
-            image_handler,
-            image_display_handler,
-            paste_handler,
-        )
-
-    fd = sys.stdin.fileno()
-    import termios
-
-    old_settings = termios.tcgetattr(fd)
     try:
-        _set_cbreak(fd)
-        with bracketed_paste():
+        if sys.platform == "win32":
             return _edit_line(
                 prompt,
                 default,
@@ -290,9 +277,35 @@ def read_line(
                 image_handler,
                 image_display_handler,
                 paste_handler,
+                input_redraw_handler,
+                input_lock,
             )
+
+        fd = sys.stdin.fileno()
+        import termios
+
+        old_settings = termios.tcgetattr(fd)
+        try:
+            _set_cbreak(fd)
+            with bracketed_paste():
+                return _edit_line(
+                    prompt,
+                    default,
+                    history,
+                    secret,
+                    multiline,
+                    continuation_prompt,
+                    image_handler,
+                    image_display_handler,
+                    paste_handler,
+                    input_redraw_handler,
+                    input_lock,
+                )
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        if input_redraw_handler is not None:
+            input_redraw_handler(None)
 
 
 def _edit_line(
@@ -307,6 +320,10 @@ def _edit_line(
             [str], tuple[str, list[tuple[str, str]]]
         ] | None,
         paste_handler: Callable[[str], str | None] | None,
+        input_redraw_handler: Callable[
+            [Callable[[], None] | None], None
+        ] | None,
+        input_lock: Any,
 ) -> str | None:
     buffer = list(default or "")
     committed: list[str] = []
@@ -321,14 +338,23 @@ def _edit_line(
     def masked(text: str) -> str:
         return "*" * len(text) if secret else text
 
+    def write(text: str) -> None:
+        if input_lock is None:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            return
+        with input_lock:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
     def redraw() -> None:
         text = masked("".join(buffer))
         prefix = masked("".join(buffer[:cursor]))
         back = cell_len(text) - cell_len(prefix)
-        sys.stdout.write("\r\x1b[2K" + current_prompt + text)
+        output = "\r\x1b[2K" + current_prompt + text
         if back > 0:
-            sys.stdout.write(f"\x1b[{back}D")
-        sys.stdout.flush()
+            output += f"\x1b[{back}D"
+        write(output)
 
     def full_text() -> str:
         return "\n".join(committed + ["".join(buffer)])
@@ -337,9 +363,13 @@ def _edit_line(
         return _serialize_input(full_text(), image_entries)
 
     def notice(message: str) -> None:
-        sys.stdout.write("\r\x1b[2K" + message + "\n")
-        sys.stdout.write(current_prompt + masked("".join(buffer)))
-        sys.stdout.flush()
+        write(
+            "\r\x1b[2K"
+            + message
+            + "\n"
+            + current_prompt
+            + masked("".join(buffer))
+        )
 
     def insert_display(
             display_text: str,
@@ -379,11 +409,11 @@ def _edit_line(
         buffer = list(lines[-1])
         cursor = len(buffer)
         current_prompt = continuation_prompt
-        sys.stdout.write("\n")
+        output = ["\n"]
         for line in lines[1:-1]:
-            sys.stdout.write(masked(line) + "\n")
-        sys.stdout.write(current_prompt + masked("".join(buffer)))
-        sys.stdout.flush()
+            output.append(masked(line) + "\n")
+        output.append(current_prompt + masked("".join(buffer)))
+        write("".join(output))
 
     def insert_paste(payload: str) -> None:
         handled = None
@@ -424,21 +454,32 @@ def _edit_line(
         cursor = len(buffer)
         image_entries = list(entries)
         current_prompt = continuation_prompt if committed else first_prompt
-        sys.stdout.write("\r\x1b[2K")
+        output = ["\r\x1b[2K"]
         if committed:
-            sys.stdout.write(first_prompt + masked(lines[0]))
+            output.append(first_prompt + masked(lines[0]))
             for line in lines[1:-1]:
-                sys.stdout.write("\n" + continuation_prompt + masked(line))
-            sys.stdout.write(
+                output.append(
+                    "\n" + continuation_prompt + masked(line)
+                )
+            output.append(
                 "\n" + continuation_prompt + masked(lines[-1])
             )
         else:
-            sys.stdout.write(first_prompt + masked(lines[0]))
-        sys.stdout.flush()
+            output.append(first_prompt + masked(lines[0]))
+        write("".join(output))
 
     initial = masked("".join(buffer))
-    sys.stdout.write(prompt + initial)
-    sys.stdout.flush()
+    if input_lock is None:
+        sys.stdout.write(prompt + initial)
+        sys.stdout.flush()
+        if input_redraw_handler is not None:
+            input_redraw_handler(redraw)
+    else:
+        with input_lock:
+            sys.stdout.write(prompt + initial)
+            sys.stdout.flush()
+            if input_redraw_handler is not None:
+                input_redraw_handler(redraw)
     while True:
         key = read_key()
 
@@ -447,22 +488,18 @@ def _edit_line(
             continue
 
         if key == "enter":
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            write("\n")
             return serialize()
         if key == "ctrl_c":
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            write("\n")
             raise KeyboardInterrupt
         if key == "ctrl_d":
             if not buffer and not committed:
-                sys.stdout.write("\n")
-                sys.stdout.flush()
+                write("\n")
                 return None
             continue
         if key == "eof":
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            write("\n")
             return None
 
         if key == "left":
@@ -500,8 +537,7 @@ def _edit_line(
                 buffer = []
                 cursor = 0
                 current_prompt = continuation_prompt
-                sys.stdout.write("\n" + current_prompt)
-                sys.stdout.flush()
+                write("\n" + current_prompt)
             continue
         if key in {"ctrl_v", "ctrl_o"}:
             if image_handler is not None:

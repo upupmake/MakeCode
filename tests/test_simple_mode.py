@@ -73,6 +73,25 @@ def test_renderer_prints_blocks_in_order_and_skips_stream_tail():
     assert "unfinished tail" not in rendered
 
 
+def test_background_event_redraws_active_input(monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    console = Console(
+        file=output,
+        force_terminal=False,
+        color_system=None,
+        width=100,
+    )
+    renderer = SimpleRenderer(console=console)
+    renderer.register_input_redraw(lambda: output.write("PROMPT"))
+
+    renderer.handle(TuiEvent(TuiRegion.BACKGROUND, "BACKGROUND LOG"))
+
+    rendered = output.getvalue()
+    assert "BACKGROUND LOG" in rendered
+    assert rendered.rfind("PROMPT") > rendered.find("BACKGROUND LOG")
+
+
 def test_renderer_skips_task_pane_refreshes():
     renderer, output = _make_renderer()
 
