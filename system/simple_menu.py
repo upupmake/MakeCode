@@ -284,7 +284,7 @@ class ChoiceMenu:
             if index is None:
                 self.message = "无效序号"
             else:
-                self._app.exit(result=self.options[index])
+                self._exit(result=self.options[index])
                 return
         elif self.searchable and command.startswith("/"):
             self._apply_search(command)
@@ -302,7 +302,7 @@ class ChoiceMenu:
             self.message = "没有可选项"
             self._refresh()
             return
-        self._app.exit(result=self.options[self.visible[self.selected]])
+        self._exit(result=self.options[self.visible[self.selected]])
 
     def _apply_search(self, command: str) -> None:
         tokens = command[1:].strip().casefold().split()
@@ -407,7 +407,12 @@ class ChoiceMenu:
         self._refresh()
 
     def _cancel(self) -> None:
-        self._app.exit(result="<cancelled>")
+        self._exit(result="<cancelled>")
+
+    def _exit(self, *, result: str) -> None:
+        if self._app is None or self._app.is_done:
+            return
+        self._app.exit(result=result)
 
     def _refresh(self) -> None:
         if self._app is not None:

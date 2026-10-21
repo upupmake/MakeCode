@@ -210,6 +210,8 @@ def _build_key_bindings(
     if cancel_on_escape:
         @bindings.add("escape")
         def _cancel(event) -> None:
+            if event.app.is_done:
+                return
             event.app.exit(exception=KeyboardInterrupt)
 
     return bindings
