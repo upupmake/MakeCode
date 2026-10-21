@@ -1,10 +1,14 @@
 """纯终端渲染后端：不启动 Textual，按事件顺序把内容直接输出到 stdout。"""
 
+import os
 import shutil
 import sys
 import threading
+import time
+from contextlib import contextmanager
 from typing import Any
 
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console, RenderableType
 from rich.cells import cell_len
 from rich.errors import MarkupError
@@ -12,6 +16,7 @@ from rich.text import Text
 
 from system import simple_management
 from system import simple_input
+from system import simple_prompt
 from system.tui_types import TuiEvent, TuiRegion
 
 
@@ -37,8 +42,14 @@ class SimpleRenderer:
         self._lock = threading.RLock()
         self._last_region: TuiRegion | None = None
         self._history: list[str] = []
-        self._input_clear: Any = None
-        self._input_redraw: Any = None
+        self._temporary_query_enabled = False
+        self._temporary_query: str | None = None
+        self._temporary_query_thread: threading.Thread | None = None
+        self._temporary_query_session: Any = None
+        self._temporary_query_stop = threading.Event()
+        self._temporary_query_prompt_active = False
+        self._foreground_input_active = False
+        self._pending_input: str | None = None
 
     def handle(self, event: TuiEvent) -> None:
         if event.region in _SUPPRESSED_REGIONS:
@@ -50,19 +61,7 @@ class SimpleRenderer:
                     self._last_region = None
                 return
 
-            clear = self._input_clear
-            redraw = self._input_redraw
-            if clear is not None:
-                clear()
-            elif redraw is not None:
-                sys.stdout.write("\r\x1b[2K")
-                sys.stdout.flush()
             self._render_event(event)
-            if redraw is not None:
-                try:
-                    redraw()
-                except Exception:
-                    self._input_redraw = None
 
     @staticmethod
     def _event_has_output(event: TuiEvent) -> bool:
@@ -94,24 +93,255 @@ class SimpleRenderer:
         self._print_region_label(event.region)
         self._print(event.payload)
 
-    def register_input_redraw(self, callback: Any) -> None:
-        with self._lock:
-            self._input_redraw = callback
-
-    def register_input_clear(self, callback: Any) -> None:
-        with self._lock:
-            self._input_clear = callback
+    @contextmanager
+    def _prompt_stdout(self):
+        if not simple_input.is_interactive():
+            yield
+            return
+        original_file = self.console.file
+        with patch_stdout(raw=True):
+            self.console.file = sys.stdout
+            try:
+                yield
+            finally:
+                self.console.file = original_file
 
     def read_input(self, prompt: str, **kwargs: Any) -> str | None:
-        return simple_input.read_line(
-            prompt,
-            input_clear_handler=self.register_input_clear,
-            input_redraw_handler=self.register_input_redraw,
-            input_lock=self._lock,
-            **kwargs,
-        )
+        self._foreground_input_active = True
+        self._pause_temporary_query_for_foreground()
+        try:
+            if kwargs.get("default") is None:
+                pending = self.take_restored_input()
+                if pending is not None:
+                    kwargs["default"] = pending
+            with self._prompt_stdout():
+                return simple_prompt.read_prompt(prompt, **kwargs)
+        finally:
+            self._foreground_input_active = False
+
+    def set_temporary_query_enabled(self, enabled: bool) -> None:
+        if not enabled:
+            self._stop_temporary_query_listener(cancel_prompt=True)
+            with self._lock:
+                self._temporary_query_enabled = False
+                self._temporary_query = None
+            return
+        if not simple_input.is_interactive():
+            return
+        with self._lock:
+            if self._temporary_query_enabled:
+                return
+            self._temporary_query_enabled = True
+            self._temporary_query = None
+            self._temporary_query_stop.clear()
+            self._temporary_query_thread = threading.Thread(
+                target=self._temporary_query_loop,
+                name="simple-temporary-query",
+                daemon=True,
+            )
+            self._temporary_query_thread.start()
+
+    def consume_temporary_query(self) -> str | None:
+        with self._lock:
+            if not self._temporary_query_enabled:
+                return None
+            query = self._temporary_query
+            self._temporary_query = None
+            return query
+
+    def restore_temporary_query_to_input(
+            self,
+            fallback_query: str | None = None,
+    ) -> None:
+        self._stop_temporary_query_listener(cancel_prompt=False)
+        with self._lock:
+            self._temporary_query_enabled = False
+            query = self._temporary_query or fallback_query
+            self._temporary_query = None
+            if query:
+                self._pending_input = query
+
+    def clear_temporary_query(self) -> None:
+        with self._lock:
+            self._temporary_query = None
+
+    def take_restored_input(self) -> str | None:
+        with self._lock:
+            query = self._pending_input
+            self._pending_input = None
+            return query
+
+    def _stop_temporary_query_listener(self, *, cancel_prompt: bool) -> None:
+        thread = self._temporary_query_thread
+        self._temporary_query_thread = None
+        if thread is None:
+            return
+        self._temporary_query_stop.set()
+        if cancel_prompt:
+            self._cancel_temporary_query_session()
+        elif self._temporary_query_prompt_active:
+            with self._lock:
+                self.console.print(
+                    Text(
+                        "Agent 已结束，请提交或按 Esc 取消临时指令。",
+                        style="yellow",
+                    )
+                )
+        if thread is not threading.current_thread():
+            if cancel_prompt:
+                thread.join(timeout=2.0)
+            else:
+                thread.join()
+
+    def _temporary_query_loop(self) -> None:
+        if sys.platform == "win32":
+            self._temporary_query_loop_windows()
+            return
+        import select
+        import termios
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            simple_input._set_cbreak(fd)
+            while not self._temporary_query_stop.is_set():
+                if not self._lock.acquire(timeout=0.1):
+                    continue
+                try:
+                    ready, _, _ = select.select([fd], [], [], 0.05)
+                    if not ready:
+                        continue
+                    data = os.read(fd, 1)
+                finally:
+                    self._lock.release()
+                if not data:
+                    break
+                if data == b"\x07":
+                    self._temporary_query_prompt()
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except (OSError, ValueError):
+                pass
+
+    def _temporary_query_loop_windows(self) -> None:
+        import _thread
+        import msvcrt
+
+        while not self._temporary_query_stop.is_set():
+            if not self._lock.acquire(timeout=0.05):
+                continue
+            try:
+                if not msvcrt.kbhit():
+                    character = None
+                else:
+                    character = msvcrt.getwch()
+            finally:
+                self._lock.release()
+            if character is None:
+                time.sleep(0.05)
+                continue
+            if character in ("\x00", "\xe0"):
+                if msvcrt.kbhit():
+                    msvcrt.getwch()
+                continue
+            if character == "\x07":
+                self._temporary_query_prompt()
+            elif character == "\x03":
+                _thread.interrupt_main()
+
+    def _temporary_query_prompt(self) -> None:
+        if (
+            self._temporary_query_stop.is_set()
+            or self._foreground_input_active
+        ):
+            return
+        self._temporary_query_prompt_active = True
+        try:
+            with self._lock:
+                self.console.print(
+                    Text(
+                        "⌨️ 临时指令：Enter 提交 · Ctrl+N 换行 · Esc 取消",
+                        style="dim",
+                    )
+                )
+            def ready(session) -> None:
+                self._temporary_query_session = session
+
+            with self._prompt_stdout():
+                query = simple_prompt.read_prompt(
+                    "\n临时指令> ",
+                    multiline=True,
+                    continuation_prompt="...> ",
+                    cancel_on_escape=True,
+                    on_session_ready=ready,
+                )
+        except (EOFError, KeyboardInterrupt):
+            query = None
+        finally:
+            self._temporary_query_session = None
+            self._temporary_query_prompt_active = False
+        if query and query.strip():
+            with self._lock:
+                if self._temporary_query_enabled:
+                    self._temporary_query = query
+                else:
+                    self._pending_input = query
+
+    def _pause_temporary_query_for_foreground(self) -> None:
+        if not self._temporary_query_prompt_active:
+            return
+        self._cancel_temporary_query_session()
+        deadline = time.monotonic() + 2.0
+        while (
+            self._temporary_query_prompt_active
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+
+    def _cancel_temporary_query_session(self) -> None:
+        session = self._temporary_query_session
+        if session is None:
+            return
+        try:
+            app = session.app
+            loop = getattr(app, "loop", None)
+            if loop is not None:
+                loop.call_soon_threadsafe(
+                    lambda: app.exit(exception=KeyboardInterrupt)
+                )
+            else:
+                app.exit(exception=KeyboardInterrupt)
+        except Exception:
+            pass
 
     def choose(
+            self,
+            title: str,
+            options: list[str],
+            *,
+            allow_custom: bool = False,
+            delete_handler: Any = None,
+            preview_handler: Any = None,
+            search_texts: list[str] | None = None,
+    ) -> str:
+        self._foreground_input_active = True
+        self._pause_temporary_query_for_foreground()
+        try:
+            return self._choose_impl(
+                title,
+                options,
+                allow_custom=allow_custom,
+                delete_handler=delete_handler,
+                preview_handler=preview_handler,
+                search_texts=search_texts,
+            )
+        finally:
+            self._foreground_input_active = False
+
+    def _choose_impl(
             self,
             title: str,
             options: list[str],
@@ -537,6 +767,7 @@ class SimpleRenderer:
         return "".join(result) + "…"
 
     def choose_delegate_tasks(self, tasks: list[dict[str, str]]) -> str:
+        self._pause_temporary_query_for_foreground()
         with self._lock:
             self.console.print()
             self.console.print(Text("子智能体委派确认", style="bold"))
@@ -561,17 +792,11 @@ class SimpleRenderer:
     def prompt_workdir(self) -> str:
         from utils import paths
 
-        def complete_path(value: str) -> str | None:
-            return paths.complete_directory_path(
-                value.strip(),
-                paths.workdir(),
-            )
-
         with self._lock:
             self.console.print(Text(f"当前工作目录：{paths.workdir()}"))
             answer = self._read_input(
                 "新工作目录（直接回车保持当前目录）",
-                completion_handler=complete_path,
+                path_completion=True,
             )
             if answer is None:
                 return "abort"
@@ -720,16 +945,18 @@ class SimpleRenderer:
             *,
             default: str | None = None,
             secret: bool = False,
-            completion_handler: Any = None,
+            path_completion: bool = False,
     ) -> str | None:
         try:
-            answer = simple_input.read_line(
-                f"{prompt}> ",
-                default=default,
-                history=[] if secret else self._history,
-                secret=secret,
-                completion_handler=completion_handler,
-            )
+            with self._prompt_stdout():
+                answer = simple_prompt.read_prompt(
+                    f"{prompt}> ",
+                    default=default,
+                    history=[] if secret else self._history,
+                    multiline=False,
+                    secret=secret,
+                    path_completion=path_completion,
+                )
         except (EOFError, KeyboardInterrupt):
             self.console.print()
             return None

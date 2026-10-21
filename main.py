@@ -1069,34 +1069,6 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
     return None
 
 
-def _complete_simple_input(
-        text: str,
-        command_names: dict[str, str],
-) -> str | None:
-    if "\n" in text or not text.startswith("/"):
-        return None
-    if text.startswith("/cd "):
-        fragment = text[4:]
-        completed = paths.complete_directory_path(
-            fragment,
-            paths.workdir(),
-        )
-        return "/cd " + completed if completed is not None else None
-    if " " in text:
-        return None
-    matches = sorted(
-        name for name in command_names if name.startswith(text)
-    )
-    if not matches:
-        return None
-    if len(matches) == 1:
-        return matches[0] + " "
-    common = os.path.commonprefix(matches)
-    if len(common) > len(text):
-        return common
-    return None
-
-
 def _toggle_plan_mode_message() -> str:
     if toggle_plan_mode():
         return "📋 Plan Mode 已启用（只允许只读和规划工具）"
@@ -1130,9 +1102,10 @@ def _run_simple_main(
     _update_terminal_title()
     post_tui(
         TuiRegion.CONTENT,
-        "[#aaaaaa]提示：Enter 提交 · Ctrl+N 换行 · Ctrl+V/Ctrl+O 附加剪贴板图片；"
+        "[#aaaaaa]提示：Enter 提交 · Ctrl+N 换行 · ↑/↓ 跨行/历史 · "
+        "Ctrl+V/Ctrl+O 附加剪贴板图片；"
         "也可直接粘贴图片文件路径 · Ctrl+P 切换计划/执行 · Tab 补全命令/目录 · "
-        "Ctrl+C 取消输入。[/#aaaaaa]",
+        "Ctrl+C 取消输入 · Agent 运行时可 Ctrl+G 追加临时指令。[/#aaaaaa]",
     )
 
     if prompt_for_workdir:
@@ -1175,9 +1148,8 @@ def _run_simple_main(
                 image_handler=_paste_image_from_system_clipboard,
                 image_display_handler=_display_input_images,
                 paste_handler=_paste_image_from_paste_text,
-                completion_handler=lambda value: _complete_simple_input(
-                    value,
-                    command_handler.get_slash_completion_commands(),
+                completion_commands=(
+                    command_handler.get_slash_completion_commands()
                 ),
                 ctrl_p_handler=_toggle_plan_mode_message,
             )
@@ -1207,6 +1179,8 @@ def _run_simple_main(
             result = asyncio.run(_process_user_query(query, history, command_handler))
         except KeyboardInterrupt:
             cancel_current_response()
+            set_temporary_query_enabled(False)
+            clear_temporary_query()
             post_tui(TuiRegion.CONTENT, "[yellow]⚠️ 已取消当前响应[/yellow]")
             _update_terminal_title()
             continue

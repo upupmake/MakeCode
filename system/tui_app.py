@@ -381,6 +381,9 @@ class TuiBridge:
         return future.result()
 
     def clear_temporary_query(self) -> None:
+        if _SIMPLE_BACKEND is not None:
+            _SIMPLE_BACKEND.clear_temporary_query()
+            return
         with self._app_lock:
             app = self._app
         if app is None:
@@ -391,6 +394,9 @@ class TuiBridge:
             app.call_from_thread(app.clear_temporary_query)
 
     def set_temporary_query_enabled(self, enabled: bool) -> None:
+        if _SIMPLE_BACKEND is not None:
+            _SIMPLE_BACKEND.set_temporary_query_enabled(enabled)
+            return
         with self._app_lock:
             app = self._app
         if app is None:
@@ -403,6 +409,8 @@ class TuiBridge:
             future.result()
 
     def consume_temporary_query(self) -> str | None:
+        if _SIMPLE_BACKEND is not None:
+            return _SIMPLE_BACKEND.consume_temporary_query()
         with self._app_lock:
             app = self._app
         if app is None:
@@ -414,6 +422,9 @@ class TuiBridge:
         return future.result()
 
     def restore_temporary_query_to_input(self, fallback_query: str | None = None) -> None:
+        if _SIMPLE_BACKEND is not None:
+            _SIMPLE_BACKEND.restore_temporary_query_to_input(fallback_query)
+            return
         with self._app_lock:
             app = self._app
         if app is None:
@@ -681,9 +692,9 @@ def is_simple_mode() -> bool:
 def read_simple_input(prompt: str, **kwargs):
     if _SIMPLE_BACKEND is not None:
         return _SIMPLE_BACKEND.read_input(prompt, **kwargs)
-    from system.simple_input import read_line
+    from system.simple_prompt import read_prompt
 
-    return read_line(prompt, **kwargs)
+    return read_prompt(prompt, **kwargs)
 
 
 class MakeCodeInput(ImageAwareTextArea):

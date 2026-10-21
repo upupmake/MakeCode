@@ -826,7 +826,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 
 `--models-list`、`--mcp-list`、`--skills-list`、`--memory-list` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64 和 macOS ARM64；源码运行仍需手动更新。
 
-`--simple` 不会退出，而是以纯终端模式启动交互循环：不启动 Textual TUI，输出按事件顺序直接渲染到 stdout，适合对 TUI 终端控制序列支持不佳的环境。该模式只输出已完成的 Markdown 段落（不逐帧刷新尾部）；HITL、AskUser、`/load` 选择等交互会降级为终端菜单或文本输入；`/models`、`/skills-list`、`/memory-panel`、`/memory-config`、`/mcp-switch`、`/extra-tools`、`/copy`、`/layout`、`/title`、`/status`、`/tokens`、`/release-notes` 等管理命令均可在简单模式下直接使用。菜单支持方向键（包括小键盘方向键）选择，输入框支持左右移动光标、上下翻阅历史；主输入支持 Ctrl+N 换行、Ctrl+V/Ctrl+O 附加剪贴板图片，也可直接粘贴图片文件路径，多行粘贴会保留换行，图片占位符可按整块删除或用方向键跳过；Tab 可补全斜杠命令、`/cd` 目录和启动工作目录，Ctrl+P 切换计划/执行，Ctrl+C 取消当前输入（退出使用 `/quit`）；会话标题加载或生成后会同步更新终端标题。可与 `--load` 组合：
+`--simple` 不会退出，而是以纯终端模式启动交互循环：不启动 Textual TUI，输出按事件顺序直接渲染到 stdout，适合对 TUI 终端控制序列支持不佳的环境。该模式只输出已完成的 Markdown 段落（不逐帧刷新尾部）；HITL、AskUser、`/load` 选择等交互会降级为终端菜单或文本输入；`/models`、`/skills-list`、`/memory-panel`、`/memory-config`、`/mcp-switch`、`/extra-tools`、`/copy`、`/layout`、`/title`、`/status`、`/tokens`、`/release-notes` 等管理命令均可在简单模式下直接使用。菜单支持方向键（包括小键盘方向键）选择，输入框支持左右移动光标、上下键跨行移动，并在首/末行继续翻阅历史；主输入是多行编辑框，支持 Ctrl+N 在光标处换行、Backspace/Delete 删除换行、Ctrl+V/Ctrl+O 附加剪贴板图片，也可直接粘贴图片文件路径，多行粘贴会保留换行，图片占位符可按整块删除或用方向键跳过；Tab 可补全斜杠命令、`/cd` 目录和启动工作目录，Ctrl+P 切换计划/执行，Ctrl+C 取消当前输入（退出使用 `/quit`），Agent 运行期间按 Ctrl+G 可追加临时指令；会话标题加载或生成后会同步更新终端标题。可与 `--load` 组合：
 
 ```bash
 python main.py --simple

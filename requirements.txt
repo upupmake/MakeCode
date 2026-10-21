@@ -9,6 +9,7 @@ Requests
 certifi
 rich
 textual
+prompt_toolkit>=3.0.0
 tiktoken
 aiofiles
 tree-sitter==0.25.2

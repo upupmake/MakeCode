@@ -10,6 +10,7 @@ from rich.text import Text
 import system.tui_app as tui_app
 import system.stream_render as stream_render
 import system.simple_input as simple_input
+from system import simple_prompt
 from system import simple_management
 from system.models import ModelManager
 from system.stream_render import StreamRenderer
@@ -72,25 +73,6 @@ def test_renderer_prints_blocks_in_order_and_skips_stream_tail():
     assert rendered.index("first block") < rendered.index("Reasoning")
     assert rendered.index("Reasoning") < rendered.index("thinking block")
     assert "unfinished tail" not in rendered
-
-
-def test_background_event_redraws_active_input(monkeypatch):
-    output = StringIO()
-    monkeypatch.setattr("sys.stdout", output)
-    console = Console(
-        file=output,
-        force_terminal=False,
-        color_system=None,
-        width=100,
-    )
-    renderer = SimpleRenderer(console=console)
-    renderer.register_input_redraw(lambda: output.write("PROMPT"))
-
-    renderer.handle(TuiEvent(TuiRegion.BACKGROUND, "BACKGROUND LOG"))
-
-    rendered = output.getvalue()
-    assert "BACKGROUND LOG" in rendered
-    assert rendered.rfind("PROMPT") > rendered.find("BACKGROUND LOG")
 
 
 def test_renderer_skips_task_pane_refreshes():
@@ -470,136 +452,117 @@ def test_deleted_image_placeholder_is_not_serialized():
     )
 
 
-def test_complete_simple_input_for_slash_commands():
-    import main
+def test_slash_completer_suggests_commands():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
 
-    commands = {
-        "/cmds": "",
-        "/models": "",
-        "/memory-list": "",
-        "/quit": "",
-    }
+    from system import simple_prompt
 
-    assert main._complete_simple_input("/qu", commands) == "/quit "
-    assert main._complete_simple_input("/mo", commands) == "/models "
-    assert main._complete_simple_input("/m", commands) is None
+    completer = simple_prompt.SlashCompleter(
+        {"/status": "显示状态", "/quit": "退出"}
+    )
+    document = Document("/sta", cursor_position=4)
+
+    completions = list(completer.get_completions(document, CompleteEvent()))
+
+    assert [completion.text for completion in completions] == ["/status"]
+    assert completions[0].display_meta_text == "显示状态"
 
 
-def test_complete_simple_input_for_cd_directories(tmp_path, monkeypatch):
-    import main
+def test_slash_completer_suggests_cd_directories(tmp_path, monkeypatch):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from system import simple_prompt
 
     (tmp_path / "alpha").mkdir()
-    monkeypatch.setattr("main.paths.workdir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "system.simple_prompt.paths.workdir",
+        lambda: tmp_path,
+    )
+    completer = simple_prompt.SlashCompleter({})
+    document = Document("/cd al", cursor_position=6)
 
-    assert main._complete_simple_input("/cd al", {}) == (
-        f"/cd alpha{os.sep}"
+    completions = list(completer.get_completions(document, CompleteEvent()))
+
+    assert [completion.text for completion in completions] == [
+        f"alpha{os.sep}"
+    ]
+
+
+def test_read_prompt_falls_back_to_input(monkeypatch):
+    monkeypatch.setattr(simple_prompt, "is_interactive", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda prompt: "hello")
+
+    assert simple_prompt.read_prompt("You> ") == "hello"
+
+
+def test_read_input_uses_restored_pending_input(monkeypatch):
+    renderer, _ = _make_renderer()
+    captured: dict[str, object] = {}
+
+    def fake_read_prompt(prompt, **kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(simple_prompt, "read_prompt", fake_read_prompt)
+    renderer._pending_input = "pending"
+
+    assert renderer.read_input("You> ") == "ok"
+    assert captured["default"] == "pending"
+
+    captured.clear()
+    assert renderer.read_input("You> ") == "ok"
+    assert captured.get("default") is None
+
+
+def test_read_prompt_uses_thread_inside_running_event_loop(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def prompt(self, **kwargs):
+            captured.update(kwargs)
+            return "ok"
+
+    monkeypatch.setattr(simple_prompt, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        simple_prompt,
+        "PromptSession",
+        lambda **kwargs: FakeSession(**kwargs),
     )
 
+    async def run():
+        return simple_prompt.read_prompt("You> ")
 
-def test_backspace_removes_multiline_newline(monkeypatch):
-    output = StringIO()
-    monkeypatch.setattr("sys.stdout", output)
-    keys = iter(
-        ["l", "i", "n", "e", "1", "ctrl_n", "backspace", "X", "enter"]
-    )
-    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
-
-    result = simple_input._edit_line(
-        "You> ",
-        None,
-        [],
-        False,
-        True,
-        "...> ",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-
-    assert result == "line1X"
+    assert asyncio.run(run()) == "ok"
+    assert captured["in_thread"] is True
 
 
-def test_backspace_deletes_image_placeholder_as_a_unit(monkeypatch):
-    output = StringIO()
-    monkeypatch.setattr("sys.stdout", output)
-    keys = iter(["home", "right", "backspace", "enter"])
-    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
+def test_simple_temporary_query_consume_and_restore():
+    renderer, _ = _make_renderer()
+    renderer._temporary_query_enabled = True
+    renderer._temporary_query = "temp"
 
-    result = simple_input._edit_line(
-        "You> ",
-        "[图片：a]X",
-        [],
-        False,
-        False,
-        "...> ",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    assert renderer.consume_temporary_query() == "temp"
+    assert renderer.consume_temporary_query() is None
 
-    assert result == "X"
+    renderer._temporary_query_enabled = True
+    renderer._temporary_query = "restored"
+    renderer.restore_temporary_query_to_input()
+
+    assert renderer.take_restored_input() == "restored"
+    assert renderer.take_restored_input() is None
 
 
-def test_delete_removes_image_placeholder_as_a_unit(monkeypatch):
-    output = StringIO()
-    monkeypatch.setattr("sys.stdout", output)
-    keys = iter(["home", "delete", "enter"])
-    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
+def test_simple_temporary_query_restore_fallback():
+    renderer, _ = _make_renderer()
 
-    result = simple_input._edit_line(
-        "You> ",
-        "[图片：a]X",
-        [],
-        False,
-        False,
-        "...> ",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    renderer.restore_temporary_query_to_input("fallback")
 
-    assert result == "X"
-
-
-def test_left_arrow_jumps_over_image_placeholder(monkeypatch):
-    output = StringIO()
-    monkeypatch.setattr("sys.stdout", output)
-    keys = iter(["end", "left", "left", "Z", "enter"])
-    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
-
-    result = simple_input._edit_line(
-        "You> ",
-        "A[图片：a]B",
-        [],
-        False,
-        False,
-        "...> ",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-
-    assert result == "AZ[图片：a]B"
+    assert renderer.take_restored_input() == "fallback"
 
 
 def test_choose_add_model_collects_fields(monkeypatch):
