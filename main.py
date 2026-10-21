@@ -63,6 +63,7 @@ from system.stream_render import StreamRenderer
 from system.ts_validator import init_ts_cache
 from system.tui_app import (
     MakeCodeTuiApp,
+    enable_simple_mode,
     post_tui,
     TuiRegion,
     set_agent_loop_active,
@@ -70,6 +71,7 @@ from system.tui_app import (
     refresh_status,
     refresh_token_usage,
     scroll_all_panes_to_bottom,
+    prompt_workdir_tui,
     consume_temporary_query,
     clear_temporary_query,
     restore_temporary_query_to_input,
@@ -1021,6 +1023,78 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
     return None
 
 
+def _run_simple_main(
+        history: list,
+        command_handler: CommandHandler,
+        prompt_for_workdir: bool,
+        startup_load_id: str | None = None,
+) -> None:
+    """纯终端模式：不启动 Textual，按顺序把事件渲染到 stdout。"""
+    import signal
+
+    from system.stream_cancel import cancel_current_response, is_cancel_available
+
+    def _handle_sigint(signum, frame) -> None:
+        # 有进行中的响应/终端命令时，第一次 Ctrl+C 只取消当前操作；否则退出输入循环。
+        if is_cancel_available():
+            cancel_current_response()
+            return
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGINT, _handle_sigint)
+    except ValueError:
+        pass
+
+    if prompt_for_workdir:
+        choice = prompt_workdir_tui()
+        if choice != "abort":
+            current_workdir = _current_workdir()
+            selected_workdir = resolve_chosen_workdir(choice, current_workdir)
+            if selected_workdir != current_workdir:
+                _apply_workdir(selected_workdir)
+                history[0] = {"role": "system", "content": get_dynamic_system_prompt()}
+                refresh_status()
+                post_tui(
+                    TuiRegion.BACKGROUND,
+                    f"[bold green]📂 Workspace switched to: {selected_workdir}[/bold green]",
+                )
+                render_current_workdir("当前工作目录已切换")
+
+    if cli_module.STARTUP_LOAD_REQUESTED:
+        loaded_history, _ = command_handler.handle_load(
+            history,
+            CONVERSATION_STORE.active_path,
+            _render_startup_banner,
+            _render_env_customization_hint,
+            _render_history,
+            conversation_id=startup_load_id,
+        )
+        if loaded_history is not history:
+            history[:] = loaded_history
+        scroll_all_panes_to_bottom()
+
+    while True:
+        try:
+            query = input("\nYou> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            post_tui(TuiRegion.CONTENT, "")
+            break
+        if not query:
+            continue
+        if query != "/flush":
+            post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
+            post_tui(TuiRegion.CONTENT, render_content_user_message(query))
+        try:
+            result = asyncio.run(_process_user_query(query, history, command_handler))
+        except KeyboardInterrupt:
+            cancel_current_response()
+            post_tui(TuiRegion.CONTENT, "[yellow]⚠️ 已取消当前响应[/yellow]")
+            continue
+        if result == "exit":
+            break
+
+
 def _run_textual_main(
         history: list,
         command_handler: CommandHandler,
@@ -1159,6 +1233,9 @@ if __name__ == "__main__":
     if _launch_macos_terminal_if_needed():
         raise SystemExit(0)
 
+    if cli_module.SIMPLE_MODE:
+        enable_simple_mode()
+
     startup_workdir = resolve_startup_workdir()
     _apply_workdir(startup_workdir)
     _signal_legacy_updater_ready()
@@ -1191,12 +1268,20 @@ if __name__ == "__main__":
     )
 
     try:
-        _run_textual_main(
-            history,
-            command_handler,
-            prompt_for_workdir,
-            startup_load_id=cli_module.STARTUP_LOAD_ID,
-        )
+        if cli_module.SIMPLE_MODE:
+            _run_simple_main(
+                history,
+                command_handler,
+                prompt_for_workdir,
+                startup_load_id=cli_module.STARTUP_LOAD_ID,
+            )
+        else:
+            _run_textual_main(
+                history,
+                command_handler,
+                prompt_for_workdir,
+                startup_load_id=cli_module.STARTUP_LOAD_ID,
+            )
     finally:
         GLOBAL_MCP_MANAGER.stop()
 

@@ -826,6 +826,13 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 
 `--models-list`、`--mcp-list`、`--skills-list`、`--memory-list` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64 和 macOS ARM64；源码运行仍需手动更新。
 
+`--simple` 不会退出，而是以纯终端模式启动交互循环：不启动 Textual TUI，输出按事件顺序直接渲染到 stdout，适合对 TUI 终端控制序列支持不佳的环境。该模式只输出已完成的 Markdown 段落（不逐帧刷新尾部）；HITL、AskUser、`/load` 选择等交互会降级为编号或文本输入；模型、Skills、记忆、MCP 等管理面板暂不可用，但 `/models`、`/skills-list` 等命令仍会打印当前状态。可与 `--load` 组合：
+
+```bash
+python main.py --simple
+python main.py --simple --load
+```
+
 ### 6.5 内置快捷命令（Slash Commands）
 
 在交互式 CLI 中，支持输入斜杠 `/` 来触发快捷命令（带有输入补全提示）：
