@@ -1,9 +1,10 @@
 import asyncio
 import os
-from contextlib import nullcontext
 from io import StringIO
 from types import SimpleNamespace
 
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from rich.text import Text
 
@@ -408,24 +409,57 @@ def test_update_terminal_title_uses_conversation_title(monkeypatch):
     assert captured == ["MakeCode · Demo"]
 
 
-def test_interactive_choose_navigates_with_arrow_keys(monkeypatch):
+def test_interactive_choose_navigates_with_arrow_keys():
     renderer, _ = _make_renderer()
-    keys = iter(["down", "down", "up", "enter"])
-    monkeypatch.setattr(simple_input, "is_interactive", lambda: True)
-    monkeypatch.setattr(simple_input, "raw_mode", lambda: nullcontext())
-    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
+    with create_pipe_input() as pipe:
+        pipe.send_text("\x1b[B\x1b[B\x1b[A\r")
+        result = renderer._choose_interactive(
+            "Pick",
+            ["alpha", "beta", "gamma"],
+            delete_handler=None,
+            preview_handler=None,
+            search_texts=None,
+            input=pipe,
+            output=DummyOutput(),
+        )
 
-    assert renderer.choose("Pick", ["alpha", "beta", "gamma"]) == "beta"
+    assert result == "beta"
 
 
-def test_arrow_escape_sequences_are_parsed():
-    assert simple_input._parse_escape(b"\x1b[A") == "up"
-    assert simple_input._parse_escape(b"\x1bOA") == "up"
-    assert simple_input._parse_escape(b"\x1b[B") == "down"
-    assert simple_input._parse_escape(b"\x1b[1;5C") == "right"
-    assert simple_input._parse_escape(b"\x1b[D") == "left"
-    assert simple_input._parse_escape(b"\x1b[H") == "home"
-    assert simple_input._parse_escape(b"\x1b[3~") == "delete"
+def test_interactive_choose_filters_by_search():
+    renderer, _ = _make_renderer()
+    with create_pipe_input() as pipe:
+        pipe.send_text("/be\r\r")
+        result = renderer._choose_interactive(
+            "Pick",
+            ["alpha", "beta", "gamma"],
+            delete_handler=None,
+            preview_handler=None,
+            search_texts=["alpha", "beta", "gamma"],
+            input=pipe,
+            output=DummyOutput(),
+        )
+
+    assert result == "beta"
+
+
+def test_interactive_choose_deletes_and_confirms():
+    renderer, _ = _make_renderer()
+    deleted: list[str] = []
+    with create_pipe_input() as pipe:
+        pipe.send_text("d 1\ry\r\r")
+        result = renderer._choose_interactive(
+            "Pick",
+            ["alpha", "beta"],
+            delete_handler=deleted.append,
+            preview_handler=None,
+            search_texts=["alpha", "beta"],
+            input=pipe,
+            output=DummyOutput(),
+        )
+
+    assert deleted == ["alpha"]
+    assert result == "beta"
 
 
 def test_image_placeholders_serialize_back_to_attachment_markers():
