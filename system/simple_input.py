@@ -369,6 +369,36 @@ def _edit_line(
             sys.stdout.write(text)
             sys.stdout.flush()
 
+    def placeholder_spans() -> list[tuple[int, int]]:
+        text = "".join(buffer)
+        return [
+            (match.start(), match.end())
+            for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text)
+        ]
+
+    def remove_image_entry(placeholder: str, occurrence: int) -> None:
+        seen = 0
+        for index, (display, _) in enumerate(image_entries):
+            if display != placeholder:
+                continue
+            if seen == occurrence:
+                image_entries.pop(index)
+                return
+            seen += 1
+
+    def delete_placeholder(span: tuple[int, int]) -> None:
+        nonlocal cursor
+        text = "".join(buffer)
+        start, end = span
+        placeholder = text[start:end]
+        occurrence = len(
+            _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.findall(text[:start])
+        )
+        remove_image_entry(placeholder, occurrence)
+        del buffer[start:end]
+        cursor = start
+        redraw()
+
     def redraw() -> None:
         text = masked("".join(buffer))
         prefix = masked("".join(buffer[:cursor]))
@@ -554,12 +584,28 @@ def _edit_line(
 
         if key == "left":
             if cursor > 0:
-                cursor -= 1
+                target = next(
+                    (
+                        start
+                        for start, end in placeholder_spans()
+                        if end == cursor
+                    ),
+                    None,
+                )
+                cursor = target if target is not None else cursor - 1
                 redraw()
             continue
         if key == "right":
             if cursor < len(buffer):
-                cursor += 1
+                target = next(
+                    (
+                        end
+                        for start, end in placeholder_spans()
+                        if start == cursor
+                    ),
+                    None,
+                )
+                cursor = target if target is not None else cursor + 1
                 redraw()
             continue
         if key == "home":
@@ -572,9 +618,20 @@ def _edit_line(
             continue
         if key == "backspace":
             if cursor > 0:
-                buffer.pop(cursor - 1)
-                cursor -= 1
-                redraw()
+                span = next(
+                    (
+                        span
+                        for span in placeholder_spans()
+                        if span[1] == cursor
+                    ),
+                    None,
+                )
+                if span is not None:
+                    delete_placeholder(span)
+                else:
+                    buffer.pop(cursor - 1)
+                    cursor -= 1
+                    redraw()
             elif committed:
                 previous = committed.pop()
                 buffer = list(previous) + buffer
@@ -594,8 +651,19 @@ def _edit_line(
             continue
         if key == "delete":
             if cursor < len(buffer):
-                buffer.pop(cursor)
-                redraw()
+                span = next(
+                    (
+                        span
+                        for span in placeholder_spans()
+                        if span[0] == cursor
+                    ),
+                    None,
+                )
+                if span is not None:
+                    delete_placeholder(span)
+                else:
+                    buffer.pop(cursor)
+                    redraw()
             continue
         if key == "ctrl_n":
             if multiline:

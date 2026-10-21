@@ -79,8 +79,8 @@ def manage_models(renderer: Any, model_manager: Any) -> str:
             )
 
         command = renderer.prompt(
-            "操作：序号=选择，a=添加，e 序号=编辑，d 序号=删除，"
-            "f 序号=收藏，r 序号 档位，q=退出"
+            "操作：序号=选择，a=添加，c 序号=复制添加，e 序号=编辑，"
+            "d 序号=删除，f 序号=收藏，r 序号 档位，q=退出"
         )
         if command is None or command.strip().lower() in {"q", "quit", "exit"}:
             return "exit"
@@ -109,7 +109,7 @@ def manage_models(renderer: Any, model_manager: Any) -> str:
             _add_model(renderer, model_manager)
             continue
 
-        if operation in {"e", "d", "f", "r"}:
+        if operation in {"e", "d", "f", "r", "c"}:
             if len(parts) < 2:
                 renderer.notice(f"用法：{operation} <序号>")
                 continue
@@ -118,7 +118,9 @@ def manage_models(renderer: Any, model_manager: Any) -> str:
                 renderer.notice("无效序号。")
                 continue
             model = models[index]
-            if operation == "e":
+            if operation == "c":
+                _add_model(renderer, model_manager, source=model)
+            elif operation == "e":
                 _edit_model(renderer, model_manager, model)
             elif operation == "d":
                 _delete_model(renderer, model_manager, model)
@@ -194,8 +196,12 @@ def _prompt_model_fields(renderer: Any, source: Any = None) -> dict[str, str] | 
     }
 
 
-def _apply_add_model(renderer: Any, model_manager: Any) -> None:
-    fields = _prompt_model_fields(renderer)
+def _apply_add_model(
+        renderer: Any,
+        model_manager: Any,
+        source: Any = None,
+) -> None:
+    fields = _prompt_model_fields(renderer, source=source)
     if fields is None:
         return
     model_ids = _split_list(fields["model_input"])
@@ -216,8 +222,8 @@ def _apply_add_model(renderer: Any, model_manager: Any) -> None:
     renderer.notice(f"已添加：{added}")
 
 
-def _add_model(renderer: Any, model_manager: Any) -> None:
-    _apply_add_model(renderer, model_manager)
+def _add_model(renderer: Any, model_manager: Any, source: Any = None) -> None:
+    _apply_add_model(renderer, model_manager, source)
 
 
 def _edit_model(renderer: Any, model_manager: Any, model: Any) -> None:
@@ -265,8 +271,11 @@ def _set_effort(renderer: Any, model_manager: Any, model: Any, effort: str | Non
         renderer.notice("设置 effort 失败。")
 
 
-def choose_add_model(renderer: Any) -> dict[str, str] | None:
-    return _prompt_model_fields(renderer)
+def choose_add_model(
+        renderer: Any,
+        source: Any = None,
+) -> dict[str, str] | None:
+    return _prompt_model_fields(renderer, source=source)
 
 
 # ============================================================================

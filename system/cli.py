@@ -51,6 +51,7 @@ COMMAND_DESCRIPTIONS = {
     "/title": "查看、重新生成或设置当前对话标题。",
     "/status": "显示当前模型、模式、工作目录、会话轮数、记忆、Skills 和 MCP 状态。",
     "/tokens": "显示当前上下文的 Token 用量明细。",
+    "/release-notes": "查看最新发布日志和版本信息。",
 }
 
 

@@ -225,6 +225,27 @@ def test_manage_models_selects_model(tmp_path, monkeypatch):
     assert "model-a" in result
 
 
+def test_manage_models_duplicates_model(tmp_path, monkeypatch):
+    renderer, _ = _make_renderer()
+    manager = ModelManager(tmp_path)
+    manager.add_model(
+        "https://api.example.com",
+        "secret",
+        ["model-a"],
+    )
+    _feed_inputs(
+        monkeypatch,
+        ["c 1", "", "", "", "model-b", "", "q"],
+    )
+
+    result = simple_management.manage_models(renderer, manager)
+
+    assert result == "exit"
+    model_ids = [model.model_id for model in manager.models]
+    assert "model-a" in model_ids
+    assert "model-b" in model_ids
+
+
 def test_manage_skills_toggles_and_applies(monkeypatch):
     renderer, _ = _make_renderer()
 
@@ -498,6 +519,84 @@ def test_backspace_removes_multiline_newline(monkeypatch):
     )
 
     assert result == "line1X"
+
+
+def test_backspace_deletes_image_placeholder_as_a_unit(monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    keys = iter(["home", "right", "backspace", "enter"])
+    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
+
+    result = simple_input._edit_line(
+        "You> ",
+        "[图片：a]X",
+        [],
+        False,
+        False,
+        "...> ",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+    assert result == "X"
+
+
+def test_delete_removes_image_placeholder_as_a_unit(monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    keys = iter(["home", "delete", "enter"])
+    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
+
+    result = simple_input._edit_line(
+        "You> ",
+        "[图片：a]X",
+        [],
+        False,
+        False,
+        "...> ",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+    assert result == "X"
+
+
+def test_left_arrow_jumps_over_image_placeholder(monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    keys = iter(["end", "left", "left", "Z", "enter"])
+    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
+
+    result = simple_input._edit_line(
+        "You> ",
+        "A[图片：a]B",
+        [],
+        False,
+        False,
+        "...> ",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+    assert result == "AZ[图片：a]B"
 
 
 def test_choose_add_model_collects_fields(monkeypatch):

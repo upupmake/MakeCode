@@ -1077,18 +1077,11 @@ def _complete_simple_input(
         return None
     if text.startswith("/cd "):
         fragment = text[4:]
-        candidates = paths.directory_completion_candidates(
+        completed = paths.complete_directory_path(
             fragment,
             paths.workdir(),
         )
-        if not candidates:
-            return None
-        if len(candidates) == 1:
-            return "/cd " + candidates[0]
-        common = os.path.commonprefix(candidates)
-        if len(common) > len(fragment):
-            return "/cd " + common
-        return None
+        return "/cd " + completed if completed is not None else None
     if " " in text:
         return None
     matches = sorted(
@@ -1138,7 +1131,8 @@ def _run_simple_main(
     post_tui(
         TuiRegion.CONTENT,
         "[#aaaaaa]提示：Enter 提交 · Ctrl+N 换行 · Ctrl+V/Ctrl+O 附加剪贴板图片；"
-        "也可直接粘贴图片文件路径 · Ctrl+P 切换计划/执行 · Tab 补全命令/目录。[/#aaaaaa]",
+        "也可直接粘贴图片文件路径 · Ctrl+P 切换计划/执行 · Tab 补全命令/目录 · "
+        "Ctrl+C 取消输入。[/#aaaaaa]",
     )
 
     if prompt_for_workdir:
@@ -1187,7 +1181,15 @@ def _run_simple_main(
                 ),
                 ctrl_p_handler=_toggle_plan_mode_message,
             )
-        except (EOFError, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            post_tui(TuiRegion.CONTENT, "")
+            post_tui(
+                TuiRegion.CONTENT,
+                "[yellow]⚠️ 已取消当前输入，使用 /quit 退出。[/yellow]",
+            )
+            _update_terminal_title()
+            continue
+        except EOFError:
             post_tui(TuiRegion.CONTENT, "")
             break
         if raw_query is None:

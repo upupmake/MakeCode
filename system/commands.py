@@ -509,6 +509,50 @@ class CommandHandler:
         )
         self.console.print("\n".join(lines))
 
+    def handle_release_notes(self) -> None:
+        from version import CURRENT_VERSION
+        from system.updater import _parse_version, fetch_latest_version_info
+
+        try:
+            version_info = fetch_latest_version_info(raise_errors=True)
+        except Exception as exc:
+            self.console.print(
+                f"\n[bold red]获取发布日志失败：{escape(str(exc))}[/bold red]"
+            )
+            return
+        if not version_info:
+            self.console.print(
+                "\n[bold yellow]未能获取最新版本信息。[/bold yellow]"
+            )
+            return
+
+        latest_version = str(version_info.get("version", "")).strip()
+        if not latest_version:
+            self.console.print(
+                "\n[bold yellow]最新版本信息缺少版本号。[/bold yellow]"
+            )
+            return
+        release_log = (
+            str(version_info.get("release_log", "")).strip()
+            or "暂无发布日志。"
+        )
+        latest = _parse_version(latest_version)
+        current = _parse_version(CURRENT_VERSION)
+        sections = [release_log]
+        if latest > current:
+            sections.append(
+                f"发现新版本 `v{latest_version}`。如需更新，请执行 `/update`。"
+            )
+        elif latest == current:
+            sections.append("当前已是最新版本。")
+        else:
+            sections.append("当前版本高于最新发布版本，无需更新。")
+        self.console.print(
+            f"\n[bold]📝 发布日志 · 当前 v{CURRENT_VERSION} · "
+            f"最新 v{latest_version}[/bold]"
+        )
+        self.console.print(Markdown("\n\n".join(sections)))
+
     def handle_mcp_view(self) -> bool:
         """处理 /mcp-view 命令"""
         summary_content, content, tools = build_mcp_view_payload(self.mcp_manager)
@@ -1660,6 +1704,10 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /update - 检查更新
+        if query == "/release-notes":
+            self.handle_release_notes()
+            return CommandResult(action=CommandAction.CONTINUE)
+
         if query == "/update":
             new_exe_path = self.handle_update()
             if new_exe_path is not None:

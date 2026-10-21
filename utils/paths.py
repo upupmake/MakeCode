@@ -75,6 +75,18 @@ def directory_completion_candidates(path_fragment: str, base_dir: Path) -> list[
     return [f"{parent_text}{directory}{separator}" for directory in directories]
 
 
+def complete_directory_path(path_fragment: str, base_dir: Path) -> str | None:
+    candidates = directory_completion_candidates(path_fragment, base_dir)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    common = os.path.commonprefix(candidates)
+    if len(common) > len(path_fragment):
+        return common
+    return None
+
+
 def workspace_conversations_dir() -> Path:
     return workspace_makecode_dir() / "conversations"
 

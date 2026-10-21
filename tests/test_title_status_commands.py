@@ -109,3 +109,22 @@ def test_tokens_command_prints_breakdown():
     assert "上下文 Token 使用" in output
     assert "system（含工具定义）: 1,000" in output
     assert "合计: 3,650 / 10,000" in output
+
+
+def test_release_notes_command_prints_log_and_update_hint(monkeypatch):
+    handler = make_handler()
+    monkeypatch.setattr(
+        "system.updater.fetch_latest_version_info",
+        lambda **kwargs: {
+            "version": "999.0.0",
+            "release_log": "- 新增功能 A\n- 修复问题 B",
+        },
+    )
+
+    handler.handle_release_notes()
+
+    output = handler.console.file.getvalue()
+    assert "新增功能 A" in output
+    assert "修复问题 B" in output
+    assert "999.0.0" in output
+    assert "/update" in output

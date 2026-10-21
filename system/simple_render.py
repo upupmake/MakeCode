@@ -561,9 +561,18 @@ class SimpleRenderer:
     def prompt_workdir(self) -> str:
         from utils import paths
 
+        def complete_path(value: str) -> str | None:
+            return paths.complete_directory_path(
+                value.strip(),
+                paths.workdir(),
+            )
+
         with self._lock:
             self.console.print(Text(f"当前工作目录：{paths.workdir()}"))
-            answer = self._read_input("新工作目录（直接回车保持当前目录）")
+            answer = self._read_input(
+                "新工作目录（直接回车保持当前目录）",
+                completion_handler=complete_path,
+            )
             if answer is None:
                 return "abort"
             answer = answer.strip()
@@ -711,6 +720,7 @@ class SimpleRenderer:
             *,
             default: str | None = None,
             secret: bool = False,
+            completion_handler: Any = None,
     ) -> str | None:
         try:
             answer = simple_input.read_line(
@@ -718,6 +728,7 @@ class SimpleRenderer:
                 default=default,
                 history=[] if secret else self._history,
                 secret=secret,
+                completion_handler=completion_handler,
             )
         except (EOFError, KeyboardInterrupt):
             self.console.print()
