@@ -99,6 +99,8 @@ def _read_key_posix() -> str | PasteEvent:
         return "ctrl_n"
     if first == b"\x0f":
         return "ctrl_o"
+    if first == b"\x10":
+        return "ctrl_p"
     if first == b"\t":
         return "tab"
 
@@ -236,6 +238,8 @@ def _read_key_windows() -> str | PasteEvent:
         return "ctrl_n"
     if character == "\x0f":
         return "ctrl_o"
+    if character == "\x10":
+        return "ctrl_p"
     if character == "\t":
         return "tab"
     return character
@@ -258,6 +262,8 @@ def read_line(
             [Callable[[], None] | None], None
         ] | None = None,
         input_lock: Any = None,
+        completion_handler: Callable[[str], str | None] | None = None,
+        ctrl_p_handler: Callable[[], str | None] | None = None,
 ) -> str | None:
     if not is_interactive():
         try:
@@ -279,6 +285,8 @@ def read_line(
                 paste_handler,
                 input_redraw_handler,
                 input_lock,
+                completion_handler,
+                ctrl_p_handler,
             )
 
         fd = sys.stdin.fileno()
@@ -300,6 +308,8 @@ def read_line(
                     paste_handler,
                     input_redraw_handler,
                     input_lock,
+                    completion_handler,
+                    ctrl_p_handler,
                 )
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -324,6 +334,8 @@ def _edit_line(
             [Callable[[], None] | None], None
         ] | None,
         input_lock: Any,
+        completion_handler: Callable[[str], str | None] | None,
+        ctrl_p_handler: Callable[[], str | None] | None,
 ) -> str | None:
     buffer = list(default or "")
     committed: list[str] = []
@@ -571,7 +583,28 @@ def _edit_line(
                     history_index = len(history)
                     load_serialized(draft)
             continue
-        if key in {"escape", "tab", "page_up", "page_down", "unknown"}:
+        if key == "tab":
+            if completion_handler is not None:
+                try:
+                    replacement = completion_handler("".join(buffer))
+                except Exception:
+                    replacement = None
+                if replacement is not None and replacement != "".join(buffer):
+                    buffer = list(replacement)
+                    cursor = len(buffer)
+                    redraw()
+            continue
+        if key == "ctrl_p":
+            if ctrl_p_handler is not None:
+                try:
+                    message = ctrl_p_handler()
+                except Exception as exc:
+                    notice(f"切换 Plan Mode 失败：{exc}")
+                else:
+                    if message:
+                        notice(message)
+            continue
+        if key in {"escape", "page_up", "page_down", "unknown"}:
             continue
 
         if len(key) == 1 and key.isprintable():

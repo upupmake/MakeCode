@@ -4,6 +4,7 @@
 import json
 import sys
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -19,7 +20,7 @@ from rich.text import Text
 
 from init import log_error_traceback, resolve_chosen_workdir
 from system.cli import COMMAND_DESCRIPTIONS
-from system.console_render import render_content_assistant_message, render_current_task_plan, render_current_workdir, render_preview_user_message, toggle_sub_agent_console
+from system.console_render import format_runtime_info, render_content_assistant_message, render_current_task_plan, render_current_workdir, render_preview_user_message, toggle_sub_agent_console
 from system.models import get_model_manager
 from tools.extra_tools import (
     get_understand_image_model_display_text,
@@ -365,6 +366,9 @@ class CommandHandler:
             conversation_store: ConversationStore,
             auto_compact_fn,
             apply_workdir_fn=None,
+            conversation_title_regenerate_fn: Callable[[], Awaitable[None]] | None = None,
+            conversation_title_update_fn: Callable[[str], None] | None = None,
+            token_usage_provider: Callable[[], tuple[dict[str, int], int]] | None = None,
     ):
         self.console = console
         self.mcp_manager = mcp_manager
@@ -373,6 +377,137 @@ class CommandHandler:
         self.conversation_store = conversation_store
         self.auto_compact = auto_compact_fn
         self.apply_workdir = apply_workdir_fn
+        self.conversation_title_regenerate_fn = conversation_title_regenerate_fn
+        self.conversation_title_update_fn = conversation_title_update_fn
+        self.token_usage_provider = token_usage_provider
+
+    async def handle_title(self, query: str) -> bool:
+        if self.conversation_store.active_path is None:
+            self.console.print(
+                "\n[bold yellow]当前还没有活动对话，请先发送一条消息。[/bold yellow]"
+            )
+            return True
+        argument = query.removeprefix("/title").strip()
+        if argument:
+            if self.conversation_title_update_fn is None:
+                self.console.print(
+                    "\n[bold yellow]当前模式不支持设置对话标题。[/bold yellow]"
+                )
+                return True
+            try:
+                self.conversation_title_update_fn(argument)
+            except Exception as exc:
+                self.console.print(
+                    f"\n[bold red]🏷️ 设置标题失败：{escape(str(exc))}[/bold red]"
+                )
+            else:
+                self.console.print(
+                    f"\n[bold green]🏷️ 对话标题已更新：{escape(argument)}[/bold green]"
+                )
+            return True
+
+        options = []
+        if self.conversation_title_regenerate_fn is not None:
+            options.append("重新生成标题")
+        options.append("取消")
+        choice = choose_tui(
+            "设置对话标题？\n可重新生成标题，或直接输入自定义标题。",
+            options,
+            allow_custom=self.conversation_title_update_fn is not None,
+        )
+        if choice in {"<cancelled>", "取消", "<empty_input>"}:
+            self.console.print(
+                "\n[#aaaaaa]已取消修改对话标题。[/#aaaaaa]"
+            )
+            return True
+        if choice == "重新生成标题":
+            if self.conversation_title_regenerate_fn is not None:
+                await self.conversation_title_regenerate_fn()
+            return True
+        if self.conversation_title_update_fn is not None:
+            try:
+                self.conversation_title_update_fn(choice.strip())
+            except Exception as exc:
+                self.console.print(
+                    f"\n[bold red]🏷️ 设置标题失败：{escape(str(exc))}[/bold red]"
+                )
+            else:
+                self.console.print(
+                    f"\n[bold green]🏷️ 对话标题已更新：{escape(choice.strip())}[/bold green]"
+                )
+        return True
+
+    def handle_status(self, history: list) -> None:
+        session_turns = sum(
+            1 for message in history if message.get("role") == "user"
+        )
+        try:
+            memory_count = get_active_memory_count()
+        except Exception:
+            memory_count = 0
+        try:
+            skills_count = len(getattr(self.skill_loader, "skills", []))
+        except Exception:
+            skills_count = 0
+        try:
+            mcp_status = self.mcp_manager.get_status_info()
+            server_count = len(mcp_status.get("loaded_servers", []))
+            tool_count = int(mcp_status.get("tool_count", 0))
+        except Exception:
+            server_count = 0
+            tool_count = 0
+        lines = [
+            "",
+            format_runtime_info(),
+            f"📂 工作目录: {paths.workdir()}",
+            f"💬 会话轮数: {session_turns} · 🧠 记忆: {memory_count}"
+            f" · 📚 Skills: {skills_count}"
+            f" · MCP: {server_count}S/{tool_count}T",
+        ]
+        if self.token_usage_provider is not None:
+            try:
+                breakdown, threshold = self.token_usage_provider()
+                total = sum(breakdown.values())
+                ratio = total / threshold * 100 if threshold else 0
+                lines.append(
+                    f"📈 Token: {total:,} / {threshold:,} ({ratio:.1f}%)"
+                )
+            except Exception:
+                pass
+        self.console.print("\n".join(lines))
+
+    def handle_tokens(self) -> None:
+        if self.token_usage_provider is None:
+            self.console.print(
+                "\n[bold yellow]当前模式不支持 Token 统计。[/bold yellow]"
+            )
+            return
+        try:
+            breakdown, threshold = self.token_usage_provider()
+        except Exception as exc:
+            self.console.print(
+                f"\n[bold red]读取 Token 用量失败：{escape(str(exc))}[/bold red]"
+            )
+            return
+        labels = (
+            ("system", "system（含工具定义）"),
+            ("user", "user"),
+            ("reasoning", "reasoning"),
+            ("assistant", "assistant"),
+            ("tool", "tool"),
+        )
+        lines = ["", "📈 上下文 Token 使用"]
+        total = 0
+        for key, label in labels:
+            tokens = int(breakdown.get(key, 0))
+            total += tokens
+            ratio = tokens / threshold * 100 if threshold else 0
+            lines.append(f"  {label}: {tokens:,} ({ratio:.1f}%)")
+        total_ratio = total / threshold * 100 if threshold else 0
+        lines.append(
+            f"  合计: {total:,} / {threshold:,} ({total_ratio:.1f}%)"
+        )
+        self.console.print("\n".join(lines))
 
     def handle_mcp_view(self) -> bool:
         """处理 /mcp-view 命令"""
@@ -1550,6 +1685,18 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
         # /pwd - 显示当前工作目录
         if query == "/pwd":
             render_current_workdir()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/title" or query.startswith("/title "):
+            await self.handle_title(query)
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/status":
+            self.handle_status(history)
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/tokens":
+            self.handle_tokens()
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /cd - 打开目录选择器或切换当前工作目录，并开启全新会话

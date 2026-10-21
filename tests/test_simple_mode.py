@@ -250,6 +250,31 @@ def test_manage_skills_toggles_and_applies(monkeypatch):
     assert loader.applied == {"alpha": False}
 
 
+def test_manage_skills_searches_and_applies(monkeypatch):
+    renderer, _ = _make_renderer()
+
+    class FakeSkillLoader:
+        def __init__(self):
+            self.applied = None
+
+        def get_skill_entries(self):
+            return [
+                {"name": "alpha", "description": "first", "enabled": True},
+                {"name": "beta", "description": "second", "enabled": False},
+            ]
+
+        def apply_skill_enabled_states(self, changes):
+            self.applied = changes
+
+    loader = FakeSkillLoader()
+    _feed_inputs(monkeypatch, ["/beta", "1", "a"])
+
+    result = simple_management.manage_skills(renderer, loader)
+
+    assert result == {"action": "applied", "enabled": 1, "disabled": 0}
+    assert loader.applied == {"beta": True}
+
+
 def test_manage_memories_adds_memory(monkeypatch):
     renderer, _ = _make_renderer()
 
@@ -421,6 +446,30 @@ def test_deleted_image_placeholder_is_not_serialized():
     assert simple_input._serialize_input(text, entries) == (
         "只看 [[image:id=bbb]]"
     )
+
+
+def test_complete_simple_input_for_slash_commands():
+    import main
+
+    commands = {
+        "/cmds": "",
+        "/models": "",
+        "/memory-list": "",
+        "/quit": "",
+    }
+
+    assert main._complete_simple_input("/qu", commands) == "/quit "
+    assert main._complete_simple_input("/mo", commands) == "/models "
+    assert main._complete_simple_input("/m", commands) is None
+
+
+def test_complete_simple_input_for_cd_directories(tmp_path, monkeypatch):
+    import main
+
+    (tmp_path / "alpha").mkdir()
+    monkeypatch.setattr("main.paths.workdir", lambda: tmp_path)
+
+    assert main._complete_simple_input("/cd al", {}) == "/cd alpha/"
 
 
 def test_choose_add_model_collects_fields(monkeypatch):

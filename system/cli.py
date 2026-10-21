@@ -48,6 +48,9 @@ COMMAND_DESCRIPTIONS = {
     "/quit": "退出程序。",
     "/exit": "退出程序。",
     "/update": "检查并安装最新版本更新。",
+    "/title": "查看、重新生成或设置当前对话标题。",
+    "/status": "显示当前模型、模式、工作目录、会话轮数、记忆、Skills 和 MCP 状态。",
+    "/tokens": "显示当前上下文的 Token 用量明细。",
 }
 
 

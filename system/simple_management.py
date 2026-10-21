@@ -284,22 +284,49 @@ def manage_skills(renderer: Any, skill_loader: Any) -> str | dict[str, Any]:
 
     original = {entry["name"]: bool(entry["enabled"]) for entry in entries}
     draft = dict(original)
+    search = ""
+    status_filter = "all"
 
     while True:
+        search_tokens = search.casefold().split()
+        visible_entries = []
+        for index, entry in enumerate(entries):
+            enabled = draft[entry["name"]]
+            if status_filter == "enabled" and not enabled:
+                continue
+            if status_filter == "disabled" and enabled:
+                continue
+            haystack = (
+                f"{entry.get('name', '')} {entry.get('description', '')}"
+            ).casefold()
+            if search_tokens and not all(
+                token in haystack for token in search_tokens
+            ):
+                continue
+            visible_entries.append((index, entry))
+
         _header(renderer, "📚 Skills 配置")
         enabled_count = sum(draft.values())
+        filter_label = {
+            "all": "全部",
+            "enabled": "已启用",
+            "disabled": "已禁用",
+        }[status_filter]
         renderer.write(
             Text(
                 f"共 {len(entries)} 个 · 已启用 {enabled_count} · "
-                f"已禁用 {len(entries) - enabled_count}",
+                f"已禁用 {len(entries) - enabled_count}"
+                f" · 当前显示 {len(visible_entries)} 个"
+                f" · 过滤：{filter_label}"
+                + (f" · 搜索：{search}" if search else ""),
                 style="dim",
             )
         )
-        for index, entry in enumerate(entries, 1):
+        for position, (_, entry) in enumerate(visible_entries, 1):
             enabled = draft[entry["name"]]
             renderer.write(
                 Text(
-                    f"  {index}. [{'✓' if enabled else '×'}] {entry['name']} · "
+                    f"  {position}. [{'✓' if enabled else '×'}] {entry['name']} · "
                     f"{'已启用' if enabled else '已禁用'}"
                 )
             )
@@ -307,7 +334,10 @@ def manage_skills(renderer: Any, skill_loader: Any) -> str | dict[str, Any]:
             if description:
                 renderer.write(Text(f"     {description}", style="dim"))
 
-        command = renderer.prompt("序号=切换状态，a=应用，q=退出")
+        command = renderer.prompt(
+            "序号=切换状态，a=应用，/关键词=搜索，c=清除搜索，"
+            "f all|on|off=过滤，q=退出"
+        )
         if command is None or command.strip().lower() in {"q", "quit", "exit"}:
             return "closed"
         command = command.strip()
@@ -331,11 +361,28 @@ def manage_skills(renderer: Any, skill_loader: Any) -> str | dict[str, Any]:
                 "enabled": enabled_count,
                 "disabled": len(changes) - enabled_count,
             }
-        index = _parse_index(command, len(entries))
+        if command.lower() == "c":
+            search = ""
+            continue
+        if command.startswith("/"):
+            search = command[1:].strip()
+            continue
+        if command.lower().startswith("f "):
+            value = command[2:].strip().lower()
+            if value in {"all", "全部"}:
+                status_filter = "all"
+            elif value in {"on", "enabled", "启用", "已启用"}:
+                status_filter = "enabled"
+            elif value in {"off", "disabled", "禁用", "已禁用"}:
+                status_filter = "disabled"
+            else:
+                renderer.notice("过滤参数应为 all、on 或 off。")
+            continue
+        index = _parse_index(command, len(visible_entries))
         if index is None:
             renderer.notice("无效序号。")
             continue
-        name = entries[index]["name"]
+        name = visible_entries[index][1]["name"]
         draft[name] = not draft[name]
 
 

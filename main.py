@@ -58,6 +58,7 @@ from utils.plan_mode import (
     is_plan_mode_command_allowed,
     PLAN_MODE_BLOCKLIST,
     PLAN_MODE_ALLOWED_COMMANDS,
+    toggle_plan_mode,
 )
 from system.stream_render import StreamRenderer
 from system.ts_validator import init_ts_cache
@@ -1068,6 +1069,48 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
     return None
 
 
+def _complete_simple_input(
+        text: str,
+        command_names: dict[str, str],
+) -> str | None:
+    if "\n" in text or not text.startswith("/"):
+        return None
+    if text.startswith("/cd "):
+        fragment = text[4:]
+        candidates = paths.directory_completion_candidates(
+            fragment,
+            paths.workdir(),
+        )
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return "/cd " + candidates[0]
+        common = os.path.commonprefix(candidates)
+        if len(common) > len(fragment):
+            return "/cd " + common
+        return None
+    if " " in text:
+        return None
+    matches = sorted(
+        name for name in command_names if name.startswith(text)
+    )
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0] + " "
+    common = os.path.commonprefix(matches)
+    if len(common) > len(text):
+        return common
+    return None
+
+
+def _toggle_plan_mode_message() -> str:
+    if toggle_plan_mode():
+        return "📋 Plan Mode 已启用（只允许只读和规划工具）"
+    render_current_task_plan(console)
+    return "✅ Plan Mode 已退出，所有工具已恢复"
+
+
 def _run_simple_main(
         history: list,
         command_handler: CommandHandler,
@@ -1095,7 +1138,7 @@ def _run_simple_main(
     post_tui(
         TuiRegion.CONTENT,
         "[#aaaaaa]提示：Enter 提交 · Ctrl+N 换行 · Ctrl+V/Ctrl+O 附加剪贴板图片；"
-        "也可直接粘贴图片文件路径。[/#aaaaaa]",
+        "也可直接粘贴图片文件路径 · Ctrl+P 切换计划/执行 · Tab 补全命令/目录。[/#aaaaaa]",
     )
 
     if prompt_for_workdir:
@@ -1138,6 +1181,11 @@ def _run_simple_main(
                 image_handler=_paste_image_from_system_clipboard,
                 image_display_handler=_display_input_images,
                 paste_handler=_paste_image_from_paste_text,
+                completion_handler=lambda value: _complete_simple_input(
+                    value,
+                    command_handler.get_slash_completion_commands(),
+                ),
+                ctrl_p_handler=_toggle_plan_mode_message,
             )
         except (EOFError, KeyboardInterrupt):
             post_tui(TuiRegion.CONTENT, "")
@@ -1335,6 +1383,15 @@ if __name__ == "__main__":
         conversation_store=CONVERSATION_STORE,
         auto_compact_fn=auto_compact,
         apply_workdir_fn=_apply_workdir,
+        conversation_title_regenerate_fn=lambda: _regenerate_conversation_title(history),
+        conversation_title_update_fn=CONVERSATION_STORE.update_title,
+        token_usage_provider=lambda: (
+            estimate_token_breakdown(
+                history,
+                tools_definition=get_current_tools_definition(),
+            ),
+            get_context_token_limit(),
+        ),
     )
 
     try:
