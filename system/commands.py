@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from init import log_error_traceback
+from init import log_error_traceback, resolve_chosen_workdir
 from system.cli import COMMAND_DESCRIPTIONS
 from system.console_render import render_content_assistant_message, render_current_task_plan, render_current_workdir, render_preview_user_message, toggle_sub_agent_console
 from system.models import get_model_manager
@@ -27,7 +27,7 @@ from tools.extra_tools import (
     is_understand_image_enabled,
     set_understand_image_config,
 )
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, prompt_workdir_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
+from system.tui_app import is_simple_mode, choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, prompt_workdir_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationListItem, ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -446,11 +446,19 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
 
     def handle_mcp_switch(self) -> bool:
         """处理 /mcp-switch 命令"""
-        self.console.print(
-            "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
-            "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，Enter/Space 切换状态，按 t 管理所选服务的工具，按 e 编辑配置；也可通过底部按钮添加服务、编辑配置、管理工具、确认应用或取消。[/#aaaaaa]",
-            tui_region=TuiRegion.BACKGROUND,
-        )
+        if is_simple_mode():
+            self.console.print(
+                "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
+                "[#aaaaaa]输入序号切换启用/禁用；t 序号管理工具；a 添加；"
+                "e 序号编辑；d 序号删除；y 应用；q 取消。[/#aaaaaa]",
+                tui_region=TuiRegion.BACKGROUND,
+            )
+        else:
+            self.console.print(
+                "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
+                "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，Enter/Space 切换状态，按 t 管理所选服务的工具，按 e 编辑配置；也可通过底部按钮添加服务、编辑配置、管理工具、确认应用或取消。[/#aaaaaa]",
+                tui_region=TuiRegion.BACKGROUND,
+            )
         try:
             server_switches = self.mcp_manager.list_server_switches()
         except FileNotFoundError:
@@ -1038,12 +1046,23 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
 
         raw_path = query.removeprefix("/cd").strip()
         if not raw_path:
-            if sys.platform in {"darwin", "win32"}:
+            if is_simple_mode():
+                choice = prompt_workdir_tui()
+                if choice == "abort":
+                    return False
+                raw_path = str(
+                    resolve_chosen_workdir(
+                        choice,
+                        Path(paths.workdir()).resolve(),
+                    )
+                )
+            elif sys.platform in {"darwin", "win32"}:
                 TUI_BRIDGE.open_directory_picker_for_input()
+                return False
             else:
                 self.console.print("[bold yellow]用法：/cd <目录路径>[/bold yellow]")
                 render_current_workdir()
-            return False
+                return False
         if (raw_path.startswith('"') and raw_path.endswith('"')) or (raw_path.startswith("'") and raw_path.endswith("'")):
             raw_path = raw_path[1:-1].strip()
 

@@ -1,12 +1,17 @@
 """纯终端渲染后端：不启动 Textual，按事件顺序把内容直接输出到 stdout。"""
 
+import shutil
+import sys
 import threading
 from typing import Any
 
 from rich.console import Console, RenderableType
+from rich.cells import cell_len
 from rich.errors import MarkupError
 from rich.text import Text
 
+from system import simple_management
+from system import simple_input
 from system.tui_types import TuiEvent, TuiRegion
 
 
@@ -31,6 +36,7 @@ class SimpleRenderer:
         self.console = console or Console()
         self._lock = threading.RLock()
         self._last_region: TuiRegion | None = None
+        self._history: list[str] = []
 
     def handle(self, event: TuiEvent) -> None:
         if event.region in _SUPPRESSED_REGIONS:
@@ -67,24 +73,32 @@ class SimpleRenderer:
             options: list[str],
             *,
             allow_custom: bool = False,
-            **_: Any,
+            delete_handler: Any = None,
+            preview_handler: Any = None,
+            search_texts: list[str] | None = None,
     ) -> str:
         with self._lock:
-            self.console.print()
-            self.console.print(Text(title, style="bold"))
-            for index, option in enumerate(options, 1):
-                self.console.print(Text(f"  {index}. {option}"))
-            if not options and not allow_custom:
-                return "<cancelled>"
-            if allow_custom:
-                self.console.print(
-                    Text(
-                        "输入序号选择，或直接输入自定义内容；空输入提交空值，Ctrl+C/Ctrl+D 取消。",
-                        style="dim",
-                    )
+            options = list(options)
+            search_texts = list(search_texts) if search_texts is not None else None
+            searchable = search_texts is not None
+            if simple_input.is_interactive() and not allow_custom:
+                return self._choose_interactive(
+                    title,
+                    options,
+                    delete_handler=delete_handler,
+                    preview_handler=preview_handler,
+                    search_texts=search_texts,
                 )
-            else:
-                self.console.print(Text("输入序号选择；Ctrl+C/Ctrl+D 取消。", style="dim"))
+            visible = list(range(len(options)))
+            self._render_choices(
+                title,
+                options,
+                visible,
+                allow_custom=allow_custom,
+                searchable=searchable,
+            )
+            if not options and not allow_custom and not searchable:
+                return "<cancelled>"
 
             while True:
                 answer = self._read_input("选择")
@@ -93,13 +107,382 @@ class SimpleRenderer:
                 answer = answer.strip()
                 if not answer:
                     return "<empty_input>" if allow_custom else "<cancelled>"
+                if (
+                    not searchable
+                    and not allow_custom
+                    and answer.lower() in {"q", "quit", "exit"}
+                ):
+                    return "<cancelled>"
+                if searchable:
+                    lowered = answer.lower()
+                    if lowered in {"q", "quit", "exit"}:
+                        return "<cancelled>"
+                    if answer.startswith("/"):
+                        tokens = answer[1:].strip().casefold().split()
+                        visible = [
+                            index
+                            for index in range(len(options))
+                            if all(
+                                token
+                                in (
+                                    search_texts[index]
+                                    if index < len(search_texts)
+                                    else ""
+                                ).casefold()
+                                for token in tokens
+                            )
+                        ]
+                        self._render_choices(
+                            title,
+                            options,
+                            visible,
+                            allow_custom=allow_custom,
+                            searchable=True,
+                        )
+                        continue
+                    parts = answer.split(maxsplit=1)
+                    operation = parts[0].lower()
+                    if operation in {"p", "d"} and len(parts) == 2:
+                        index = self._visible_choice(parts[1], visible)
+                        if index is None:
+                            self.console.print(Text("无效序号。", style="yellow"))
+                            continue
+                        if operation == "p":
+                            if preview_handler is None:
+                                self.console.print(Text("当前选择不支持预览。", style="yellow"))
+                                continue
+                            try:
+                                preview_title, content = preview_handler(options[index])
+                            except Exception as exc:
+                                self.console.print(Text(f"预览失败：{exc}", style="yellow"))
+                                continue
+                            self.console.print(Text(str(preview_title), style="bold"))
+                            self._print(content)
+                            continue
+                        if delete_handler is None:
+                            self.console.print(Text("当前选择不支持删除。", style="yellow"))
+                            continue
+                        confirm = self._read_input("确认删除？[y/N]")
+                        if confirm is None or confirm.strip().lower() not in {
+                            "y",
+                            "yes",
+                            "是",
+                        }:
+                            continue
+                        try:
+                            delete_handler(options[index])
+                        except Exception as exc:
+                            self.console.print(Text(f"删除失败：{exc}", style="yellow"))
+                            continue
+                        options.pop(index)
+                        if index < len(search_texts):
+                            search_texts.pop(index)
+                        visible = list(range(len(options)))
+                        self._render_choices(
+                            title,
+                            options,
+                            visible,
+                            allow_custom=allow_custom,
+                            searchable=True,
+                        )
+                        continue
                 if answer.isdigit():
-                    index = int(answer)
-                    if 1 <= index <= len(options):
-                        return options[index - 1]
+                    index = self._visible_choice(answer, visible)
+                    if index is not None:
+                        return options[index]
                 if allow_custom:
                     return answer
                 self.console.print(Text(f"无效选择：{answer}", style="yellow"))
+
+    def _render_choices(
+            self,
+            title: str,
+            options: list[str],
+            visible: list[int],
+            *,
+            allow_custom: bool,
+            searchable: bool,
+    ) -> None:
+        self.console.print()
+        self.console.print(Text(title, style="bold"))
+        for position, index in enumerate(visible, 1):
+            self.console.print(Text(f"  {position}. {options[index]}"))
+        if searchable:
+            self.console.print(
+                Text(
+                    "序号=选择；/关键词=搜索；p 序号=预览；d 序号=删除；q=取消。",
+                    style="dim",
+                )
+            )
+        elif allow_custom:
+            self.console.print(
+                Text(
+                    "输入序号选择，或直接输入自定义内容；空输入提交空值，Ctrl+C/Ctrl+D 取消。",
+                    style="dim",
+                )
+            )
+        else:
+            self.console.print(Text("输入序号选择；Ctrl+C/Ctrl+D 取消。", style="dim"))
+
+    @staticmethod
+    def _visible_choice(raw: str, visible: list[int]) -> int | None:
+        try:
+            position = int(raw.strip())
+        except (TypeError, ValueError):
+            return None
+        if 1 <= position <= len(visible):
+            return visible[position - 1]
+        return None
+
+    def _choose_interactive(
+            self,
+            title: str,
+            options: list[str],
+            *,
+            delete_handler: Any,
+            preview_handler: Any,
+            search_texts: list[str] | None,
+    ) -> str:
+        searchable = search_texts is not None
+        visible = list(range(len(options)))
+        selected = 0
+        buffer = ""
+        message = ""
+
+        with simple_input.raw_mode():
+            self._render_interactive_menu(title, options, visible, searchable)
+            self._write_interactive_status(
+                options,
+                visible,
+                selected,
+                buffer,
+                message,
+            )
+            while True:
+                key = simple_input.read_key()
+
+                if key in {"up", "left"}:
+                    if visible:
+                        selected = (selected - 1) % len(visible)
+                    buffer = ""
+                    message = ""
+                    self._write_interactive_status(
+                        options, visible, selected, buffer, message
+                    )
+                    continue
+
+                if key in {"down", "right"}:
+                    if visible:
+                        selected = (selected + 1) % len(visible)
+                    buffer = ""
+                    message = ""
+                    self._write_interactive_status(
+                        options, visible, selected, buffer, message
+                    )
+                    continue
+
+                if key in {"ctrl_c", "eof", "escape"}:
+                    self._end_interactive_status()
+                    return "<cancelled>"
+
+                if key == "ctrl_d":
+                    if not buffer:
+                        self._end_interactive_status()
+                        return "<cancelled>"
+                    continue
+
+                if key == "enter":
+                    if not buffer:
+                        if not visible:
+                            self._end_interactive_status()
+                            return "<cancelled>"
+                        self._end_interactive_status()
+                        return options[visible[selected]]
+
+                    command = buffer.strip()
+                    buffer = ""
+                    if not command:
+                        continue
+                    lowered = command.lower()
+                    if lowered in {"q", "quit", "exit"}:
+                        self._end_interactive_status()
+                        return "<cancelled>"
+
+                    if command.isdigit():
+                        index = self._visible_choice(command, visible)
+                        if index is not None:
+                            self._end_interactive_status()
+                            return options[index]
+                        message = "无效序号"
+                    elif searchable and command.startswith("/"):
+                        tokens = command[1:].strip().casefold().split()
+                        visible = [
+                            index
+                            for index in range(len(options))
+                            if all(
+                                token
+                                in (
+                                    search_texts[index]
+                                    if index < len(search_texts)
+                                    else ""
+                                ).casefold()
+                                for token in tokens
+                            )
+                        ]
+                        selected = 0
+                        message = ""
+                        self._end_interactive_status()
+                        self._render_interactive_menu(
+                            title, options, visible, searchable
+                        )
+                    elif searchable and command.split(maxsplit=1)[0].lower() in {
+                        "p",
+                        "d",
+                    }:
+                        parts = command.split(maxsplit=1)
+                        operation = parts[0].lower()
+                        if len(parts) < 2:
+                            message = f"用法：{operation} <序号>"
+                        else:
+                            index = self._visible_choice(parts[1], visible)
+                            if index is None:
+                                message = "无效序号"
+                            elif operation == "p":
+                                if preview_handler is None:
+                                    message = "当前选择不支持预览"
+                                else:
+                                    try:
+                                        preview_title, content = preview_handler(
+                                            options[index]
+                                        )
+                                    except Exception as exc:
+                                        message = f"预览失败：{exc}"
+                                    else:
+                                        message = ""
+                                        self._end_interactive_status()
+                                        self.console.print(
+                                            Text(str(preview_title), style="bold")
+                                        )
+                                        self._print(content)
+                                        self._render_interactive_menu(
+                                            title, options, visible, searchable
+                                        )
+                            else:
+                                if delete_handler is None:
+                                    message = "当前选择不支持删除"
+                                else:
+                                    self._end_interactive_status()
+                                    sys.stdout.write("确认删除？[y/N] ")
+                                    sys.stdout.flush()
+                                    confirm = simple_input.read_key()
+                                    sys.stdout.write("\n")
+                                    sys.stdout.flush()
+                                    if confirm in {"y", "Y"}:
+                                        try:
+                                            delete_handler(options[index])
+                                        except Exception as exc:
+                                            message = f"删除失败：{exc}"
+                                        else:
+                                            message = ""
+                                            options.pop(index)
+                                            if (
+                                                search_texts is not None
+                                                and index < len(search_texts)
+                                            ):
+                                                search_texts.pop(index)
+                                            visible = list(range(len(options)))
+                                            selected = 0
+                                    self._render_interactive_menu(
+                                        title, options, visible, searchable
+                                    )
+                    else:
+                        message = "无效选择"
+
+                    self._write_interactive_status(
+                        options, visible, selected, buffer, message
+                    )
+                    continue
+
+                if key == "backspace":
+                    if buffer:
+                        buffer = buffer[:-1]
+                    message = ""
+                    self._write_interactive_status(
+                        options, visible, selected, buffer, message
+                    )
+                    continue
+
+                if len(key) == 1 and key.isprintable():
+                    buffer += key
+                    message = ""
+                    self._write_interactive_status(
+                        options, visible, selected, buffer, message
+                    )
+
+    def _render_interactive_menu(
+            self,
+            title: str,
+            options: list[str],
+            visible: list[int],
+            searchable: bool,
+    ) -> None:
+        self.console.print()
+        self.console.print(Text(title, style="bold"))
+        if visible:
+            for position, index in enumerate(visible, 1):
+                self.console.print(Text(f"  {position}. {options[index]}"))
+        else:
+            self.console.print(Text("  （没有匹配项）", style="dim"))
+        if searchable:
+            hint = (
+                "↑/↓/←/→ 移动，Enter 选择；数字+Enter 直接选择；"
+                "/关键词 搜索；p 序号 预览；d 序号 删除；q 取消。"
+            )
+        else:
+            hint = "↑/↓/←/→ 移动，Enter 选择；数字+Enter 直接选择；q 取消。"
+        self.console.print(Text(hint, style="dim"))
+
+    def _write_interactive_status(
+            self,
+            options: list[str],
+            visible: list[int],
+            selected: int,
+            buffer: str,
+            message: str,
+    ) -> None:
+        if message:
+            text = f"⚠ {message}"
+        elif buffer:
+            text = f"> {buffer}"
+        elif visible:
+            text = (
+                f"选中 {selected + 1}/{len(visible)}: "
+                f"{options[visible[selected]]}"
+            )
+        else:
+            text = "选中: -"
+        width = max(shutil.get_terminal_size((80, 20)).columns - 1, 20)
+        sys.stdout.write("\r\x1b[2K" + self._truncate_status(text, width))
+        sys.stdout.flush()
+
+    @staticmethod
+    def _end_interactive_status() -> None:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _truncate_status(text: str, width: int) -> str:
+        if cell_len(text) <= width:
+            return text
+        result = []
+        cells = 0
+        for character in text:
+            character_width = cell_len(character)
+            if cells + character_width > width - 1:
+                break
+            result.append(character)
+            cells += character_width
+        return "".join(result) + "…"
 
     def choose_delegate_tasks(self, tasks: list[dict[str, str]]) -> str:
         with self._lock:
@@ -113,20 +496,15 @@ class SimpleRenderer:
                     )
                 )
                 self.console.print(Text(f"    {task.get('summary', '')}", style="dim"))
-            self.console.print(
-                Text("  1. 批准委派  2. 主智能体执行  3. 取消", style="dim")
+            choice = self.choose(
+                "请选择",
+                ["批准委派", "主智能体执行", "取消"],
             )
-            while True:
-                answer = self._read_input("选择")
-                if answer is None:
-                    return "cancel"
-                answer = answer.strip().lower()
-                if answer in {"1", "approve", "y", "yes"}:
-                    return "approve"
-                if answer in {"2", "orchestrator", "o"}:
-                    return "orchestrator"
-                if answer in {"3", "cancel", "n", "no", ""}:
-                    return "cancel"
+        if choice == "批准委派":
+            return "approve"
+        if choice == "主智能体执行":
+            return "orchestrator"
+        return "cancel"
 
     def prompt_workdir(self) -> str:
         from utils import paths
@@ -162,56 +540,55 @@ class SimpleRenderer:
         return "closed"
 
     def choose_add_model(self) -> dict[str, str] | None:
-        self.notice("简单模式暂不支持添加模型面板；请使用 TUI 模式或直接编辑模型配置文件。")
-        return None
+        return simple_management.choose_add_model(self)
 
     def choose_mcp_switch(
             self,
             server_switches: list[dict[str, Any]],
             mcp_manager: Any,
     ) -> str | dict:
-        self.notice("简单模式暂不支持 MCP 管理面板；可使用 /mcp-view 查看当前状态。")
-        return {"action": "cancel"}
+        return simple_management.choose_mcp_switch(
+            self,
+            server_switches,
+            mcp_manager,
+        )
 
     def manage_tasks(self, task_manager: Any) -> str:
         self.print_tasks(task_manager)
         return "closed"
 
     def show_copy_content(self, messages: list[dict[str, Any]]) -> str:
-        self.notice("简单模式暂不支持复制面板；可直接选择终端文本进行复制。")
-        return "<cancelled>"
+        return simple_management.show_copy_content(self, messages)
 
     def manage_models(self, model_manager: Any) -> str:
-        self.notice("简单模式暂不支持交互式模型管理面板；可使用 --models-list 查看当前配置。")
-        return "<cancelled>"
+        return simple_management.manage_models(self, model_manager)
 
     def manage_skills(self, skill_loader: Any) -> str | dict[str, Any]:
-        self.notice("简单模式暂不支持 Skills 配置面板；/skills-list 会打印当前启用的技能。")
-        return "<cancelled>"
+        return simple_management.manage_skills(self, skill_loader)
 
     def manage_layout(self) -> str | dict[str, int]:
-        self.notice("简单模式没有多面板布局，/layout 仅适用于 TUI 模式。")
-        return "<cancelled>"
+        return simple_management.manage_layout(self)
 
     def manage_memories(self, memory_provider: Any) -> list[str]:
-        self.notice("简单模式暂不支持记忆管理面板；请使用 /memory-list 查看长期记忆。")
-        return []
+        return simple_management.manage_memories(self, memory_provider)
 
     def manage_memory_config(self, values: dict[str, Any]) -> str | dict[str, Any]:
-        self.notice("简单模式暂不支持记忆配置面板。")
-        return "<cancelled>"
+        from system.models import get_model_manager
+
+        return simple_management.manage_memory_config(
+            self,
+            values,
+            get_model_manager(),
+        )
 
     def choose_recall_model(self, options: list[str]) -> str:
-        self.notice("简单模式暂不支持模型选择面板。")
-        return "<cancelled>"
+        return simple_management.choose_recall_model(self, options)
 
     def manage_extra_tools(self, values: dict[str, Any]) -> str | dict[str, Any]:
-        self.notice("简单模式暂不支持额外工具配置面板。")
-        return "<cancelled>"
+        return simple_management.manage_extra_tools(self, values)
 
     def choose_image_understanding_model(self, options: list[str]) -> str:
-        self.notice("简单模式暂不支持图片理解模型选择面板。")
-        return "<cancelled>"
+        return simple_management.choose_image_understanding_model(self, options)
 
     def print_tasks(self, task_manager: Any) -> None:
         task_table = task_manager.get_task_table()
@@ -246,12 +623,57 @@ class SimpleRenderer:
         with self._lock:
             self.console.print(Text(message, style="yellow"))
 
-    def _read_input(self, prompt: str) -> str | None:
+    def write(self, payload: Any) -> None:
+        with self._lock:
+            self._print(payload)
+
+    def prompt(
+            self,
+            label: str,
+            *,
+            default: str | None = None,
+            secret: bool = False,
+    ) -> str | None:
+        with self._lock:
+            interactive = simple_input.is_interactive()
+            suffix = (
+                ""
+                if interactive or default is None
+                else f" [{default}]"
+            )
+            answer = self._read_input(
+                f"{label}{suffix}",
+                default=default,
+                secret=secret,
+            )
+        if answer is None:
+            return None
+        answer = answer.strip()
+        if not answer and default is not None:
+            return default
+        return answer
+
+    def _read_input(
+            self,
+            prompt: str,
+            *,
+            default: str | None = None,
+            secret: bool = False,
+    ) -> str | None:
         try:
-            return input(f"{prompt}> ")
+            answer = simple_input.read_line(
+                f"{prompt}> ",
+                default=default,
+                history=[] if secret else self._history,
+                secret=secret,
+            )
         except (EOFError, KeyboardInterrupt):
             self.console.print()
             return None
+        if answer is not None and answer.strip() and not secret:
+            if not self._history or self._history[-1] != answer:
+                self._history.append(answer)
+        return answer
 
     def _print_region_label(self, region: TuiRegion) -> None:
         label = _REGION_LABELS.get(region)

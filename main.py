@@ -89,6 +89,7 @@ from utils.llm_client import (
 )
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
+from utils.terminal import set_terminal_title
 from utils.vision import (
     IMAGE_PLACEHOLDER_PATTERN,
     image_reference_marker,
@@ -739,6 +740,17 @@ def _get_current_conversation_title() -> str | None:
     return CONVERSATION_STORE.active_title or "未命名对话"
 
 
+def _terminal_title_supported() -> bool:
+    return bool(sys.stdout.isatty() or sys.stderr.isatty())
+
+
+def _update_terminal_title() -> None:
+    if not _terminal_title_supported():
+        return
+    title = _get_current_conversation_title()
+    set_terminal_title(f"MakeCode · {title}" if title else "MakeCode")
+
+
 def _refresh_workspace_state() -> None:
     from utils import memory as memory_module
     from utils import tasks as tasks_module
@@ -1032,6 +1044,7 @@ def _run_simple_main(
     """纯终端模式：不启动 Textual，按顺序把事件渲染到 stdout。"""
     import signal
 
+    from system.simple_input import read_line
     from system.stream_cancel import cancel_current_response, is_cancel_available
 
     def _handle_sigint(signum, frame) -> None:
@@ -1045,6 +1058,8 @@ def _run_simple_main(
         signal.signal(signal.SIGINT, _handle_sigint)
     except ValueError:
         pass
+
+    _update_terminal_title()
 
     if prompt_for_workdir:
         choice = prompt_workdir_tui()
@@ -1073,13 +1088,21 @@ def _run_simple_main(
         if loaded_history is not history:
             history[:] = loaded_history
         scroll_all_panes_to_bottom()
+        _update_terminal_title()
 
+    history_inputs: list[str] = []
     while True:
         try:
-            query = input("\nYou> ").strip()
+            raw_query = read_line("\nYou> ", history=history_inputs)
         except (EOFError, KeyboardInterrupt):
             post_tui(TuiRegion.CONTENT, "")
             break
+        if raw_query is None:
+            post_tui(TuiRegion.CONTENT, "")
+            break
+        query = raw_query.strip()
+        if query and (not history_inputs or history_inputs[-1] != query):
+            history_inputs.append(query)
         if not query:
             continue
         if query != "/flush":
@@ -1090,7 +1113,9 @@ def _run_simple_main(
         except KeyboardInterrupt:
             cancel_current_response()
             post_tui(TuiRegion.CONTENT, "[yellow]⚠️ 已取消当前响应[/yellow]")
+            _update_terminal_title()
             continue
+        _update_terminal_title()
         if result == "exit":
             break
 

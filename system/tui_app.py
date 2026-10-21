@@ -674,6 +674,10 @@ def enable_simple_mode() -> None:
         _SIMPLE_BACKEND = SimpleRenderer()
 
 
+def is_simple_mode() -> bool:
+    return _SIMPLE_BACKEND is not None
+
+
 class MakeCodeInput(ImageAwareTextArea):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         super().on_text_area_changed(event)
@@ -3398,6 +3402,9 @@ def choose_tui(
             title,
             options,
             allow_custom=allow_custom,
+            delete_handler=delete_handler,
+            preview_handler=preview_handler,
+            search_texts=search_texts,
         )
     return TUI_BRIDGE.choose(
         title,
