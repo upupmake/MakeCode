@@ -380,6 +380,30 @@ def test_arrow_escape_sequences_are_parsed():
     assert simple_input._parse_escape(b"\x1b[3~") == "delete"
 
 
+def test_image_placeholders_serialize_back_to_attachment_markers():
+    text = "看看 [图片：a.png] 和 [图片：b.png]"
+    entries = [
+        ("[图片：a.png]", "[[image:id=aaa]]"),
+        ("[图片：b.png]", "[[image:id=bbb]]"),
+    ]
+
+    assert simple_input._serialize_input(text, entries) == (
+        "看看 [[image:id=aaa]] 和 [[image:id=bbb]]"
+    )
+
+
+def test_deleted_image_placeholder_is_not_serialized():
+    text = "只看 [图片：b.png]"
+    entries = [
+        ("[图片：a.png]", "[[image:id=aaa]]"),
+        ("[图片：b.png]", "[[image:id=bbb]]"),
+    ]
+
+    assert simple_input._serialize_input(text, entries) == (
+        "只看 [[image:id=bbb]]"
+    )
+
+
 def test_choose_add_model_collects_fields(monkeypatch):
     renderer, _ = _make_renderer()
     _feed_inputs(

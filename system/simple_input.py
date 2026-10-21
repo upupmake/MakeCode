@@ -1,10 +1,23 @@
 """纯终端模式的方向键读取与行编辑。"""
 
 import os
+import re
 import sys
+from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from rich.cells import cell_len
+
+
+_IMAGE_DISPLAY_PLACEHOLDER_PATTERN = re.compile(r"\[图片：[^\]\n]+\]")
+_BRACKETED_PASTE_START = b"\x1b[200~"
+_BRACKETED_PASTE_END = b"\x1b[201~"
+
+
+@dataclass(frozen=True)
+class PasteEvent:
+    text: str
 
 
 def is_interactive() -> bool:
@@ -16,7 +29,17 @@ def is_interactive() -> bool:
     )
 
 
-def read_key() -> str:
+def _set_cbreak(fd: int) -> None:
+    import termios
+    import tty
+
+    tty.setcbreak(fd)
+    attributes = termios.tcgetattr(fd)
+    attributes[3] &= ~termios.IEXTEN
+    termios.tcsetattr(fd, termios.TCSADRAIN, attributes)
+
+
+def read_key() -> str | PasteEvent:
     if sys.platform == "win32":
         return _read_key_windows()
     return _read_key_posix()
@@ -28,19 +51,33 @@ def raw_mode():
         yield
         return
 
-    import termios
-    import tty
-
     fd = sys.stdin.fileno()
+    import termios
+
     old_settings = termios.tcgetattr(fd)
     try:
-        tty.setcbreak(fd)
-        yield
+        _set_cbreak(fd)
+        with bracketed_paste():
+            yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
-def _read_key_posix() -> str:
+@contextmanager
+def bracketed_paste():
+    if not is_interactive() or sys.platform == "win32":
+        yield
+        return
+    sys.stdout.write("\x1b[?2004h")
+    sys.stdout.flush()
+    try:
+        yield
+    finally:
+        sys.stdout.write("\x1b[?2004l")
+        sys.stdout.flush()
+
+
+def _read_key_posix() -> str | PasteEvent:
     fd = sys.stdin.fileno()
     first = os.read(fd, 1)
     if not first:
@@ -55,6 +92,12 @@ def _read_key_posix() -> str:
         return "ctrl_c"
     if first == b"\x04":
         return "ctrl_d"
+    if first == b"\x16":
+        return "ctrl_v"
+    if first == b"\x0e":
+        return "ctrl_n"
+    if first == b"\x0f":
+        return "ctrl_o"
     if first == b"\t":
         return "tab"
 
@@ -78,7 +121,7 @@ def _utf8_length(first_byte: int) -> int:
     return 1
 
 
-def _read_escape_sequence(fd: int) -> str:
+def _read_escape_sequence(fd: int) -> str | PasteEvent:
     import select
 
     sequence = b"\x1b"
@@ -92,7 +135,27 @@ def _read_escape_sequence(fd: int) -> str:
         sequence += next_byte
         if _escape_complete(sequence):
             break
+    if sequence == _BRACKETED_PASTE_START:
+        return _read_paste_payload(fd)
     return _parse_escape(sequence)
+
+
+def _read_paste_payload(fd: int) -> PasteEvent:
+    import select
+
+    data = bytearray()
+    while True:
+        ready, _, _ = select.select([fd], [], [], 1.0)
+        if not ready:
+            break
+        chunk = os.read(fd, 1)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if data.endswith(_BRACKETED_PASTE_END):
+            del data[-len(_BRACKETED_PASTE_END):]
+            break
+    return PasteEvent(data.decode("utf-8", errors="replace"))
 
 
 def _escape_complete(sequence: bytes) -> bool:
@@ -152,7 +215,7 @@ _WINDOWS_KEYS = {
 }
 
 
-def _read_key_windows() -> str:
+def _read_key_windows() -> str | PasteEvent:
     import msvcrt
 
     character = msvcrt.getwch()
@@ -166,6 +229,12 @@ def _read_key_windows() -> str:
         return "ctrl_c"
     if character == "\x04":
         return "ctrl_d"
+    if character == "\x16":
+        return "ctrl_v"
+    if character == "\x0e":
+        return "ctrl_n"
+    if character == "\x0f":
+        return "ctrl_o"
     if character == "\t":
         return "tab"
     return character
@@ -177,6 +246,13 @@ def read_line(
         default: str | None = None,
         history: list[str] | None = None,
         secret: bool = False,
+        multiline: bool = False,
+        continuation_prompt: str = "... ",
+        image_handler: Callable[[], str | None] | None = None,
+        image_display_handler: Callable[
+            [str], tuple[str, list[tuple[str, str]]]
+        ] | None = None,
+        paste_handler: Callable[[str], str | None] | None = None,
 ) -> str | None:
     if not is_interactive():
         try:
@@ -185,16 +261,36 @@ def read_line(
             return None
 
     if sys.platform == "win32":
-        return _edit_line(prompt, default, history, secret)
-
-    import termios
-    import tty
+        return _edit_line(
+            prompt,
+            default,
+            history,
+            secret,
+            multiline,
+            continuation_prompt,
+            image_handler,
+            image_display_handler,
+            paste_handler,
+        )
 
     fd = sys.stdin.fileno()
+    import termios
+
     old_settings = termios.tcgetattr(fd)
     try:
-        tty.setcbreak(fd)
-        return _edit_line(prompt, default, history, secret)
+        _set_cbreak(fd)
+        with bracketed_paste():
+            return _edit_line(
+                prompt,
+                default,
+                history,
+                secret,
+                multiline,
+                continuation_prompt,
+                image_handler,
+                image_display_handler,
+                paste_handler,
+            )
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -204,38 +300,162 @@ def _edit_line(
         default: str | None,
         history: list[str] | None,
         secret: bool,
+        multiline: bool,
+        continuation_prompt: str,
+        image_handler: Callable[[], str | None] | None,
+        image_display_handler: Callable[
+            [str], tuple[str, list[tuple[str, str]]]
+        ] | None,
+        paste_handler: Callable[[str], str | None] | None,
 ) -> str | None:
     buffer = list(default or "")
+    committed: list[str] = []
+    image_entries: list[tuple[str, str]] = []
     cursor = len(buffer)
     history = list(history or [])
     history_index = len(history)
     draft = ""
+    first_prompt = prompt.lstrip("\r\n")
+    current_prompt = first_prompt
+
+    def masked(text: str) -> str:
+        return "*" * len(text) if secret else text
 
     def redraw() -> None:
-        text = "*" * len(buffer) if secret else "".join(buffer)
-        prefix = "*" * cursor if secret else "".join(buffer[:cursor])
+        text = masked("".join(buffer))
+        prefix = masked("".join(buffer[:cursor]))
         back = cell_len(text) - cell_len(prefix)
-        sys.stdout.write("\r\x1b[2K" + prompt + text)
+        sys.stdout.write("\r\x1b[2K" + current_prompt + text)
         if back > 0:
             sys.stdout.write(f"\x1b[{back}D")
         sys.stdout.flush()
 
-    initial = "*" * len(buffer) if secret else "".join(buffer)
+    def full_text() -> str:
+        return "\n".join(committed + ["".join(buffer)])
+
+    def serialize() -> str:
+        return _serialize_input(full_text(), image_entries)
+
+    def notice(message: str) -> None:
+        sys.stdout.write("\r\x1b[2K" + message + "\n")
+        sys.stdout.write(current_prompt + masked("".join(buffer)))
+        sys.stdout.flush()
+
+    def insert_display(
+            display_text: str,
+            entries: list[tuple[str, str]],
+    ) -> None:
+        nonlocal cursor
+        display_text = (
+            display_text.replace("\r\n", "\n").replace("\r", "\n")
+        )
+        if "\n" in display_text:
+            display_text = display_text.replace("\n", " ")
+        current = "".join(buffer)
+        image_index = len(
+            _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.findall(current[:cursor])
+        )
+        buffer[cursor:cursor] = list(display_text)
+        cursor += len(display_text)
+        for offset, entry in enumerate(entries):
+            image_entries.insert(image_index + offset, entry)
+        redraw()
+
+    def insert_text(text: str) -> None:
+        nonlocal buffer, cursor, current_prompt
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not multiline:
+            insert_display(text.replace("\n", " "), [])
+            return
+        if "\n" not in text:
+            insert_display(text, [])
+            return
+        combined = "".join(buffer) + text
+        lines = combined.split("\n")
+        buffer = list(lines[0])
+        cursor = len(buffer)
+        redraw()
+        committed.extend(lines[:-1])
+        buffer = list(lines[-1])
+        cursor = len(buffer)
+        current_prompt = continuation_prompt
+        sys.stdout.write("\n")
+        for line in lines[1:-1]:
+            sys.stdout.write(masked(line) + "\n")
+        sys.stdout.write(current_prompt + masked("".join(buffer)))
+        sys.stdout.flush()
+
+    def insert_paste(payload: str) -> None:
+        handled = None
+        if paste_handler is not None:
+            try:
+                handled = paste_handler(payload)
+            except Exception as exc:
+                notice(f"粘贴处理失败：{exc}")
+                return
+        if handled == "":
+            return
+        if handled:
+            display_text, entries = _display_serialized(
+                handled, image_display_handler
+            )
+            insert_display(display_text, entries)
+            return
+        if image_display_handler is not None:
+            display_text, entries = _display_serialized(
+                payload, image_display_handler
+            )
+            if entries:
+                insert_display(display_text, entries)
+                return
+        insert_text(payload)
+
+    def load_serialized(serialized: str) -> None:
+        nonlocal buffer, cursor, committed, image_entries, current_prompt
+        display_text, entries = _display_serialized(
+            serialized, image_display_handler
+        )
+        display_text = (
+            display_text.replace("\r\n", "\n").replace("\r", "\n")
+        )
+        lines = display_text.split("\n")
+        committed = lines[:-1]
+        buffer = list(lines[-1])
+        cursor = len(buffer)
+        image_entries = list(entries)
+        current_prompt = continuation_prompt if committed else first_prompt
+        sys.stdout.write("\r\x1b[2K")
+        if committed:
+            sys.stdout.write(first_prompt + masked(lines[0]))
+            for line in lines[1:-1]:
+                sys.stdout.write("\n" + continuation_prompt + masked(line))
+            sys.stdout.write(
+                "\n" + continuation_prompt + masked(lines[-1])
+            )
+        else:
+            sys.stdout.write(first_prompt + masked(lines[0]))
+        sys.stdout.flush()
+
+    initial = masked("".join(buffer))
     sys.stdout.write(prompt + initial)
     sys.stdout.flush()
     while True:
         key = read_key()
 
+        if isinstance(key, PasteEvent):
+            insert_paste(key.text)
+            continue
+
         if key == "enter":
             sys.stdout.write("\n")
             sys.stdout.flush()
-            return "".join(buffer)
+            return serialize()
         if key == "ctrl_c":
             sys.stdout.write("\n")
             sys.stdout.flush()
             raise KeyboardInterrupt
         if key == "ctrl_d":
-            if not buffer:
+            if not buffer and not committed:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 return None
@@ -274,26 +494,46 @@ def _edit_line(
                 buffer.pop(cursor)
                 redraw()
             continue
+        if key == "ctrl_n":
+            if multiline:
+                committed.append("".join(buffer))
+                buffer = []
+                cursor = 0
+                current_prompt = continuation_prompt
+                sys.stdout.write("\n" + current_prompt)
+                sys.stdout.flush()
+            continue
+        if key in {"ctrl_v", "ctrl_o"}:
+            if image_handler is not None:
+                try:
+                    serialized = image_handler()
+                except Exception as exc:
+                    notice(f"附加图片失败：{exc}")
+                else:
+                    if serialized:
+                        display_text, entries = _display_serialized(
+                            serialized, image_display_handler
+                        )
+                        insert_display(display_text, entries)
+                    else:
+                        notice("剪贴板中没有可附加的图片或图片文件。")
+            continue
         if key == "up":
             if history:
                 if history_index == len(history):
-                    draft = "".join(buffer)
+                    draft = serialize()
                 if history_index > 0:
                     history_index -= 1
-                    buffer = list(history[history_index])
-                    cursor = len(buffer)
-                    redraw()
+                    load_serialized(history[history_index])
             continue
         if key == "down":
             if history:
                 if history_index < len(history) - 1:
                     history_index += 1
-                    buffer = list(history[history_index])
+                    load_serialized(history[history_index])
                 elif history_index == len(history) - 1:
                     history_index = len(history)
-                    buffer = list(draft)
-                cursor = len(buffer)
-                redraw()
+                    load_serialized(draft)
             continue
         if key in {"escape", "tab", "page_up", "page_down", "unknown"}:
             continue
@@ -302,3 +542,39 @@ def _edit_line(
             buffer.insert(cursor, key)
             cursor += 1
             redraw()
+
+
+def _serialize_input(
+        text: str,
+        entries: list[tuple[str, str]],
+) -> str:
+    if not entries:
+        return text
+    remaining = list(entries)
+    result: list[str] = []
+    position = 0
+    for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text):
+        result.append(text[position:match.start()])
+        for index, (placeholder, reference) in enumerate(remaining):
+            if placeholder == match.group(0):
+                result.append(reference)
+                del remaining[index]
+                break
+        else:
+            result.append(match.group(0))
+        position = match.end()
+    result.append(text[position:])
+    return "".join(result)
+
+
+def _display_serialized(
+        text: str,
+        handler: Callable[[str], tuple[str, list[tuple[str, str]]]] | None,
+) -> tuple[str, list[tuple[str, str]]]:
+    if handler is None:
+        return text, []
+    try:
+        display_text, entries = handler(text)
+    except Exception:
+        return text, []
+    return display_text, list(entries)

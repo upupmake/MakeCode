@@ -261,6 +261,14 @@ class SimpleRenderer:
             while True:
                 key = simple_input.read_key()
 
+                if isinstance(key, simple_input.PasteEvent):
+                    buffer += key.text.replace("\n", " ")
+                    message = ""
+                    self._write_interactive_status(
+                        options, visible, selected, buffer, message
+                    )
+                    continue
+
                 if key in {"up", "left"}:
                     if visible:
                         selected = (selected - 1) % len(visible)

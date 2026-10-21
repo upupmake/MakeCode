@@ -92,6 +92,7 @@ from utils import paths
 from utils.terminal import set_terminal_title
 from utils.vision import (
     IMAGE_PLACEHOLDER_PATTERN,
+    image_placeholder_text,
     image_reference_marker,
     parse_image_placeholders,
     remove_image_placeholders,
@@ -903,6 +904,21 @@ def _parse_input_images(text: str) -> tuple[str, list[dict[str, str]]]:
     return parse_image_placeholders(text, CONVERSATION_STORE.active_root)
 
 
+def _display_input_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+    if IMAGE_PLACEHOLDER_PATTERN.search(text) is None:
+        return text, []
+    try:
+        display_text, parts = _parse_input_images(text)
+    except (OSError, ValueError):
+        return text, []
+    entries = [
+        (image_placeholder_text(part), image_reference_marker(part))
+        for part in parts
+        if part.get("type") == "image"
+    ]
+    return display_text, entries
+
+
 def _store_clipboard_image(data: bytes, filename: str, media_type: str) -> str:
     _ensure_active_conversation()
     block = store_image_bytes_attachment(
@@ -934,6 +950,22 @@ def _paste_image_from_system_clipboard(paste_text: str | None = None) -> str | N
     extension = media_type.removeprefix("image/")
     filename = f"clipboard.{('jpg' if extension == 'jpeg' else extension)}"
     return _store_clipboard_image(data, filename, media_type)
+
+
+def _paste_image_from_paste_text(text: str) -> str | None:
+    lowered = text.lower()
+    looks_like_path = (
+        "file://" in lowered
+        or "/" in text
+        or "\\" in text
+        or any(
+            extension in lowered
+            for extension in (".png", ".jpg", ".jpeg", ".gif", ".webp")
+        )
+    )
+    if not looks_like_path:
+        return None
+    return _paste_image_from_system_clipboard(text)
 
 
 def _message_from_user_query(user_query: str) -> tuple[dict, str]:
@@ -1060,6 +1092,11 @@ def _run_simple_main(
         pass
 
     _update_terminal_title()
+    post_tui(
+        TuiRegion.CONTENT,
+        "[#aaaaaa]提示：Enter 提交 · Ctrl+N 换行 · Ctrl+V/Ctrl+O 附加剪贴板图片；"
+        "也可直接粘贴图片文件路径。[/#aaaaaa]",
+    )
 
     if prompt_for_workdir:
         choice = prompt_workdir_tui()
@@ -1093,7 +1130,15 @@ def _run_simple_main(
     history_inputs: list[str] = []
     while True:
         try:
-            raw_query = read_line("\nYou> ", history=history_inputs)
+            raw_query = read_line(
+                "\nYou> ",
+                history=history_inputs,
+                multiline=True,
+                continuation_prompt="...> ",
+                image_handler=_paste_image_from_system_clipboard,
+                image_display_handler=_display_input_images,
+                paste_handler=_paste_image_from_paste_text,
+            )
         except (EOFError, KeyboardInterrupt):
             post_tui(TuiRegion.CONTENT, "")
             break
