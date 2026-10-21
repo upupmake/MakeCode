@@ -833,6 +833,8 @@ python main.py --simple
 python main.py --simple --load
 ```
 
+旧终端会自动降级：`TERM=dumb` 使用纯 `input()` 和序号菜单，不发送 prompt_toolkit 的终端控制序列；`vt100` 等基础终端使用 ASCII 提示、16 色和按 Tab 触发的补全。也可用 `MAKECODE_SIMPLE_PROFILE=plain|basic|full` 手动指定。
+
 ### 6.5 内置快捷命令（Slash Commands）
 
 在交互式 CLI 中，支持输入斜杠 `/` 来触发快捷命令（带有输入补全提示）：

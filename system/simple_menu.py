@@ -13,17 +13,17 @@ from prompt_toolkit.layout import Dimension, FormattedTextControl, HSplit, Layou
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
 
+from system import simple_terminal
+
 
 _STYLE = Style.from_dict({
     "title": "bold",
     "selected": "reverse",
-    "dim": "fg:#888888",
-    "status": "fg:#aaaaaa",
-    "error": "fg:#ffaa00",
-    "hint": "fg:#666666",
+    "dim": "ansibrightblack",
+    "status": "ansibrightblack",
+    "error": "ansiyellow",
+    "hint": "ansibrightblack",
 })
-
-_MAX_VISIBLE = 12
 
 
 class ChoiceMenu:
@@ -51,6 +51,7 @@ class ChoiceMenu:
         self.offset = 0
         self.message = ""
         self.confirm_index: int | None = None
+        self.rows = max(3, simple_terminal.menu_rows())
         self.input_area: TextArea | None = None
         self._app: Application | None = None
 
@@ -60,6 +61,7 @@ class ChoiceMenu:
             input: Any = None,
             output: Any = None,
     ) -> str:
+        simple_terminal.prepare_prompt_toolkit()
         app = self._build_app(input=input, output=output)
         self._app = app
         try:
@@ -97,7 +99,7 @@ class ChoiceMenu:
         )
         list_window = Window(
             FormattedTextControl(self._render_list),
-            height=Dimension(min=1, max=_MAX_VISIBLE + 1),
+            height=Dimension(min=1, max=self.rows + 1),
             wrap_lines=True,
             dont_extend_height=True,
         )
@@ -142,11 +144,11 @@ class ChoiceMenu:
 
         @bindings.add("pageup")
         def _page_up(event) -> None:
-            self._move(-_MAX_VISIBLE)
+            self._move(-self.rows)
 
         @bindings.add("pagedown")
         def _page_down(event) -> None:
-            self._move(_MAX_VISIBLE)
+            self._move(self.rows)
 
         @bindings.add("c-c")
         def _cancel(event) -> None:
@@ -189,6 +191,7 @@ class ChoiceMenu:
             key_bindings=bindings,
             style=_STYLE,
             full_screen=False,
+            color_depth=simple_terminal.prompt_color_depth(),
             input=input,
             output=output,
         )
@@ -198,16 +201,24 @@ class ChoiceMenu:
             return [("class:dim", "  （没有匹配项）")]
         if self.selected < self.offset:
             self.offset = self.selected
-        elif self.selected >= self.offset + _MAX_VISIBLE:
-            self.offset = self.selected - _MAX_VISIBLE + 1
-        end = min(len(self.visible), self.offset + _MAX_VISIBLE)
+        elif self.selected >= self.offset + self.rows:
+            self.offset = self.selected - self.rows + 1
+        end = min(len(self.visible), self.offset + self.rows)
         lines: list[tuple[str, str]] = []
         if self.offset > 0:
-            lines.append(("class:dim", "  ↑ 还有更多\n"))
+            up = "^" if simple_terminal.ascii_ui() else "↑"
+            lines.append((
+                "class:dim",
+                f"  {up} 还有更多\n",
+            ))
         for position in range(self.offset, end):
             index = self.visible[position]
             style = "class:selected" if position == self.selected else ""
-            marker = "❯ " if position == self.selected else "  "
+            marker = (
+                simple_terminal.selected_marker()
+                if position == self.selected
+                else "  "
+            )
             lines.append((
                 style,
                 f"{marker}{position + 1}. {self.options[index]}",
@@ -215,7 +226,8 @@ class ChoiceMenu:
             if position != end - 1:
                 lines.append(("", "\n"))
         if end < len(self.visible):
-            lines.append(("class:dim", "\n  ↓ 还有更多"))
+            down = "v" if simple_terminal.ascii_ui() else "↓"
+            lines.append(("class:dim", f"\n  {down} 还有更多"))
         return lines
 
     def _render_status(self):
@@ -235,11 +247,14 @@ class ChoiceMenu:
     def _render_hint(self):
         if self.searchable:
             text = (
-                "↑/↓ 选择 · 数字+Enter · /关键词 · "
+                f"{simple_terminal.arrows_label()} 选择 · 数字+Enter · /关键词 · "
                 "p N 预览 · d N 删除 · q 取消"
             )
         else:
-            text = "↑/↓ 选择 · 数字+Enter · q 取消"
+            text = (
+                f"{simple_terminal.arrows_label()} 选择 · "
+                "数字+Enter · q 取消"
+            )
         return [("class:hint", text)]
 
     def _accept(self, buffer) -> None:

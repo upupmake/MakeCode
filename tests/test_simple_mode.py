@@ -12,6 +12,7 @@ import system.tui_app as tui_app
 import system.stream_render as stream_render
 import system.simple_input as simple_input
 from system import simple_prompt
+from system import simple_terminal
 from system import simple_management
 from system.models import ModelManager
 from system.stream_render import StreamRenderer
@@ -525,10 +526,54 @@ def test_slash_completer_suggests_cd_directories(tmp_path, monkeypatch):
 
 
 def test_read_prompt_falls_back_to_input(monkeypatch):
-    monkeypatch.setattr(simple_prompt, "is_interactive", lambda: False)
+    monkeypatch.setattr(
+        simple_prompt.simple_terminal,
+        "supports_prompt_toolkit",
+        lambda: False,
+    )
     monkeypatch.setattr("builtins.input", lambda prompt: "hello")
 
     assert simple_prompt.read_prompt("You> ") == "hello"
+
+
+def test_terminal_profile_plain_for_dumb_terminal(monkeypatch):
+    monkeypatch.setattr(simple_terminal, "is_interactive", lambda: True)
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("MAKECODE_SIMPLE_PROFILE", raising=False)
+
+    assert simple_terminal.profile() == "plain"
+    assert not simple_terminal.supports_prompt_toolkit()
+    assert simple_terminal.ascii_ui()
+
+
+def test_terminal_profile_override_and_full_terminal(monkeypatch):
+    monkeypatch.setattr(simple_terminal, "is_interactive", lambda: True)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("MAKECODE_SIMPLE_PROFILE", raising=False)
+
+    assert simple_terminal.profile() == "full"
+
+    monkeypatch.setenv("MAKECODE_SIMPLE_PROFILE", "plain")
+    assert simple_terminal.profile() == "plain"
+
+
+def test_terminal_profile_basic_uses_conservative_features(monkeypatch):
+    monkeypatch.setattr(simple_terminal, "is_interactive", lambda: True)
+    monkeypatch.setenv("TERM", "vt100")
+    monkeypatch.delenv("MAKECODE_SIMPLE_PROFILE", raising=False)
+    monkeypatch.delenv("PROMPT_TOOLKIT_NO_CPR", raising=False)
+
+    assert simple_terminal.profile() == "basic"
+    assert simple_terminal.supports_prompt_toolkit()
+    assert simple_terminal.ascii_ui()
+    assert not simple_terminal.live_completion()
+    assert not simple_terminal.show_bottom_toolbar()
+
+    try:
+        simple_terminal.prepare_prompt_toolkit()
+        assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+    finally:
+        os.environ.pop("PROMPT_TOOLKIT_NO_CPR", None)
 
 
 def test_read_input_uses_restored_pending_input(monkeypatch):
@@ -561,7 +606,11 @@ def test_read_prompt_uses_thread_inside_running_event_loop(monkeypatch):
             captured.update(kwargs)
             return "ok"
 
-    monkeypatch.setattr(simple_prompt, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        simple_prompt.simple_terminal,
+        "supports_prompt_toolkit",
+        lambda: True,
+    )
     monkeypatch.setattr(
         simple_prompt,
         "PromptSession",

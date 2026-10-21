@@ -15,10 +15,11 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
 from system.simple_input import (
+    _IMAGE_DISPLAY_PLACEHOLDER_PATTERN,
     _display_serialized,
     _serialize_input,
-    is_interactive,
 )
+from system import simple_terminal
 from utils import paths
 
 
@@ -68,6 +69,46 @@ def _build_key_bindings(
         image_entries: list[tuple[str, str]],
 ) -> KeyBindings:
     bindings = KeyBindings()
+
+    def placeholder_before_cursor() -> int:
+        line = get_app().current_buffer.document.current_line_before_cursor
+        for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(line):
+            if match.end() == len(line):
+                return len(match.group(0))
+        return 0
+
+    def placeholder_after_cursor() -> int:
+        line = get_app().current_buffer.document.current_line_after_cursor
+        match = _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.match(line)
+        return len(match.group(0)) if match else 0
+
+    @bindings.add(
+        "backspace",
+        filter=Condition(lambda: placeholder_before_cursor() > 0),
+    )
+    def _delete_placeholder_before(event) -> None:
+        event.current_buffer.delete_before_cursor(placeholder_before_cursor())
+
+    @bindings.add(
+        "delete",
+        filter=Condition(lambda: placeholder_after_cursor() > 0),
+    )
+    def _delete_placeholder_after(event) -> None:
+        event.current_buffer.delete(placeholder_after_cursor())
+
+    @bindings.add(
+        "left",
+        filter=Condition(lambda: placeholder_before_cursor() > 0),
+    )
+    def _skip_placeholder_left(event) -> None:
+        event.current_buffer.cursor_position -= placeholder_before_cursor()
+
+    @bindings.add(
+        "right",
+        filter=Condition(lambda: placeholder_after_cursor() > 0),
+    )
+    def _skip_placeholder_right(event) -> None:
+        event.current_buffer.cursor_position += placeholder_after_cursor()
 
     @bindings.add("enter", filter=~has_completions)
     def _submit(event) -> None:
@@ -191,61 +232,82 @@ def read_prompt(
         cancel_on_escape: bool = False,
         on_session_ready: Callable[[PromptSession], None] | None = None,
 ) -> str | None:
-    if not is_interactive():
+    if not simple_terminal.supports_prompt_toolkit():
         try:
             return input(prompt)
         except EOFError:
             return None
 
+    simple_terminal.prepare_prompt_toolkit()
     image_entries: list[tuple[str, str]] = []
-    bindings = _build_key_bindings(
-        multiline=multiline,
-        image_handler=image_handler,
-        image_display_handler=image_display_handler,
-        paste_handler=paste_handler,
-        ctrl_p_handler=ctrl_p_handler,
-        cancel_on_escape=cancel_on_escape,
-        image_entries=image_entries,
-    )
-
-    def continuation(width: int, line_number: int, is_soft_wrap: bool) -> str:
-        if is_soft_wrap:
-            return " " * width
-        return " " * width + continuation_prompt
-
-    toolbar = (
-        "Enter 提交 · Ctrl+N 换行 · ↑/↓ 跨行/历史 · Tab 补全"
-        if multiline
-        else "Enter 提交 · Tab 补全"
-    )
-    if path_completion:
-        completer = PathCompleter(
-            expanduser=True,
-            only_directories=True,
-            get_paths=lambda: [str(paths.workdir())],
-        )
-    else:
-        completer = SlashCompleter(completion_commands)
-
-    session = PromptSession(
-        message=prompt,
-        history=InMemoryHistory(history or []),
-        multiline=multiline,
-        is_password=secret,
-        key_bindings=bindings,
-        completer=completer,
-        complete_while_typing=bool(completion_commands or path_completion),
-        reserve_space_for_menu=6,
-        prompt_continuation=continuation if multiline else None,
-        bottom_toolbar=toolbar,
-    )
-    if on_session_ready is not None:
-        on_session_ready(session)
     try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        in_thread = False
-    else:
-        in_thread = True
-    text = session.prompt(default=default or "", in_thread=in_thread)
-    return _serialize_input(text, image_entries)
+        bindings = _build_key_bindings(
+            multiline=multiline,
+            image_handler=image_handler,
+            image_display_handler=image_display_handler,
+            paste_handler=paste_handler,
+            ctrl_p_handler=ctrl_p_handler,
+            cancel_on_escape=cancel_on_escape,
+            image_entries=image_entries,
+        )
+
+        def continuation(width: int, line_number: int, is_soft_wrap: bool) -> str:
+            if is_soft_wrap:
+                return " " * width
+            return " " * width + continuation_prompt
+
+        toolbar = (
+            "Enter 提交 · Ctrl+N 换行 · "
+            f"{simple_terminal.arrows_label()} 跨行/历史 · Tab 补全"
+            if multiline
+            else "Enter 提交 · Tab 补全"
+        )
+        if path_completion:
+            completer = PathCompleter(
+                expanduser=True,
+                only_directories=True,
+                get_paths=lambda: [str(paths.workdir())],
+            )
+        else:
+            completer = SlashCompleter(completion_commands)
+
+        session = PromptSession(
+            message=prompt,
+            history=InMemoryHistory(history or []),
+            multiline=multiline,
+            is_password=secret,
+            key_bindings=bindings,
+            completer=completer,
+            complete_while_typing=(
+                bool(completion_commands or path_completion)
+                and simple_terminal.live_completion()
+            ),
+            reserve_space_for_menu=(
+                6 if simple_terminal.profile_is_full() else 0
+            ),
+            prompt_continuation=continuation if multiline else None,
+            bottom_toolbar=(
+                toolbar if simple_terminal.show_bottom_toolbar() else None
+            ),
+        )
+        if on_session_ready is not None:
+            on_session_ready(session)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            in_thread = False
+        else:
+            in_thread = True
+        text = session.prompt(
+            default=default or "",
+            in_thread=in_thread,
+            color_depth=simple_terminal.prompt_color_depth(),
+        )
+        return _serialize_input(text, image_entries)
+    except (EOFError, KeyboardInterrupt):
+        raise
+    except Exception:
+        try:
+            return input(prompt)
+        except EOFError:
+            return None

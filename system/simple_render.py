@@ -15,6 +15,7 @@ from rich.text import Text
 from system import simple_input
 from system import simple_management
 from system import simple_prompt
+from system import simple_terminal
 from system.simple_menu import ChoiceMenu
 from system.tui_types import TuiEvent, TuiRegion
 
@@ -37,7 +38,7 @@ class SimpleRenderer:
     """把 TuiEvent 顺序渲染到普通终端。"""
 
     def __init__(self, console: Console | None = None) -> None:
-        self.console = console or Console()
+        self.console = console or simple_terminal.make_console()
         self._lock = threading.RLock()
         self._last_region: TuiRegion | None = None
         self._history: list[str] = []
@@ -94,7 +95,7 @@ class SimpleRenderer:
 
     @contextmanager
     def _prompt_stdout(self):
-        if not simple_input.is_interactive():
+        if not simple_terminal.supports_prompt_toolkit():
             yield
             return
         original_file = self.console.file
@@ -262,7 +263,7 @@ class SimpleRenderer:
             with self._lock:
                 self.console.print(
                     Text(
-                        "⌨️ 临时指令：Enter 提交 · Ctrl+N 换行 · Esc 取消",
+                        "临时指令：Enter 提交 · Ctrl+N 换行 · Esc 取消",
                         style="dim",
                     )
                 )
@@ -356,14 +357,24 @@ class SimpleRenderer:
             searchable = search_texts is not None
             if not options and not allow_custom and not searchable:
                 return "<cancelled>"
-            if simple_input.is_interactive() and not allow_custom:
-                return self._choose_interactive(
-                    title,
-                    options,
-                    delete_handler=delete_handler,
-                    preview_handler=preview_handler,
-                    search_texts=search_texts,
-                )
+            if simple_terminal.supports_prompt_toolkit() and not allow_custom:
+                try:
+                    return self._choose_interactive(
+                        title,
+                        options,
+                        delete_handler=delete_handler,
+                        preview_handler=preview_handler,
+                        search_texts=search_texts,
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    return "<cancelled>"
+                except Exception as exc:
+                    self.console.print(
+                        Text(
+                            f"菜单已降级为文本选择：{exc}",
+                            style="yellow",
+                        )
+                    )
             visible = list(range(len(options)))
             self._render_choices(
                 title,
@@ -683,10 +694,10 @@ class SimpleRenderer:
             label: str,
             *,
             default: str | None = None,
-            secret: bool = False,
+        secret: bool = False,
     ) -> str | None:
         with self._lock:
-            interactive = simple_input.is_interactive()
+            interactive = simple_terminal.supports_prompt_toolkit()
             suffix = (
                 ""
                 if interactive or default is None

@@ -860,6 +860,8 @@ python main.py --simple
 python main.py --simple --load
 ```
 
+Older terminals degrade automatically: `TERM=dumb` uses plain `input()` and numbered menus without prompt_toolkit control sequences; basic terminals such as `vt100` use ASCII hints, 16-color output, and Tab-triggered completion. Set `MAKECODE_SIMPLE_PROFILE=plain|basic|full` to override the detected profile.
+
 ### 6.5 Built-in Slash Commands
 
 In the interactive CLI, you can type `/` to trigger quick commands (with auto-completion support):

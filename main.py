@@ -744,6 +744,11 @@ def _get_current_conversation_title() -> str | None:
 
 
 def _terminal_title_supported() -> bool:
+    if cli_module.SIMPLE_MODE:
+        from system import simple_terminal
+
+        if not simple_terminal.supports_prompt_toolkit():
+            return False
     return bool(sys.stdout.isatty() or sys.stderr.isatty())
 
 
@@ -1085,6 +1090,7 @@ def _run_simple_main(
     """纯终端模式：不启动 Textual，按顺序把事件渲染到 stdout。"""
     import signal
 
+    from system import simple_terminal
     from system.stream_cancel import cancel_current_response, is_cancel_available
 
     def _handle_sigint(signum, frame) -> None:
@@ -1100,9 +1106,10 @@ def _run_simple_main(
         pass
 
     _update_terminal_title()
+    arrows = simple_terminal.arrows_label()
     post_tui(
         TuiRegion.CONTENT,
-        "[#aaaaaa]提示：Enter 提交 · Ctrl+N 换行 · ↑/↓ 跨行/历史 · "
+        f"[#aaaaaa]提示：Enter 提交 · Ctrl+N 换行 · {arrows} 跨行/历史 · "
         "Ctrl+V/Ctrl+O 附加剪贴板图片；"
         "也可直接粘贴图片文件路径 · Ctrl+P 切换计划/执行 · Tab 补全命令/目录 · "
         "Ctrl+C 取消输入 · Agent 运行时可 Ctrl+G 追加临时指令。[/#aaaaaa]",
