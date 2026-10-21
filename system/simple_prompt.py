@@ -9,7 +9,7 @@ from typing import Any
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app, run_in_terminal
 from prompt_toolkit.completion import Completer, Completion, PathCompleter
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, has_completions
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -69,9 +69,25 @@ def _build_key_bindings(
 ) -> KeyBindings:
     bindings = KeyBindings()
 
-    @bindings.add("enter")
+    @bindings.add("enter", filter=~has_completions)
     def _submit(event) -> None:
         event.current_buffer.validate_and_handle()
+
+    @bindings.add("enter", filter=has_completions)
+    def _complete_first(event) -> None:
+        buffer = event.current_buffer
+        state = buffer.complete_state
+        if state is None or not state.completions:
+            buffer.validate_and_handle()
+            return
+        completion = state.current_completion or state.completions[0]
+        if (
+            completion.text == buffer.text
+            and completion.start_position == -len(buffer.text)
+        ):
+            buffer.validate_and_handle()
+            return
+        buffer.apply_completion(completion)
 
     if multiline:
         @bindings.add("c-n")
