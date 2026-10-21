@@ -37,6 +37,7 @@ class SimpleRenderer:
         self._lock = threading.RLock()
         self._last_region: TuiRegion | None = None
         self._history: list[str] = []
+        self._input_clear: Any = None
         self._input_redraw: Any = None
 
     def handle(self, event: TuiEvent) -> None:
@@ -49,8 +50,11 @@ class SimpleRenderer:
                     self._last_region = None
                 return
 
+            clear = self._input_clear
             redraw = self._input_redraw
-            if redraw is not None:
+            if clear is not None:
+                clear()
+            elif redraw is not None:
                 sys.stdout.write("\r\x1b[2K")
                 sys.stdout.flush()
             self._render_event(event)
@@ -94,9 +98,14 @@ class SimpleRenderer:
         with self._lock:
             self._input_redraw = callback
 
+    def register_input_clear(self, callback: Any) -> None:
+        with self._lock:
+            self._input_clear = callback
+
     def read_input(self, prompt: str, **kwargs: Any) -> str | None:
         return simple_input.read_line(
             prompt,
+            input_clear_handler=self.register_input_clear,
             input_redraw_handler=self.register_input_redraw,
             input_lock=self._lock,
             **kwargs,

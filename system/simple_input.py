@@ -261,6 +261,9 @@ def read_line(
         input_redraw_handler: Callable[
             [Callable[[], None] | None], None
         ] | None = None,
+        input_clear_handler: Callable[
+            [Callable[[], None] | None], None
+        ] | None = None,
         input_lock: Any = None,
         completion_handler: Callable[[str], str | None] | None = None,
         ctrl_p_handler: Callable[[], str | None] | None = None,
@@ -284,6 +287,7 @@ def read_line(
                 image_display_handler,
                 paste_handler,
                 input_redraw_handler,
+                input_clear_handler,
                 input_lock,
                 completion_handler,
                 ctrl_p_handler,
@@ -307,6 +311,7 @@ def read_line(
                     image_display_handler,
                     paste_handler,
                     input_redraw_handler,
+                    input_clear_handler,
                     input_lock,
                     completion_handler,
                     ctrl_p_handler,
@@ -316,6 +321,8 @@ def read_line(
     finally:
         if input_redraw_handler is not None:
             input_redraw_handler(None)
+        if input_clear_handler is not None:
+            input_clear_handler(None)
 
 
 def _edit_line(
@@ -331,6 +338,9 @@ def _edit_line(
         ] | None,
         paste_handler: Callable[[str], str | None] | None,
         input_redraw_handler: Callable[
+            [Callable[[], None] | None], None
+        ] | None,
+        input_clear_handler: Callable[
             [Callable[[], None] | None], None
         ] | None,
         input_lock: Any,
@@ -368,6 +378,33 @@ def _edit_line(
             output += f"\x1b[{back}D"
         write(output)
 
+    def clear_input() -> None:
+        if committed:
+            write(f"\r\x1b[{len(committed)}A\r\x1b[J")
+        else:
+            write("\r\x1b[J")
+
+    def redraw_all() -> None:
+        if not committed:
+            text = masked("".join(buffer))
+            suffix = masked("".join(buffer[cursor:]))
+            output = first_prompt + text
+            if suffix:
+                output += f"\x1b[{cell_len(suffix)}D"
+            write(output)
+            return
+
+        output = [first_prompt + masked(committed[0])]
+        for line in committed[1:]:
+            output.append("\n" + continuation_prompt + masked(line))
+        output.append(
+            "\n" + continuation_prompt + masked("".join(buffer))
+        )
+        suffix = masked("".join(buffer[cursor:]))
+        if suffix:
+            output.append(f"\x1b[{cell_len(suffix)}D")
+        write("".join(output))
+
     def full_text() -> str:
         return "\n".join(committed + ["".join(buffer)])
 
@@ -375,13 +412,9 @@ def _edit_line(
         return _serialize_input(full_text(), image_entries)
 
     def notice(message: str) -> None:
-        write(
-            "\r\x1b[2K"
-            + message
-            + "\n"
-            + current_prompt
-            + masked("".join(buffer))
-        )
+        clear_input()
+        write(message + "\n")
+        redraw_all()
 
     def insert_display(
             display_text: str,
@@ -461,12 +494,13 @@ def _edit_line(
             display_text.replace("\r\n", "\n").replace("\r", "\n")
         )
         lines = display_text.split("\n")
+        clear_input()
         committed = lines[:-1]
         buffer = list(lines[-1])
         cursor = len(buffer)
         image_entries = list(entries)
         current_prompt = continuation_prompt if committed else first_prompt
-        output = ["\r\x1b[2K"]
+        output = []
         if committed:
             output.append(first_prompt + masked(lines[0]))
             for line in lines[1:-1]:
@@ -485,13 +519,17 @@ def _edit_line(
         sys.stdout.write(prompt + initial)
         sys.stdout.flush()
         if input_redraw_handler is not None:
-            input_redraw_handler(redraw)
+            input_redraw_handler(redraw_all)
+        if input_clear_handler is not None:
+            input_clear_handler(clear_input)
     else:
         with input_lock:
             sys.stdout.write(prompt + initial)
             sys.stdout.flush()
             if input_redraw_handler is not None:
-                input_redraw_handler(redraw)
+                input_redraw_handler(redraw_all)
+            if input_clear_handler is not None:
+                input_clear_handler(clear_input)
     while True:
         key = read_key()
 
@@ -537,6 +575,22 @@ def _edit_line(
                 buffer.pop(cursor - 1)
                 cursor -= 1
                 redraw()
+            elif committed:
+                previous = committed.pop()
+                buffer = list(previous) + buffer
+                cursor = len(previous)
+                current_prompt = (
+                    continuation_prompt if committed else first_prompt
+                )
+                suffix = masked("".join(buffer[cursor:]))
+                output = (
+                    "\r\x1b[1A\r\x1b[J"
+                    + current_prompt
+                    + masked("".join(buffer))
+                )
+                if suffix:
+                    output += f"\x1b[{cell_len(suffix)}D"
+                write(output)
             continue
         if key == "delete":
             if cursor < len(buffer):

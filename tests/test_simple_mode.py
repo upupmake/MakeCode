@@ -472,6 +472,34 @@ def test_complete_simple_input_for_cd_directories(tmp_path, monkeypatch):
     assert main._complete_simple_input("/cd al", {}) == "/cd alpha/"
 
 
+def test_backspace_removes_multiline_newline(monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    keys = iter(
+        ["l", "i", "n", "e", "1", "ctrl_n", "backspace", "X", "enter"]
+    )
+    monkeypatch.setattr(simple_input, "read_key", lambda: next(keys))
+
+    result = simple_input._edit_line(
+        "You> ",
+        None,
+        [],
+        False,
+        True,
+        "...> ",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+    assert result == "line1X"
+
+
 def test_choose_add_model_collects_fields(monkeypatch):
     renderer, _ = _make_renderer()
     _feed_inputs(
