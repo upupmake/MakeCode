@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import nullcontext
 from io import StringIO
 from types import SimpleNamespace
@@ -490,7 +491,9 @@ def test_complete_simple_input_for_cd_directories(tmp_path, monkeypatch):
     (tmp_path / "alpha").mkdir()
     monkeypatch.setattr("main.paths.workdir", lambda: tmp_path)
 
-    assert main._complete_simple_input("/cd al", {}) == "/cd alpha/"
+    assert main._complete_simple_input("/cd al", {}) == (
+        f"/cd alpha{os.sep}"
+    )
 
 
 def test_backspace_removes_multiline_newline(monkeypatch):
