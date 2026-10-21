@@ -156,23 +156,30 @@ def finalize_release(token: str, current_tag: str):
     print(f"   [OK] {release_line} 版本线内的旧 Release 已删除")
 
 
-def create_release(token: str, tag: str, name: str, body: str) -> dict:
+def create_release(
+    token: str,
+    tag: str,
+    name: str,
+    body: str,
+    *,
+    prerelease: bool = False,
+) -> dict:
     """创建 GitHub Release。"""
     payload = {
         "tag_name": tag,
         "name": name,
         "body": body,
         "draft": False,
-        "prerelease": False,
+        "prerelease": prerelease,
         "make_latest": "false",
     }
     return github_request(token, "POST", "/releases", payload)
 
 
-def get_release_body(log_path: Path) -> str:
+def get_release_body(log_path: Path, version: str) -> str:
     """生成 markdown 格式的 Release 介绍内容。"""
     release_log = log_path.read_text(encoding="utf-8").strip()
-    lines = [f"## MakeCode {CURRENT_VERSION}", ""]
+    lines = [f"## MakeCode {version}", ""]
     if release_log:
         lines.extend([
             "**发布日志**:",
@@ -196,6 +203,11 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--tag",
+        metavar="TAG",
+        help="发布 tag；默认使用 version.py 中的 CURRENT_VERSION",
+    )
+    parser.add_argument(
         "--finalize-release",
         metavar="CURRENT_TAG",
         help="资产上传成功后设为 latest，并清理同一次版本线内的旧版本",
@@ -203,7 +215,8 @@ def main():
     args = parser.parse_args()
 
     token = get_token()
-    tag = f"v{CURRENT_VERSION}"
+    tag = args.tag or f"v{CURRENT_VERSION}"
+    version = tag[1:] if tag.startswith("v") else tag
     if args.finalize_release:
         if args.finalize_release != tag:
             parser.error(
@@ -220,7 +233,7 @@ def main():
         sys.exit(1)
 
     # 生成 Release 介绍内容
-    body = get_release_body(log_path)
+    body = get_release_body(log_path, version)
 
     # 创建新 Release
     print(f"[创建] Release {tag}...")
@@ -229,10 +242,14 @@ def main():
         tag=tag,
         name=tag,
         body=body,
+        prerelease="-" in version,
     )
     print(f"   Release ID: {release['id']}")
     print(f"   URL: {release['html_url']}")
-    print("   Release 暂不设为 latest；Windows/macOS/Linux ZIP 和 version.json 将由 GitHub Actions 生成并上传")
+    if "-" in version:
+        print("   实验版 Release 将保持 prerelease，不更新 latest")
+    else:
+        print("   Release 暂不设为 latest；Windows/macOS/Linux ZIP 和 version.json 将由 GitHub Actions 生成并上传")
 
     print()
     print(f"[OK] GitHub Release 发布成功！")
