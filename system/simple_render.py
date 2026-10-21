@@ -100,7 +100,7 @@ class SimpleRenderer:
             return
         original_file = self.console.file
         with patch_stdout(raw=True):
-            self.console.file = sys.stdout
+            self.console.file = simple_terminal.safe_output(sys.stdout)
             try:
                 yield
             finally:

@@ -1269,6 +1269,10 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
         return True
 
     def _reset_hitl_session(self) -> None:
+        if is_simple_mode():
+            hitl_mod.SESSION_WHITELIST.clear()
+            hitl_mod.PATH_WHITELIST.clear()
+            return
         if not hitl_mod.get_hitl_status():
             hitl_mod.toggle_hitl(enabled=True)
             self.console.print("[#aaaaaa]🛡️ Human-in-the-Loop 已恢复为开启状态[/#aaaaaa]")

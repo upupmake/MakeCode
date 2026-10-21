@@ -91,7 +91,12 @@ class ChoiceMenu:
 
         title_window = Window(
             FormattedTextControl(
-                lambda: [("class:title", self.title)],
+                lambda: [
+                    (
+                        "class:title",
+                        simple_terminal.sanitize_icons(self.title),
+                    )
+                ],
             ),
             height=Dimension(min=1, max=3),
             wrap_lines=True,
@@ -221,7 +226,8 @@ class ChoiceMenu:
             )
             lines.append((
                 style,
-                f"{marker}{position + 1}. {self.options[index]}",
+                f"{marker}{position + 1}. "
+                f"{simple_terminal.sanitize_icons(self.options[index])}",
             ))
             if position != end - 1:
                 lines.append(("", "\n"))
@@ -234,14 +240,17 @@ class ChoiceMenu:
         if self.confirm_index is not None:
             return [("class:error", "确认删除？[y/N]")]
         if self.message:
-            return [("class:error", f"⚠ {self.message}")]
+            return [(
+                "class:error",
+                simple_terminal.sanitize_icons(f"⚠ {self.message}"),
+            )]
         if not self.visible:
             return [("class:dim", "没有匹配项")]
         index = self.visible[self.selected]
         return [(
             "class:status",
             f"选中 {self.selected + 1}/{len(self.visible)}: "
-            f"{self.options[index]}",
+            f"{simple_terminal.sanitize_icons(self.options[index])}",
         )]
 
     def _render_hint(self):

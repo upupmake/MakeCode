@@ -140,11 +140,18 @@ def test_choose_tui_routes_to_simple_backend(monkeypatch):
 
 
 def test_enable_simple_mode_creates_backend(monkeypatch):
+    from utils import hitl
+
     monkeypatch.setattr(tui_app, "_SIMPLE_BACKEND", None)
+    hitl.toggle_hitl(enabled=True)
 
-    tui_app.enable_simple_mode()
+    try:
+        tui_app.enable_simple_mode()
 
-    assert isinstance(tui_app._SIMPLE_BACKEND, SimpleRenderer)
+        assert isinstance(tui_app._SIMPLE_BACKEND, SimpleRenderer)
+        assert not hitl.get_hitl_status()
+    finally:
+        hitl.toggle_hitl(enabled=True)
 
 
 def test_stream_renderer_outputs_completed_blocks_through_simple_backend(monkeypatch):
@@ -574,6 +581,21 @@ def test_terminal_profile_basic_uses_conservative_features(monkeypatch):
         assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
     finally:
         os.environ.pop("PROMPT_TOOLKIT_NO_CPR", None)
+
+
+def test_windows_uses_ascii_icons_and_safe_output(monkeypatch):
+    monkeypatch.setattr(simple_terminal.sys, "platform", "win32")
+    monkeypatch.delenv("MAKECODE_SIMPLE_UNICODE", raising=False)
+
+    assert simple_terminal.ascii_ui()
+    assert simple_terminal.sanitize_icons(
+        "🛠️ Tool ✅ ─╭❯"
+    ) == "[tool] Tool [ok] -+>"
+
+    stream = StringIO()
+    output = simple_terminal.safe_output(stream)
+    output.write("🧠 Reasoning")
+    assert stream.getvalue() == "[reasoning] Reasoning"
 
 
 def test_read_input_uses_restored_pending_input(monkeypatch):

@@ -681,8 +681,10 @@ def enable_simple_mode() -> None:
     global _SIMPLE_BACKEND
     if _SIMPLE_BACKEND is None:
         from system.simple_render import SimpleRenderer
+        from utils import hitl
 
         _SIMPLE_BACKEND = SimpleRenderer()
+        hitl.toggle_hitl(enabled=False)
 
 
 def is_simple_mode() -> bool:

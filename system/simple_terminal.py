@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 
@@ -12,6 +13,108 @@ _PROFILE_FULL = "full"
 
 _VALID_PROFILES = {_PROFILE_PLAIN, _PROFILE_BASIC, _PROFILE_FULL}
 _UTF8_ENCODINGS = {"utf-8", "utf8", "cp65001"}
+
+_ICON_TRANSLATIONS = {
+    "🛠": "[tool]",
+    "🧠": "[reasoning]",
+    "✅": "[ok]",
+    "✓": "[ok]",
+    "✔": "[ok]",
+    "☑": "[ok]",
+    "❌": "[x]",
+    "✖": "[x]",
+    "✗": "[x]",
+    "⚠": "[warn]",
+    "📂": "[dir]",
+    "📁": "[dir]",
+    "📄": "[file]",
+    "🧾": "[log]",
+    "🌳": "[tree]",
+    "🔄": "[sync]",
+    "💡": "[tip]",
+    "👋": "[bye]",
+    "⌨": "[key]",
+    "🔧": "[tool]",
+    "📌": "[pin]",
+    "🧩": "[layout]",
+    "📚": "[skills]",
+    "🔌": "[mcp]",
+    "🔍": "[search]",
+    "📝": "[edit]",
+    "🗑": "[del]",
+    "💾": "[save]",
+    "📋": "[copy]",
+    "🆕": "[new]",
+    "🚀": "[run]",
+    "🔥": "[hot]",
+    "🎉": "[ok]",
+    "⏳": "[wait]",
+    "⌛": "[wait]",
+    "⚙": "[cfg]",
+    "⚡": "[fast]",
+    "🔗": "[link]",
+    "🔒": "[lock]",
+    "🔓": "[unlock]",
+    "▶": ">",
+    "◀": "<",
+    "▸": ">",
+    "◂": "<",
+    "➜": ">",
+    "→": ">",
+    "←": "<",
+    "↑": "^",
+    "↓": "v",
+    "↔": "<->",
+    "↩": "<-",
+    "⟳": "[sync]",
+    "❯": ">",
+    "●": "*",
+    "○": "o",
+    "★": "*",
+    "☆": "*",
+    "♥": "*",
+    "■": "#",
+    "□": "[]",
+    "▪": "-",
+    "▫": "-",
+    "•": "*",
+    "·": "-",
+    "…": "...",
+    "—": "-",
+    "–": "-",
+    "×": "x",
+    "≤": "<=",
+    "≥": ">=",
+    "\u00a0": " ",
+    "\ufe0e": "",
+    "\ufe0f": "",
+    "\u200d": "",
+    "\u200b": "",
+    "\u20e3": "",
+}
+
+_BOX_TRANSLATIONS = {
+    **{character: "+" for character in "╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬"},
+    **{character: "-" for character in "─━═"},
+    **{character: "|" for character in "│┃║"},
+}
+
+_ICON_TRANSLATION_TABLE = str.maketrans({
+    **_ICON_TRANSLATIONS,
+    **_BOX_TRANSLATIONS,
+})
+
+_ICON_RANGES = re.compile(
+    "["
+    "\u2190-\u21ff"
+    "\u2300-\u23ff"
+    "\u2500-\u27bf"
+    "\u2b00-\u2bff"
+    "\ufe0e\ufe0f"
+    "\u200d\u200b\u20e3"
+    "\U0001f000-\U0001faff"
+    "]"
+)
 
 
 def is_interactive() -> bool:
@@ -71,6 +174,10 @@ def supports_prompt_toolkit() -> bool:
 
 
 def ascii_ui() -> bool:
+    if os.environ.get("MAKECODE_SIMPLE_UNICODE") == "1":
+        return False
+    if sys.platform == "win32":
+        return True
     if profile() != _PROFILE_FULL:
         return True
     encoding = (sys.stdout.encoding or "").lower().replace("-", "")
@@ -121,13 +228,15 @@ def prompt_color_depth():
 def make_console():
     from rich.console import Console
 
+    output = safe_output(sys.stdout)
     if no_color():
-        return Console(color_system=None, no_color=True)
+        return Console(file=output, color_system=None, no_color=True)
     if profile() != _PROFILE_FULL:
         return Console(
+            file=output,
             color_system="windows" if sys.platform == "win32" else "standard"
         )
-    return Console()
+    return Console(file=output)
 
 
 def selected_marker() -> str:
@@ -136,3 +245,38 @@ def selected_marker() -> str:
 
 def arrows_label() -> str:
     return "Up/Down" if ascii_ui() else "↑/↓"
+
+
+def _replace_icon(match: re.Match[str]) -> str:
+    character = match.group(0)
+    if character in _ICON_TRANSLATIONS:
+        return _ICON_TRANSLATIONS[character]
+    if character in _BOX_TRANSLATIONS:
+        return _BOX_TRANSLATIONS[character]
+    return ""
+
+
+def sanitize_icons(text: str) -> str:
+    if not ascii_ui():
+        return text
+    text = text.translate(_ICON_TRANSLATION_TABLE)
+    return _ICON_RANGES.sub(_replace_icon, text)
+
+
+class _AsciiOutput:
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    def write(self, text):
+        return self._stream.write(sanitize_icons(text))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def safe_output(stream):
+    if not ascii_ui():
+        return stream
+    if isinstance(stream, _AsciiOutput):
+        return stream
+    return _AsciiOutput(stream)

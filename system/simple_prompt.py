@@ -52,7 +52,9 @@ class SlashCompleter(Completer):
                     command,
                     start_position=-len(text),
                     display=command,
-                    display_meta=self._commands[command],
+                    display_meta=simple_terminal.sanitize_icons(
+                        self._commands[command]
+                    ),
                 )
 
 
@@ -272,7 +274,7 @@ def read_prompt(
             completer = SlashCompleter(completion_commands)
 
         session = PromptSession(
-            message=prompt,
+            message=simple_terminal.sanitize_icons(prompt),
             history=InMemoryHistory(history or []),
             multiline=multiline,
             is_password=secret,

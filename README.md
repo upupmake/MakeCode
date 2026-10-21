@@ -833,7 +833,7 @@ python main.py --simple
 python main.py --simple --load
 ```
 
-旧终端会自动降级：`TERM=dumb` 使用纯 `input()` 和序号菜单，不发送 prompt_toolkit 的终端控制序列；`vt100` 等基础终端使用 ASCII 提示、16 色和按 Tab 触发的补全。也可用 `MAKECODE_SIMPLE_PROFILE=plain|basic|full` 手动指定。
+旧终端会自动降级：`TERM=dumb` 使用纯 `input()` 和序号菜单，不发送 prompt_toolkit 的终端控制序列；`vt100` 等基础终端使用 ASCII 提示、16 色和按 Tab 触发的补全。也可用 `MAKECODE_SIMPLE_PROFILE=plain|basic|full` 手动指定。Windows 默认把 emoji/图标转换为 `[tool]`、`[ok]` 等 ASCII 标记；如需保留 Unicode 图标，设置 `MAKECODE_SIMPLE_UNICODE=1`。
 
 ### 6.5 内置快捷命令（Slash Commands）
 
