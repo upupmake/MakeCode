@@ -238,7 +238,7 @@ def test_conversation_store_rejects_legacy_checkpoint_arrays(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_text("[]", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Invalid 6.0 conversation data"):
+    with pytest.raises(ValueError, match=r"Invalid 6.0 conversation data"):
         ConversationStore(tmp_path / "conversations").load(path)
 
 
@@ -348,7 +348,7 @@ def test_conversation_store_rejects_manifest_outside_its_root(tmp_path):
     outside_store = ConversationStore(tmp_path / "other")
     outside_path = outside_store.save_messages([{"role": "system", "content": "system"}])
 
-    with pytest.raises(ValueError, match="Invalid 6.0 conversation path"):
+    with pytest.raises(ValueError, match=r"Invalid 6.0 conversation path"):
         store.load(outside_path)
 
 
@@ -363,9 +363,9 @@ def test_conversation_store_rejects_symlinked_storage_root(tmp_path):
     store = ConversationStore(linked_root)
     linked_path = linked_root / outside_path.parent.name / CONVERSATION_FILE
 
-    with pytest.raises(ValueError, match="Invalid 6.0 conversation root"):
+    with pytest.raises(ValueError, match=r"Invalid 6.0 conversation root"):
         store.save_messages([{"role": "system", "content": "new"}])
-    with pytest.raises(ValueError, match="Invalid 6.0 conversation root"):
+    with pytest.raises(ValueError, match=r"Invalid 6.0 conversation root"):
         store.delete(linked_path)
 
     assert outside_path.exists()

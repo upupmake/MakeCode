@@ -218,10 +218,12 @@ class TeammateManager:
     async def _save_history(self, lock: asyncio.Lock):
         """写入时加锁，保证多子节点并发完成时不会写坏文件"""
         self._validate_storage_paths()
+        history_path = self.history_path
+        assert history_path is not None
         async with lock:
-            self.history_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.history_path.with_name(
-                f".{self.history_path.name}.{uuid.uuid4().hex}.tmp"
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = history_path.with_name(
+                f".{history_path.name}.{uuid.uuid4().hex}.tmp"
             )
             async with aiofiles.open(temporary, "w", encoding="utf-8") as f:
                 await f.write(json.dumps({
@@ -229,7 +231,7 @@ class TeammateManager:
                     "conversation_id": self.conversation_id,
                     "records": self.history,
                 }, ensure_ascii=False, indent=2))
-            temporary.replace(self.history_path)
+            temporary.replace(history_path)
 
     def _validate_storage_paths(self) -> None:
         if (
@@ -340,12 +342,16 @@ class TeammateManager:
         if delegation_action != "approve":
             return "Sub-agent delegation cancelled by the user."
         self._validate_storage_paths()
+        runs_dir = self.runs_dir
+        conversation_root = self.conversation_root
+        assert runs_dir is not None
+        assert conversation_root is not None
         post_tui(TuiRegion.SUB_AGENT, active=True)
         post_tui(TuiRegion.BACKGROUND, active=True)
         # 1. 创建本次调用的专属文件夹
         run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_id = f"run_{run_timestamp}_{uuid.uuid4().hex[:6]}"
-        current_run_dir = self.runs_dir / run_id
+        current_run_dir = runs_dir / run_id
         current_run_dir.mkdir(parents=True, exist_ok=True)
 
         print_formatted_text(
@@ -394,7 +400,7 @@ class TeammateManager:
                     "status": "running",
                     "start_time": start_time,
                     "prompt": prompt,
-                    "trace_log": str(log_file_path.relative_to(self.conversation_root)),
+                    "trace_log": str(log_file_path.relative_to(conversation_root)),
                 }
 
                 async with lock:
@@ -557,7 +563,7 @@ class TeammateManager:
         max_steps = 40
 
         async def _build_completion_report(
-                stop_reason: str, executed_steps: int
+                stop_reason: str | None, executed_steps: int
         ) -> str:
             """生成详细的完成报告，并判断是否应该标记为 completed"""
             todo_snapshot = local_todo.render()
@@ -604,7 +610,7 @@ class TeammateManager:
                 "The task is not complete. Continue from existing todo states."
             )
 
-        stop_reason = "step_limit_exhausted"
+        stop_reason: str | None = "step_limit_exhausted"
 
         for step in range(max_steps):  # 最大 max_steps 步限制
             try:

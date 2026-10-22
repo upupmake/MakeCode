@@ -4,7 +4,7 @@ import shlex
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 from rich.console import RenderableType
 from rich.segment import Segment
@@ -58,7 +58,7 @@ def filter_choice_options(options: list[str], search_texts: list[str] | None, qu
         return list(options)
     return [
         option
-        for option, haystack in zip(options, search_texts)
+        for option, haystack in zip(options, search_texts, strict=True)
         if all(token in haystack.casefold() for token in tokens)
     ]
 
@@ -1237,7 +1237,7 @@ class ChoiceModal(ClosableModalScreen[str]):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "confirm", "Confirm", priority=True),
         Binding("v", "preview", "Preview", priority=True),
@@ -1577,7 +1577,7 @@ class ChoiceModal(ClosableModalScreen[str]):
 class HitlModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("1", "choose(1)", "允许本次", priority=True),
         Binding("2", "choose(2)", "允许本会话", priority=True),
         Binding("3", "choose(3)", "拒绝", priority=True),
@@ -1672,7 +1672,7 @@ class HitlModal(ClosableModalScreen[str]):
 class TemporaryQueryModal(ClosableModalScreen[str | None]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "submit", "Submit", priority=True),
         Binding("ctrl+n", "insert_newline", "New line", priority=True),
         Binding("escape", "cancel", "Cancel", priority=True),
@@ -1750,7 +1750,7 @@ class TemporaryQueryModal(ClosableModalScreen[str | None]):
 class DelegateTasksModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("escape", "cancel", "Cancel", priority=True),
     ]
@@ -2046,7 +2046,7 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
             return
 
         self._completion_index = 0
-        common_prefix = os.path.commonprefix(candidates)
+        common_prefix = os.path.commonprefix(candidates)  # noqa: RUF071 - completion needs a character prefix
         if len(common_prefix) > len(path_fragment):
             self._replace_completion(
                 custom_input,
@@ -2117,7 +2117,7 @@ class StartupWorkdirModal(ClosableModalScreen[str]):
 class TaskPanelModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "close", "Close", priority=True),
     ]
 
@@ -2279,9 +2279,9 @@ class McpDataTable(SelectBeforeActivateDataTable):
 
 class SkillsConfigModal(ClosableModalScreen[str | dict[str, Any]]):
     CSS = ChoiceModal.CSS
-    BINDINGS: list[Binding] = []
+    BINDINGS: ClassVar[list[Binding]] = []
 
-    _STATUS_OPTIONS = [
+    _STATUS_OPTIONS: ClassVar[list[tuple[str, str]]] = [
         ("全部状态", "all"),
         ("已启用", "enabled"),
         ("已禁用", "disabled"),
@@ -2493,7 +2493,7 @@ class SkillsConfigModal(ClosableModalScreen[str | dict[str, Any]]):
 class TokenUsageModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "close", "Close", priority=True),
     ]
 
@@ -2556,7 +2556,7 @@ class TokenUsageModal(ClosableModalScreen[str]):
 class InfoPanelModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "close", "Close", priority=True),
     ]
 
@@ -2606,7 +2606,7 @@ class InfoPanelModal(ClosableModalScreen[str]):
 class CopyContentModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "close", "Close", priority=True),
     ]
 
@@ -2857,11 +2857,11 @@ class CopyContentModal(ClosableModalScreen[str]):
 class McpAddModal(ClosableModalScreen[dict[str, Any] | None]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
     ]
 
-    _TRANSPORTS = {"stdio", "streamable-http", "sse"}
+    _TRANSPORTS: ClassVar[set[str]] = {"stdio", "streamable-http", "sse"}
 
     def __init__(
         self,
@@ -3105,13 +3105,13 @@ class McpAddModal(ClosableModalScreen[dict[str, Any] | None]):
 class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Close", priority=True),
         Binding("enter", "confirm_or_toggle", "Toggle/Confirm", priority=True),
         Binding("space", "toggle", "Toggle", priority=True),
     ]
 
-    _STATUS_OPTIONS = [
+    _STATUS_OPTIONS: ClassVar[list[tuple[str, str]]] = [
         ("全部状态", "all"),
         ("已启用", "enabled"),
         ("已禁用", "disabled"),
@@ -3351,11 +3351,11 @@ class McpToolsModal(ClosableModalScreen[dict[str, Any] | None]):
 class McpViewModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "close", "Close", priority=True),
     ]
 
-    _STATUS_OPTIONS = [
+    _STATUS_OPTIONS: ClassVar[list[tuple[str, str]]] = [
         ("全部状态", "all"),
         ("已启用", "enabled"),
         ("已禁用", "disabled"),
@@ -3469,7 +3469,7 @@ class McpViewModal(ClosableModalScreen[str]):
 class McpSwitchModal(ClosableModalScreen[str | dict]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "confirm_or_toggle", "Toggle/Confirm", priority=True),
         Binding("space", "toggle", "Toggle", priority=True),
@@ -3966,7 +3966,7 @@ class McpSwitchModal(ClosableModalScreen[str | dict]):
 class ModelPanelModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "select", "Select", priority=True),
         Binding("f", "favorite", "Favorite", priority=True),
         Binding("d", "delete", "Delete", priority=True),
@@ -4030,7 +4030,7 @@ class ModelPanelModal(ClosableModalScreen[str]):
 class ModelManagerModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS: list[Binding] = []
+    BINDINGS: ClassVar[list[Binding]] = []
 
     def __init__(self, model_manager: Any) -> None:
         super().__init__()
@@ -4480,7 +4480,7 @@ class ModelManagerModal(ClosableModalScreen[str]):
 class MemoryDetailModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "close", "Close", priority=True),
     ]
 
@@ -4530,7 +4530,7 @@ class MemoryDetailModal(ClosableModalScreen[str]):
 
 class MemoryPanelModal(ClosableModalScreen[list[str]]):
     CSS = ChoiceModal.CSS
-    BINDINGS: list[Binding] = []
+    BINDINGS: ClassVar[list[Binding]] = []
 
     def __init__(self, memory_provider: Any) -> None:
         super().__init__()
@@ -4896,12 +4896,12 @@ class AddMemoryModal(ClosableModalScreen[dict[str, str] | None]):
 class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("enter", "submit", "Submit", priority=True),
     ]
 
-    _FIELDS = {
+    _FIELDS: ClassVar[dict[str, dict[str, str]]] = {
         "context_length": {
             "label": "全局上下文长度（k tokens）",
             "input_id": "memory-config-context-length",
@@ -5092,7 +5092,7 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
 class ExtraToolsModal(ClosableModalScreen[dict[str, Any] | str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
     ]
 
@@ -5193,7 +5193,7 @@ class ExtraToolsModal(ClosableModalScreen[dict[str, Any] | str]):
 class RecallModelPickerModal(ClosableModalScreen[str]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "select", "Select", priority=True),
         Binding("q", "cancel", "Cancel", priority=True),
     ]
@@ -5283,7 +5283,7 @@ class ModelPasswordInput(Horizontal):
 class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
     ]
 
@@ -5382,7 +5382,7 @@ class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
 class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
     ]
 
@@ -5483,12 +5483,12 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
 class LayoutModal(ClosableModalScreen[str | dict[str, int]]):
     CSS = ChoiceModal.CSS
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "cancel", "Cancel", priority=True),
         Binding("space", "increment_focused", "Increment", priority=True),
     ]
 
-    _LABELS = {
+    _LABELS: ClassVar[dict[str, str]] = {
         "task": "Task",
         "background": "Background",
         "sub_agent": "Sub-Agent",

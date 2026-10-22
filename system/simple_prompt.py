@@ -261,8 +261,8 @@ def read_prompt(
             image_entries=image_entries,
         )
 
-        def continuation(width: int, line_number: int, is_soft_wrap: bool) -> str:
-            if is_soft_wrap:
+        def continuation(width: int, line_number: int, wrap_count: int) -> str:
+            if wrap_count:
                 return " " * width
             return " " * width + continuation_prompt
 
@@ -272,6 +272,7 @@ def read_prompt(
             if multiline
             else "Enter 提交 · Tab 补全"
         )
+        completer: Completer
         if path_completion:
             completer = PathCompleter(
                 expanduser=True,
@@ -281,7 +282,7 @@ def read_prompt(
         else:
             completer = SlashCompleter(completion_commands)
 
-        session = PromptSession(
+        session: PromptSession[str] = PromptSession(
             message=simple_terminal.sanitize_icons(prompt),
             history=InMemoryHistory(history or []),
             multiline=multiline,

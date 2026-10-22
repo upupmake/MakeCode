@@ -80,7 +80,7 @@ def complete_directory_path(path_fragment: str, base_dir: Path) -> str | None:
         return None
     if len(candidates) == 1:
         return candidates[0]
-    common = os.path.commonprefix(candidates)
+    common = os.path.commonprefix(candidates)  # noqa: RUF071 - completion needs a character prefix
     if len(common) > len(path_fragment):
         return common
     return None

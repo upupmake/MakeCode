@@ -242,7 +242,7 @@ class GlobalMCPManager:
                 continue
             enabled_items = [
                 (tool, status)
-                for tool, status in zip(server_tool_items, server_status_items)
+                for tool, status in zip(server_tool_items, server_status_items, strict=True)
                 if status.get("original_name") not in disabled_tools
             ]
             all_tools.extend(tool for tool, _ in enabled_items)
@@ -522,7 +522,7 @@ class GlobalMCPManager:
 
         self._is_running = False
 
-    def restart(self, config_path: Path = None):
+    def restart(self, config_path: Path | None = None):
         self.stop()
         if config_path:
             self.config_path = config_path

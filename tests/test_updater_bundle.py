@@ -333,7 +333,7 @@ def test_macos_extract_update_archive_requires_launcher(tmp_path):
         bundle.writestr(runtime, "new")
 
     with patch.object(updater, "IS_MACOS", True), patch.object(updater, "IS_WINDOWS", False):
-        with pytest.raises(ValueError, match="缺少可执行的 MakeCode.command"):
+        with pytest.raises(ValueError, match=r"缺少可执行的 MakeCode.command"):
             updater.extract_update_archive(archive, tmp_path / "staging")
 
 
@@ -351,7 +351,7 @@ def test_non_macos_extract_update_archive_rejects_launcher(tmp_path):
         bundle.writestr(launcher, "launcher")
 
     with patch.object(updater, "IS_MACOS", False):
-        with pytest.raises(ValueError, match="当前平台更新包不能包含 MakeCode.command"):
+        with pytest.raises(ValueError, match=r"当前平台更新包不能包含 MakeCode.command"):
             updater.extract_update_archive(archive, tmp_path / "staging")
 
 
@@ -365,7 +365,7 @@ def test_macos_install_update_requires_existing_launcher(tmp_path):
     _write_macos_bundle(archive)
 
     with patch.object(updater, "IS_MACOS", True), patch.object(updater, "IS_WINDOWS", False):
-        with pytest.raises(ValueError, match="安装目录旁缺少 MakeCode.command"):
+        with pytest.raises(ValueError, match=r"安装目录旁缺少 MakeCode.command"):
             updater.install_update(archive, install_dir)
 
     assert (install_dir / "MakeCode").read_text(encoding="utf-8") == "old"

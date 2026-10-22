@@ -94,9 +94,9 @@ _ICON_TRANSLATIONS = {
 }
 
 _BOX_TRANSLATIONS = {
-    **{character: "+" for character in "╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬"},
-    **{character: "-" for character in "─━═"},
-    **{character: "|" for character in "│┃║"},
+    **dict.fromkeys("╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬", "+"),
+    **dict.fromkeys("─━═", "-"),
+    **dict.fromkeys("│┃║", "|"),
 }
 
 _ICON_TRANSLATION_TABLE = str.maketrans({

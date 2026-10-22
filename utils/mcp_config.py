@@ -3,6 +3,7 @@ import json
 import shlex
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 MCP_ADD_USAGE = "--mcp-add <name> [options] -- <cmd> [args...] 或 --mcp-add <name> --url <url> [options]"
 
@@ -83,7 +84,7 @@ def parse_mcp_add_args(arguments: Sequence[str], *, command_name: str = "--mcp-a
     if command_parts and namespace.url:
         raise ValueError("--url 不能和 -- 后的启动命令同时使用")
 
-    cfg = {}
+    cfg: dict[str, Any] = {}
     if command_parts:
         cfg["command"] = command_parts[0]
         if len(command_parts) > 1:

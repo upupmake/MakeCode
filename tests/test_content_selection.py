@@ -62,7 +62,7 @@ def test_stream_committed_blocks_carry_raw_text_for_content_only():
         "system.stream_render.post_tui",
         side_effect=lambda region, payload=None, **kwargs: events.append((region, payload)),
     ):
-        remaining, emitted = renderer._process_block_commit(
+        _remaining, _emitted = renderer._process_block_commit(
             "第一段完整\n\n第二段尾巴", "第一段完整\n\n第二段尾巴", region=TuiRegion.CONTENT
         )
         renderer._process_block_commit(

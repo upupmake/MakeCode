@@ -149,4 +149,4 @@ if __name__ == "__main__":
         raise SystemExit(asyncio.run(main()))
     except KeyboardInterrupt:
         print("Interrupted", file=sys.stderr)
-        raise SystemExit(130)
+        raise SystemExit(130) from None

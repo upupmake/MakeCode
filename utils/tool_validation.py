@@ -28,7 +28,7 @@ def is_tool_error_output(output: Any) -> bool:
     HITL denial string, or an error-shaped mapping. Exceptions are flagged by the callers.
     """
     if isinstance(output, str):
-        return output.startswith("Error:") or output.startswith(TOOL_DENIAL_MARKER)
+        return output.startswith(("Error:", TOOL_DENIAL_MARKER))
     if isinstance(output, Mapping):
         return output.get("status") == "error" or "error" in output
     return False

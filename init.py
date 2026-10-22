@@ -67,7 +67,7 @@ def log_error_traceback(context: str, exc: Exception):
         log_path = _get_error_log_path()
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(
-                f"\n[{datetime.now().isoformat()}] [{context}] {type(exc).__name__}: {str(exc)}\n"
+                f"\n[{datetime.now().isoformat()}] [{context}] {type(exc).__name__}: {exc!s}\n"
             )
             traceback.print_exc(file=f)
     except Exception as logging_exc:

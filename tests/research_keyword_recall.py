@@ -40,12 +40,12 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
 
-import jieba  # noqa: E402
-import jieba.analyse  # noqa: E402
+import jieba
+import jieba.analyse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils import paths  # noqa: E402
+from utils import paths
 
 jieba.setLogLevel(logging.ERROR)
 

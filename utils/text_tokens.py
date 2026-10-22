@@ -9,7 +9,7 @@ try:
     import tiktoken
 
     if getattr(sys, "frozen", False):
-        _base_path = Path(getattr(sys, "_MEIPASS"))
+        _base_path = Path(getattr(sys, "_MEIPASS"))  # noqa: B009 - PyInstaller-only attribute
     else:
         _base_path = Path(__file__).parent.parent
 

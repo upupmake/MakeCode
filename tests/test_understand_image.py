@@ -226,7 +226,7 @@ def test_understand_image_accepts_single_or_bounded_image_list():
             "prompt": "describe",
             "image_url": ["one.png", "two.png", "three.png", "four.png", "five.png"],
         })
-    with pytest.raises(ValueError, match="Image 2.*must not be empty"):
+    with pytest.raises(ValueError, match=r"Image 2.*must not be empty"):
         UnderstandImage.model_validate({
             "prompt": "describe",
             "image_url": ["one.png", "   "],

@@ -88,7 +88,7 @@ def ask_user(question: str, options: list, **kwargs) -> str:
     if choice == "<empty_input>":
         return json.dumps({"choice": "<empty_input>"}, ensure_ascii=False)
 
-    for opt, label in zip(parsed_options, labels):
+    for opt, label in zip(parsed_options, labels, strict=True):
         if choice == label:
             return json.dumps({"choice": opt.content}, ensure_ascii=False)
 

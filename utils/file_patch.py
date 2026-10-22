@@ -617,7 +617,7 @@ def _find_unique_hunk_sequence(
         selected.append(previous)
     return [
         (start, end, hunk.new_lines)
-        for hunk, (start, end) in zip(hunks, selected)
+        for hunk, (start, end) in zip(hunks, selected, strict=True)
     ]
 
 
@@ -651,13 +651,13 @@ def _apply_hunks(text: str, hunks: tuple[_Hunk, ...]) -> tuple[bytes, int]:
             else:
                 default_ending = next((ending for ending in old_endings if ending), "\n")
                 replacement_endings = [default_ending] * len(replacement)
-                if old_endings and old_endings[-1] == "" or appended_after_unterminated_line:
+                if (old_endings and old_endings[-1] == "") or appended_after_unterminated_line:
                     replacement_endings[-1] = ""
         else:
             replacement_endings = []
         lines[start:end] = list(replacement)
         endings[start:end] = replacement_endings
-    assembled = "".join(line + ending for line, ending in zip(lines, endings))
+    assembled = "".join(line + ending for line, ending in zip(lines, endings, strict=True))
     return assembled.encode("utf-8"), len(hunks)
 
 
@@ -748,7 +748,7 @@ def _commit(plans: list[_Plan]) -> None:
             _fsync_directory(directory)
     except Exception as commit_error:
         for plan in reversed(plans):
-            if plan.path in temporary_paths and plan.path.exists() and not plan.existed or plan.path in temporary_paths and plan.path.exists() and plan.path in backup_paths:
+            if (plan.path in temporary_paths and plan.path.exists() and not plan.existed) or (plan.path in temporary_paths and plan.path.exists() and plan.path in backup_paths):
                 _unlink_quietly(plan.path)
         restore_errors: list[str] = []
         for path, backup in backup_paths.items():

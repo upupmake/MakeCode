@@ -3,9 +3,10 @@ target-version = "py312"
 extend-exclude = ["skills", "ts_cache", "tiktoken_cache", ".makecode"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "UP", "SIM"]
+select = ["E4", "E7", "E9", "F", "I", "UP", "SIM", "B", "C4", "PIE", "RUF"]
 # Nested with-blocks are often clearer, especially in tests; revisit separately.
-ignore = ["E731", "SIM117"]
+# Chinese text legitimately uses full-width punctuation in strings, docstrings and comments.
+ignore = ["E731", "SIM117", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 # These modules intentionally adjust sys.path before importing project packages.
@@ -34,7 +35,7 @@ source = [
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
-fail_under = 40
+fail_under = 70
 
 [tool.mypy]
 python_version = "3.12"
@@ -59,6 +60,25 @@ files = [
     "utils/hitl.py",
     "utils/terminal.py",
     "utils/tool_validation.py",
+    "utils/teams.py",
+    "utils/mcp_config.py",
+    "utils/file_access.py",
+    "utils/skill_catalog.py",
+    "utils/tool_aliases.py",
+    "system/simple_input.py",
+    "system/simple_prompt.py",
+    "system/simple_terminal.py",
+    "system/stream_cancel.py",
+    "system/stream_render.py",
+    "system/tool_render.py",
+    "system/tui_types.py",
+    "system/window_attention.py",
+    "tools/ask_user.py",
+    "tools/extra_tools.py",
+    "tools/import_memory_jsonl.py",
+    "tools/todo.py",
+    "tools/understand_image.py",
+    "tools/verify_tree_sitter_offline.py",
 ]
 follow_imports = "silent"
 ignore_missing_imports = true

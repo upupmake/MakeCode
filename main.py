@@ -603,7 +603,7 @@ async def _agent_loop_with_client(
         )
 
         try:
-            text_content, tool_calls, raw_message, cancelled = await _stream_with_render(
+            _text_content, tool_calls, raw_message, cancelled = await _stream_with_render(
                 messages,
                 current_super_tools,
                 llm_client,

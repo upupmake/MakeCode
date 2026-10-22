@@ -120,11 +120,11 @@ def extract_update_archive(archive: Path, staging_dir: Path) -> Path:
             raise ValueError("更新包包含重复路径")
         symlink_paths = {
             path
-            for member, path in zip(members, paths)
+            for member, path in zip(members, paths, strict=True)
             if stat.S_ISLNK(member.external_attr >> 16)
         }
 
-        for member, path in zip(members, paths):
+        for member, path in zip(members, paths, strict=True):
             if (
                 path.is_absolute()
                 or not path.parts
@@ -144,7 +144,7 @@ def extract_update_archive(archive: Path, staging_dir: Path) -> Path:
                 target = bundle.read(member).decode("utf-8")
                 _validate_symlink_target(path, target)
 
-        for member, path in zip(members, paths):
+        for member, path in zip(members, paths, strict=True):
             if path in symlink_paths:
                 continue
             bundle.extract(member, staging_dir)
@@ -153,7 +153,7 @@ def extract_update_archive(archive: Path, staging_dir: Path) -> Path:
                 if mode:
                     (staging_dir / path).chmod(mode)
 
-        for member, path in zip(members, paths):
+        for member, path in zip(members, paths, strict=True):
             if path not in symlink_paths:
                 continue
             target = bundle.read(member).decode("utf-8")
@@ -302,7 +302,7 @@ def main() -> None:
         install_update(archive, install_dir)
     except Exception:
         log.exception("更新失败，已尝试恢复旧版本")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
     finally:
         try:
             archive.unlink(missing_ok=True)

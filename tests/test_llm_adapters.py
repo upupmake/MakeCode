@@ -51,7 +51,7 @@ class FakeAnthropicStream:
         try:
             return next(self._events)
         except StopIteration:
-            raise StopAsyncIteration
+            raise StopAsyncIteration from None
 
     async def get_final_message(self):
         self.final_message_requested = True
@@ -209,7 +209,7 @@ def test_request_builders_fill_missing_tool_results(source_format, project, expe
 
     projected = project(messages)
     assert projected[-1] == expected_result
-    continued = project(messages + [{"role": "user", "content": "continue"}])
+    continued = project([*messages, {"role": "user", "content": "continue"}])
     assert continued[:-1] == projected
     assert messages == original
     if native_blocks[source_format] is not None:
@@ -824,7 +824,8 @@ def test_openai_prompt_cache_key_is_stable_for_growing_history_and_dict_order():
 
     first = build_openai_prompt_cache_key(messages=messages, tools=tools, **common)
     continued = build_openai_prompt_cache_key(
-        messages=messages + [
+        messages=[
+            *messages,
             {"role": "assistant", "content": "first answer"},
             {"role": "user", "content": "follow up"},
         ],
@@ -855,7 +856,8 @@ def test_openai_prompt_cache_key_is_stable_for_growing_history_and_dict_order():
         **common,
     )
     responses_continued = build_openai_prompt_cache_key(
-        messages=messages + [
+        messages=[
+            *messages,
             {"role": "assistant", "content": "first answer"},
             {"role": "user", "content": "follow up"},
         ],
@@ -1064,7 +1066,7 @@ async def test_openai_responses_stream_builds_lossless_unified_result():
             try:
                 return next(self._events)
             except StopIteration:
-                raise StopAsyncIteration
+                raise StopAsyncIteration from None
 
         def close(self):
             self.closed = True
@@ -1590,7 +1592,7 @@ def test_mixed_protocol_history_projection_is_prefix_stable(target, responses_na
         return build_openai_responses_request(messages)
 
     system, first = project(history)
-    next_system, continued = project(history + [{"role": "user", "content": "next"}])
+    next_system, continued = project([*history, {"role": "user", "content": "next"}])
     assert system == next_system
     assert continued[:len(first)] == first
     wire = json.dumps(first)
@@ -2093,7 +2095,7 @@ async def test_responses_upstream_break_respects_retry_limit(max_retries, isolat
     emitted = []
     try:
         with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
-                pytest.raises(RuntimeError, match="response.failed.*upstream_stream_break"):
+                pytest.raises(RuntimeError, match=r"response.failed.*upstream_stream_break"):
             async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
                 emitted.append(event)
         assert sleep.await_count == max_retries
@@ -2284,7 +2286,7 @@ async def test_responses_missing_completed_respects_retry_limit(max_retries, iso
     emitted = []
     try:
         with patch("utils.llm_client.asyncio.sleep", new=AsyncMock()) as sleep, \
-                pytest.raises(RuntimeError, match="without a terminal response.completed"):
+                pytest.raises(RuntimeError, match=r"without a terminal response.completed"):
             async for event in client.generate_stream([{"role": "user", "content": "hi"}]):
                 emitted.append(event)
         assert sleep.await_count == max_retries

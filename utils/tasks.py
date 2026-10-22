@@ -375,7 +375,7 @@ class TaskManager:
             if tid in tasks[tid].get("depend_on", []):
                 raise ValueError(f"Task {tid} cannot depend on itself")
 
-        indegree = {tid: 0 for tid in active}
+        indegree = dict.fromkeys(active, 0)
         graph: dict[str, list[str]] = defaultdict(list)
         for tid in active:
             for dep in tasks[tid].get("depend_on", []):
@@ -495,7 +495,7 @@ class TaskManager:
             if len(task_ids) != len(set(task_ids)):
                 raise ValueError("Each task_id can only occur once")
             prepared = []
-            for item, task_id in zip(updates, task_ids):
+            for item, task_id in zip(updates, task_ids, strict=True):
                 dep_ids = self._ensure_tasks_exist(item.depend_on)
                 if task_id in dep_ids:
                     raise ValueError(f"Task {task_id} cannot depend on itself")
@@ -539,7 +539,7 @@ class TaskManager:
             log_error_traceback("UpdateTasksContent validation", exc)
             raise ValueError(f"UpdateTasksContent parameters invalid: {exc}") from exc
 
-        for item, task_id, subject in zip(updates, task_ids, subjects):
+        for item, task_id, subject in zip(updates, task_ids, subjects, strict=True):
             task = self._data["tasks"][task_id]
             task["subject"] = subject
             task["description"] = item.description

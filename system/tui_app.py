@@ -10,7 +10,7 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from typing import Any
+from typing import Any, ClassVar
 
 from rich import box
 from rich.cells import cell_len
@@ -872,7 +872,7 @@ class WorkdirStatus(Static):
 
 class TokenUsageBar(Static):
     _LABELS = ("system", "user", "reasoning", "assistant", "tool")
-    _DISPLAY_LABELS = {
+    _DISPLAY_LABELS: ClassVar[dict[str, str]] = {
         "system": "system*",
         "user": "user",
         "reasoning": "reasoning",
@@ -1395,7 +1395,7 @@ class MakeCodeTuiApp(App[None]):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+p", "toggle_plan_mode", "切换计划/执行", priority=True),
         Binding("ctrl+c", "cancel_response", "取消回复", priority=True),
         Binding("escape", "cancel_response", "Cancel", priority=True),
@@ -3219,7 +3219,7 @@ class MakeCodeTuiApp(App[None]):
                 self._hide_slash_hints()
                 return True
             selected = 0
-            common_prefix = os.path.commonprefix(candidates)
+            common_prefix = os.path.commonprefix(candidates)  # noqa: RUF071 - completion needs a character prefix
             if len(common_prefix) > len(path_fragment):
                 completed_path = common_prefix
             elif len(candidates) == 1:

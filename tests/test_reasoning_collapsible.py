@@ -307,7 +307,7 @@ async def test_render_async_stream_finalizes_reasoning_collapsible():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         renderer = StreamRenderer()
-        text, tool_calls, raw = await renderer.render_async(fake_stream(), agent_name="Orchestrator")
+        text, _tool_calls, _raw = await renderer.render_async(fake_stream(), agent_name="Orchestrator")
         await pilot.pause()
 
         assert text == "这是回答第一段\n\n回答第二段"
@@ -370,7 +370,7 @@ async def test_render_async_tool_calls_only_stream_still_collapses_reasoning():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         renderer = StreamRenderer()
-        text, tool_calls, raw = await renderer.render_async(fake_stream(), agent_name="Orchestrator")
+        text, tool_calls, _raw = await renderer.render_async(fake_stream(), agent_name="Orchestrator")
         await pilot.pause()
 
         assert text == ""

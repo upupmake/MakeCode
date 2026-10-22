@@ -4,6 +4,7 @@
 import json
 import re
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from markdown_it import MarkdownIt
@@ -343,7 +344,7 @@ def _render_tool_round(messages: list[dict], assistant_index: int) -> None:
 def _render_agent_response_message(
         text: str,
         identity: str = "Assistant",
-        response_time: float = None,
+        response_time: float | None = None,
         tui_region: TuiRegion = TuiRegion.CONTENT,
 ):
     """渲染 Agent 的消息"""
@@ -468,7 +469,7 @@ def _render_token_usage(
         messages: list,
         tools_definition: Any = None,
         threshold: int = 80000,
-        estimate_tokens_fn: callable = None,
+        estimate_tokens_fn: Callable[..., int] | None = None,
 ):
     """
     渲染 token 使用情况。

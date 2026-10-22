@@ -35,7 +35,7 @@ class StreamRenderer:
         text_content = ""
         emitted_text = ""
         live_buffer = ""
-        tool_calls = []
+        tool_calls: list[dict] = []
         raw_message = None
 
         self._tail_texts.clear()
@@ -93,7 +93,7 @@ class StreamRenderer:
         text_content = ""
         emitted_text = ""
         live_buffer = ""
-        tool_calls = []
+        tool_calls: list[dict] = []
         raw_message = None
         reasoning_started = False
         text_started = False
@@ -263,9 +263,10 @@ class StreamRenderer:
         if full_text.count("```") % 2 != 0 or "\n\n" not in current_buffer:
             return current_buffer, ""
 
-        complete_blocks, remaining_buffer = self._split_committable_markdown(current_buffer)
-        if complete_blocks is None:
+        split_result = self._split_committable_markdown(current_buffer)
+        if split_result is None:
             return current_buffer, ""
+        complete_blocks, remaining_buffer = split_result
 
         # 提交的段落与新的尾部放进同一个事件，UI 线程一次处理完，
         # 不再“先清尾部、再挂载、再显示尾部”造成多次布局失效。
@@ -280,12 +281,12 @@ class StreamRenderer:
         return remaining_buffer, f"{complete_blocks}\n\n"
 
     @staticmethod
-    def _split_committable_markdown(current_buffer: str) -> tuple[str, str] | tuple[None, None]:
+    def _split_committable_markdown(current_buffer: str) -> tuple[str, str] | None:
         search_from = len(current_buffer)
         while True:
             split_at = current_buffer.rfind("\n\n", 0, search_from)
             if split_at == -1:
-                return None, None
+                return None
             complete_blocks = current_buffer[:split_at]
             remaining_buffer = current_buffer[split_at + 2:]
             remaining = remaining_buffer.lstrip()

@@ -1,6 +1,7 @@
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from rich.console import Console
@@ -14,7 +15,7 @@ class FakeMCPManager:
 
 
 class FakeSkillLoader:
-    skills = ["alpha", "beta"]
+    skills: ClassVar[list[str]] = ["alpha", "beta"]
 
 
 def make_handler():

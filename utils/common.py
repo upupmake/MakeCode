@@ -811,7 +811,7 @@ def _match_indent_shift(window: list[str], search_lines: list[str]) -> tuple[str
     not correspond to the search block.
     """
     shift: tuple[str, bool] | None = None
-    for file_line, search_line in zip(window, search_lines):
+    for file_line, search_line in zip(window, search_lines, strict=True):
         if file_line.strip() != search_line.strip():
             return None
         if not search_line.strip():
@@ -1063,7 +1063,7 @@ def _region_diff(
         n=1,
     ))
     if len(diff) > _DIAGNOSTIC_DIFF_MAX_LINES:
-        diff = diff[:_DIAGNOSTIC_DIFF_MAX_LINES] + ["... (diff truncated)"]
+        diff = [*diff[:_DIAGNOSTIC_DIFF_MAX_LINES], "... (diff truncated)"]
     return diff
 
 
@@ -1179,7 +1179,7 @@ def _find_unique_edit_sequence(
                         [located["index"]] + [previous["index"] for previous in conflicts]
                     )
                     continue
-                stack.append((index + 1, selected + [located]))
+                stack.append((index + 1, [*selected, located]))
         if not solutions:
             missing = [index + 1 for index, spans in enumerate(candidates) if not spans]
             if missing:
@@ -1401,7 +1401,7 @@ def file_edit(path: str, edits: Any) -> str:
 
             # Commit atomically, preserving the file's original identity.
             assembled = "".join(
-                line + ending for line, ending in zip(current, current_endings)
+                line + ending for line, ending in zip(current, current_endings, strict=True)
             )
             payload = assembled.encode("utf-8")
             _write_file_atomically(fp, _UTF8_BOM + payload if has_bom else payload, original_mode)
@@ -1755,7 +1755,6 @@ class GetSystemTime(ToolArgumentsModel):
     RETURNS: Datetime string in format "YYYY-MM-DD HH:MM:SS"
     """
 
-    pass
 
 
 def get_system_time(**kwargs) -> str:

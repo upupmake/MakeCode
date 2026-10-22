@@ -4652,8 +4652,8 @@ class _ClosableAsyncStream:
             return next(self._chunks)
         except StopIteration:
             if self._error_after_chunks is not None:
-                raise self._error_after_chunks
-            raise StopAsyncIteration
+                raise self._error_after_chunks from None
+            raise StopAsyncIteration from None
 
     async def close(self):
         self.closed = True
@@ -5614,7 +5614,7 @@ async def test_agent_loop_injects_temporary_query_images_with_intact_wrapper(tmp
         request_content = request_messages[0]["content"]
         text_type, image_type = "text", "image"
     assert [block["type"] for block in request_content] == [text_type if block["type"] == "text" else image_type for block in content]
-    for source, projected in zip(content, request_content):
+    for source, projected in zip(content, request_content, strict=True):
         if source["type"] == "text":
             assert projected["text"] == source["text"]
         else:
