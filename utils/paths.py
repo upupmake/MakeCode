@@ -2,7 +2,6 @@ import os
 import sys
 from pathlib import Path
 
-
 _is_frozen = getattr(sys, "frozen", False)
 _INSTALL_DIR = Path(sys.executable).parent if _is_frozen else Path(__file__).resolve().parent.parent
 if _is_frozen and sys.platform == "darwin":

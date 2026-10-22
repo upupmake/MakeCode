@@ -8,23 +8,23 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-from pydantic import Field, ValidationError, model_validator, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from rich.markup import escape
 
 from init import log_error_traceback
-from system.models import get_current_model_config
 from prompts import (
-    get_sub_agent_system_prompt,
-    get_sub_agent_summary_prompt,
     get_report_assistant_system_prompt,
+    get_sub_agent_summary_prompt,
+    get_sub_agent_system_prompt,
 )
 from system.console_render import (
-    console_lock,
     _render_agent_response_message,
     _render_tool_call,
     _render_tool_output,
+    console_lock,
     get_sub_agent_console,
 )
+from system.models import get_current_model_config
 from system.tui_app import TuiRegion, choose_delegate_tasks_tui, post_tui
 from system.window_attention import request_window_attention
 
@@ -32,12 +32,19 @@ from system.window_attention import request_window_attention
 def print_formatted_text(value):
     post_tui(TuiRegion.SUB_AGENT, str(value))
 
-from tools.todo import TodoManager, TODO_TOOLS, TODO_TOOL_MODELS
+from tools.todo import TODO_TOOL_MODELS, TODO_TOOLS, TodoManager
+from utils import paths
+from utils import tasks as tasks_module
 from utils.common import (
+    COMMON_TOOL_MODELS,
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
-    COMMON_TOOL_MODELS,
     STARTUP_TERMINAL_TYPE,
+)
+from utils.conversations import (
+    SCHEMA_VERSION,
+    SUB_AGENT_HISTORY_FILE,
+    SUB_AGENT_RUNS_DIR,
 )
 from utils.hitl import current_agent_role
 from utils.llm_client import (
@@ -45,26 +52,22 @@ from utils.llm_client import (
     close_async_llm_client,
 )
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
-from utils import paths
+from utils.memory import format_clean_conversation_context, recall_long_term_memories
 from utils.skills import (
+    SKILL_TOOL_MODELS,
     SKILL_TOOLS,
     SKILL_TOOLS_HANDLERS,
-    SKILL_TOOL_MODELS,
 )
-from utils.memory import format_clean_conversation_context, recall_long_term_memories
-from utils.conversations import SCHEMA_VERSION, SUB_AGENT_HISTORY_FILE, SUB_AGENT_RUNS_DIR
-from utils import tasks as tasks_module
 from utils.tool_aliases import resolve_tool_name
 from utils.tool_validation import (
     ToolArgumentsModel,
+    ToolArgumentValidationError,
     build_tool_definitions,
     is_tool_error_output,
     merge_tool_model_registries,
     parse_tool_arguments,
     validate_builtin_tool_arguments,
-    ToolArgumentValidationError,
 )
-
 
 SUB_AGENT_TOOL_MODELS = merge_tool_model_registries(
     COMMON_TOOL_MODELS,

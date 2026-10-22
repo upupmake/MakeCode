@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import difflib
 import json
@@ -11,17 +12,20 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, model_validator, field_validator
+from pydantic import Field, field_validator, model_validator
 
-from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
+from init import STARTUP_TERMINAL_SOURCE, STARTUP_TERMINAL_TYPE, log_error_traceback
 from system.ts_validator import validate_code
 from utils import paths
 from utils.file_access import GLOBAL_FILE_CONTROLLER
 from utils.file_patch import FilePatch, file_patch
-from utils.hitl import check_permission, check_path_permission
+from utils.hitl import check_path_permission, check_permission
 from utils.text_tokens import truncate_text_by_tokens
-from utils.tool_validation import ToolArgumentsModel, build_tool_definitions, merge_tool_model_registries
-
+from utils.tool_validation import (
+    ToolArgumentsModel,
+    build_tool_definitions,
+    merge_tool_model_registries,
+)
 
 _OUTPUT_TRUNCATION_MARKER_PATTERN = re.compile(
     r"(?:\n\n)?\[\.\.\.此处省略 \d+ tokens\.\.\.\](?:\n\n)?"
@@ -199,7 +203,7 @@ _TERMINAL_COLLECT_TIMEOUT = 2.0
 def _terminate_process_tree(process: subprocess.Popen) -> None:
     if os.name == "nt":
         if process.poll() is None:
-            try:
+            with contextlib.suppress(FileNotFoundError, subprocess.TimeoutExpired):
                 subprocess.run(
                     ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                     stdout=subprocess.DEVNULL,
@@ -207,17 +211,11 @@ def _terminate_process_tree(process: subprocess.Popen) -> None:
                     check=False,
                     timeout=5,
                 )
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
         if process.poll() is None:
-            try:
+            with contextlib.suppress(OSError):
                 process.kill()
-            except OSError:
-                pass
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pass
         return
 
     group_signalled = False
@@ -233,26 +231,18 @@ def _terminate_process_tree(process: subprocess.Popen) -> None:
                 pass
 
     if process.poll() is None:
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pass
 
     if group_signalled:
-        try:
+        with contextlib.suppress(ProcessLookupError, OSError):
             os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass
 
     if process.poll() is None:
-        try:
+        with contextlib.suppress(OSError):
             process.kill()
-        except OSError:
-            pass
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pass
 
 
 def _collect_process_output(
@@ -269,10 +259,8 @@ def _collect_process_output(
             stderr = b"".join(getattr(process, "_stderr_buff", []) or [])
         for stream in (process.stdout, process.stderr):
             if stream is not None:
-                try:
+                with contextlib.suppress(Exception):
                     stream.close()
-                except Exception:
-                    pass
         process.poll()
         return stdout, stderr
 
@@ -325,7 +313,7 @@ def run_terminal_command(command: str) -> str:
     try:
         resolved_terminal = _resolve_startup_terminal_type()
         terminal_meta = f"{resolved_terminal}, source={STARTUP_TERMINAL_SOURCE}"
-        popen_kwargs = {
+        popen_kwargs: dict[str, Any] = {
             "cwd": _workdir(),
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE,
@@ -526,13 +514,13 @@ def merge_intervals(intervals: list[list[int]]) -> list[list[int]]:
 
 
 def file_read(
-        path: str, regions: list[dict]
+        path: str, regions: list[dict[str, Any]]
 ) -> str:
     try:
         try:
             validated = FileRead.model_validate({"path": path, "regions": regions})
             path = validated.path
-            regions = validated.regions
+            validated_regions = validated.regions
         except Exception as exc:
             return f"Error: Invalid arguments provided to FileRead. {exc}"
 
@@ -556,7 +544,7 @@ def file_read(
         # 读取指定区域
         # 收集所有有效区间（regions已经是经过model_validate的ReadBlock列表）
         intervals = []
-        for region in regions:
+        for region in validated_regions:
             s = region.start
             e = region.end
 
@@ -574,7 +562,7 @@ def file_read(
         merged = merge_intervals(intervals)
 
         # 格式化输出：不连续的 region 之间插入断点标记，避免模型跨空洞拼接行
-        formatted_lines = []
+        formatted_lines: list[str] = []
         previous_end = None
         for s, e in merged:
             if previous_end is not None:
@@ -1550,7 +1538,7 @@ def content_search(
 
                 matched_line_numbers = []
                 try:
-                    with open(filepath, "r", encoding="utf-8-sig", errors="ignore") as f:
+                    with open(filepath, encoding="utf-8-sig", errors="ignore") as f:
                         file_lines = f.readlines()
 
                     for i, line in enumerate(file_lines, 1):
@@ -1564,7 +1552,7 @@ def content_search(
                     continue
 
                 if matched_line_numbers:
-                    context_ranges = []
+                    context_ranges: list[tuple[int, int]] = []
                     for line_number in matched_line_numbers:
                         start = max(1, line_number - context_size)
                         end = min(len(file_lines), line_number + context_size)
@@ -1694,12 +1682,12 @@ def file_search(
         return f"Error resolving root directory: {e}"
 
     try:
-        matched_files = set()
-        matched_dirs = set()
+        matched_files: set[str] = set()
+        matched_dirs: set[str] = set()
         for root, dirs, files in os.walk(base_dir):
             dirs[:] = [d for d in dirs if not d.startswith(".") and d not in EXCLUDE_DIRS]
 
-            entries = []
+            entries: list[tuple[Path, bool]] = []
             if type in ("dir", "all"):
                 entries.extend((Path(root) / d, True) for d in dirs)
             if type in ("file", "all"):

@@ -58,13 +58,10 @@ _WINDOWS_EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com")
 PLAN_MODE_ENABLED = False
 
 
-def toggle_plan_mode(enabled: bool = None) -> bool:
+def toggle_plan_mode(enabled: bool | None = None) -> bool:
     """Toggle plan mode. Returns new state."""
     global PLAN_MODE_ENABLED
-    if enabled is not None:
-        PLAN_MODE_ENABLED = enabled
-    else:
-        PLAN_MODE_ENABLED = not PLAN_MODE_ENABLED
+    PLAN_MODE_ENABLED = enabled if enabled is not None else not PLAN_MODE_ENABLED
     return PLAN_MODE_ENABLED
 
 

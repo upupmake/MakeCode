@@ -8,7 +8,6 @@ import pytest
 from system.cli import COMMAND_DESCRIPTIONS, run_external_cli
 from version import CURRENT_VERSION
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 

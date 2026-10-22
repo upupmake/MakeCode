@@ -720,7 +720,7 @@ def test_read_clipboard_file_items_matches_windows_and_linux_paste_text(tmp_path
     second_source.write_bytes(second)
     folder.mkdir()
 
-    windows_payload = f"{first_source}\n{second_source}\n{folder}".encode("utf-8")
+    windows_payload = f"{first_source}\n{second_source}\n{folder}".encode()
     linux_payload = f"{first_source.as_uri()}\n{second_source.as_uri()}\n{folder.as_uri()}\n".encode()
 
     with (
@@ -773,7 +773,7 @@ def test_main_clipboard_callback_expands_truncated_windows_paste(tmp_path):
     first_source.write_bytes(first)
     second_source.write_bytes(second)
     store = ConversationStore(tmp_path / "conversations")
-    windows_payload = f"{first_source}\n{second_source}\n".encode("utf-8")
+    windows_payload = f"{first_source}\n{second_source}\n".encode()
 
     with (
         patch.object(main, "CONVERSATION_STORE", store),

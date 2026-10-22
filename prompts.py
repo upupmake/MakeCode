@@ -10,7 +10,6 @@ from utils import paths
 from utils.plan_mode import PLAN_MODE_ALLOWED_COMMANDS
 from utils.skills import SKILL_LOADER
 
-
 # ============================================================================
 # Environment Helpers
 # ============================================================================
@@ -360,7 +359,7 @@ def get_sub_agent_system_prompt(
     """Prompt 2: Sub-Agent system prompt."""
     skills_prompt_block = SKILL_LOADER.render_prompt_block()
 
-    sub_agent_policy = f"""You have been assigned a specific task by the Orchestrator.
+    sub_agent_policy = """You have been assigned a specific task by the Orchestrator.
 Use available tools to complete the task thoroughly and completely.
 
 INSTRUCTION SOURCE:

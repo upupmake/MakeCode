@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
-from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app, run_in_terminal
@@ -14,12 +14,12 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
+from system import simple_terminal
 from system.simple_input import (
     _IMAGE_DISPLAY_PLACEHOLDER_PATTERN,
     _display_serialized,
     _serialize_input,
 )
-from system import simple_terminal
 from utils import paths
 
 
@@ -168,10 +168,8 @@ def _build_key_bindings(
         image_entries.extend(entries)
 
     def show_message(message: str) -> None:
-        try:
+        with contextlib.suppress(Exception):
             run_in_terminal(lambda: print(message))
-        except Exception:
-            pass
 
     if image_handler is not None:
         @bindings.add("c-v")

@@ -5,7 +5,7 @@ from system.console_render import console_lock
 from system.tui_app import choose_tui, prompt_hitl_tui
 
 # Global Session Whitelist
-SESSION_WHITELIST = set()
+SESSION_WHITELIST: set[str] = set()
 
 # Global Path Whitelist (stores allowed external directory prefixes)
 PATH_WHITELIST: set[str] = set()
@@ -17,17 +17,14 @@ HITL_ENABLED = True
 current_agent_role = ContextVar("current_agent_role", default="#0 - Orchestrator")
 
 
-def toggle_hitl(enabled: bool = None) -> bool:
+def toggle_hitl(enabled: bool | None = None) -> bool:
     """切换 HITL 状态，返回新状态
 
     Args:
         enabled: 传 True/False 直接设置，传 None 则切换
     """
     global HITL_ENABLED
-    if enabled is not None:
-        HITL_ENABLED = enabled
-    else:
-        HITL_ENABLED = not HITL_ENABLED
+    HITL_ENABLED = enabled if enabled is not None else not HITL_ENABLED
     SESSION_WHITELIST.clear()  # 切换时清空白名单
     PATH_WHITELIST.clear()  # 切换时清空路径白名单
     return HITL_ENABLED

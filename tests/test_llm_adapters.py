@@ -13,15 +13,15 @@ from pydantic import TypeAdapter
 
 from system.models import ModelConfig
 from utils.llm_client import (
+    _LLM_TIMEOUT,
     AnthropicMessagesClient,
     AsyncBaseLLMClient,
     AsyncChatAPIClient,
     OpenAIResponsesClient,
-    _TrackedAsyncAnthropic,
-    _TrackedAsyncOpenAI,
     _client_request_active,
     _create_async_chat_client,
-    _LLM_TIMEOUT,
+    _TrackedAsyncAnthropic,
+    _TrackedAsyncOpenAI,
     build_anthropic_request_messages,
     build_llm_result,
     build_openai_prompt_cache_key,
@@ -1260,19 +1260,19 @@ async def test_anthropic_stream_does_not_replay_after_partial_output():
         nonlocal attempts
         attempts += 1
         message_start = (
-            'event: message_start\ndata: {"type":"message_start","message":'
-            '{"id":"msg_1","type":"message","role":"assistant","model":"claude-test",'
-            '"content":[],"stop_reason":null,"stop_sequence":null,'
-            '"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
-        ).encode()
+            b'event: message_start\ndata: {"type":"message_start","message":'
+            b'{"id":"msg_1","type":"message","role":"assistant","model":"claude-test",'
+            b'"content":[],"stop_reason":null,"stop_sequence":null,'
+            b'"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
+        )
         content_start = (
-            'event: content_block_start\ndata: {"type":"content_block_start","index":0,'
-            '"content_block":{"type":"text","text":""}}\n\n'
-        ).encode()
+            b'event: content_block_start\ndata: {"type":"content_block_start","index":0,'
+            b'"content_block":{"type":"text","text":""}}\n\n'
+        )
         text_delta = (
-            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,'
-            '"delta":{"type":"text_delta","text":"partial"}}\n\n'
-        ).encode()
+            b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,'
+            b'"delta":{"type":"text_delta","text":"partial"}}\n\n'
+        )
         if attempts == 1:
             return httpx.Response(
                 200,
@@ -2343,8 +2343,8 @@ async def test_responses_sdk_retries_connection_before_output(isolated_responses
 async def test_responses_persistence_and_compaction_preserve_phase(
     responses_native_items, isolated_responses_runtime, tmp_path,
 ):
-    from utils.conversations import ConversationStore
     from utils import memory
+    from utils.conversations import ConversationStore
 
     client, _ = responses_sdk_client([responses_terminal_event(responses_native_items)])
     history = [{"role": "system", "content": "stable"}, {"role": "user", "content": "old"}]
@@ -2439,8 +2439,8 @@ def auxiliary_sse_response(request, message_format, reply):
 async def auxiliary_gateway(request, monkeypatch, isolated_responses_runtime, tmp_path):
     import main as main_module
     import system.stream_render as stream_render
-    from utils import llm_client, memory, teams
     from tools import understand_image
+    from utils import llm_client, memory, teams
 
     formats = ["openai_chat", "openai_responses", "anthropic"]
     offset = formats.index(request.param)

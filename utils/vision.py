@@ -8,7 +8,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-
 IMAGE_PLACEHOLDER_PATTERN = re.compile(
     r"\[\[image:id=(?P<id>img_[0-9a-f]{32})\]\]"
 )

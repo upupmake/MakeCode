@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 
 from utils.llm_client import AsyncChatAPIClient
-from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS, TOOLS, TaskManager
+from utils.tasks import (
+    TASK_MANAGER_TOOLS,
+    TASK_MANAGER_TOOLS_HANDLERS,
+    TOOLS,
+    TaskManager,
+)
 
 
 def make_manager(tmp_path: Path) -> TaskManager:

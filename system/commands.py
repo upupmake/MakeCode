@@ -4,11 +4,11 @@
 import json
 import sys
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional, Any, Callable
+from typing import Any
 
 from rich import box
 from rich.console import Console, Group
@@ -20,43 +20,77 @@ from rich.text import Text
 
 from init import log_error_traceback, resolve_chosen_workdir
 from system.cli import COMMAND_DESCRIPTIONS
-from system.console_render import format_runtime_info, render_content_assistant_message, render_current_task_plan, render_current_workdir, render_preview_user_message, toggle_sub_agent_console
+from system.console_render import (
+    format_runtime_info,
+    render_content_assistant_message,
+    render_current_task_plan,
+    render_current_workdir,
+    render_preview_user_message,
+    toggle_sub_agent_console,
+)
 from system.models import get_model_manager
+from system.tui_app import (
+    TUI_BRIDGE,
+    TuiRegion,
+    begin_tui_batch_render,
+    choose_image_understanding_model_tui,
+    choose_mcp_switch_tui,
+    choose_recall_model_tui,
+    choose_tui,
+    end_tui_batch_render,
+    flush_tui_screen,
+    is_simple_mode,
+    manage_extra_tools_tui,
+    manage_layout_tui,
+    manage_memories_tui,
+    manage_memory_config_tui,
+    manage_models_tui,
+    manage_skills_tui,
+    manage_tasks_tui,
+    post_tui,
+    prompt_workdir_tui,
+    refresh_status,
+    scroll_all_panes_to_bottom,
+    set_agent_loop_active,
+    show_copy_content_tui,
+    show_info_panel_tui,
+    show_mcp_view_tui,
+)
+from system.updater import AUTO_UPDATE_SUPPORTED, check_update, download_update
 from tools.extra_tools import (
     get_understand_image_model_display_text,
     get_understand_image_model_key,
     is_understand_image_enabled,
     set_understand_image_config,
 )
-from system.tui_app import is_simple_mode, choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, prompt_workdir_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
-from utils import hitl as hitl_mod, paths
+from utils import hitl as hitl_mod
+from utils import paths
 from utils.conversations import ConversationListItem, ConversationStore
 from utils.llm_client import strip_native_message_payloads
 from utils.mcp_config import parse_mcp_add_query
-from utils.memory_catalog import sort_memory_records
-from utils.plan_mode import toggle_plan_mode
 from utils.memory import (
     delete_long_term_memories,
     get_active_memory_count,
     get_compaction_thresholds,
     get_context_length,
-    get_memory_recall_window_size,
     get_memory_pre_recall,
+    get_memory_recall_window_size,
+    get_memory_size,
     get_partial_compact_percentages,
     get_tool_output_compact_tokens,
-    get_memory_size,
     list_long_term_memories,
     manual_memory_update,
     reset_memory_recall_windows,
     set_compaction_thresholds,
     set_context_length,
-    set_memory_recall_window_size,
     set_memory_pre_recall,
+    set_memory_recall_window_size,
+    set_memory_size,
     set_partial_compact_percentages,
     set_tool_output_compact_tokens,
-    set_memory_size,
 )
-from system.updater import AUTO_UPDATE_SUPPORTED, check_update, download_update
+from utils.memory_catalog import sort_memory_records
+from utils.plan_mode import toggle_plan_mode
 
 
 class CommandAction(Enum):
@@ -510,8 +544,8 @@ class CommandHandler:
         self.console.print("\n".join(lines))
 
     def handle_release_notes(self) -> None:
-        from version import CURRENT_VERSION
         from system.updater import _parse_version, fetch_latest_version_info
+        from version import CURRENT_VERSION
 
         try:
             version_info = fetch_latest_version_info(raise_errors=True)
@@ -983,6 +1017,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
     def handle_update(self) -> Path | None:
         """处理 /update 命令 - 检查并安装更新"""
         import sys
+
         from version import CURRENT_VERSION
 
         self.console.print(f"\n[bold cyan]📋 当前版本: v{CURRENT_VERSION}[/bold cyan]")
@@ -1188,7 +1223,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             )
         return True
 
-    def handle_new(self, history: list, current_conversation: Optional[Path]) -> tuple:
+    def handle_new(self, history: list, current_conversation: Path | None) -> tuple:
         """处理 /new 命令，返回 (should_continue, new_conversation)。"""
         from utils import tasks as tasks_module
         from utils import teams as teams_module
@@ -1292,7 +1327,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             post_tui(region, "", clear=True)
         render_current_task_plan(self.console)
 
-    async def handle_compact(self, query: str, history: list, current_conversation: Optional[Path]) -> tuple:
+    async def handle_compact(self, query: str, history: list, current_conversation: Path | None) -> tuple:
         """处理 /compact [prompt] 命令，返回当前 conversation 路径。"""
         parts = query.split(maxsplit=1)
         reason = parts[1].strip() if len(parts) == 2 and parts[1].strip() else self.DEFAULT_COMPACT_PROMPT
@@ -1344,7 +1379,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
         self.console.print(table)
         return True
 
-    def handle_memory_delete(self, query: str, history: list, current_conversation: Optional[Path]) -> Optional[Path]:
+    def handle_memory_delete(self, query: str, history: list, current_conversation: Path | None) -> Path | None:
         """处理 /memory-delete <id> [id...] 命令"""
         parts = query.split()
         if len(parts) < 2:
@@ -1365,7 +1400,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             self.console.print(f"\n[bold yellow]未找到 active 长期记忆：{', '.join(missing_ids)}[/bold yellow]")
         return conversation_path
 
-    def handle_memory_panel(self, history: list, current_conversation: Optional[Path]) -> Optional[Path]:
+    def handle_memory_panel(self, history: list, current_conversation: Path | None) -> Path | None:
         """处理 /memory-panel 命令"""
         import utils.memory as memory_provider
 
@@ -1479,7 +1514,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
     def handle_load(
             self,
             history: list,
-            current_conversation: Optional[Path],
+            current_conversation: Path | None,
             render_banner_fn,
             render_hint_fn,
             render_history_fn,
@@ -1601,7 +1636,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             self,
             query: str,
             history: list,
-            current_conversation: Optional[Path],
+            current_conversation: Path | None,
             render_banner_fn,
             render_hint_fn,
             render_history_fn,

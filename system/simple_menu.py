@@ -9,12 +9,17 @@ from typing import Any
 from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Dimension, FormattedTextControl, HSplit, Layout, Window
+from prompt_toolkit.layout import (
+    Dimension,
+    FormattedTextControl,
+    HSplit,
+    Layout,
+    Window,
+)
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
 
 from system import simple_terminal
-
 
 _STYLE = Style.from_dict({
     "title": "bold",

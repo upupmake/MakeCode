@@ -9,12 +9,14 @@ import tiktoken
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import utils.memory as memory
-from utils.memory_catalog import MemoryStore
 from prompts import get_orchestrator_system_prompt, get_sub_agent_system_prompt
 from utils import text_tokens
 from utils.common import truncate_output
-from utils.teams import build_sub_agent_recall_query, prepend_recalled_memory_to_sub_agent_prompt
-
+from utils.memory_catalog import MemoryStore
+from utils.teams import (
+    build_sub_agent_recall_query,
+    prepend_recalled_memory_to_sub_agent_prompt,
+)
 
 MEMORY_RECORDS = [
     {

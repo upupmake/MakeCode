@@ -8,41 +8,45 @@ import tempfile
 import threading
 import uuid
 import warnings
+from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
 
 import jieba
 import jieba.analyse
 from pydantic import Field
-from rich.markup import escape
 from rich.markdown import Markdown
-from rich.table import Table
+from rich.markup import escape
+
 from init import log_error_traceback
+from settings import MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_WINDOW_SIZE
 from system.console_render import (
     _render_agent_response_message,
+)
+from system.console_render import (
     console as _compact_console,
 )
 from system.models import get_current_model_config
 from system.stream_render import StreamRenderer
 from system.tui_app import TuiRegion, post_tui
-from utils.memory_catalog import MemoryStore, sort_memory_records
+from utils import paths, text_tokens
 from utils.llm_client import (
     close_async_llm_client,
     create_memory_management_llm_client,
     strip_native_message_payloads,
 )
-from utils.vision import strip_images_in_place, text_only_messages
-from utils import text_tokens
+from utils.memory_catalog import MemoryStore, sort_memory_records
 from utils.text_tokens import truncate_text_by_tokens
 from utils.tool_validation import (
     ToolArgumentsModel,
+    ToolArgumentValidationError,
     build_tool_definitions,
     validate_builtin_tool_arguments,
-    ToolArgumentValidationError,
 )
-from settings import MEMORY_AGENT_MAX_ITERATIONS, MEMORY_RECALL_MAX_ITERATIONS, MEMORY_RECALL_WINDOW_SIZE
-from utils import paths
+from utils.vision import strip_images_in_place, text_only_messages
 
 jieba.setLogLevel(logging.ERROR)
 
@@ -90,6 +94,11 @@ def _memory_config_file_signature() -> tuple[int, int, int] | None:
     except OSError:
         return None
     return stat.st_mtime_ns, stat.st_size, stat.st_ino
+
+
+MAKECODE_DIR: Path
+MEMORY_DIR: Path
+MEMORY_DB_FILE: Path
 
 
 def refresh_workspace_paths() -> None:
@@ -302,7 +311,7 @@ def update_long_term_memory(
     return {"id": memory_id, "status": "active", **updated_record}
 
 
-LONG_TERM_MEMORY_TOOL_HANDLERS = {
+LONG_TERM_MEMORY_TOOL_HANDLERS: dict[str, Callable[..., Any]] = {
     "AppendLongTermMemory": append_long_term_memory,
     "DeleteLongTermMemory": lambda memory_ids, **kwargs: delete_long_term_memories(memory_ids),
     "UpdateLongTermMemory": update_long_term_memory,
@@ -375,8 +384,8 @@ def _load_memory_config_from_disk() -> dict:
     signature = _memory_config_file_signature()
     with _MEMORY_CONFIG_CACHE_LOCK:
         if (
-            _MEMORY_CONFIG_CACHE_PATH == cache_path
-            and _MEMORY_CONFIG_CACHE_SIGNATURE == signature
+            cache_path == _MEMORY_CONFIG_CACHE_PATH
+            and signature == _MEMORY_CONFIG_CACHE_SIGNATURE
             and _MEMORY_CONFIG_CACHE_DATA is not None
         ):
             return _MEMORY_CONFIG_CACHE_DATA.copy()
@@ -384,7 +393,7 @@ def _load_memory_config_from_disk() -> dict:
         data = {}
         if signature is not None:
             try:
-                with open(MEMORY_CONFIG_FILE, "r", encoding="utf-8") as f:
+                with open(MEMORY_CONFIG_FILE, encoding="utf-8") as f:
                     loaded = json.load(f)
             except (OSError, json.JSONDecodeError):
                 loaded = {}
@@ -981,7 +990,7 @@ async def memory_agent_loop(
     if llm_client is None:
         raise RuntimeError("No model configured. Please use /models to configure a model first.")
     post_tui(TuiRegion.BACKGROUND, active=True)
-    saved_outputs = []
+    saved_outputs: list[dict] = []
     had_error = False
     try:
         post_tui(TuiRegion.BACKGROUND, "\n[bold yellow]🧠 正在管理长期记忆...[/bold yellow]")
@@ -1110,7 +1119,7 @@ async def memory_agent_loop(
         await close_async_llm_client(llm_client)
 
 
-async def manual_memory_update(prompt: str, history: list = None) -> list[dict]:
+async def manual_memory_update(prompt: str, history: list | None = None) -> list[dict]:
     prompt = prompt.strip()
     return await memory_agent_loop(
         conversation_text=format_clean_conversation_context(history or []),
@@ -1173,7 +1182,7 @@ def _token_tool_call_text(name: str, arguments: object) -> str:
 
 def _build_token_estimation_sections(
     messages: list,
-    tools_definition: list = None,
+    tools_definition: list | None = None,
     message_format: str | None = None,
 ) -> dict[str, str]:
     if message_format is None:
@@ -1183,7 +1192,7 @@ def _build_token_estimation_sections(
     projected_messages = text_only_messages(
         strip_native_message_payloads(messages)
     )
-    sections = {
+    sections: dict[str, list[str]] = {
         "system": [],
         "user": [],
         "reasoning": [],
@@ -1242,7 +1251,7 @@ def _build_token_estimation_sections(
 
 def estimate_token_breakdown(
     messages: list,
-    tools_definition: list = None,
+    tools_definition: list | None = None,
     message_format: str | None = None,
 ) -> dict[str, int]:
     return {
@@ -1253,7 +1262,7 @@ def estimate_token_breakdown(
     }
 
 
-def estimate_tokens(messages: list, tools_definition: list = None, message_format: str | None = None):
+def estimate_tokens(messages: list, tools_definition: list | None = None, message_format: str | None = None):
     return sum(
         estimate_token_breakdown(messages, tools_definition, message_format).values()
     )
@@ -1462,10 +1471,11 @@ def _compaction_tool_results(messages: list[dict]) -> dict[str, dict]:
 
 def _compaction_value_text(value: object) -> str:
     if isinstance(value, str):
+        text = value
         try:
             value = json.loads(value)
         except json.JSONDecodeError:
-            return value
+            return text
     if value is None:
         return ""
     return json.dumps(value, ensure_ascii=False, default=str)

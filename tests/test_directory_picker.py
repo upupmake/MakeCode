@@ -1,5 +1,4 @@
 import base64
-import os
 import plistlib
 import subprocess
 from unittest.mock import patch

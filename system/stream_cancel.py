@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import contextlib
 import threading
 
 from system.tui_app import TuiRegion, post_tui
@@ -31,10 +32,8 @@ def add_cancel_available_callback(callback) -> None:
 
 
 def remove_cancel_available_callback(callback) -> None:
-    try:
+    with contextlib.suppress(ValueError):
         _cancel_available_callbacks.remove(callback)
-    except ValueError:
-        pass
 
 
 def register_response_task(task: asyncio.Task) -> None:
@@ -58,10 +57,8 @@ def _request_response_task_cancel() -> None:
         task = _response_task
     if task is None or task.done():
         return
-    try:
+    with contextlib.suppress(RuntimeError):
         task.get_loop().call_soon_threadsafe(task.cancel)
-    except RuntimeError:
-        pass
 
 
 def cancel_current_response():

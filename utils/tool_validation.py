@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from openai import pydantic_function_tool
+from openai.types.chat import ChatCompletionFunctionToolParam
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 
@@ -41,8 +42,8 @@ def format_tool_content(output: Any) -> str:
 
 def normalize_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Project complete tool-result pairs without changing live execution history."""
-    normalized = []
-    pending = {}
+    normalized: list[dict[str, Any]] = []
+    pending: dict[str, dict[str, Any]] = {}
     for message in messages:
         role = message.get("role")
         if role != "tool":
@@ -74,7 +75,7 @@ def normalize_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
                     "content": "",
                 }
         elif role == "tool":
-            pending.pop(message.get("tool_call_id"), None)
+            pending.pop(message.get("tool_call_id") or "", None)
             message = {**message, "content": format_tool_content(message.get("content"))}
         normalized.append(message)
 
@@ -100,7 +101,7 @@ def _format_location(location: tuple[Any, ...]) -> str:
 def _format_validation_error(
         tool_name: str,
         model: type[ToolArgumentsModel],
-        errors: list[dict[str, Any]],
+        errors: list[Any],
 ) -> str:
     lines = [f"Error: Invalid arguments for {tool_name}."]
     for error in errors:
@@ -189,7 +190,7 @@ def build_tool_model_registry(
 
 def build_tool_definitions(
         *models: type[ToolArgumentsModel],
-) -> tuple[list[dict[str, Any]], dict[str, type[ToolArgumentsModel]]]:
+) -> tuple[list[ChatCompletionFunctionToolParam], dict[str, type[ToolArgumentsModel]]]:
     registry = build_tool_model_registry(*models)
     return [pydantic_function_tool(model) for model in models], registry
 

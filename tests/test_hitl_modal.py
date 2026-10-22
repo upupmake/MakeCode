@@ -209,4 +209,4 @@ def test_check_paths_permission_lists_all_pending_paths_in_details(monkeypatch, 
     assert second.as_posix() in captured["details"]
     assert first.parent.as_posix() in captured["details"]
     assert second.parent.as_posix() in captured["details"]
-    assert hitl.PATH_WHITELIST == set()
+    assert set() == hitl.PATH_WHITELIST

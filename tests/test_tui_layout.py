@@ -4,7 +4,6 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -13,12 +12,25 @@ from rich.text import Text
 from textual.events import Paste
 
 from system.console_render import _render_startup_banner
-from system.tui_app import MakeCodeTuiApp, TuiBridge, TUI_BRIDGE
-from system.tui_types import LAYOUT_DEFAULT_RATIOS, TuiEvent, TuiRegion, normalize_layout_ratios
-from system.tui_modals import ChoiceModal, InfoPanelModal, StartupWorkdirModal, TokenUsageModal
+from system.tui_app import TUI_BRIDGE, MakeCodeTuiApp, TuiBridge
+from system.tui_modals import (
+    ChoiceModal,
+    InfoPanelModal,
+    StartupWorkdirModal,
+    TokenUsageModal,
+)
+from system.tui_types import (
+    LAYOUT_DEFAULT_RATIOS,
+    TuiEvent,
+    TuiRegion,
+    normalize_layout_ratios,
+)
 from utils.skills import SkillLoader
-from utils.vision import image_reference_marker, parse_image_placeholders, store_image_bytes_attachment
-
+from utils.vision import (
+    image_reference_marker,
+    parse_image_placeholders,
+    store_image_bytes_attachment,
+)
 
 TEST_LAYOUT_RATIOS = {
     "task": 2,
@@ -135,8 +147,9 @@ async def test_footer_shows_current_version_at_bottom_right(width):
 @pytest.mark.anyio
 @pytest.mark.skipif(sys.platform == "win32", reason="Textual test timing is unstable on Windows CI")
 async def test_clicking_footer_version_shows_latest_release_log_without_updating():
-    from version import CURRENT_VERSION
     from rich.markdown import Markdown
+
+    from version import CURRENT_VERSION
 
     started = threading.Event()
     release = threading.Event()

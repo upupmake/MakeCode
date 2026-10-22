@@ -2,6 +2,7 @@
 
 import ctypes
 import sys
+from typing import Any
 
 
 def _safe_terminal_title(title: str) -> str:
@@ -10,7 +11,7 @@ def _safe_terminal_title(title: str) -> str:
 
 def _write_ansi_terminal_title(title: str) -> None:
     payload = f"\x1b]0;{title}\x07\x1b]2;{title}\x07"
-    streams = []
+    streams: list[Any] = []
     for name in ("__stderr__", "stderr", "__stdout__", "stdout"):
         stream = getattr(sys, name, None)
         if stream is not None and all(stream is not previous for previous in streams):

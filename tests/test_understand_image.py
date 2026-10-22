@@ -9,14 +9,15 @@ import pytest
 from system.commands import CommandHandler
 from system.models import ModelConfig, ModelManager
 from system.tui_modals import ExtraToolsModal
+from tools import understand_image
 from tools.extra_tools import (
     get_understand_image_model,
     get_understand_image_model_display_text,
     is_understand_image_enabled,
     set_understand_image_config,
 )
-from tools import understand_image
-from tools.understand_image import UnderstandImage, load_image_for_understanding, understand_image as understand_image_handler
+from tools.understand_image import UnderstandImage, load_image_for_understanding
+from tools.understand_image import understand_image as understand_image_handler
 from utils.llm_client import (
     build_anthropic_request_messages,
     build_openai_responses_request,
@@ -24,7 +25,6 @@ from utils.llm_client import (
     sanitize_openai_messages,
 )
 from utils.vision import image_media_type_from_bytes
-
 
 MIN_PNG = (
     b"\x89PNG\r\n\x1a\n"

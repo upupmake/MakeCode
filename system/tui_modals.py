@@ -2,13 +2,13 @@ import json
 import os
 import shlex
 import sys
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, TypeVar
 
 from rich.console import RenderableType
 from rich.segment import Segment
 from rich.style import Style
-from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -19,22 +19,33 @@ from textual.geometry import Region
 from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Button, Collapsible, Input, Label, ListItem, ListView, RichLog, Select, Static, TextArea, DataTable
+from textual.widgets import (
+    Button,
+    Collapsible,
+    DataTable,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    RichLog,
+    Select,
+    Static,
+    TextArea,
+)
 from textual.widgets.text_area import Selection
 
-from system.models import MESSAGE_FORMATS, ModelKey, REASONING_EFFORTS
 from system.clipboard import copy_to_system_clipboard
+from system.image_input import ImageAwareTextArea
+from system.models import MESSAGE_FORMATS, REASONING_EFFORTS, ModelKey
 from system.tool_render import format_tool_value
 from system.tui_types import (
     LAYOUT_DEFAULT_RATIOS,
     LAYOUT_RIGHT_KEYS,
     normalize_layout_ratios,
 )
-from system.image_input import ImageAwareTextArea
 from utils import paths
 from utils.directory_picker import DirectoryPickerUnavailableError, choose_directory
 from utils.text_sanitize import sanitize_control_characters
-
 
 ModalResult = TypeVar("ModalResult")
 
@@ -1400,12 +1411,15 @@ class ChoiceModal(ClosableModalScreen[str]):
             event.stop()
             event.prevent_default()
             return
-        if self._preview_handler is not None and not isinstance(self.focused, Input):
-            if event.key == "v":
-                self.action_preview()
-                event.stop()
-                event.prevent_default()
-                return
+        if (
+            self._preview_handler is not None
+            and not isinstance(self.focused, Input)
+            and event.key == "v"
+        ):
+            self.action_preview()
+            event.stop()
+            event.prevent_default()
+            return
         if self._delete_handler is not None and not isinstance(self.focused, Input):
             key_actions = {
                 "d": self.action_delete,
@@ -4676,12 +4690,11 @@ class MemoryPanelModal(ClosableModalScreen[list[str]]):
         self._last_clicked_index = event.index
 
     def _on_key(self, event: Key) -> None:
-        if event.key == "q":
-            if not isinstance(self.focused, Input):
-                self.action_close()
-                event.stop()
-                event.prevent_default()
-                return
+        if event.key == "q" and not isinstance(self.focused, Input):
+            self.action_close()
+            event.stop()
+            event.prevent_default()
+            return
         if event.key == "y" and self._pending_delete_id is not None:
             self.action_confirm_delete()
             event.stop()
@@ -5145,8 +5158,8 @@ class ExtraToolsModal(ClosableModalScreen[dict[str, Any] | str]):
         )
 
     def _toggle_enabled(self) -> None:
-        from tools.extra_tools import set_understand_image_enabled
         from system.tui_app import refresh_status
+        from tools.extra_tools import set_understand_image_enabled
 
         enabled = not bool(self._values.get("enabled", False))
         if not set_understand_image_enabled(enabled):

@@ -1,9 +1,9 @@
 import sys
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from rich.cells import cell_len
 from textual.containers import VerticalScroll
-from unittest.mock import AsyncMock, patch
 from textual.widgets import Collapsible
 
 import system.console_render as console_render

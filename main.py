@@ -8,127 +8,136 @@ from pathlib import Path
 
 from system import cli as cli_module
 
-
 if __name__ == "__main__":
     external_cli_exit_code = cli_module.run_external_cli(sys.argv[1:])
     if external_cli_exit_code is not None:
         raise SystemExit(external_cli_exit_code)
 
 
-from rich.console import Console
-from rich.markup import escape
-from rich.markdown import Markdown
-from pydantic import Field
+import contextlib
 
+from pydantic import Field
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.markup import escape
+
+import utils.tasks as _tasks_module
+import utils.teams as _teams_module
 from init import (
+    STARTUP_TERMINAL_TYPE,
     log_error_traceback,
     resolve_chosen_workdir,
     resolve_startup_workdir,
     set_workdir,
     should_prompt_for_workdir,
-    STARTUP_TERMINAL_TYPE,
 )
 from prompts import get_orchestrator_system_prompt, get_title_generation_system_prompt
-# 导入命令模块
-from system.commands import (
-    CommandHandler,
-    CommandAction,
-)
 from system.clipboard import (
     clipboard_paste_text_matches_file_items,
     read_clipboard_file_items,
     read_image_from_system_clipboard,
 )
+
+# 导入命令模块
+from system.commands import (
+    CommandAction,
+    CommandHandler,
+)
 from system.console_render import (
-    _render_history,
-    _render_token_usage,
-    _render_startup_banner,
     _render_env_customization_hint,
-    render_current_workdir,
-    render_current_task_plan,
+    _render_history,
+    _render_startup_banner,
+    _render_token_usage,
+    console,
+    format_runtime_info,
     render_content_user_message,
+    render_current_task_plan,
+    render_current_workdir,
     render_tool_call_block,
     render_tool_result_block,
-    format_runtime_info,
-    console,
-)
-from system.updater import AUTO_UPDATE_SUPPORTED, check_update, launch_updater
-from utils.plan_mode import (
-    is_plan_mode,
-    is_plan_mode_command_allowed,
-    PLAN_MODE_BLOCKLIST,
-    PLAN_MODE_ALLOWED_COMMANDS,
-    toggle_plan_mode,
 )
 from system.stream_render import StreamRenderer
+from system.tool_render import tool_result_status
 from system.ts_validator import init_ts_cache
 from system.tui_app import (
     MakeCodeTuiApp,
+    TuiRegion,
+    clear_temporary_query,
+    consume_temporary_query,
     enable_simple_mode,
     post_tui,
-    TuiRegion,
-    set_agent_loop_active,
-    set_temporary_query_enabled,
-    refresh_status,
-    refresh_token_usage,
-    scroll_all_panes_to_bottom,
     prompt_workdir_tui,
     read_simple_input,
-    consume_temporary_query,
-    clear_temporary_query,
+    refresh_status,
+    refresh_token_usage,
     restore_temporary_query_to_input,
+    scroll_all_panes_to_bottom,
+    set_agent_loop_active,
+    set_temporary_query_enabled,
 )
+from system.updater import AUTO_UPDATE_SUPPORTED, check_update, launch_updater
+from tools.ask_user import ASK_USER_TOOL_MODELS, ASK_USER_TOOLS, ASK_USER_TOOLS_HANDLERS
+from tools.extra_tools import is_understand_image_enabled
+from tools.understand_image import (
+    UNDERSTAND_IMAGE_TOOL_MODELS,
+    UNDERSTAND_IMAGE_TOOLS,
+    UNDERSTAND_IMAGE_TOOLS_HANDLERS,
+)
+from utils import paths
 from utils.common import (
+    COMMON_TOOL_MODELS,
     COMMON_TOOLS,
     COMMON_TOOLS_HANDLERS,
-    COMMON_TOOL_MODELS,
     sanitize_title,
 )
+from utils.conversations import CONVERSATION_STORE
 from utils.llm_client import (
     close_async_llm_client,
     create_current_async_llm_client,
     format_tools_for_current_model,
 )
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
-from utils import paths
-from utils.terminal import set_terminal_title
-from utils.vision import (
-    IMAGE_PLACEHOLDER_PATTERN,
-    image_placeholder_text,
-    image_reference_marker,
-    parse_image_placeholders,
-    remove_image_placeholders,
-    store_image_bytes_attachment,
-)
 from utils.memory import (
+    MEMORY_RECALL_TOOL_MODELS,
     MEMORY_RECALL_TOOLS,
     MEMORY_RECALL_TOOLS_HANDLERS,
-    MEMORY_RECALL_TOOL_MODELS,
-    MEMORY_SELF_MANAGEMENT_TOOLS,
     MEMORY_SELF_MANAGEMENT_TOOL_MODELS,
+    MEMORY_SELF_MANAGEMENT_TOOLS,
     ORCHESTRATOR_AGENT_ID,
     auto_compact,
     compact_tool_outputs,
-    estimate_tokens,
     estimate_token_breakdown,
+    estimate_tokens,
     get_active_memory_count,
     get_compaction_thresholds,
-    get_memory_pre_recall,
     get_context_token_limit,
+    get_memory_pre_recall,
     manual_memory_update,
     partial_compact,
     prepend_recalled_memory_to_query,
     recall_long_term_memories,
 )
-from utils.conversations import CONVERSATION_STORE
-from utils.skills import SKILL_LOADER, SKILL_TOOLS, SKILL_TOOLS_HANDLERS, SKILL_TOOL_MODELS
-import utils.tasks as _tasks_module
-import utils.teams as _teams_module
-from utils.tasks import TASK_MANAGER_TOOLS, TASK_MANAGER_TOOLS_HANDLERS, TASK_MANAGER_TOOL_MODELS
-from utils.teams import TEAM_TOOLS, TEAM_TOOLS_HANDLERS, TEAM_TOOL_MODELS
-from tools.ask_user import ASK_USER_TOOLS, ASK_USER_TOOLS_HANDLERS, ASK_USER_TOOL_MODELS
-from tools.understand_image import UNDERSTAND_IMAGE_TOOLS, UNDERSTAND_IMAGE_TOOLS_HANDLERS, UNDERSTAND_IMAGE_TOOL_MODELS
-from tools.extra_tools import is_understand_image_enabled
+from utils.plan_mode import (
+    PLAN_MODE_ALLOWED_COMMANDS,
+    PLAN_MODE_BLOCKLIST,
+    is_plan_mode,
+    is_plan_mode_command_allowed,
+    toggle_plan_mode,
+)
+from utils.skills import (
+    SKILL_LOADER,
+    SKILL_TOOL_MODELS,
+    SKILL_TOOLS,
+    SKILL_TOOLS_HANDLERS,
+)
+from utils.tasks import (
+    TASK_MANAGER_TOOL_MODELS,
+    TASK_MANAGER_TOOLS,
+    TASK_MANAGER_TOOLS_HANDLERS,
+)
+from utils.teams import TEAM_TOOL_MODELS, TEAM_TOOLS, TEAM_TOOLS_HANDLERS
+from utils.terminal import set_terminal_title
+from utils.tool_aliases import resolve_tool_name
 from utils.tool_validation import (
     ToolArgumentsModel,
     ToolArgumentValidationError,
@@ -138,8 +147,14 @@ from utils.tool_validation import (
     parse_tool_arguments,
     validate_builtin_tool_arguments,
 )
-from utils.tool_aliases import resolve_tool_name
-from system.tool_render import tool_result_status
+from utils.vision import (
+    IMAGE_PLACEHOLDER_PATTERN,
+    image_placeholder_text,
+    image_reference_marker,
+    parse_image_placeholders,
+    remove_image_placeholders,
+    store_image_bytes_attachment,
+)
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
 
@@ -1135,10 +1150,8 @@ def _run_simple_main(
             return
         raise KeyboardInterrupt
 
-    try:
+    with contextlib.suppress(ValueError):
         signal.signal(signal.SIGINT, _handle_sigint)
-    except ValueError:
-        pass
 
     _update_terminal_title()
     arrows = simple_terminal.arrows_label()

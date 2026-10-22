@@ -1,19 +1,21 @@
 """按真实 /load 链路（工作线程 + TuiConsole + _render_history）验证滚动行为。"""
-import threading
 import sys
+import threading
 
 import pytest
 
 from system.commands import CommandHandler
 from system.console_render import (
-    console as tui_console,
     _render_env_customization_hint,
     _render_history,
     _render_startup_banner,
 )
+from system.console_render import (
+    console as tui_console,
+)
 from system.tui_app import (
-    MakeCodeTuiApp,
     TUI_BRIDGE,
+    MakeCodeTuiApp,
     post_tui,
     scroll_all_panes_to_bottom,
     set_agent_loop_active,

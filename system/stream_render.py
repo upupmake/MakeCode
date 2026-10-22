@@ -1,6 +1,7 @@
 import asyncio
 import time
-from typing import Any, AsyncIterator, List, Tuple
+from collections.abc import AsyncIterator
+from typing import Any
 
 from rich.text import Text
 
@@ -30,7 +31,7 @@ class StreamRenderer:
             region: TuiRegion = TuiRegion.CONTENT,
             render_live: bool = True,
             set_active: bool = False,
-    ) -> Tuple[str, List, Any]:
+    ) -> tuple[str, list, Any]:
         text_content = ""
         emitted_text = ""
         live_buffer = ""
@@ -84,7 +85,7 @@ class StreamRenderer:
             self,
             stream_generator: AsyncIterator[dict],
             agent_name: str = "Orchestrator",
-    ) -> Tuple[str, List, Any]:
+    ) -> tuple[str, list, Any]:
         self._tail_texts.clear()
         self._print_header(agent_name)
         start_time = time.perf_counter()
@@ -180,7 +181,7 @@ class StreamRenderer:
         return text_content, tool_calls, raw_message
 
     @staticmethod
-    def _done_content(event: dict) -> Tuple[str, List, Any]:
+    def _done_content(event: dict) -> tuple[str, list, Any]:
         result = event["result"]
         return result.text, result.tool_calls, result.assistant_message
 

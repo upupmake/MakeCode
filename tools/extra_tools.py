@@ -7,11 +7,10 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from system.models import ModelConfig, ModelKey, get_model_manager
 from utils import paths
-
 
 UNDERSTAND_IMAGE_TOOL_ID = "UnderstandImage"
 
@@ -153,11 +152,11 @@ def is_understand_image_enabled() -> bool:
     return _load_raw()[UNDERSTAND_IMAGE_TOOL_ID]["enabled"] is True
 
 
-def get_understand_image_model_key() -> Optional[ModelKey]:
+def get_understand_image_model_key() -> ModelKey | None:
     return ModelConfig.key_from_dict(_load_raw()[UNDERSTAND_IMAGE_TOOL_ID].get("model"))
 
 
-def get_understand_image_model() -> Optional[ModelConfig]:
+def get_understand_image_model() -> ModelConfig | None:
     manager = get_model_manager()
     if manager is None:
         return None
@@ -178,7 +177,7 @@ def set_understand_image_enabled(enabled: bool) -> bool:
     return _save_raw(payload)
 
 
-def set_understand_image_config(enabled: bool, key: Optional[ModelKey] = None) -> bool:
+def set_understand_image_config(enabled: bool, key: ModelKey | None = None) -> bool:
     manager = get_model_manager()
     model = None
     if key is not None:

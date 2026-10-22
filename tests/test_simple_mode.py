@@ -8,15 +8,13 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from rich.text import Text
 
-import system.tui_app as tui_app
-import system.stream_render as stream_render
 import system.simple_input as simple_input
-from system import simple_prompt
-from system import simple_terminal
-from system import simple_management
+import system.stream_render as stream_render
+import system.tui_app as tui_app
+from system import simple_management, simple_prompt, simple_terminal
 from system.models import ModelManager
-from system.stream_render import StreamRenderer
 from system.simple_render import SimpleRenderer
+from system.stream_render import StreamRenderer
 from system.tui_types import TuiEvent, TuiRegion
 
 

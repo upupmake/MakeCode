@@ -6,11 +6,10 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
-from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
-
 from system.console_render import console_lock
 from system.tui_app import choose_tui
 from system.window_attention import request_window_attention
+from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
 
 
 class Option(ToolArgumentsModel):

@@ -1,17 +1,17 @@
 import json
 import uuid
 from collections import defaultdict, deque
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from rich.text import Text
 from pydantic import Field, field_validator
+from rich.text import Text
 
 from init import log_error_traceback
 from utils.conversations import SCHEMA_VERSION, TASK_PLAN_FILE
 from utils.hitl import check_permission
 from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
-
 
 VALID_STATUS = {
     "pending",
@@ -251,10 +251,10 @@ class TaskManager:
         self.path = conversation_root / TASK_PLAN_FILE if conversation_root is not None else None
         if data is not None:
             self._validate_loaded_data(data, conversation_id)
-            self._data = data
+            self._data: dict[str, Any] = data
             self._validate_topology()
             return
-        self._data: dict[str, Any] = {
+        self._data = {
             "schema_version": SCHEMA_VERSION,
             "conversation_id": conversation_id,
             "epic_id": uuid.uuid4().hex[:8],
@@ -264,12 +264,15 @@ class TaskManager:
 
     def _save(self) -> None:
         self._validate_storage_path()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
+        path = self.path
+        if path is None:
+            raise RuntimeError("No active conversation for TaskManager")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_text(
             json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        temporary.replace(self.path)
+        temporary.replace(path)
         render_task_pane()
 
     def _validate_storage_path(self) -> None:
@@ -335,7 +338,7 @@ class TaskManager:
             raise ValueError(f"Task {task_id} not found")
         return tid
 
-    def _ensure_tasks_exist(self, task_ids: list[str | int]) -> list[str]:
+    def _ensure_tasks_exist(self, task_ids: Sequence[str | int]) -> list[str]:
         # Filter out empty strings that LLM might mistakenly pass
         ids = [self._id_str(x).strip() for x in task_ids if self._id_str(x).strip()]
         missing = [x for x in ids if x not in self._data["tasks"]]

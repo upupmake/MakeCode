@@ -8,8 +8,8 @@ import sys
 import tempfile
 import zlib
 from pathlib import Path
+from typing import cast
 from urllib.parse import unquote, urlparse
-
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _TIFF_SIGNATURES = (b"II*\x00", b"MM\x00*")
@@ -376,16 +376,17 @@ def read_image_file_from_system_clipboard() -> tuple[bytes, str, str] | None:
 
 def read_image_files_from_system_clipboard() -> list[tuple[bytes, str, str]]:
     return [
-        item["image"]
+        cast(tuple[bytes, str, str], item["image"])
         for item in read_clipboard_file_items()
         if item["kind"] == "image"
     ]
 
 
 def _clipboard_item_from_path(path_text: str) -> dict[str, object] | None:
-    path_text = _normalize_local_path_text(path_text)
-    if path_text is None:
+    normalized_path = _normalize_local_path_text(path_text)
+    if normalized_path is None:
         return None
+    path_text = normalized_path
     image = _read_image_file(path_text)
     if image is not None:
         return {"kind": "image", "image": image}
@@ -522,12 +523,18 @@ def read_clipboard_file_items(paste_text: str | None = None) -> list[dict[str, o
         path = _normalize_local_path_text(token)
         if path is None:
             continue
+        matched_key: str | None
         if _looks_like_local_path(path):
-            key = path.replace("\\", "/") if sys.platform == "win32" else path
+            matched_key = path.replace("\\", "/") if sys.platform == "win32" else path
         else:
             names = set(_paste_text_names(token))
-            key = next((key for key, item in items_by_path.items() if names & _clipboard_item_names(item)), None)
-        item = items_by_path.pop(key, None)
+            matched_key = next(
+                (key for key, item in items_by_path.items() if names & _clipboard_item_names(item)),
+                None,
+            )
+        if matched_key is None:
+            return []
+        item = items_by_path.pop(matched_key, None)
         if item is None:
             return []
         matched.append(item)
@@ -657,11 +664,14 @@ def read_image_from_system_clipboard(
 
 
 def copy_to_system_clipboard(text: str) -> bool:
+    commands: list[list[str]]
     if sys.platform == "darwin":
-        commands = [[shutil.which("pbcopy")]]
+        pbcopy = shutil.which("pbcopy")
+        commands = [[pbcopy]] if pbcopy else []
         encoding = "utf-8"
     elif sys.platform == "win32":
-        commands = [[shutil.which("clip")]]
+        clip = shutil.which("clip")
+        commands = [[clip]] if clip else []
         encoding = "utf-16le"
     elif sys.platform.startswith("linux"):
         encoding = "utf-8"

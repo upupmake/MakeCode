@@ -8,21 +8,25 @@ import itertools
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 import httpx
 from anthropic import AsyncAnthropic
 from openai import APIError, AsyncOpenAI
 from openai._streaming import ServerSentEvent, SSEDecoder
 
-from prompts import get_memory_decision_system_prompt, get_summary_system_prompt, get_summary_user_prompt
+from prompts import (
+    get_memory_decision_system_prompt,
+    get_summary_system_prompt,
+    get_summary_user_prompt,
+)
 from utils.tool_validation import format_tool_content, normalize_tool_messages
 from utils.vision import SUPPORTED_IMAGE_TYPES, image_data_uri, resolve_image_attachment
-
 
 _LLM_TIMEOUT = (10.0, 120.0, 120.0, 120.0)
 _LLM_MAX_RETRIES = 5
@@ -59,7 +63,9 @@ class LLMResult:
     text: str = ""
     reasoning: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    assistant_message: LLMMessage = field(default_factory=lambda: {"role": "assistant", "content": ""})
+    assistant_message: LLMMessage = field(
+        default_factory=lambda: LLMMessage(role="assistant", content="")
+    )
     stop_reason: str | None = None
     usage: dict[str, Any] | None = None
 
@@ -407,11 +413,11 @@ class AsyncBaseLLMClient(ABC):
         self.conversation_root = conversation_root
 
     @abstractmethod
-    async def generate_stream(
+    def generate_stream(
         self,
         messages: list,
-        tools: list = None,
-    ):
+        tools: list | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         """Yields stream events and ends with a done event containing LLMResult."""
         raise NotImplementedError
 
@@ -420,9 +426,9 @@ class AsyncBaseLLMClient(ABC):
             tool_call_id: str,
             tool_name: str,
             output: Any,
-            is_error: bool = False,
+        is_error: bool = False,
     ) -> dict:
-        result = {
+        result: dict[str, Any] = {
             "role": "tool",
             "tool_call_id": tool_call_id,
             "name": tool_name,
@@ -453,7 +459,7 @@ class AsyncBaseLLMClient(ABC):
         self,
         conversation_text: str,
         reason: str,
-        tools: list = None,
+        tools: list | None = None,
     ):
         messages = [
             {"role": "system", "content": get_summary_system_prompt()},
@@ -788,7 +794,7 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
     async def generate_stream(
         self,
         messages: list,
-        tools: list = None,
+        tools: list | None = None,
     ):
         with _client_request_active():
             async for event in self._generate_stream(messages, tools):
@@ -797,7 +803,7 @@ class AsyncChatAPIClient(AsyncBaseLLMClient):
     async def _generate_stream(
         self,
         messages: list,
-        tools: list = None,
+        tools: list | None = None,
     ):
         request_messages = sanitize_openai_messages(messages, self.conversation_root)
         kwargs = {
@@ -1259,7 +1265,7 @@ def build_openai_responses_request(
 
 
 def _normalized_openai_responses_blocks(native_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized = []
+    normalized: list[dict[str, Any]] = []
     for block in native_blocks:
         block_type = block.get("type")
         if block_type == "message":
@@ -1376,7 +1382,7 @@ class OpenAIResponsesClient(AsyncBaseLLMClient):
     async def generate_stream(
         self,
         messages: list,
-        tools: list = None,
+        tools: list | None = None,
     ):
         instructions, request_items = build_openai_responses_request(
             messages,
@@ -1554,7 +1560,7 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
     async def generate_stream(
         self,
         messages: list,
-        tools: list = None,
+        tools: list | None = None,
     ):
         system, request_messages = build_anthropic_request_messages(
             messages,
@@ -1694,11 +1700,12 @@ def _normalize_anthropic_base_url(base_url: str) -> str:
 
 
 def _create_async_chat_client(model_config, conversation_root: Path | None = None):
+    client: _TrackedAsyncAnthropic | _TrackedAsyncOpenAI
     if model_config.message_format == "anthropic":
         client = _TrackedAsyncAnthropic(
             base_url=_normalize_anthropic_base_url(model_config.base_url),
             api_key=model_config.api_key,
-            timeout=_LLM_TIMEOUT,
+            timeout=cast(Any, _LLM_TIMEOUT),
             max_retries=_LLM_MAX_RETRIES,
             default_headers={"User-Agent": "MakeCode Agent"},
         )
@@ -1713,7 +1720,7 @@ def _create_async_chat_client(model_config, conversation_root: Path | None = Non
     client = _TrackedAsyncOpenAI(
         base_url=normalized_base_url,
         api_key=model_config.api_key,
-        timeout=_LLM_TIMEOUT,
+        timeout=cast(Any, _LLM_TIMEOUT),
         max_retries=_LLM_MAX_RETRIES,
         default_headers={"User-Agent": "MakeCode Agent"},
     )

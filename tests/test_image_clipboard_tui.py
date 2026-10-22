@@ -202,7 +202,7 @@ async def test_split_paste_events_insert_each_clipboard_item_once():
 
     app = MakeCodeTuiApp(
         image_placeholder_handler=placeholder_handler,
-        image_clipboard_handler=lambda paste_text: mapping.get(paste_text or "", None),
+        image_clipboard_handler=lambda paste_text: mapping.get(paste_text or ""),
     )
 
     async with app.run_test(size=(180, 40)) as pilot:
@@ -230,7 +230,7 @@ async def test_unmatched_clipboard_filename_is_not_inserted_as_text():
     }
     app = MakeCodeTuiApp(
         image_placeholder_handler=lambda value: ("[图片：提示文案.jpg]", [block]),
-        image_clipboard_handler=lambda paste_text: mapping.get(paste_text, None),
+        image_clipboard_handler=lambda paste_text: mapping.get(paste_text),
     )
 
     async with app.run_test(size=(180, 40)) as pilot:

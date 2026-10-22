@@ -2,11 +2,8 @@ import json
 from pathlib import Path
 
 from pydantic import Field
-
-from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
 from rich.markup import escape
 
-from init import log_error_traceback
 from system.tui_app import TuiRegion, post_tui
 from utils import paths
 from utils.skill_catalog import (
@@ -15,6 +12,7 @@ from utils.skill_catalog import (
     skill_directories,
     write_disabled_skill_names,
 )
+from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
 
 
 def _skills_dirs() -> list[Path]:
@@ -73,8 +71,8 @@ class SkillLoader:
             self.disabled_skills_file = skills_dir / "disabled_skills.json"
         else:
             self.disabled_skills_file = paths.workspace_disabled_skills_file()
-        self.all_skills = {}
-        self.skills = {}
+        self.all_skills: dict[str, dict] = {}
+        self.skills: dict[str, dict] = {}
         self.disabled_skill_names: set[str] = set()
         self.is_enabled = DEFAULT_SKILLS_PROMPT_ENABLED
         self._load_all()

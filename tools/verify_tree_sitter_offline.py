@@ -12,7 +12,6 @@ os.environ["TS_PACK_OFFLINE"] = "1"
 
 import pyzstd
 
-
 EXPECTED_PACKAGE_VERSIONS = {
     "tree-sitter": "0.25.2",
     "tree-sitter-language-pack": "1.14.3",

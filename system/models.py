@@ -5,11 +5,9 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
-
 
 REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_REASONING_EFFORT = "medium"
@@ -81,7 +79,7 @@ class ModelConfig:
         }
 
     @classmethod
-    def key_from_dict(cls, data: dict | None) -> Optional[ModelKey]:
+    def key_from_dict(cls, data: dict | None) -> ModelKey | None:
         if not isinstance(data, dict):
             return None
         base_url = data.get("base_url")
@@ -112,19 +110,19 @@ class ModelManager:
         self.config_dir = config_dir
         self.config_file = config_dir / "model_config.json"
         self.models: list[ModelConfig] = []
-        self.current_model: Optional[ModelConfig] = None
-        self.current_model_key: Optional[ModelKey] = None
-        self.last_selected_key: Optional[ModelKey] = None
-        self.memory_recall_model_key: Optional[ModelKey] = None
-        self.load_error: Optional[str] = None
-        self._raw_config: Optional[dict] = None
+        self.current_model: ModelConfig | None = None
+        self.current_model_key: ModelKey | None = None
+        self.last_selected_key: ModelKey | None = None
+        self.memory_recall_model_key: ModelKey | None = None
+        self.load_error: str | None = None
+        self._raw_config: dict | None = None
         self._load_config()
         self._set_initial_current_model()
 
     def _sort_models(self):
         self.models.sort(key=lambda model: (not model.is_favorite, model.model_id.lower()))
 
-    def _get_model_by_key(self, key: Optional[ModelKey]) -> Optional[ModelConfig]:
+    def _get_model_by_key(self, key: ModelKey | None) -> ModelConfig | None:
         if key is None:
             return None
         for model in self.models:
@@ -132,10 +130,10 @@ class ModelManager:
                 return model
         return None
 
-    def get_model_by_key(self, key: Optional[ModelKey]) -> Optional[ModelConfig]:
+    def get_model_by_key(self, key: ModelKey | None) -> ModelConfig | None:
         return self._get_model_by_key(key)
 
-    def _get_default_model(self) -> Optional[ModelConfig]:
+    def _get_default_model(self) -> ModelConfig | None:
         if not self.models:
             return None
         for model in self.models:
@@ -143,7 +141,7 @@ class ModelManager:
                 return model
         return self.models[0]
 
-    def _set_current_model(self, model: Optional[ModelConfig]):
+    def _set_current_model(self, model: ModelConfig | None):
         self.current_model = model
         self.current_model_key = model.key if model else None
 
@@ -167,7 +165,7 @@ class ModelManager:
             return
 
         try:
-            with open(self.config_file, "r", encoding="utf-8") as f:
+            with open(self.config_file, encoding="utf-8") as f:
                 data = json.load(f)
 
             self.load_error = None
@@ -212,9 +210,7 @@ class ModelManager:
     def _ensure_config_loaded_for_save(self) -> bool:
         if self.load_error is None:
             return True
-        if not self.config_file.exists():
-            return True
-        return False
+        return bool(not self.config_file.exists())
 
     def _build_save_payload(self) -> dict:
         payload = self._raw_config.copy() if isinstance(self._raw_config, dict) else {}
@@ -229,14 +225,14 @@ class ModelManager:
     def get_load_error_display(self) -> str:
         return f"无法读取模型配置文件 {self.config_file}: {self.load_error}" if self.load_error else ""
 
-    def _get_last_selected_payload(self) -> Optional[dict]:
+    def _get_last_selected_payload(self) -> dict | None:
         model = self._get_model_by_key(self.last_selected_key)
         if model is None:
             model = self._get_default_model()
             self.last_selected_key = model.key if model else None
         return model.to_identity_dict() if model else None
 
-    def _get_memory_recall_model_payload(self) -> Optional[dict]:
+    def _get_memory_recall_model_payload(self) -> dict | None:
         model = self.get_memory_recall_model()
         return model.to_identity_dict() if model else None
 
@@ -279,10 +275,10 @@ class ModelManager:
     def get_favorite_models(self) -> list[ModelConfig]:
         return [m for m in self.models if m.is_favorite]
 
-    def get_current_model(self) -> Optional[ModelConfig]:
+    def get_current_model(self) -> ModelConfig | None:
         return self.current_model
 
-    def get_memory_recall_model(self) -> Optional[ModelConfig]:
+    def get_memory_recall_model(self) -> ModelConfig | None:
         model = self._get_model_by_key(self.memory_recall_model_key)
         if model is None:
             self.memory_recall_model_key = None
@@ -292,7 +288,7 @@ class ModelManager:
         model = self.get_memory_recall_model()
         return model.get_display_text() if model else "同主模型"
 
-    def set_memory_recall_model_by_key(self, key: Optional[ModelKey]) -> bool:
+    def set_memory_recall_model_by_key(self, key: ModelKey | None) -> bool:
         if not self._reload_from_disk():
             return False
         if key is not None and self._get_model_by_key(key) is None:
@@ -324,7 +320,7 @@ class ModelManager:
         model_id: str,
         message_format: str,
         alias: str,
-    ) -> Optional[ModelConfig]:
+    ) -> ModelConfig | None:
         if not self._reload_from_disk():
             return None
         model = self._get_model_by_key(key)
@@ -412,8 +408,9 @@ class ModelManager:
             self.memory_recall_model_key,
         )
         new_models = []
+        alias_values = aliases or []
         for index, model_id in enumerate(model_ids):
-            alias = normalize_model_alias(aliases[index]) if index < len(aliases or []) else ""
+            alias = normalize_model_alias(alias_values[index]) if index < len(alias_values) else ""
             model = ModelConfig(
                 base_url=base_url.rstrip("/"),
                 api_key=api_key,
@@ -492,7 +489,7 @@ class ModelManager:
         return saved
 
 
-_model_manager: Optional[ModelManager] = None
+_model_manager: ModelManager | None = None
 
 
 def init_model_manager(config_dir: Path) -> ModelManager:
@@ -501,11 +498,11 @@ def init_model_manager(config_dir: Path) -> ModelManager:
     return _model_manager
 
 
-def get_model_manager() -> Optional[ModelManager]:
+def get_model_manager() -> ModelManager | None:
     return _model_manager
 
 
-def get_current_model_config() -> Optional[ModelConfig]:
+def get_current_model_config() -> ModelConfig | None:
     if _model_manager:
         return _model_manager.get_current_model()
     return None

@@ -1,6 +1,6 @@
+import json
 import tempfile
 import unittest
-import json
 from pathlib import Path
 from unittest.mock import patch
 

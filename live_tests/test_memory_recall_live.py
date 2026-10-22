@@ -4,10 +4,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from system.models import init_model_manager, get_current_model_config
-from utils import paths
 import utils.memory as memory
-
+from system.models import get_current_model_config, init_model_manager
+from utils import paths
 
 CASES = [
     {

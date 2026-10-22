@@ -1,0 +1,66 @@
+[tool.ruff]
+target-version = "py312"
+extend-exclude = ["skills", "ts_cache", "tiktoken_cache", ".makecode"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "SIM"]
+# Nested with-blocks are often clearer, especially in tests; revisit separately.
+ignore = ["E731", "SIM117"]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules intentionally adjust sys.path before importing project packages.
+"init.py" = ["E402"]
+"utils/llm_client.py" = ["E402"]
+"utils/mcp_manager.py" = ["E402"]
+"utils/memory.py" = ["E402"]
+"utils/teams.py" = ["E402"]
+"tests/*" = ["E402"]
+"live_tests/*" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+    "live: requires live external services; excluded from CI",
+]
+
+[tool.coverage.run]
+source = [
+    "system",
+    "utils",
+    "tools",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 40
+
+[tool.mypy]
+python_version = "3.12"
+files = [
+    "utils/paths.py",
+    "utils/common.py",
+    "utils/file_patch.py",
+    "utils/directory_picker.py",
+    "utils/tasks.py",
+    "utils/skills.py",
+    "utils/llm_client.py",
+    "utils/memory.py",
+    "utils/conversations.py",
+    "utils/text_sanitize.py",
+    "utils/vision.py",
+    "system/cli.py",
+    "system/clipboard.py",
+    "system/models.py",
+    "system/updater.py",
+    "utils/plan_mode.py",
+    "utils/text_tokens.py",
+    "utils/hitl.py",
+    "utils/terminal.py",
+    "utils/tool_validation.py",
+]
+follow_imports = "silent"
+ignore_missing_imports = true
+show_error_codes = true
+warn_unused_configs = true

@@ -11,13 +11,13 @@ os.environ["TS_PACK_OFFLINE"] = "1"
 
 import pyzstd
 from tree_sitter_language_pack import (
-    get_parser,
-    detect_language_from_path,
-    downloaded_languages,
-    process,
     PackConfig,
     ProcessConfig,
-    configure
+    configure,
+    detect_language_from_path,
+    downloaded_languages,
+    get_parser,
+    process,
 )
 
 from utils import paths

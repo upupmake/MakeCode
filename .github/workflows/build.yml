@@ -13,8 +13,35 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Lint and type check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip --retries 10 --timeout 60
+          python -m pip install --retries 10 --timeout 60 -r requirements-dev.txt
+
+      - name: Run Ruff
+        run: python -m ruff check .
+
+      - name: Run Mypy
+        run: python -m mypy
+
   build:
     name: Build on ${{ matrix.os }}
+    needs: quality
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -60,7 +87,6 @@ jobs:
         run: >-
           python -m pytest
           tests/
-          --ignore=tests/test_memory_recall_live.py
           -q
 
       - name: Build updater
@@ -197,6 +223,7 @@ jobs:
 
   build-linux:
     name: Build on Linux X64 (GLIBC 2.31)
+    needs: quality
     runs-on: ubuntu-22.04
     container:
       image: python:3.12-bullseye
@@ -221,7 +248,7 @@ jobs:
           python -m pip install --upgrade pip --retries 10 --timeout 60
           python -m pip install --retries 10 --timeout 60 tree-sitter==0.25.2
           python -m pip install --retries 10 --timeout 60 --no-deps "tree-sitter-language-pack @ git+https://github.com/xberg-io/tree-sitter-language-pack.git@df3bcc39862da6972032d7537d49b782a50a25bb#subdirectory=packages/python"
-          python -m pip install --retries 10 --timeout 60 -r requirements.txt pyinstaller==6.19.0 pytest
+          python -m pip install --retries 10 --timeout 60 -r requirements.txt -r requirements-dev.txt pyinstaller==6.19.0
 
       - name: Verify bundled tree-sitter parser cache
         env:
@@ -239,8 +266,9 @@ jobs:
         run: >-
           python -m pytest
           tests/
-          --ignore=tests/test_memory_recall_live.py
           -q
+          --cov
+          --cov-report=term-missing
 
       - name: Build updater
         run: pyinstaller --clean --noconfirm updater.spec

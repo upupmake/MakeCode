@@ -12,12 +12,11 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
-from rich.rule import Rule
 from rich.style import Style
 from rich.text import Span, Text
 from rich.theme import Theme
 
-from init import log_error_traceback, STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE
+from init import STARTUP_TERMINAL_SOURCE, STARTUP_TERMINAL_TYPE
 from system.tool_render import (
     format_tool_arguments,
     format_tool_call_block,
@@ -51,7 +50,6 @@ _custom_theme = Theme({
 class TuiConsole(Console):
     def print(self, *objects: Any, **kwargs: Any) -> None:
         region = kwargs.pop("tui_region", TuiRegion.CONTENT)
-        sep = kwargs.get("sep", " ")
         end = kwargs.get("end", "\n")
         if not objects:
             post_tui(region, "")
@@ -66,7 +64,6 @@ class TuiConsole(Console):
             post_tui(region, active=False)
 
     def rule(self, title: str = "", **kwargs: Any) -> None:
-        style = kwargs.get("style", "")
         text = f"[bold]{title}[/bold]" if title else "─" * 24
         post_tui(TuiRegion.CONTENT, active=True)
         try:

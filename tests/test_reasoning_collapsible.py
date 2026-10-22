@@ -4,7 +4,7 @@ from textual.widgets import Collapsible, Static
 
 import system.console_render as console_render
 from system.console_render import _render_history
-from system.tui_app import CopyableContentGroup, ContentBlock, MakeCodeTuiApp
+from system.tui_app import ContentBlock, CopyableContentGroup, MakeCodeTuiApp
 from system.tui_types import TuiEvent, TuiRegion
 
 

@@ -31,12 +31,13 @@ def _locale_language() -> str:
         category = getattr(locale, category_name, None)
         if category is None:
             continue
+        locale_value: str | None
         try:
-            value = locale.getlocale(category)[0]
+            locale_value = locale.getlocale(category)[0]
         except (locale.Error, ValueError):
-            value = None
-        if value:
-            language = _normalize_language_tag(value)
+            locale_value = None
+        if locale_value:
+            language = _normalize_language_tag(locale_value)
             if language and language not in _C_LOCALE_NAMES:
                 return language
     return "en"
@@ -66,7 +67,10 @@ def _windows_ui_language() -> str | None:
     try:
         import ctypes
 
-        langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return None
+        langid = windll.kernel32.GetUserDefaultUILanguage()
     except (AttributeError, OSError, ValueError):
         return None
     return locale.windows_locale.get(int(langid))

@@ -2,12 +2,14 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
+_ENCODER: Any
 try:
     import tiktoken
 
     if getattr(sys, "frozen", False):
-        _base_path = Path(sys._MEIPASS)
+        _base_path = Path(getattr(sys, "_MEIPASS"))
     else:
         _base_path = Path(__file__).parent.parent
 

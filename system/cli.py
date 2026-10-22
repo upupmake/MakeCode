@@ -7,7 +7,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 from version import CURRENT_VERSION
 
-
 STARTUP_LOAD_REQUESTED = False
 STARTUP_LOAD_ID: str | None = None
 SIMPLE_MODE = False
@@ -181,7 +180,11 @@ def _mcp_list() -> int:
 
 def _mcp_add(arguments: Sequence[str]) -> int:
     from utils import paths
-    from utils.mcp_config import MCP_ADD_USAGE, add_mcp_server_config, parse_mcp_add_args
+    from utils.mcp_config import (
+        MCP_ADD_USAGE,
+        add_mcp_server_config,
+        parse_mcp_add_args,
+    )
 
     try:
         server_name, config = parse_mcp_add_args(arguments)
@@ -229,8 +232,8 @@ def _skills_list() -> int:
     print("Skills 搜索目录（优先级从高到低）:")
     for directory in directories:
         print(f"  {directory.resolve()}")
-    for skill_file, exc in parse_errors:
-        print(f"跳过无法解析的 Skill {skill_file}: {exc}", file=sys.stderr)
+    for skill_file, parse_error in parse_errors:
+        print(f"跳过无法解析的 Skill {skill_file}: {parse_error}", file=sys.stderr)
 
     if not skills:
         print("当前工作区没有可用 Skills。")
@@ -299,7 +302,12 @@ def _check_update() -> int:
 
 
 def _update(*, assume_yes: bool) -> int:
-    from system.updater import AUTO_UPDATE_SUPPORTED, check_update, download_update, launch_updater
+    from system.updater import (
+        AUTO_UPDATE_SUPPORTED,
+        check_update,
+        download_update,
+        launch_updater,
+    )
 
     print(f"当前版本: {CURRENT_VERSION}")
     if not getattr(sys, "frozen", False):

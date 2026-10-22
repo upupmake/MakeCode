@@ -1,7 +1,6 @@
 """独立更新器：安全解压并事务替换 Windows/Linux onedir 应用目录，以及 macOS 的启动器与 onedir 目录。"""
 
 import argparse
-import ctypes
 import logging
 import os
 import posixpath

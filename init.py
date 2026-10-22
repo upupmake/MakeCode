@@ -88,7 +88,7 @@ SUPPORTED_TERMINAL_TYPES = ("powershell", "pwsh", "cmd", "bash", "zsh", "sh")
 
 def _terminal_exists(terminal: str) -> bool:
     if terminal == "cmd":
-        return sys.platform == "win32" and bool(which("cmd") or os.getenv("ComSpec"))
+        return sys.platform == "win32" and bool(which("cmd") or os.getenv("COMSPEC"))
     return which(terminal) is not None
 
 
@@ -119,4 +119,5 @@ STARTUP_TERMINAL_TYPE, STARTUP_TERMINAL_SOURCE = _detect_startup_terminal_type()
 
 # 初始化模型管理器 - 使用安装目录的配置
 from system.models import init_model_manager
+
 MODEL_MANAGER = init_model_manager(paths.install_makecode_dir())

@@ -1,8 +1,8 @@
 """TuiBridge 事件队列：工作线程只入队，UI 线程按序批量 drain，并与其他跨线程调用保持先后顺序。"""
 import asyncio
+import sys
 import threading
 import time
-import sys
 from unittest.mock import patch
 
 import pytest
@@ -10,11 +10,11 @@ from rich.text import Text
 
 from system.stream_render import StreamRenderer
 from system.tui_app import (
+    TUI_BRIDGE,
     ContentBlock,
     CopyableContentGroup,
     InlineCollapsible,
     MakeCodeTuiApp,
-    TUI_BRIDGE,
     TuiBridge,
     begin_tui_batch_render,
     end_tui_batch_render,

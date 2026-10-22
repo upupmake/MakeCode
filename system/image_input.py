@@ -7,8 +7,11 @@ from typing import Any
 from textual.events import Key, Paste
 from textual.widgets import TextArea
 
-from utils.vision import IMAGE_PLACEHOLDER_PATTERN, image_placeholder_text, image_reference_marker
-
+from utils.vision import (
+    IMAGE_PLACEHOLDER_PATTERN,
+    image_placeholder_text,
+    image_reference_marker,
+)
 
 IMAGE_DISPLAY_PLACEHOLDER_PATTERN = re.compile(r"\[图片：[^\]\n]+\]")
 

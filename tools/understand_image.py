@@ -10,13 +10,15 @@ import httpx
 from pydantic import Field, field_validator
 
 from init import log_error_traceback
+from system.tui_app import TuiRegion, post_tui
 from tools.extra_tools import is_understand_image_enabled
-from system.tui_app import post_tui, TuiRegion
 from utils.common import safe_path
-from utils.llm_client import close_async_llm_client, create_image_understanding_llm_client
+from utils.llm_client import (
+    close_async_llm_client,
+    create_image_understanding_llm_client,
+)
 from utils.tool_validation import ToolArgumentsModel, build_tool_definitions
 from utils.vision import SUPPORTED_IMAGE_TYPES, image_media_type_from_bytes
-
 
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_IMAGE_COUNT = 4

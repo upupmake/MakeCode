@@ -13,11 +13,11 @@ from queue import Queue
 from typing import Any
 
 from rich import box
-from rich.console import RenderableType
 from rich.cells import cell_len
+from rich.console import RenderableType
 from rich.errors import MarkupError
-from rich.markup import escape
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -27,25 +27,26 @@ from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Click, Event, Key, Paste, Resize
 from textual.widget import Widget
-from textual.widgets import Button, Collapsible, Footer, Input, Label, RichLog, Static, TextArea
+from textual.widgets import (
+    Button,
+    Collapsible,
+    Footer,
+    Label,
+    RichLog,
+    Static,
+    TextArea,
+)
 
 from system.clipboard import copy_to_system_clipboard, strip_invisible_characters
-from utils.vision import image_reference_marker
-from system.tui_types import (
-    TuiEvent,
-    TuiRegion,
-    load_layout_ratios,
-    normalize_layout_ratios,
-    save_layout_ratios,
-)
 from system.image_input import ImageAwareTextArea
-from system.updater import _parse_version, fetch_latest_version_info
 from system.tui_modals import (
     AddModelModal,
     ChoiceModal,
     CopyContentModal,
     DelegateTasksModal,
+    ExtraToolsModal,
     HitlModal,
+    ImageUnderstandingModelPickerModal,
     InfoPanelModal,
     LayoutModal,
     McpSwitchModal,
@@ -54,18 +55,25 @@ from system.tui_modals import (
     MemoryPanelModal,
     ModelManagerModal,
     ModelPanelModal,
-    ExtraToolsModal,
     RecallModelPickerModal,
-    ImageUnderstandingModelPickerModal,
     SkillsConfigModal,
     StartupWorkdirModal,
     TaskPanelModal,
     TemporaryQueryModal,
     TokenUsageModal,
 )
-from utils.directory_picker import DirectoryPickerUnavailableError, choose_directory
+from system.tui_types import (
+    TuiEvent,
+    TuiRegion,
+    load_layout_ratios,
+    normalize_layout_ratios,
+    save_layout_ratios,
+)
+from system.updater import _parse_version, fetch_latest_version_info
 from utils import paths
+from utils.directory_picker import DirectoryPickerUnavailableError, choose_directory
 from utils.terminal import set_terminal_title
+from utils.vision import image_reference_marker
 
 COMPACT_WIDTH = 140
 CUSTOM_CONVERSATION_TITLE_PREFIX = "\x00makecode-custom-title:"

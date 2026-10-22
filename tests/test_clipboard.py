@@ -21,7 +21,7 @@ def test_copy_to_system_clipboard_uses_pbcopy_on_macos():
 
     run.assert_called_once_with(
         ["/usr/bin/pbcopy"],
-        input="你好".encode("utf-8"),
+        input="你好".encode(),
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

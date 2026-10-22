@@ -5,7 +5,6 @@ import pytest
 
 from utils import common
 
-
 patch_impl = importlib.import_module("utils.file_patch")
 
 

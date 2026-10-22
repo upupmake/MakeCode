@@ -2,9 +2,9 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
 from rich.cells import cell_len
 from rich.console import Console
-import pytest
 
 from system.console_render import (
     _render_tool_call,

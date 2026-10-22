@@ -1,6 +1,6 @@
 """Content 面板在长历史下的渲染路径：面板高亮、批量回放、尾部原子提交与按需布局。"""
-from unittest.mock import patch
 import sys
+from unittest.mock import patch
 
 import pytest
 from rich.text import Text

@@ -12,7 +12,13 @@ from textual.app import App, ComposeResult
 from textual.widgets import Button, Input, Label, Static
 
 from init import resolve_chosen_workdir
-from system.commands import COMMAND_DESCRIPTIONS, CommandAction, CommandHandler, _conversation_preview, _task_plan_preview
+from system.commands import (
+    COMMAND_DESCRIPTIONS,
+    CommandAction,
+    CommandHandler,
+    _conversation_preview,
+    _task_plan_preview,
+)
 from system.console_render import (
     _extract_message_text,
     render_content_user_message,
@@ -21,10 +27,14 @@ from system.console_render import (
 from system.tui_app import MakeCodeInput, MakeCodeTuiApp
 from system.tui_modals import StartupWorkdirModal
 from system.tui_types import TuiEvent, TuiRegion
-from utils.conversations import ConversationStore, SCHEMA_VERSION, SUB_AGENT_HISTORY_FILE, TASK_PLAN_FILE
+from utils.conversations import (
+    SCHEMA_VERSION,
+    SUB_AGENT_HISTORY_FILE,
+    TASK_PLAN_FILE,
+    ConversationStore,
+)
 from utils.mcp_manager import GlobalMCPManager
 from utils.paths import directory_completion_candidates
-
 
 TEST_LAYOUT_RATIOS = {
     "task": 2,

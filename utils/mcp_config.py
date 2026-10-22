@@ -4,7 +4,6 @@ import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
-
 MCP_ADD_USAGE = "--mcp-add <name> [options] -- <cmd> [args...] 或 --mcp-add <name> --url <url> [options]"
 
 

@@ -3,7 +3,10 @@ from pathlib import Path
 import pytest
 
 from utils import common
-from utils.tool_validation import ToolArgumentValidationError, validate_builtin_tool_arguments
+from utils.tool_validation import (
+    ToolArgumentValidationError,
+    validate_builtin_tool_arguments,
+)
 
 
 def _search_in_workspace(monkeypatch, tmp_path: Path, content_regex: str, context_size: int | None = None) -> str:

@@ -4,7 +4,7 @@ import os
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any
 
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -12,14 +12,10 @@ from rich.console import Console, RenderableType
 from rich.errors import MarkupError
 from rich.text import Text
 
-from system import simple_input
-from system import simple_management
-from system import simple_prompt
-from system import simple_terminal
+from system import simple_input, simple_management, simple_prompt, simple_terminal
 from system.simple_menu import ChoiceMenu
 from system.tui_types import TuiEvent, TuiRegion
 from utils.text_sanitize import sanitize_control_characters
-
 
 _REGION_LABELS = {
     TuiRegion.BACKGROUND: "Background",
@@ -222,10 +218,8 @@ class SimpleRenderer:
         except (OSError, ValueError):
             pass
         finally:
-            try:
+            with suppress(OSError, ValueError):
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            except (OSError, ValueError):
-                pass
 
     def _temporary_query_loop_windows(self) -> None:
         import _thread
@@ -235,10 +229,7 @@ class SimpleRenderer:
             if not self._lock.acquire(timeout=0.05):
                 continue
             try:
-                if not msvcrt.kbhit():
-                    character = None
-                else:
-                    character = msvcrt.getwch()
+                character = None if not msvcrt.kbhit() else msvcrt.getwch()
             finally:
                 self._lock.release()
             if character is None:
@@ -762,9 +753,13 @@ class SimpleRenderer:
         except (EOFError, KeyboardInterrupt):
             self.console.print()
             return None
-        if answer is not None and answer.strip() and not secret:
-            if not self._history or self._history[-1] != answer:
-                self._history.append(answer)
+        if (
+            answer is not None
+            and answer.strip()
+            and not secret
+            and (not self._history or self._history[-1] != answer)
+        ):
+            self._history.append(answer)
         return answer
 
     def _print_region_label(self, region: TuiRegion) -> None:

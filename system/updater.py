@@ -12,13 +12,13 @@ import ssl
 import subprocess
 import sys
 import tempfile
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 import certifi
 
-from version import CURRENT_VERSION, VERSION_CHECK_URL, DOWNLOAD_URL
+from version import CURRENT_VERSION, DOWNLOAD_URL, VERSION_CHECK_URL
 
 logger = logging.getLogger(__name__)
 
@@ -156,11 +156,14 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
     if not isinstance(expected_size, int) or expected_size <= 0:
         raise ValueError("version.json 缺少有效的 size")
 
+    platform_key = UPDATE_PLATFORM_KEY
+    if platform_key is None:
+        raise RuntimeError("当前平台不支持应用内自动更新")
     archive_name = {
         "windows-x86_64": "MakeCode-Windows-X64.zip",
         "linux-x86_64": "MakeCode-Linux-X64.zip",
         "macos-arm64": "MakeCode-macOS-ARM64.zip",
-    }[UPDATE_PLATFORM_KEY]
+    }[platform_key]
     tmp_dir = tempfile.mkdtemp(prefix="makecode_update_")
     tmp_file = Path(tmp_dir) / archive_name
 

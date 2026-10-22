@@ -4,14 +4,13 @@ import pytest
 from textual.selection import Selection
 
 from system.console_render import (
-    render_copyable_markdown,
     render_content_assistant_message,
     render_content_user_message,
+    render_copyable_markdown,
 )
 from system.stream_render import StreamRenderer
-from system.tui_app import CopyableContentGroup, ContentBlock, MakeCodeTuiApp
+from system.tui_app import ContentBlock, CopyableContentGroup, MakeCodeTuiApp
 from system.tui_types import TuiEvent, TuiRegion
-
 
 TEST_LAYOUT_RATIOS = {
     "task": 2,
@@ -43,7 +42,7 @@ def test_copyable_group_get_selection_returns_raw_text():
 
 def test_content_block_has_no_copy_behavior():
     """子 block 只负责渲染，不处理点击或选区复制。"""
-    block = ContentBlock("普通文本块")
+    ContentBlock("普通文本块")
 
     assert "on_click" not in ContentBlock.__dict__
     assert "get_selection" not in ContentBlock.__dict__

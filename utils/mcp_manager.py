@@ -17,6 +17,8 @@ from utils.mcp_config import add_mcp_server_config, update_mcp_server_config
 def print_formatted_text(value):
     post_tui(TuiRegion.BACKGROUND, str(value))
 
+import contextlib
+
 from init import log_error_traceback
 
 mcp_config_path = paths.mcp_config_file()
@@ -46,7 +48,7 @@ class GlobalMCPManager:
         self.console = console
 
     def _load_config_dict(self) -> dict:
-        with open(self.config_path, "r", encoding="utf-8") as f:
+        with open(self.config_path, encoding="utf-8") as f:
             return json.load(f)
 
     def _save_config_dict(self, config_dict: dict):
@@ -402,10 +404,8 @@ class GlobalMCPManager:
             except Exception as e:
                 # 清理失败的 Client 资源
                 if client and hasattr(client, "__aexit__"):
-                    try:
+                    with contextlib.suppress(Exception):
                         await client.__aexit__(None, None, None)
-                    except Exception:
-                        pass
                 
                 with self._db_lock:
                     self.clients.pop(server_name, None)

@@ -158,9 +158,8 @@ def test_install_update_rolls_back_when_replacement_fails(tmp_path):
         launcher.write_text("old-launcher", encoding="utf-8")
         launcher.chmod(0o755)
 
-    with failure_patch:
-        with pytest.raises(OSError, match="cannot install"):
-            updater.install_update(archive, install_dir)
+    with failure_patch, pytest.raises(OSError, match="cannot install"):
+        updater.install_update(archive, install_dir)
 
     assert (install_dir / _executable_name()).read_text(encoding="utf-8") == "old"
     if updater.IS_MACOS:

@@ -3,7 +3,6 @@ import base64
 import json
 import shlex
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -13,11 +12,33 @@ from openai import APIError
 from rich.panel import Panel
 from rich.text import Text
 
-from system.models import MESSAGE_FORMATS, ModelConfig, ModelManager, REASONING_EFFORTS
+import main as main_module
 from system import console_render, ts_validator, updater, window_attention
 from system.commands import CommandAction, CommandHandler, CommandResult
-from system.tui_modals import AddMemoryModal, AddModelModal, ChoiceModal, InfoPanelModal, McpSwitchModal, McpToolsModal, McpViewModal, MemoryConfigModal, MemoryDetailModal, MemoryPanelModal, RecallModelPickerModal, ExtraToolsModal, ImageUnderstandingModelPickerModal, LayoutModal, ModelManagerModal, ModelPanelModal, EditModelModal, TaskPanelModal, filter_choice_options
-from utils import llm_client as llm_client_module, memory
+from system.models import MESSAGE_FORMATS, REASONING_EFFORTS, ModelConfig, ModelManager
+from system.tui_modals import (
+    AddMemoryModal,
+    AddModelModal,
+    ChoiceModal,
+    EditModelModal,
+    ExtraToolsModal,
+    ImageUnderstandingModelPickerModal,
+    InfoPanelModal,
+    LayoutModal,
+    McpSwitchModal,
+    McpToolsModal,
+    McpViewModal,
+    MemoryConfigModal,
+    MemoryDetailModal,
+    MemoryPanelModal,
+    ModelManagerModal,
+    ModelPanelModal,
+    RecallModelPickerModal,
+    TaskPanelModal,
+    filter_choice_options,
+)
+from utils import llm_client as llm_client_module
+from utils import memory
 from utils.conversations import ConversationStore
 from utils.llm_client import (
     AsyncChatAPIClient,
@@ -26,8 +47,11 @@ from utils.llm_client import (
     sanitize_openai_messages,
     strip_native_message_payloads,
 )
-from utils.vision import IMAGE_PLACEHOLDER_PATTERN, image_reference_marker, store_image_bytes_attachment
-import main as main_module
+from utils.vision import (
+    IMAGE_PLACEHOLDER_PATTERN,
+    image_reference_marker,
+    store_image_bytes_attachment,
+)
 
 
 def test_render_current_workdir_preserves_windows_drive_root():
@@ -444,14 +468,14 @@ def test_refresh_workspace_paths_keeps_shared_memory_config_file(tmp_path, monke
         patch.object(memory, "_reopen_memory_store") as reopen_store,
     ):
         memory.refresh_workspace_paths()
-        assert memory.MEMORY_DB_FILE == first_workspace / ".makecode" / "memory" / "memory.db"
+        assert first_workspace / ".makecode" / "memory" / "memory.db" == memory.MEMORY_DB_FILE
 
         monkeypatch.setattr(paths, "_WORKDIR", second_workspace)
         memory.refresh_workspace_paths()
-        assert memory.MEMORY_DB_FILE == second_workspace / ".makecode" / "memory" / "memory.db"
+        assert second_workspace / ".makecode" / "memory" / "memory.db" == memory.MEMORY_DB_FILE
         reopen_store.assert_called_with(memory.MEMORY_DB_FILE)
 
-    assert memory.MEMORY_CONFIG_FILE == install_dir / "memory_config.json"
+    assert install_dir / "memory_config.json" == memory.MEMORY_CONFIG_FILE
     assert memory.get_context_length() == 222
     memory.set_context_length(333)
     monkeypatch.setattr(paths, "_WORKDIR", first_workspace)
@@ -856,7 +880,16 @@ def test_tui_modals_use_q_not_escape_for_cancel():
 
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import Button, DataTable, Input, Label, ListView, RichLog, Select, TextArea
+from textual.widgets import (
+    Button,
+    DataTable,
+    Input,
+    Label,
+    ListView,
+    RichLog,
+    Select,
+    TextArea,
+)
 
 
 @pytest.fixture

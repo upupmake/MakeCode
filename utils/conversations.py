@@ -12,7 +12,6 @@ from utils.common import sanitize_title
 from utils.tool_validation import normalize_tool_messages
 from utils.vision import image_blocks_from_content, resolve_image_attachment
 
-
 SCHEMA_VERSION = 1
 CONVERSATION_FILE = "conversation.json"
 TASK_PLAN_FILE = "task_plan.json"
@@ -83,7 +82,7 @@ def _conversation_search_text(
 
 
 def _read_object(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         data = json.load(file)
     if not isinstance(data, dict):
         raise ValueError(f"Invalid 6.0 conversation data: {path}")

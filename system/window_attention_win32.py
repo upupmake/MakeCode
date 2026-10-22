@@ -2,7 +2,6 @@ import ctypes
 import os
 from ctypes import wintypes
 
-
 FLASHW_ALL = 0x00000003
 FLASHW_TIMERNOFG = 0x0000000C
 TH32CS_SNAPPROCESS = 0x00000002

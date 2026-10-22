@@ -252,7 +252,7 @@ def main():
         print("   Release 暂不设为 latest；Windows/macOS/Linux ZIP 和 version.json 将由 GitHub Actions 生成并上传")
 
     print()
-    print(f"[OK] GitHub Release 发布成功！")
+    print("[OK] GitHub Release 发布成功！")
     print(f"   下载地址: {release['html_url']}")
 
     # 清理发布日志文件

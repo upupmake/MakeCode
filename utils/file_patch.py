@@ -7,10 +7,10 @@ import re
 import stat
 import tempfile
 from bisect import bisect_left, bisect_right
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import Field
 
@@ -19,7 +19,6 @@ from utils import paths
 from utils.file_access import GLOBAL_FILE_CONTROLLER
 from utils.hitl import check_paths_permission, check_permission
 from utils.tool_validation import ToolArgumentsModel
-
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 _FILE_HEADER = re.compile(
@@ -295,7 +294,7 @@ def _parse_patch(patch: str) -> list[_PatchFile]:
             next_boundary = _skip_to_file_boundary(lines, index, end)
             index = next_boundary if next_boundary > index else index + 1
             continue
-        operation = match.group(1)
+        operation = cast(Literal["Update", "Add", "Delete"], match.group(1))
         path = match.group(2).strip()
         path_error = None
         if not path or "\0" in path:
@@ -652,9 +651,7 @@ def _apply_hunks(text: str, hunks: tuple[_Hunk, ...]) -> tuple[bytes, int]:
             else:
                 default_ending = next((ending for ending in old_endings if ending), "\n")
                 replacement_endings = [default_ending] * len(replacement)
-                if old_endings and old_endings[-1] == "":
-                    replacement_endings[-1] = ""
-                elif appended_after_unterminated_line:
+                if old_endings and old_endings[-1] == "" or appended_after_unterminated_line:
                     replacement_endings[-1] = ""
         else:
             replacement_endings = []
@@ -673,10 +670,8 @@ def _unique_sibling(path: Path, prefix: str) -> Path:
 
 
 def _unlink_quietly(path: Path) -> None:
-    try:
+    with suppress(OSError):
         path.unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def _ensure_parent(path: Path, created: list[Path]) -> None:
@@ -719,7 +714,7 @@ def _commit(plans: list[_Plan]) -> None:
             )
             temporary = Path(temporary_name)
             temporary_paths[plan.path] = temporary
-            open_fd = fd
+            open_fd: int | None = fd
             try:
                 stream = os.fdopen(fd, "wb")
                 open_fd = None
@@ -743,9 +738,9 @@ def _commit(plans: list[_Plan]) -> None:
             backup_paths[plan.path] = backup
 
         for plan in plans:
-            temporary = temporary_paths.get(plan.path)
-            if temporary is not None:
-                os.replace(temporary, plan.path)
+            temporary_file = temporary_paths.get(plan.path)
+            if temporary_file is not None:
+                os.replace(temporary_file, plan.path)
 
         for backup in backup_paths.values():
             _unlink_quietly(backup)
@@ -753,9 +748,7 @@ def _commit(plans: list[_Plan]) -> None:
             _fsync_directory(directory)
     except Exception as commit_error:
         for plan in reversed(plans):
-            if plan.path in temporary_paths and plan.path.exists() and not plan.existed:
-                _unlink_quietly(plan.path)
-            elif plan.path in temporary_paths and plan.path.exists() and plan.path in backup_paths:
+            if plan.path in temporary_paths and plan.path.exists() and not plan.existed or plan.path in temporary_paths and plan.path.exists() and plan.path in backup_paths:
                 _unlink_quietly(plan.path)
         restore_errors: list[str] = []
         for path, backup in backup_paths.items():
@@ -767,10 +760,8 @@ def _commit(plans: list[_Plan]) -> None:
         for temporary in temporary_paths.values():
             _unlink_quietly(temporary)
         for directory in reversed(created_dirs):
-            try:
+            with suppress(OSError):
                 directory.rmdir()
-            except OSError:
-                pass
         if restore_errors:
             details = "; ".join(restore_errors)
             raise RuntimeError(
@@ -891,40 +882,40 @@ def file_patch(patch: str) -> str:
 
             mark_alias_paths(resolved)
             planned: list[tuple[int, _Plan]] = []
-            for index, (spec, path) in enumerate(resolved, 1):
-                if index in failures or path is None:
+            for index, (spec, resolved_path) in enumerate(resolved, 1):
+                if index in failures or resolved_path is None:
                     continue
                 if spec.parse_error is not None:
                     failures[index] = _typed_failure("Format error", spec.parse_error)
                     continue
-                if external_permission_error and not path.is_relative_to(workdir):
+                if external_permission_error and not resolved_path.is_relative_to(workdir):
                     failures[index] = _typed_failure("Permission error", external_permission_error)
                     continue
                 try:
-                    exists = path.exists()
+                    exists = resolved_path.exists()
                     if spec.operation == "Add":
                         if exists:
                             raise ValueError(f"cannot add existing path: {spec.path}")
                         payload = (
                             "\n".join(spec.add_lines) + "\n" if spec.add_lines else ""
                         ).encode("utf-8")
-                        planned.append((index, _Plan(spec, path, False, None, payload, 1)))
+                        planned.append((index, _Plan(spec, resolved_path, False, None, payload, 1)))
                         continue
 
                     if not exists:
                         raise ValueError(f"target not found: {spec.path}")
-                    if not path.is_file():
+                    if not resolved_path.is_file():
                         raise ValueError(f"target is not a regular file: {spec.path}")
 
                     if spec.operation == "Delete":
                         planned.append((
                             index,
-                            _Plan(spec, path, True, stat.S_IMODE(path.stat().st_mode), None, 0),
+                            _Plan(spec, resolved_path, True, stat.S_IMODE(resolved_path.stat().st_mode), None, 0),
                         ))
                         continue
 
-                    raw = path.read_bytes()
-                    text, has_bom = _decode_text(raw, path)
+                    raw = resolved_path.read_bytes()
+                    text, has_bom = _decode_text(raw, resolved_path)
                     payload, hunk_count = _apply_hunks(text, spec.hunks)
                     if has_bom:
                         payload = _UTF8_BOM + payload
@@ -932,9 +923,9 @@ def file_patch(patch: str) -> str:
                         index,
                         _Plan(
                             spec,
-                            path,
+                            resolved_path,
                             True,
-                            stat.S_IMODE(path.stat().st_mode),
+                            stat.S_IMODE(resolved_path.stat().st_mode),
                             payload,
                             hunk_count,
                         ),
