@@ -660,6 +660,12 @@ def test_windows_uses_ascii_icons_and_safe_output(monkeypatch):
     assert stream.getvalue() == "[reasoning] Reasoning"
 
 
+def test_paste_text_normalizes_windows_line_endings():
+    assert simple_prompt._normalize_paste_text(
+        "first\r\nsecond\rthird\nfourth"
+    ) == "first\nsecond\nthird\nfourth"
+
+
 def test_read_input_uses_restored_pending_input(monkeypatch):
     renderer, _ = _make_renderer()
     captured: dict[str, object] = {}

@@ -58,6 +58,11 @@ class SlashCompleter(Completer):
                 )
 
 
+def _normalize_paste_text(text: str) -> str:
+    """把终端粘贴的 CRLF/CR 统一成换行符。"""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _build_key_bindings(
         *,
         multiline: bool,
@@ -184,7 +189,7 @@ def _build_key_bindings(
 
     @bindings.add(Keys.BracketedPaste)
     def _paste(event) -> None:
-        payload = event.data
+        payload = _normalize_paste_text(event.data)
         handled = None
         if paste_handler is not None:
             try:
@@ -194,7 +199,10 @@ def _build_key_bindings(
                 return
         if handled == "":
             return
-        insert_display(event, handled if handled is not None else payload)
+        insert_display(
+            event,
+            _normalize_paste_text(handled) if handled is not None else payload,
+        )
 
     if ctrl_p_handler is not None:
         @bindings.add("c-p")
