@@ -126,6 +126,31 @@ def is_interactive() -> bool:
     )
 
 
+def _modern_windows_terminal() -> bool:
+    """Windows terminals are identified by their own environment markers.
+
+    ``TERM`` is usually unset on Windows even inside Windows Terminal, so the
+    OS version alone says nothing about VT/Unicode support.
+    """
+    if sys.platform != "win32":
+        return False
+    env = os.environ
+    if env.get("WT_SESSION") or env.get("WT_PROFILE_ID"):
+        return True
+    if env.get("ConEmuANSI", "").upper() == "ON":
+        return True
+    if env.get("TERM_PROGRAM", "").lower() == "vscode":
+        return True
+    if env.get("COLORTERM", "").lower() in {"truecolor", "24bit"}:
+        return True
+    return bool(
+        env.get("WEZTERM_EXECUTABLE")
+        or env.get("WEZTERM_PANE")
+        or env.get("ALACRITTY_WINDOW_ID")
+        or env.get("KITTY_WINDOW_ID")
+    )
+
+
 def profile() -> str:
     override = os.environ.get("MAKECODE_SIMPLE_PROFILE", "").strip().lower()
     if override in _VALID_PROFILES:
@@ -135,10 +160,6 @@ def profile() -> str:
     term = os.environ.get("TERM", "").strip().lower()
     if term in {"dumb", "unknown"}:
         return _PROFILE_PLAIN
-    if not term:
-        # Windows terminals often do not set TERM. A POSIX terminal
-        # without TERM is usually a very basic "dumb" environment.
-        return _PROFILE_BASIC if sys.platform == "win32" else _PROFILE_PLAIN
     if term in {
         "vt100",
         "vt102",
@@ -162,6 +183,12 @@ def profile() -> str:
         }
     ):
         return _PROFILE_FULL
+    if _modern_windows_terminal():
+        return _PROFILE_FULL
+    if not term:
+        # Windows terminals often do not set TERM. A POSIX terminal
+        # without TERM is usually a very basic "dumb" environment.
+        return _PROFILE_BASIC if sys.platform == "win32" else _PROFILE_PLAIN
     return _PROFILE_BASIC
 
 
@@ -176,9 +203,9 @@ def supports_prompt_toolkit() -> bool:
 def ascii_ui() -> bool:
     if os.environ.get("MAKECODE_SIMPLE_UNICODE") == "1":
         return False
-    if sys.platform == "win32":
-        return True
     if profile() != _PROFILE_FULL:
+        return True
+    if sys.platform == "win32" and not _modern_windows_terminal():
         return True
     encoding = (sys.stdout.encoding or "").lower().replace("-", "")
     return encoding not in _UTF8_ENCODINGS

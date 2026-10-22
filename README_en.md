@@ -860,7 +860,7 @@ python main.py --simple
 python main.py --simple --load
 ```
 
-Older terminals degrade automatically: `TERM=dumb` uses plain `input()` and numbered menus without prompt_toolkit control sequences; basic terminals such as `vt100` use ASCII hints, 16-color output, and Tab-triggered completion. Set `MAKECODE_SIMPLE_PROFILE=plain|basic|full` to override the detected profile. On Windows, emoji/icons are converted to ASCII labels such as `[tool]` and `[ok]`; set `MAKECODE_SIMPLE_UNICODE=1` to keep Unicode icons.
+Older terminals degrade automatically: `TERM=dumb` uses plain `input()` and numbered menus without prompt_toolkit control sequences; basic terminals such as `vt100` use ASCII hints, 16-color output, and Tab-triggered completion. Set `MAKECODE_SIMPLE_PROFILE=plain|basic|full` to override the detected profile. On Windows the profile follows the hosting terminal rather than the OS version: Windows Terminal (`WT_SESSION`), the VS Code terminal, ConEmu, WezTerm, Alacritty, and Kitty enable the full profile and keep Unicode icons; only terminals without a reliable capability signal, such as legacy conhost, convert emoji/icons to ASCII labels such as `[tool]` and `[ok]`. Set `MAKECODE_SIMPLE_UNICODE=1` to force Unicode icons.
 
 ### 6.5 Built-in Slash Commands
 

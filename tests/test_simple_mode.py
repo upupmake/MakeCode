@@ -644,10 +644,26 @@ def test_terminal_profile_basic_uses_conservative_features(monkeypatch):
         os.environ.pop("PROMPT_TOOLKIT_NO_CPR", None)
 
 
-def test_windows_uses_ascii_icons_and_safe_output(monkeypatch):
+def test_windows_legacy_console_uses_ascii_icons_and_safe_output(monkeypatch):
     monkeypatch.setattr(simple_terminal.sys, "platform", "win32")
+    monkeypatch.setattr(simple_terminal, "is_interactive", lambda: True)
+    for name in (
+        "TERM",
+        "TERM_PROGRAM",
+        "COLORTERM",
+        "WT_SESSION",
+        "WT_PROFILE_ID",
+        "ConEmuANSI",
+        "WEZTERM_EXECUTABLE",
+        "WEZTERM_PANE",
+        "ALACRITTY_WINDOW_ID",
+        "KITTY_WINDOW_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("MAKECODE_SIMPLE_PROFILE", raising=False)
     monkeypatch.delenv("MAKECODE_SIMPLE_UNICODE", raising=False)
 
+    assert simple_terminal.profile() == "basic"
     assert simple_terminal.ascii_ui()
     assert simple_terminal.sanitize_icons(
         "🛠️ Tool ✅ ─╭❯"
@@ -657,6 +673,48 @@ def test_windows_uses_ascii_icons_and_safe_output(monkeypatch):
     output = simple_terminal.safe_output(stream)
     output.write("🧠 Reasoning")
     assert stream.getvalue() == "[reasoning] Reasoning"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("WT_SESSION", "session"),
+        ("WT_PROFILE_ID", "{profile}"),
+        ("ConEmuANSI", "ON"),
+        ("TERM_PROGRAM", "vscode"),
+        ("COLORTERM", "truecolor"),
+        ("WEZTERM_PANE", "1"),
+        ("ALACRITTY_WINDOW_ID", "1"),
+        ("KITTY_WINDOW_ID", "1"),
+    ],
+)
+def test_modern_windows_terminal_marker_selects_full_profile(
+    monkeypatch, name, value
+):
+    monkeypatch.setattr(simple_terminal.sys, "platform", "win32")
+    monkeypatch.setattr(simple_terminal, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        simple_terminal.sys, "stdout", SimpleNamespace(encoding="utf-8")
+    )
+    for marker in (
+        "TERM",
+        "TERM_PROGRAM",
+        "COLORTERM",
+        "WT_SESSION",
+        "WT_PROFILE_ID",
+        "ConEmuANSI",
+        "WEZTERM_EXECUTABLE",
+        "WEZTERM_PANE",
+        "ALACRITTY_WINDOW_ID",
+        "KITTY_WINDOW_ID",
+    ):
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.delenv("MAKECODE_SIMPLE_PROFILE", raising=False)
+    monkeypatch.delenv("MAKECODE_SIMPLE_UNICODE", raising=False)
+    monkeypatch.setenv(name, value)
+
+    assert simple_terminal.profile() == "full"
+    assert not simple_terminal.ascii_ui()
 
 
 def test_paste_text_normalizes_windows_line_endings():
