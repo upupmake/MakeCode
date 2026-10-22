@@ -647,6 +647,9 @@ def test_terminal_profile_basic_uses_conservative_features(monkeypatch):
 def test_windows_legacy_console_uses_ascii_icons_and_safe_output(monkeypatch):
     monkeypatch.setattr(simple_terminal.sys, "platform", "win32")
     monkeypatch.setattr(simple_terminal, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        simple_terminal, "_windows_conpty_console", lambda: False
+    )
     for name in (
         "TERM",
         "TERM_PROGRAM",
@@ -669,10 +672,51 @@ def test_windows_legacy_console_uses_ascii_icons_and_safe_output(monkeypatch):
         "🛠️ Tool ✅ ─╭❯"
     ) == "[tool] Tool [ok] -+>"
 
+    monkeypatch.setenv("MAKECODE_SIMPLE_UNICODE", "1")
+    assert not simple_terminal.ascii_ui()
+    assert simple_terminal.sanitize_icons("🛠️ Tool") == "🛠️ Tool"
+    monkeypatch.delenv("MAKECODE_SIMPLE_UNICODE")
+
     stream = StringIO()
     output = simple_terminal.safe_output(stream)
     output.write("🧠 Reasoning")
     assert stream.getvalue() == "[reasoning] Reasoning"
+
+
+def test_windows_conpty_console_without_wt_session_selects_full_profile(
+    monkeypatch,
+):
+    monkeypatch.setattr(simple_terminal.sys, "platform", "win32")
+    monkeypatch.setattr(simple_terminal, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        simple_terminal, "_windows_conpty_console", lambda: True
+    )
+    monkeypatch.setattr(
+        simple_terminal.sys, "stdout", SimpleNamespace(encoding="utf-8")
+    )
+    for marker in (
+        "TERM",
+        "TERM_PROGRAM",
+        "COLORTERM",
+        "WT_SESSION",
+        "WT_PROFILE_ID",
+        "ConEmuANSI",
+        "WEZTERM_EXECUTABLE",
+        "WEZTERM_PANE",
+        "ALACRITTY_WINDOW_ID",
+        "KITTY_WINDOW_ID",
+    ):
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.delenv("MAKECODE_SIMPLE_PROFILE", raising=False)
+    monkeypatch.delenv("MAKECODE_SIMPLE_UNICODE", raising=False)
+
+    assert simple_terminal.profile() == "full"
+    assert not simple_terminal.ascii_ui()
+    assert simple_terminal.live_completion()
+
+    monkeypatch.setenv("MAKECODE_SIMPLE_PROFILE", "plain")
+    assert simple_terminal.profile() == "plain"
+    assert simple_terminal.ascii_ui()
 
 
 @pytest.mark.parametrize(
@@ -695,6 +739,9 @@ def test_modern_windows_terminal_marker_selects_full_profile(
     monkeypatch.setattr(simple_terminal, "is_interactive", lambda: True)
     monkeypatch.setattr(
         simple_terminal.sys, "stdout", SimpleNamespace(encoding="utf-8")
+    )
+    monkeypatch.setattr(
+        simple_terminal, "_windows_conpty_console", lambda: False
     )
     for marker in (
         "TERM",

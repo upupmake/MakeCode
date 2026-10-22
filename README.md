@@ -833,7 +833,7 @@ python main.py --simple
 python main.py --simple --load
 ```
 
-旧终端会自动降级：`TERM=dumb` 使用纯 `input()` 和序号菜单，不发送 prompt_toolkit 的终端控制序列；`vt100` 等基础终端使用 ASCII 提示、16 色和按 Tab 触发的补全。也可用 `MAKECODE_SIMPLE_PROFILE=plain|basic|full` 手动指定。Windows 不按系统版本一刀切，而是识别当前终端：Windows Terminal（`WT_SESSION`）、VS Code 终端、ConEmu、WezTerm、Alacritty、Kitty 等会启用 full 档并保留 Unicode 图标；传统 conhost 等无法确认支持能力的终端才把 emoji/图标转换为 `[tool]`、`[ok]` 等 ASCII 标记。如需强制保留 Unicode 图标，设置 `MAKECODE_SIMPLE_UNICODE=1`。
+旧终端会自动降级：`TERM=dumb` 使用纯 `input()` 和序号菜单，不发送 prompt_toolkit 的终端控制序列；`vt100` 等基础终端使用 ASCII 提示、16 色和按 Tab 触发的补全。也可用 `MAKECODE_SIMPLE_PROFILE=plain|basic|full` 手动指定。Windows 不按系统版本一刀切，而是识别当前终端：Windows Terminal（`WT_SESSION`）、VS Code 终端、ConEmu、WezTerm、Alacritty、Kitty 等会启用 full 档并保留 Unicode 图标；从资源管理器双击或经默认终端接管启动时，进程环境里可能没有 `WT_SESSION`，此时会检查 stdout 是否为启用 `ENABLE_VIRTUAL_TERMINAL_PROCESSING` 的 ConPTY 控制台（`PseudoConsoleWindow`），命中同样启用 full；传统 conhost 不满足这些条件，才把 emoji/图标转换为 `[tool]`、`[ok]` 等 ASCII 标记。如需强制保留 Unicode 图标，设置 `MAKECODE_SIMPLE_UNICODE=1`。
 
 ### 6.5 内置快捷命令（Slash Commands）
 

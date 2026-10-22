@@ -126,6 +126,37 @@ def is_interactive() -> bool:
     )
 
 
+def _windows_conpty_console() -> bool:
+    """Detect a ConPTY-backed console without relying on Windows Terminal env.
+
+    Apps started from Explorer (or through the default-terminal handoff) are
+    hosted by ConPTY but do not inherit ``WT_SESSION``. ConPTY enables
+    ``ENABLE_VIRTUAL_TERMINAL_PROCESSING`` on the client's stdout console and
+    exposes a ``PseudoConsoleWindow``; legacy conhost leaves VT processing off
+    for console apps and uses ``ConsoleWindowClass``.
+    """
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if not mode.value & 0x0004:  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            return False
+        window = kernel32.GetConsoleWindow()
+        if not window:
+            return False
+        class_name = ctypes.create_unicode_buffer(64)
+        ctypes.windll.user32.GetClassNameW(window, class_name, len(class_name))
+        return class_name.value == "PseudoConsoleWindow"
+    except Exception:
+        return False
+
+
 def _modern_windows_terminal() -> bool:
     """Windows terminals are identified by their own environment markers.
 
@@ -143,12 +174,14 @@ def _modern_windows_terminal() -> bool:
         return True
     if env.get("COLORTERM", "").lower() in {"truecolor", "24bit"}:
         return True
-    return bool(
+    if (
         env.get("WEZTERM_EXECUTABLE")
         or env.get("WEZTERM_PANE")
         or env.get("ALACRITTY_WINDOW_ID")
         or env.get("KITTY_WINDOW_ID")
-    )
+    ):
+        return True
+    return _windows_conpty_console()
 
 
 def profile() -> str:
