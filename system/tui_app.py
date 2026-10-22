@@ -45,6 +45,7 @@ from system.tui_modals import (
     ChoiceModal,
     CopyContentModal,
     DelegateTasksModal,
+    HitlModal,
     InfoPanelModal,
     LayoutModal,
     McpSwitchModal,
@@ -196,6 +197,32 @@ class TuiBridge:
                 delete_handler,
                 preview_handler,
                 search_texts,
+                future,
+            )
+        return future.result()
+
+    def prompt_hitl(
+        self,
+        title: str,
+        options: list[str],
+        *,
+        summary: str = "",
+        details: str = "",
+    ) -> str:
+        with self._app_lock:
+            app = self._app
+        if app is None:
+            return "<cancelled>"
+        future: Future[str] = Future()
+        if self._is_app_thread():
+            app.open_hitl_modal(title, options, summary, details, future)
+        else:
+            app.call_from_thread(
+                app.open_hitl_modal,
+                title,
+                options,
+                summary,
+                details,
                 future,
             )
         return future.result()
@@ -2035,6 +2062,30 @@ class MakeCodeTuiApp(App[None]):
             _done,
         )
 
+    def open_hitl_modal(
+        self,
+        title: str,
+        options: list[str],
+        summary: str,
+        details: str,
+        future: Future[str],
+    ) -> None:
+        def _done(value: str | None) -> None:
+            self._modal_active = False
+            if not future.done():
+                future.set_result(value or "<cancelled>")
+
+        self._modal_active = True
+        self.push_screen(
+            HitlModal(
+                title,
+                options,
+                summary=summary,
+                details=details,
+            ),
+            _done,
+        )
+
     def open_temporary_query_modal(self) -> None:
         if (
             not self._agent_loop_active
@@ -3434,4 +3485,26 @@ def choose_tui(
         delete_handler=delete_handler,
         preview_handler=preview_handler,
         search_texts=search_texts,
+    )
+
+
+def prompt_hitl_tui(
+    title: str,
+    options: list[str],
+    *,
+    summary: str = "",
+    details: str = "",
+) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.prompt_hitl(
+            title,
+            options,
+            summary=summary,
+            details=details,
+        )
+    return TUI_BRIDGE.prompt_hitl(
+        title,
+        options,
+        summary=summary,
+        details=details,
     )

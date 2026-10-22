@@ -77,6 +77,42 @@ def test_renderer_prints_blocks_in_order_and_skips_stream_tail():
     assert "unfinished tail" not in rendered
 
 
+def test_prompt_hitl_prints_full_details_before_short_menu(monkeypatch):
+    renderer, output = _make_renderer()
+    captured = {}
+
+    def fake_choose_impl(title, options, **kwargs):
+        captured["title"] = title
+        captured["options"] = list(options)
+        return options[1]
+
+    monkeypatch.setattr(renderer, "_choose_impl", fake_choose_impl)
+    details = (
+        "nohup python -m pytest --collect-only -q "
+        "> /tmp/mc_collect.log 2>&1 & echo \"PID: $!\" "
+        + "very-long-argument " * 40
+        + "\x1b[97;;116:101:120:116:117:97:108u"
+    )
+
+    result = renderer.prompt_hitl(
+        "⚠️ 敏感操作已拦截",
+        ["允许本次", "允许本会话", "拒绝并反馈原因"],
+        summary="🤖 Agent: #0 - Orchestrator\n🛠️ Action: cmd:nohup",
+        details=details,
+    )
+
+    rendered = output.getvalue()
+    normalized = " ".join(rendered.split())
+    assert result == "允许本会话"
+    assert "执行内容" in rendered
+    assert "Agent: #0 - Orchestrator" in rendered
+    assert "nohup python -m pytest" in normalized
+    assert "\\x1b[97;;116:101:120:116:117:97:108u" in rendered
+    assert "\x1b" not in rendered
+    assert captured["title"] == "请选择操作"
+    assert details not in captured["title"]
+
+
 def test_renderer_skips_task_pane_refreshes():
     renderer, output = _make_renderer()
 
@@ -137,6 +173,32 @@ def test_choose_tui_routes_to_simple_backend(monkeypatch):
     monkeypatch.setattr(tui_app, "_SIMPLE_BACKEND", FakeBackend())
 
     assert tui_app.choose_tui("Pick", ["first", "second"]) == "first"
+
+
+def test_prompt_hitl_tui_routes_to_simple_backend(monkeypatch):
+    captured = {}
+    backend = SimpleNamespace(
+        prompt_hitl=lambda *args, **kwargs: captured.update(
+            args=args,
+            kwargs=kwargs,
+        )
+        or "允许本会话"
+    )
+    monkeypatch.setattr(tui_app, "_SIMPLE_BACKEND", backend)
+
+    result = tui_app.prompt_hitl_tui(
+        "⚠️ 敏感操作已拦截",
+        ["允许本次", "允许本会话", "拒绝并反馈原因"],
+        summary="summary",
+        details="details",
+    )
+
+    assert result == "允许本会话"
+    assert captured["args"] == (
+        "⚠️ 敏感操作已拦截",
+        ["允许本次", "允许本会话", "拒绝并反馈原因"],
+    )
+    assert captured["kwargs"] == {"summary": "summary", "details": "details"}
 
 
 def test_enable_simple_mode_creates_backend(monkeypatch):

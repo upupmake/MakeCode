@@ -54,6 +54,7 @@ from utils.skills import (
 from utils.memory import format_clean_conversation_context, recall_long_term_memories
 from utils.conversations import SCHEMA_VERSION, SUB_AGENT_HISTORY_FILE, SUB_AGENT_RUNS_DIR
 from utils import tasks as tasks_module
+from utils.tool_aliases import resolve_tool_name
 from utils.tool_validation import (
     ToolArgumentsModel,
     build_tool_definitions,
@@ -655,7 +656,7 @@ class TeammateManager:
 
             # 处理工具调用
             for tc in tool_calls:
-                tool_name = tc["name"]
+                tool_name = resolve_tool_name(tc["name"])
                 tool_id = tc["id"]
                 tool_args = tc["arguments"]
                 # 回显工具调用参数到主控制台（如果启用）

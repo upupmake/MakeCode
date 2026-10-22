@@ -1,3 +1,4 @@
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -153,18 +154,85 @@ def test_posix_process_tree_termination_targets_process_group():
             patch.object(common.os, "killpg", create=True) as killpg:
         common._terminate_process_tree(process)
 
-    killpg.assert_called_once_with(1234, common.signal.SIGTERM)
+    killpg.assert_any_call(1234, common.signal.SIGTERM)
+    killpg.assert_any_call(1234, common.signal.SIGKILL)
 
 
-def test_process_tree_termination_skips_already_exited_process():
+def test_posix_process_tree_termination_cleans_group_after_leader_exit():
     process = FakeProcess(0)
 
-    with patch.object(common.subprocess, "run") as run, \
+    with patch.object(common.os, "name", "posix"), \
             patch.object(common.os, "killpg", create=True) as killpg:
         common._terminate_process_tree(process)
 
+    killpg.assert_any_call(1234, common.signal.SIGTERM)
+    killpg.assert_any_call(1234, common.signal.SIGKILL)
+
+
+def test_windows_process_tree_termination_skips_exited_leader():
+    process = FakeProcess(0)
+
+    with patch.object(common.os, "name", "nt"), \
+            patch.object(common.subprocess, "run") as run:
+        common._terminate_process_tree(process)
+
     run.assert_not_called()
-    killpg.assert_not_called()
+
+
+class OrphanPipeProcess(FakeProcess):
+    def __init__(self):
+        super().__init__(0)
+        self.communicate_calls = 0
+
+    def communicate(self, timeout=None):
+        self.communicate_calls += 1
+        if self.communicate_calls <= 2:
+            raise subprocess.TimeoutExpired("command", timeout)
+        return b"finished", b""
+
+
+def test_terminal_command_returns_when_descendant_keeps_pipes_open():
+    process = OrphanPipeProcess()
+
+    with patch.object(common, "_resolve_startup_terminal_type", return_value="pwsh"), \
+            patch.object(common, "_workdir"), \
+            patch.object(common, "check_permission", return_value=(True, "")), \
+            patch.object(common.subprocess, "Popen", return_value=process), \
+            patch.object(common, "_terminate_process_tree") as terminate, \
+            patch.object(common.time, "monotonic", side_effect=[0, 1]), \
+            patch("system.stream_cancel.start_terminal_command"), \
+            patch("system.stream_cancel.stop_terminal_command"), \
+            patch("system.stream_cancel.is_terminal_cancelled", return_value=False):
+        result = common.run_terminal_command("pytest -q")
+
+    assert result.startswith("Status: success\nExit code: 0")
+    assert result.endswith("finished")
+    terminate.assert_called_once_with(process)
+
+
+def test_terminal_cancellation_returns_partial_output_when_pipes_never_close():
+    process = RunningFakeProcess()
+
+    def never_closes(timeout=None):
+        raise subprocess.TimeoutExpired(
+            "command",
+            timeout,
+            output=b"partial output",
+        )
+
+    with patch.object(common, "_resolve_startup_terminal_type", return_value="pwsh"), \
+            patch.object(common, "_workdir"), \
+            patch.object(common, "check_permission", return_value=(True, "")), \
+            patch.object(common.subprocess, "Popen", return_value=process), \
+            patch.object(common, "_terminate_process_tree"), \
+            patch.object(process, "communicate", side_effect=never_closes), \
+            patch("system.stream_cancel.start_terminal_command"), \
+            patch("system.stream_cancel.stop_terminal_command"), \
+            patch("system.stream_cancel.is_terminal_cancelled", return_value=True):
+        result = common.run_terminal_command("pytest -q")
+
+    assert result.startswith("Status: cancelled")
+    assert result.endswith("partial output")
 
 
 def test_terminal_cancellation_terminates_process_tree_and_cleans_up_registration():

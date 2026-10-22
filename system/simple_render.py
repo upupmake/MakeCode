@@ -18,6 +18,7 @@ from system import simple_prompt
 from system import simple_terminal
 from system.simple_menu import ChoiceMenu
 from system.tui_types import TuiEvent, TuiRegion
+from utils.text_sanitize import sanitize_control_characters
 
 
 _REGION_LABELS = {
@@ -338,6 +339,31 @@ class SimpleRenderer:
                 preview_handler=preview_handler,
                 search_texts=search_texts,
             )
+        finally:
+            self._foreground_input_active = False
+
+    def prompt_hitl(
+            self,
+            title: str,
+            options: list[str],
+            *,
+            summary: str = "",
+            details: str = "",
+    ) -> str:
+        self._foreground_input_active = True
+        self._pause_temporary_query_for_foreground()
+        try:
+            with self._lock:
+                self.console.print()
+                self.console.print(
+                    Text(sanitize_control_characters(title), style="bold yellow")
+                )
+                if summary:
+                    self.console.print(Text(sanitize_control_characters(summary)))
+                if details:
+                    self.console.print(Text("执行内容", style="bold"))
+                    self.console.print(Text(sanitize_control_characters(details)))
+            return self._choose_impl("请选择操作", options)
         finally:
             self._foreground_input_active = False
 

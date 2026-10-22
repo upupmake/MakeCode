@@ -192,41 +192,89 @@ def _build_terminal_argv(terminal_type: str, command: str) -> list[str]:
 
 _TERMINAL_COMMAND_TIMEOUT = 120
 _TERMINAL_POLL_INTERVAL = 0.1
+_TERMINAL_OUTPUT_GRACE = 0.2
+_TERMINAL_COLLECT_TIMEOUT = 2.0
 
 
 def _terminate_process_tree(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
     if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=5,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            if process.poll() is None:
-                process.kill()
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            if process.poll() is None:
-                process.terminate()
-
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            process.kill()
-        else:
+        if process.poll() is None:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+        if process.poll() is None:
+            try:
                 process.kill()
-        process.wait(timeout=2)
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        return
+
+    group_signalled = False
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        group_signalled = True
+    except (ProcessLookupError, OSError):
+        if process.poll() is None:
+            try:
+                process.terminate()
+                group_signalled = True
+            except OSError:
+                pass
+
+    if process.poll() is None:
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+    if group_signalled:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _collect_process_output(
+        process: subprocess.Popen,
+        timeout: float = _TERMINAL_COLLECT_TIMEOUT,
+) -> tuple[bytes, bytes]:
+    try:
+        return process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.output or b""
+        stderr = exc.stderr or b""
+        if not stdout and not stderr:
+            stdout = b"".join(getattr(process, "_stdout_buff", []) or [])
+            stderr = b"".join(getattr(process, "_stderr_buff", []) or [])
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+        process.poll()
+        return stdout, stderr
 
 
 def _decode_terminal_output(raw_output: bytes) -> str:
@@ -308,14 +356,14 @@ def run_terminal_command(command: str) -> str:
             if is_terminal_cancelled():
                 cancelled = True
                 _terminate_process_tree(process)
-                stdout, stderr = process.communicate()
+                stdout, stderr = _collect_process_output(process)
                 break
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 _terminate_process_tree(process)
-                stdout, stderr = process.communicate()
+                stdout, stderr = _collect_process_output(process)
                 break
 
             try:
@@ -324,7 +372,16 @@ def run_terminal_command(command: str) -> str:
                 )
                 break
             except subprocess.TimeoutExpired:
-                continue
+                if process.poll() is not None:
+                    try:
+                        stdout, stderr = process.communicate(
+                            timeout=_TERMINAL_OUTPUT_GRACE
+                        )
+                        break
+                    except subprocess.TimeoutExpired:
+                        _terminate_process_tree(process)
+                        stdout, stderr = _collect_process_output(process)
+                        break
 
         output = _decode_terminal_output(stdout + stderr)
         if cancelled:
@@ -346,7 +403,7 @@ def run_terminal_command(command: str) -> str:
     except Exception as e:
         if process is not None and process.poll() is None:
             _terminate_process_tree(process)
-            process.communicate()
+            _collect_process_output(process)
         log_error_traceback("RunTerminalCommand execution", e)
         return f"Status: execution_error\nExit code: none\nError executing command: {e}"
     finally:

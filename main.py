@@ -138,6 +138,7 @@ from utils.tool_validation import (
     parse_tool_arguments,
     validate_builtin_tool_arguments,
 )
+from utils.tool_aliases import resolve_tool_name
 from system.tool_render import tool_result_status
 
 STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
@@ -326,18 +327,39 @@ async def _stream_with_render(messages: list, current_tools: list, llm_client):
     1. reasoning 和正文均交给 StreamRenderer 处理。
     2. StreamRenderer 负责按完整 Markdown 段落增量输出，并返回工具调用信息。
     """
-    from system.stream_cancel import start_cancel_listener, stop_cancel_listener, is_cancelled
+    from system.stream_cancel import (
+        is_cancelled,
+        register_response_task,
+        start_cancel_listener,
+        stop_cancel_listener,
+        unregister_response_task,
+    )
 
     renderer = StreamRenderer(console=console, update_interval=0.1)
     start_cancel_listener()
+    response_task = None
     try:
         stream = llm_client.generate_stream(messages, current_tools)
-        text_content, tool_calls, raw_message = await renderer.render_async(
-            stream,
-            agent_name="Orchestrator",
+        response_task = asyncio.create_task(
+            renderer.render_async(
+                stream,
+                agent_name="Orchestrator",
+            )
         )
+        register_response_task(response_task)
+        try:
+            text_content, tool_calls, raw_message = await response_task
+        except asyncio.CancelledError:
+            if not is_cancelled():
+                raise
+            text_content, tool_calls, raw_message = "", [], None
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                await close()
         cancelled = is_cancelled()
     finally:
+        if response_task is not None:
+            unregister_response_task(response_task)
         stop_cancel_listener()
 
     return text_content, tool_calls, raw_message, cancelled
@@ -604,7 +626,7 @@ async def _agent_loop_with_client(
         stop_reason = raw_message.get("stop_reason") if isinstance(raw_message, dict) else None
 
         for tc in tool_calls:
-            tool_name = tc["name"]
+            tool_name = resolve_tool_name(tc["name"])
             tool_id = tc["id"]
             tool_args = tc["arguments"]
             post_tui(

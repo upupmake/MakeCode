@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Any, AsyncIterator, List, Tuple
 
@@ -154,6 +155,9 @@ class StreamRenderer:
                             tool_calls_started = True
                         self._handle_tool_calls_generated(agent_name)
                     break
+        except asyncio.CancelledError:
+            if not is_cancelled():
+                raise
         finally:
             await self._close_async_stream(stream_generator)
             if reasoning_container_open:

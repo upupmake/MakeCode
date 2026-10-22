@@ -5,12 +5,15 @@
 通知流式生成器中断。
 """
 
+import asyncio
 import threading
 
 from system.tui_app import TuiRegion, post_tui
 
 _cancel_requested = False
 _response_active = False
+_response_task = None
+_response_task_lock = threading.Lock()
 _terminal_active_count = 0
 _terminal_cancel_event = threading.Event()
 _terminal_lock = threading.Lock()
@@ -34,10 +37,38 @@ def remove_cancel_available_callback(callback) -> None:
         pass
 
 
+def register_response_task(task: asyncio.Task) -> None:
+    """注册当前流式响应任务，便于从其他线程立即取消。"""
+    global _response_task
+    with _response_task_lock:
+        _response_task = task
+    if _cancel_requested:
+        _request_response_task_cancel()
+
+
+def unregister_response_task(task: asyncio.Task) -> None:
+    global _response_task
+    with _response_task_lock:
+        if _response_task is task:
+            _response_task = None
+
+
+def _request_response_task_cancel() -> None:
+    with _response_task_lock:
+        task = _response_task
+    if task is None or task.done():
+        return
+    try:
+        task.get_loop().call_soon_threadsafe(task.cancel)
+    except RuntimeError:
+        pass
+
+
 def cancel_current_response():
     global _cancel_requested
     if _response_active:
         _cancel_requested = True
+        _request_response_task_cancel()
         post_tui(TuiRegion.STATUS, "⚠️ 已取消当前响应")
         return True
     with _terminal_lock:
@@ -74,17 +105,21 @@ def is_terminal_cancelled() -> bool:
 
 def start_cancel_listener():
     """启动取消监听。在流式输出前调用。"""
-    global _cancel_requested, _response_active
+    global _cancel_requested, _response_active, _response_task
     _cancel_requested = False
     _response_active = True
+    with _response_task_lock:
+        _response_task = None
     _notify_cancel_available_changed()
 
 
 def stop_cancel_listener():
     """停止取消监听并清除本次响应的取消信号。"""
-    global _cancel_requested, _response_active
+    global _cancel_requested, _response_active, _response_task
     _response_active = False
     _cancel_requested = False
+    with _response_task_lock:
+        _response_task = None
     _notify_cancel_available_changed()
 
 
@@ -103,9 +138,11 @@ def is_cancel_available() -> bool:
 
 def reset_cancel():
     """重置取消标志。"""
-    global _cancel_requested, _terminal_active_count, _response_active
+    global _cancel_requested, _terminal_active_count, _response_active, _response_task
     _cancel_requested = False
     _response_active = False
+    with _response_task_lock:
+        _response_task = None
     with _terminal_lock:
         _terminal_active_count = 0
         _terminal_cancel_event.clear()

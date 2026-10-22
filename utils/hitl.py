@@ -2,7 +2,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 from system.console_render import console_lock
-from system.tui_app import choose_tui
+from system.tui_app import choose_tui, prompt_hitl_tui
 
 # Global Session Whitelist
 SESSION_WHITELIST = set()
@@ -38,14 +38,22 @@ def get_hitl_status() -> bool:
     return HITL_ENABLED
 
 
-def interactive_hitl_prompt(action_key: str) -> str:
+def interactive_hitl_prompt(action_key: str, details: str) -> str:
     """交互式拦截选项面板"""
     options = [
-        f"允许本次执行 `{action_key}`",
-        f"允许整个会话期间执行 `{action_key}`",
-        "拒绝执行，并反馈原因",
+        "允许本次",
+        "允许本会话",
+        "拒绝并反馈原因",
     ]
-    choice = choose_tui("⚠️ 敏感操作已拦截", options, allow_custom=False)
+    choice = prompt_hitl_tui(
+        "⚠️ 敏感操作已拦截",
+        options,
+        summary=(
+            f"🤖 Agent: {current_agent_role.get()}\n"
+            f"🛠️ Action: {action_key}"
+        ),
+        details=details,
+    )
     if choice == options[0]:
         return "1"
     if choice == options[1]:
@@ -70,15 +78,7 @@ def check_permission(action_type: str, action_name: str, details: str) -> tuple[
         if action_key in SESSION_WHITELIST:
             return True, ""
 
-        agent_name = current_agent_role.get()
-        title = (
-            "⚠️ 敏感操作已拦截\n"
-            f"🤖 Agent: {agent_name}\n"
-            f"🛠️ Action: {action_key}\n"
-            f"🎯 Details: {details}"
-        )
-
-        choice = interactive_hitl_prompt(title)
+        choice = interactive_hitl_prompt(action_key, details)
 
         if choice == '1':
             return True, ""
@@ -123,16 +123,21 @@ def check_path_permission(resolved_path: Path, tool_name: str) -> tuple[bool, st
         whitelist_dir = resolved_path.as_posix() if resolved_path.is_dir() else resolved_path.parent.as_posix()
         options = [
             "允许本次访问",
-            f"允许整个会话期间（目录: {whitelist_dir}，含子目录）",
+            "允许本会话访问该目录",
             "拒绝",
         ]
-        title = (
-            "⚠️ 工作区外路径访问拦截\n"
-            f"🤖 Agent: {agent_name}\n"
-            f"🛠️ Tool: {tool_name}\n"
-            f"📁 Path: {path_str}"
+        choice = prompt_hitl_tui(
+            "⚠️ 工作区外路径访问拦截",
+            options,
+            summary=(
+                f"🤖 Agent: {agent_name}\n"
+                f"🛠️ Tool: {tool_name}"
+            ),
+            details=(
+                f"📁 Path:\n{path_str}\n\n"
+                f"📂 会话白名单目录:\n{whitelist_dir}（含子目录）"
+            ),
         )
-        choice = choose_tui(title, options, allow_custom=False)
 
         if choice == options[0]:
             return True, ""
@@ -166,18 +171,28 @@ def check_paths_permission(resolved_paths: list[Path], tool_name: str) -> tuple[
             return True, ""
 
         path_lines = "\n".join(f"- {path.as_posix()}" for path in pending)
+        whitelist_dirs = sorted({
+            path.as_posix() if path.is_dir() else path.parent.as_posix()
+            for path in pending
+        })
         options = [
             "允许本次批量访问",
-            "允许这些路径所在目录在本次会话访问",
+            "允许这些目录本会话访问",
             "拒绝",
         ]
-        title = (
-            "⚠️ 工作区外路径访问拦截\n"
-            f"🤖 Agent: {current_agent_role.get()}\n"
-            f"🛠️ Tool: {tool_name}\n"
-            f"📁 Paths:\n{path_lines}"
+        choice = prompt_hitl_tui(
+            "⚠️ 工作区外路径访问拦截",
+            options,
+            summary=(
+                f"🤖 Agent: {current_agent_role.get()}\n"
+                f"🛠️ Tool: {tool_name}"
+            ),
+            details=(
+                f"📁 Paths:\n{path_lines}\n\n"
+                "📂 会话白名单目录:\n"
+                + "\n".join(f"- {directory}" for directory in whitelist_dirs)
+            ),
         )
-        choice = choose_tui(title, options, allow_custom=False)
 
         if choice == options[0]:
             return True, ""

@@ -33,6 +33,7 @@ from system.tui_types import (
 from system.image_input import ImageAwareTextArea
 from utils import paths
 from utils.directory_picker import DirectoryPickerUnavailableError, choose_directory
+from utils.text_sanitize import sanitize_control_characters
 
 
 ModalResult = TypeVar("ModalResult")
@@ -461,6 +462,80 @@ class ChoiceModal(ClosableModalScreen[str]):
         border: round #f59e0b;
         background: $surface;
         padding: 1 2;
+    }
+
+    HitlModal {
+        align: center middle;
+        background: $background 20%;
+    }
+
+    #hitl-dialog {
+        width: 80%;
+        max-width: 140;
+        height: auto;
+        max-height: 30;
+        offset-y: -2;
+        border: round #f59e0b;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #hitl-title {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #hitl-summary {
+        width: 1fr;
+        height: auto;
+        margin-top: 1;
+        color: #cbd5e1;
+    }
+
+    #hitl-details-label {
+        height: auto;
+        margin-top: 1;
+        color: #fbbf24;
+        text-style: bold;
+    }
+
+    #hitl-body {
+        height: auto;
+        min-height: 3;
+        max-height: 16;
+        margin-top: 0;
+        padding: 0 1;
+        border: round #475569;
+        background: #0f172a;
+    }
+
+    #hitl-details {
+        width: 1fr;
+        height: auto;
+        color: #e5e7eb;
+    }
+
+    #hitl-hint {
+        height: auto;
+        margin-top: 1;
+        color: #94a3b8;
+    }
+
+    #hitl-actions {
+        height: 3;
+        margin-top: 1;
+        align: left middle;
+    }
+
+    .hitl-action {
+        width: 1fr;
+        min-width: 0;
+        height: 3;
+        margin: 0 1 0 0;
+    }
+
+    .hitl-action:last-child {
+        margin-right: 0;
     }
 
     #delegate-dialog {
@@ -1480,6 +1555,101 @@ class ChoiceModal(ClosableModalScreen[str]):
         if self._visible_options():
             choice_list.index = min(index, len(self._visible_options()) - 1)
         choice_list.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss("<cancelled>")
+
+
+class HitlModal(ClosableModalScreen[str]):
+    CSS = ChoiceModal.CSS
+
+    BINDINGS = [
+        Binding("1", "choose(1)", "允许本次", priority=True),
+        Binding("2", "choose(2)", "允许本会话", priority=True),
+        Binding("3", "choose(3)", "拒绝", priority=True),
+        Binding("escape", "cancel", "取消", priority=True),
+        Binding("q", "cancel", "取消", priority=True),
+    ]
+
+    def __init__(
+        self,
+        title: str,
+        options: list[str],
+        *,
+        summary: str = "",
+        details: str = "",
+    ) -> None:
+        super().__init__()
+        self._title = title
+        self._options = list(options)
+        self._summary = sanitize_control_characters(summary)
+        self._details = sanitize_control_characters(details)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="hitl-dialog"):
+            yield ModalHeader(self._title, title_id="hitl-title", markup=False)
+            with VerticalScroll(id="hitl-body"):
+                if self._summary:
+                    yield Static(self._summary, id="hitl-summary", markup=False)
+                yield Label("执行内容", id="hitl-details-label", markup=False)
+                yield Static(
+                    self._details or "(无额外内容)",
+                    id="hitl-details",
+                    markup=False,
+                )
+            yield Label(
+                "1 允许本次 · 2 允许本会话 · 3 拒绝并反馈原因 · Esc 取消",
+                id="hitl-hint",
+                markup=False,
+            )
+            with Horizontal(id="hitl-actions"):
+                for index, option in enumerate(self._options, 1):
+                    variant = (
+                        "success"
+                        if index == 1
+                        else "error"
+                        if index == len(self._options)
+                        else "primary"
+                    )
+                    yield Button(
+                        f"{index}. {option}",
+                        id=f"hitl-option-{index}",
+                        variant=variant,
+                        classes="hitl-action",
+                    )
+
+    def on_mount(self) -> None:
+        self._fit_dialog()
+        self.query_one("#hitl-body", VerticalScroll).focus()
+
+    def on_resize(self, event: Resize) -> None:
+        self._fit_dialog()
+
+    def _fit_dialog(self) -> None:
+        screen_height = max(self.size.height, 1)
+        dialog_max = max(10, int(screen_height * 0.78))
+        body_max = max(3, min(16, dialog_max - 10))
+        self.query_one("#hitl-dialog").styles.max_height = dialog_max
+        self.query_one("#hitl-body").styles.max_height = body_max
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if not button_id.startswith("hitl-option-"):
+            return
+        try:
+            index = int(button_id.removeprefix("hitl-option-")) - 1
+        except ValueError:
+            return
+        if 0 <= index < len(self._options):
+            self.dismiss(self._options[index])
+
+    def action_choose(self, index: str | int) -> None:
+        try:
+            option_index = int(index) - 1
+        except (TypeError, ValueError):
+            return
+        if 0 <= option_index < len(self._options):
+            self.dismiss(self._options[option_index])
 
     def action_cancel(self) -> None:
         self.dismiss("<cancelled>")
