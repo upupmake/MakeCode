@@ -23,6 +23,8 @@ def _set_cbreak(fd: int) -> None:
     tty.setcbreak(fd)
     attributes = termios.tcgetattr(fd)
     attributes[3] &= ~termios.IEXTEN
+    # Keep Ctrl+C as SIGINT while still allowing single-key reads for Ctrl+G.
+    attributes[3] |= termios.ISIG
     termios.tcsetattr(fd, termios.TCSADRAIN, attributes)
 
 

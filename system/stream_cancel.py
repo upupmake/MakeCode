@@ -63,15 +63,17 @@ def _request_response_task_cancel() -> None:
 
 def cancel_current_response():
     global _cancel_requested
-    if _response_active:
+    response_active = _response_active
+    if response_active:
         _cancel_requested = True
         _request_response_task_cancel()
-        post_tui(TuiRegion.STATUS, "⚠️ 已取消当前响应")
-        return True
     with _terminal_lock:
         terminal_active = _terminal_active_count > 0
         if terminal_active:
             _terminal_cancel_event.set()
+    if response_active:
+        post_tui(TuiRegion.STATUS, "⚠️ 已取消当前响应")
+        return True
     if terminal_active:
         post_tui(TuiRegion.STATUS, "⚠️ 已取消当前终端命令")
         return True

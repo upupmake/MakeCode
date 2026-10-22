@@ -1150,8 +1150,11 @@ def _run_simple_main(
             return
         raise KeyboardInterrupt
 
-    with contextlib.suppress(ValueError):
-        signal.signal(signal.SIGINT, _handle_sigint)
+    def _install_sigint_handler() -> None:
+        with contextlib.suppress(ValueError):
+            signal.signal(signal.SIGINT, _handle_sigint)
+
+    _install_sigint_handler()
 
     _update_terminal_title()
     arrows = simple_terminal.arrows_label()
@@ -1231,6 +1234,8 @@ def _run_simple_main(
             post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
             post_tui(TuiRegion.CONTENT, render_content_user_message(query))
         try:
+            # prompt_toolkit 或第三方组件可能改写 SIGINT；进入 Agent 前恢复取消处理器。
+            _install_sigint_handler()
             result = asyncio.run(_process_user_query(query, history, command_handler))
         except KeyboardInterrupt:
             cancel_current_response()

@@ -69,6 +69,21 @@ async def test_cancel_current_response_cancels_registered_awaiting_task():
         stream_cancel.reset_cancel()
 
 
+def test_cancel_current_response_sets_both_response_and_terminal_flags():
+    stream_cancel.reset_cancel()
+    stream_cancel.start_cancel_listener()
+    stream_cancel.start_terminal_command()
+    try:
+        with patch("system.stream_cancel.post_tui"):
+            assert stream_cancel.cancel_current_response() is True
+        assert stream_cancel.is_cancelled() is True
+        assert stream_cancel.is_terminal_cancelled() is True
+    finally:
+        stream_cancel.stop_terminal_command()
+        stream_cancel.stop_cancel_listener()
+        stream_cancel.reset_cancel()
+
+
 @pytest.mark.anyio
 async def test_stream_with_render_cancels_before_first_stream_event():
     import main

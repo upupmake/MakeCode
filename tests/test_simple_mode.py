@@ -3,6 +3,7 @@ import os
 from io import StringIO
 from types import SimpleNamespace
 
+import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
@@ -725,6 +726,66 @@ def test_read_prompt_uses_thread_inside_running_event_loop(monkeypatch):
 
     assert asyncio.run(run()) == "ok"
     assert captured["in_thread"] is True
+    assert captured["handle_sigint"] is False
+
+
+def test_choice_menu_disables_prompt_toolkit_sigint_handler(monkeypatch):
+    from system.simple_menu import ChoiceMenu
+
+    captured = {}
+
+    class FakeApp:
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            return "ok"
+
+    menu = ChoiceMenu("选择", ["a"])
+    monkeypatch.setattr(
+        menu,
+        "_build_app",
+        lambda **kwargs: FakeApp(),
+    )
+    assert menu.run() == "ok"
+    assert captured["handle_sigint"] is False
+
+
+def test_simple_cbreak_keeps_sigint_enabled():
+    if os.name == "nt":
+        pytest.skip("POSIX termios only")
+
+    import pty
+    import termios
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        simple_input._set_cbreak(slave_fd)
+        attributes = termios.tcgetattr(slave_fd)
+        assert attributes[3] & termios.ISIG
+        assert not attributes[3] & termios.ICANON
+    finally:
+        os.close(master_fd)
+        os.close(slave_fd)
+
+
+def test_temporary_query_ctrl_c_and_escape_cancel_response(monkeypatch):
+    renderer, _ = _make_renderer()
+    calls = []
+    monkeypatch.setattr(
+        renderer,
+        "_cancel_from_temporary_query_listener",
+        lambda: calls.append("cancel"),
+    )
+    monkeypatch.setattr(
+        renderer,
+        "_temporary_query_prompt",
+        lambda: calls.append("prompt"),
+    )
+
+    renderer._handle_temporary_query_key(b"\x03", None)
+    renderer._handle_temporary_query_key(b"\x1b", None)
+    renderer._handle_temporary_query_key(b"\x07", None)
+
+    assert calls == ["cancel", "cancel", "prompt"]
 
 
 def test_simple_temporary_query_consume_and_restore():

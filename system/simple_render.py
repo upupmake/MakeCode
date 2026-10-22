@@ -213,8 +213,7 @@ class SimpleRenderer:
                     self._lock.release()
                 if not data:
                     break
-                if data == b"\x07":
-                    self._temporary_query_prompt()
+                self._handle_temporary_query_key(data, fd)
         except (OSError, ValueError):
             pass
         finally:
@@ -222,7 +221,6 @@ class SimpleRenderer:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     def _temporary_query_loop_windows(self) -> None:
-        import _thread
         import msvcrt
 
         while not self._temporary_query_stop.is_set():
@@ -239,10 +237,50 @@ class SimpleRenderer:
                 if msvcrt.kbhit():
                     msvcrt.getwch()
                 continue
-            if character == "\x07":
-                self._temporary_query_prompt()
-            elif character == "\x03":
-                _thread.interrupt_main()
+            self._handle_temporary_query_key(character.encode("utf-8", "ignore"), None)
+
+    def _handle_temporary_query_key(self, data: bytes, fd: int | None) -> None:
+        if data == b"\x07":
+            self._temporary_query_prompt()
+            return
+        if data == b"\x03":
+            self._cancel_from_temporary_query_listener()
+            return
+        if data == b"\x1b":
+            if fd is not None and self._escape_sequence_pending(fd):
+                return
+            self._cancel_from_temporary_query_listener()
+
+    @staticmethod
+    def _escape_sequence_pending(fd: int) -> bool:
+        import select
+
+        try:
+            ready, _, _ = select.select([fd], [], [], 0.05)
+        except (OSError, ValueError):
+            return False
+        if not ready:
+            return False
+        # Drain the rest of an arrow/function-key sequence so it is not
+        # mistaken for a standalone Escape key.
+        while True:
+            try:
+                more, _, _ = select.select([fd], [], [], 0.005)
+            except (OSError, ValueError):
+                return True
+            if not more:
+                return True
+            try:
+                os.read(fd, 64)
+            except (OSError, ValueError):
+                return True
+
+    @staticmethod
+    def _cancel_from_temporary_query_listener() -> None:
+        from system.stream_cancel import cancel_current_response
+
+        with suppress(Exception):
+            cancel_current_response()
 
     def _temporary_query_prompt(self) -> None:
         if (

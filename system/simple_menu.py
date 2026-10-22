@@ -76,7 +76,7 @@ class ChoiceMenu:
                 in_thread = False
             else:
                 in_thread = True
-            result = app.run(in_thread=in_thread)
+            result = app.run(in_thread=in_thread, handle_sigint=False)
             return result if result is not None else "<cancelled>"
         except (EOFError, KeyboardInterrupt):
             return "<cancelled>"

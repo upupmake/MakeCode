@@ -311,6 +311,7 @@ def read_prompt(
         text = session.prompt(
             default=default or "",
             in_thread=in_thread,
+            handle_sigint=False,
             color_depth=simple_terminal.prompt_color_depth(),
         )
         return _serialize_input(text, image_entries)
