@@ -2,4 +2,6 @@ ruff==0.17.1
 mypy==2.4.0
 pytest==9.1.1
 pytest-cov==7.1.0
+# Optional local speedup: developer machines benefit from `pytest -n auto`,
+# while GitHub-hosted runners showed no reliable gain.
 pytest-xdist==3.8.0
