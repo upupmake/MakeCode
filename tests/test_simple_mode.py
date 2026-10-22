@@ -666,6 +666,21 @@ def test_paste_text_normalizes_windows_line_endings():
     ) == "first\nsecond\nthird\nfourth"
 
 
+def test_resume_command_includes_simple_flag():
+    import main
+
+    assert main._build_resume_command(
+        "MakeCode",
+        "conv_123",
+        simple=True,
+    ) == "MakeCode --simple --load conv_123"
+    assert main._build_resume_command(
+        "MakeCode",
+        "conv_123",
+        simple=False,
+    ) == "MakeCode --load conv_123"
+
+
 def test_read_input_uses_restored_pending_input(monkeypatch):
     renderer, _ = _make_renderer()
     captured: dict[str, object] = {}

@@ -997,6 +997,19 @@ def _paste_image_from_paste_text(text: str) -> str | None:
     return _paste_image_from_system_clipboard(text)
 
 
+def _build_resume_command(
+        executable: str,
+        conversation_id: str,
+        *,
+        simple: bool,
+) -> str:
+    parts = [executable]
+    if simple:
+        parts.append("--simple")
+    parts.extend(["--load", conversation_id])
+    return " ".join(parts)
+
+
 def _message_from_user_query(user_query: str) -> tuple[dict, str]:
     display_text, parts = _parse_input_images(user_query)
     image_present = any(part.get("type") == "image" for part in parts)
@@ -1423,7 +1436,13 @@ if __name__ == "__main__":
             if getattr(sys, "frozen", False)
             else f'python "{Path(__file__).resolve()}"'
         )
-        print(f"{executable} --load {CONVERSATION_STORE.active_id}")
+        print(
+            _build_resume_command(
+                executable,
+                CONVERSATION_STORE.active_id,
+                simple=cli_module.SIMPLE_MODE,
+            )
+        )
 
     if _PENDING_UPDATE_EXE_PATH is not None:
         launch_updater(_PENDING_UPDATE_EXE_PATH)
