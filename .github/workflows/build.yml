@@ -65,7 +65,7 @@ jobs:
           TSLP_OFFLINE: '1'
         run: |
           python -m pip install --upgrade pip --retries 10 --timeout 60
-          python -m pip install --retries 10 --timeout 60 -r requirements.txt pyinstaller==6.19.0 pytest pytest-cov==7.1.0
+          python -m pip install --retries 10 --timeout 60 -r requirements.txt pyinstaller==6.19.0 pytest pytest-cov==7.1.0 pytest-xdist==3.8.0
 
       - name: Verify bundled tree-sitter parser cache
         env:
@@ -87,6 +87,7 @@ jobs:
         run: >-
           python -m pytest
           tests/
+          -n auto
           -q
           --cov
           --cov-report=term
@@ -106,6 +107,10 @@ jobs:
           import re
           from pathlib import Path
 
+          non_runtime_modules = {
+              "tools.import_memory_jsonl",
+              "tools.verify_tree_sitter_offline",
+          }
           expected = {"init", "prompts", "settings", "version"}
           for package in ("system", "tools", "utils"):
               for source in Path(package).rglob("*.py"):
@@ -113,6 +118,7 @@ jobs:
                   if parts[-1] == "__init__":
                       parts = parts[:-1]
                   expected.add(".".join(parts))
+          expected.difference_update(non_runtime_modules)
 
           toc_path = Path("build/MakeCode/PYZ-00.toc")
           if not toc_path.is_file():
@@ -124,6 +130,20 @@ jobs:
           )
           if missing:
               raise SystemExit(f"Project modules missing from bundle: {', '.join(missing)}")
+          forbidden_prefixes = (
+              "tests", "live_tests", "pytest", "_pytest", "pytest_cov",
+              "pytest_xdist", "xdist", "execnet", "coverage", "mypy", "ruff",
+          )
+          leaked_modules = sorted(
+              module for module in non_runtime_modules
+              if re.search(rf"\('{re.escape(module)}',", toc)
+          )
+          leaked_modules.extend(
+              prefix for prefix in forbidden_prefixes
+              if re.search(rf"\('{re.escape(prefix)}(?:\.|',)", toc)
+          )
+          if leaked_modules:
+              raise SystemExit(f"Non-runtime modules found in bundle: {', '.join(sorted(set(leaked_modules)))}")
 
           analysis_path = Path("build/MakeCode/Analysis-00.toc")
           analysis = analysis_path.read_text(encoding="utf-8")
@@ -156,6 +176,30 @@ jobs:
               raise SystemExit("Project module warnings:\n" + "\n".join(missing_warning))
 
           print(f"Verified {len(expected)} bundled project modules")
+          PY
+
+      - name: Verify bundle excludes non-runtime files
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path("dist/MakeCode")
+          internal = root / "_internal"
+          forbidden = (
+              "tests",
+              "live_tests",
+              "requirements-dev.txt",
+              "pyproject.toml",
+              ".github",
+          )
+          leaked = [
+              name for name in forbidden
+              if (root / name).exists() or (internal / name).exists()
+          ]
+          if leaked:
+              raise SystemExit(f"Non-runtime paths found in bundle: {', '.join(leaked)}")
+          print("Verified no non-runtime files in bundle")
           PY
 
       - name: Package build outputs
@@ -268,6 +312,7 @@ jobs:
         run: >-
           python -m pytest
           tests/
+          -n auto
           -q
           --cov
           --cov-report=term-missing
@@ -285,6 +330,10 @@ jobs:
           import re
           from pathlib import Path
 
+          non_runtime_modules = {
+              "tools.import_memory_jsonl",
+              "tools.verify_tree_sitter_offline",
+          }
           expected = {"init", "prompts", "settings", "version"}
           for package in ("system", "tools", "utils"):
               for source in Path(package).rglob("*.py"):
@@ -292,6 +341,7 @@ jobs:
                   if parts[-1] == "__init__":
                       parts = parts[:-1]
                   expected.add(".".join(parts))
+          expected.difference_update(non_runtime_modules)
 
           toc_path = Path("build/MakeCode/PYZ-00.toc")
           if not toc_path.is_file():
@@ -303,6 +353,20 @@ jobs:
           )
           if missing:
               raise SystemExit(f"Project modules missing from bundle: {', '.join(missing)}")
+          forbidden_prefixes = (
+              "tests", "live_tests", "pytest", "_pytest", "pytest_cov",
+              "pytest_xdist", "xdist", "execnet", "coverage", "mypy", "ruff",
+          )
+          leaked_modules = sorted(
+              module for module in non_runtime_modules
+              if re.search(rf"\('{re.escape(module)}',", toc)
+          )
+          leaked_modules.extend(
+              prefix for prefix in forbidden_prefixes
+              if re.search(rf"\('{re.escape(prefix)}(?:\.|',)", toc)
+          )
+          if leaked_modules:
+              raise SystemExit(f"Non-runtime modules found in bundle: {', '.join(sorted(set(leaked_modules)))}")
 
           analysis_path = Path("build/MakeCode/Analysis-00.toc")
           analysis = analysis_path.read_text(encoding="utf-8")
@@ -328,6 +392,30 @@ jobs:
               raise SystemExit("Project module warnings:\n" + "\n".join(missing_warning))
 
           print(f"Verified {len(expected)} bundled project modules")
+          PY
+
+      - name: Verify bundle excludes non-runtime files
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path("dist/MakeCode")
+          internal = root / "_internal"
+          forbidden = (
+              "tests",
+              "live_tests",
+              "requirements-dev.txt",
+              "pyproject.toml",
+              ".github",
+          )
+          leaked = [
+              name for name in forbidden
+              if (root / name).exists() or (internal / name).exists()
+          ]
+          if leaked:
+              raise SystemExit(f"Non-runtime paths found in bundle: {', '.join(leaked)}")
+          print("Verified no non-runtime files in bundle")
           PY
 
       - name: Verify GLIBC compatibility

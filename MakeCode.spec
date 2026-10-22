@@ -17,8 +17,16 @@ project_hiddenimports = [
     'settings',
     'version',
 ]
+# Standalone maintenance scripts that must stay outside the desktop bundle.
+non_runtime_modules = {
+    'tools.import_memory_jsonl',
+    'tools.verify_tree_sitter_offline',
+}
 for package in ('system', 'tools', 'utils'):
-    project_hiddenimports.extend(collect_submodules(package))
+    project_hiddenimports.extend(
+        module for module in collect_submodules(package)
+        if module not in non_runtime_modules
+    )
 language_pack_hiddenimports = collect_submodules('tree_sitter_language_pack')
 prompt_toolkit_hiddenimports = collect_submodules('prompt_toolkit')
 certificate_datas = collect_data_files('certifi')
@@ -77,7 +85,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['numpy', 'matplotlib', 'PIL', 'pandas', 'openpyxl', 'xlrd', 'pytest'],
+    excludes=[
+        'numpy', 'matplotlib', 'PIL', 'pandas', 'openpyxl', 'xlrd',
+        'pytest', 'pytest_cov', 'pytest_xdist', 'xdist', 'execnet', 'coverage',
+        'mypy', 'ruff',
+    ],
     noarchive=False,
     optimize=0,
 )
