@@ -25,7 +25,7 @@ from system.tool_render import (
     format_tool_value,
     tool_result_status,
 )
-from system.tui_app import TuiRegion, post_tui
+from system.tui_app import TuiRegion, is_simple_mode, post_tui
 from utils import paths
 
 
@@ -189,6 +189,14 @@ MAKECODE_ASCII = r"""
 ██║╚██╔╝██║██╔══██║██╔═██╗ ██╔══╝  ██║     ██║   ██║██║  ██║██╔══╝
 ██║ ╚═╝ ██║██║  ██║██║  ██╗███████╗╚██████╗╚██████╔╝██████╔╝███████╗
 ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
+"""
+
+MAKECODE_ASCII_FALLBACK = r"""
+  #     #    #    #   #  ######  ####   ####   ####   ######
+  ##   ##   # #   #  #   #       #   #  #   #  #   #  #
+  # # # #  #   #  ####   ####    #      #   #  ####   ####
+  #  #  #  #######  #  #  #       #   #  #   #  #  #   #
+  #     #  #     #  #   #  ######  ####   ####   #   #  ######
 """
 
 
@@ -481,9 +489,15 @@ def _render_startup_banner():
     """渲染启动横幅"""
     STARTUP_TERMINAL_LABEL = STARTUP_TERMINAL_TYPE or "unavailable"
     subtitle = f"Terminal Environment: [bold]{STARTUP_TERMINAL_LABEL}[/bold] (source={STARTUP_TERMINAL_SOURCE})"
+    logo = MAKECODE_ASCII
+    if is_simple_mode():
+        from system import simple_terminal
+
+        if simple_terminal.ascii_ui():
+            logo = MAKECODE_ASCII_FALLBACK
     console.print(
         Panel(
-            Text(MAKECODE_ASCII.strip("\n"), style="bold bright_blue"),
+            Text(logo.strip("\n"), style="bold bright_blue"),
             title="[bold white]MakeCode CLI[/bold white]",
             border_style="bright_blue",
             box=box.DOUBLE_EDGE,
