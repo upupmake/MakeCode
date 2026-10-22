@@ -87,7 +87,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         'numpy', 'matplotlib', 'PIL', 'pandas', 'openpyxl', 'xlrd',
-        'pytest', 'pytest_cov', 'pytest_xdist', 'xdist', 'execnet', 'coverage',
+        'pytest', '_pytest', 'pytest_cov', 'pytest_xdist', 'xdist', 'execnet', 'coverage',
         'mypy', 'ruff',
     ],
     noarchive=False,
