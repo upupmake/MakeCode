@@ -138,7 +138,10 @@ def _windows_conpty_console() -> bool:
     try:
         import ctypes
 
-        kernel32 = ctypes.windll.kernel32
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return False
+        kernel32 = windll.kernel32
         kernel32.GetStdHandle.restype = ctypes.c_void_p
         kernel32.GetConsoleWindow.restype = ctypes.c_void_p
         handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
@@ -151,7 +154,7 @@ def _windows_conpty_console() -> bool:
         if not window:
             return False
         class_name = ctypes.create_unicode_buffer(64)
-        ctypes.windll.user32.GetClassNameW(window, class_name, len(class_name))
+        windll.user32.GetClassNameW(window, class_name, len(class_name))
         return class_name.value == "PseudoConsoleWindow"
     except Exception:
         return False
