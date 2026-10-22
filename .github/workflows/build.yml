@@ -453,6 +453,7 @@ jobs:
 
           tag = os.environ["RELEASE_TAG"]
           version = tag.removeprefix("v")
+          experimental = "-" in version
           repository = os.environ["REPOSITORY"]
           token = os.environ["GH_TOKEN"]
 
@@ -476,7 +477,10 @@ jobs:
           if not release_log:
               raise SystemExit("Release log is empty")
 
-          base_url = f"https://github.com/{repository}/releases/latest/download"
+          if experimental:
+              base_url = f"https://github.com/{repository}/releases/download/{tag}"
+          else:
+              base_url = f"https://github.com/{repository}/releases/latest/download"
           asset_names = {
               "windows-x86_64": "MakeCode-Windows-X64.zip",
               "macos-arm64": "MakeCode-macOS-ARM64.zip",
@@ -519,8 +523,10 @@ jobs:
           files: release-assets/*
           generate_release_notes: false
           make_latest: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Finalize release after assets are available
+        if: ${{ !contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python github_release.py --finalize-release "${{ github.ref_name }}"

@@ -10,6 +10,7 @@ from version import CURRENT_VERSION
 
 STARTUP_LOAD_REQUESTED = False
 STARTUP_LOAD_ID: str | None = None
+SIMPLE_MODE = False
 
 
 COMMAND_DESCRIPTIONS = {
@@ -47,6 +48,10 @@ COMMAND_DESCRIPTIONS = {
     "/quit": "退出程序。",
     "/exit": "退出程序。",
     "/update": "检查并安装最新版本更新。",
+    "/title": "查看、重新生成或设置当前对话标题。",
+    "/status": "显示当前模型、模式、工作目录、会话轮数、记忆、Skills 和 MCP 状态。",
+    "/tokens": "显示当前上下文的 Token 用量明细。",
+    "/release-notes": "查看最新发布日志和版本信息。",
 }
 
 
@@ -67,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
     commands.add_argument("--update", action="store_true", help="检查、下载并安装最新版本")
     commands.add_argument("--load", nargs="?", const="", metavar="CONVERSATION_ID", help="启动后加载会话；可指定会话 ID")
     parser.add_argument("-y", "--yes", action="store_true", help="与 --update 配合使用，跳过安装确认")
+    parser.add_argument(
+        "--simple",
+        action="store_true",
+        help="使用纯终端简单模式启动：不启动 Textual TUI，按顺序把输出直接渲染到终端",
+    )
     return parser
 
 
@@ -372,9 +382,10 @@ def _update(*, assume_yes: bool) -> int:
 
 
 def run_external_cli(argv: Sequence[str]) -> int | None:
-    global STARTUP_LOAD_REQUESTED, STARTUP_LOAD_ID
+    global STARTUP_LOAD_REQUESTED, STARTUP_LOAD_ID, SIMPLE_MODE
     STARTUP_LOAD_REQUESTED = False
     STARTUP_LOAD_ID = None
+    SIMPLE_MODE = False
     if not argv:
         return None
     if argv[0] == "--mcp-add":
@@ -382,6 +393,7 @@ def run_external_cli(argv: Sequence[str]) -> int | None:
 
     parser = _build_parser()
     args = parser.parse_args(argv)
+    SIMPLE_MODE = bool(args.simple)
     if args.yes and not args.update:
         parser.error("-y/--yes 只能与 --update 一起使用")
     if args.version:

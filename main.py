@@ -58,11 +58,13 @@ from utils.plan_mode import (
     is_plan_mode_command_allowed,
     PLAN_MODE_BLOCKLIST,
     PLAN_MODE_ALLOWED_COMMANDS,
+    toggle_plan_mode,
 )
 from system.stream_render import StreamRenderer
 from system.ts_validator import init_ts_cache
 from system.tui_app import (
     MakeCodeTuiApp,
+    enable_simple_mode,
     post_tui,
     TuiRegion,
     set_agent_loop_active,
@@ -70,6 +72,8 @@ from system.tui_app import (
     refresh_status,
     refresh_token_usage,
     scroll_all_panes_to_bottom,
+    prompt_workdir_tui,
+    read_simple_input,
     consume_temporary_query,
     clear_temporary_query,
     restore_temporary_query_to_input,
@@ -87,8 +91,10 @@ from utils.llm_client import (
 )
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils import paths
+from utils.terminal import set_terminal_title
 from utils.vision import (
     IMAGE_PLACEHOLDER_PATTERN,
+    image_placeholder_text,
     image_reference_marker,
     parse_image_placeholders,
     remove_image_placeholders,
@@ -737,6 +743,22 @@ def _get_current_conversation_title() -> str | None:
     return CONVERSATION_STORE.active_title or "未命名对话"
 
 
+def _terminal_title_supported() -> bool:
+    if cli_module.SIMPLE_MODE:
+        from system import simple_terminal
+
+        if not simple_terminal.supports_prompt_toolkit():
+            return False
+    return bool(sys.stdout.isatty() or sys.stderr.isatty())
+
+
+def _update_terminal_title() -> None:
+    if not _terminal_title_supported():
+        return
+    title = _get_current_conversation_title()
+    set_terminal_title(f"MakeCode · {title}" if title else "MakeCode")
+
+
 def _refresh_workspace_state() -> None:
     from utils import memory as memory_module
     from utils import tasks as tasks_module
@@ -889,6 +911,21 @@ def _parse_input_images(text: str) -> tuple[str, list[dict[str, str]]]:
     return parse_image_placeholders(text, CONVERSATION_STORE.active_root)
 
 
+def _display_input_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+    if IMAGE_PLACEHOLDER_PATTERN.search(text) is None:
+        return text, []
+    try:
+        display_text, parts = _parse_input_images(text)
+    except (OSError, ValueError):
+        return text, []
+    entries = [
+        (image_placeholder_text(part), image_reference_marker(part))
+        for part in parts
+        if part.get("type") == "image"
+    ]
+    return display_text, entries
+
+
 def _store_clipboard_image(data: bytes, filename: str, media_type: str) -> str:
     _ensure_active_conversation()
     block = store_image_bytes_attachment(
@@ -920,6 +957,22 @@ def _paste_image_from_system_clipboard(paste_text: str | None = None) -> str | N
     extension = media_type.removeprefix("image/")
     filename = f"clipboard.{('jpg' if extension == 'jpeg' else extension)}"
     return _store_clipboard_image(data, filename, media_type)
+
+
+def _paste_image_from_paste_text(text: str) -> str | None:
+    lowered = text.lower()
+    looks_like_path = (
+        "file://" in lowered
+        or "/" in text
+        or "\\" in text
+        or any(
+            extension in lowered
+            for extension in (".png", ".jpg", ".jpeg", ".gif", ".webp")
+        )
+    )
+    if not looks_like_path:
+        return None
+    return _paste_image_from_system_clipboard(text)
 
 
 def _message_from_user_query(user_query: str) -> tuple[dict, str]:
@@ -1019,6 +1072,128 @@ async def _process_user_query(query: str, history: list, command_handler: Comman
         history[0] = {"role": "system", "content": command_result.payload}
         refresh_status()
     return None
+
+
+def _toggle_plan_mode_message() -> str:
+    if toggle_plan_mode():
+        return "📋 Plan Mode 已启用（只允许只读和规划工具）"
+    render_current_task_plan(console)
+    return "✅ Plan Mode 已退出，所有工具已恢复"
+
+
+def _run_simple_main(
+        history: list,
+        command_handler: CommandHandler,
+        prompt_for_workdir: bool,
+        startup_load_id: str | None = None,
+) -> None:
+    """纯终端模式：不启动 Textual，按顺序把事件渲染到 stdout。"""
+    import signal
+
+    from system import simple_terminal
+    from system.stream_cancel import cancel_current_response, is_cancel_available
+
+    def _handle_sigint(signum, frame) -> None:
+        # 有进行中的响应/终端命令时，第一次 Ctrl+C 只取消当前操作；否则退出输入循环。
+        if is_cancel_available():
+            cancel_current_response()
+            return
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGINT, _handle_sigint)
+    except ValueError:
+        pass
+
+    _update_terminal_title()
+    arrows = simple_terminal.arrows_label()
+    post_tui(
+        TuiRegion.CONTENT,
+        f"[#aaaaaa]提示：Enter 提交 · Ctrl+N 换行 · {arrows} 跨行/历史 · "
+        "Ctrl+V/Ctrl+O 附加剪贴板图片；"
+        "也可直接粘贴图片文件路径 · Ctrl+P 切换计划/执行 · Tab 补全命令/目录 · "
+        "Ctrl+C 取消输入 · Agent 运行时可 Ctrl+G 追加临时指令。[/#aaaaaa]",
+    )
+
+    if prompt_for_workdir:
+        choice = prompt_workdir_tui()
+        if choice != "abort":
+            current_workdir = _current_workdir()
+            selected_workdir = resolve_chosen_workdir(choice, current_workdir)
+            if selected_workdir != current_workdir:
+                _apply_workdir(selected_workdir)
+                history[0] = {"role": "system", "content": get_dynamic_system_prompt()}
+                refresh_status()
+                post_tui(
+                    TuiRegion.BACKGROUND,
+                    f"[bold green]📂 Workspace switched to: {selected_workdir}[/bold green]",
+                )
+                render_current_workdir("当前工作目录已切换")
+
+    if cli_module.STARTUP_LOAD_REQUESTED:
+        loaded_history, _ = command_handler.handle_load(
+            history,
+            CONVERSATION_STORE.active_path,
+            _render_startup_banner,
+            _render_env_customization_hint,
+            _render_history,
+            conversation_id=startup_load_id,
+        )
+        if loaded_history is not history:
+            history[:] = loaded_history
+        scroll_all_panes_to_bottom()
+        _update_terminal_title()
+
+    history_inputs: list[str] = []
+    while True:
+        try:
+            raw_query = read_simple_input(
+                "\nYou> ",
+                history=history_inputs,
+                multiline=True,
+                continuation_prompt="...> ",
+                image_handler=_paste_image_from_system_clipboard,
+                image_display_handler=_display_input_images,
+                paste_handler=_paste_image_from_paste_text,
+                completion_commands=(
+                    command_handler.get_slash_completion_commands()
+                ),
+                ctrl_p_handler=_toggle_plan_mode_message,
+            )
+        except KeyboardInterrupt:
+            post_tui(TuiRegion.CONTENT, "")
+            post_tui(
+                TuiRegion.CONTENT,
+                "[yellow]⚠️ 已取消当前输入，使用 /quit 退出。[/yellow]",
+            )
+            _update_terminal_title()
+            continue
+        except EOFError:
+            post_tui(TuiRegion.CONTENT, "")
+            break
+        if raw_query is None:
+            post_tui(TuiRegion.CONTENT, "")
+            break
+        query = raw_query.strip()
+        if query and (not history_inputs or history_inputs[-1] != query):
+            history_inputs.append(query)
+        if not query:
+            continue
+        if query != "/flush":
+            post_tui(TuiRegion.CONTENT, "[#3f3f46]─[/#3f3f46]")
+            post_tui(TuiRegion.CONTENT, render_content_user_message(query))
+        try:
+            result = asyncio.run(_process_user_query(query, history, command_handler))
+        except KeyboardInterrupt:
+            cancel_current_response()
+            set_temporary_query_enabled(False)
+            clear_temporary_query()
+            post_tui(TuiRegion.CONTENT, "[yellow]⚠️ 已取消当前响应[/yellow]")
+            _update_terminal_title()
+            continue
+        _update_terminal_title()
+        if result == "exit":
+            break
 
 
 def _run_textual_main(
@@ -1159,6 +1334,9 @@ if __name__ == "__main__":
     if _launch_macos_terminal_if_needed():
         raise SystemExit(0)
 
+    if cli_module.SIMPLE_MODE:
+        enable_simple_mode()
+
     startup_workdir = resolve_startup_workdir()
     _apply_workdir(startup_workdir)
     _signal_legacy_updater_ready()
@@ -1188,15 +1366,32 @@ if __name__ == "__main__":
         conversation_store=CONVERSATION_STORE,
         auto_compact_fn=auto_compact,
         apply_workdir_fn=_apply_workdir,
+        conversation_title_regenerate_fn=lambda: _regenerate_conversation_title(history),
+        conversation_title_update_fn=CONVERSATION_STORE.update_title,
+        token_usage_provider=lambda: (
+            estimate_token_breakdown(
+                history,
+                tools_definition=get_current_tools_definition(),
+            ),
+            get_context_token_limit(),
+        ),
     )
 
     try:
-        _run_textual_main(
-            history,
-            command_handler,
-            prompt_for_workdir,
-            startup_load_id=cli_module.STARTUP_LOAD_ID,
-        )
+        if cli_module.SIMPLE_MODE:
+            _run_simple_main(
+                history,
+                command_handler,
+                prompt_for_workdir,
+                startup_load_id=cli_module.STARTUP_LOAD_ID,
+            )
+        else:
+            _run_textual_main(
+                history,
+                command_handler,
+                prompt_for_workdir,
+                startup_load_id=cli_module.STARTUP_LOAD_ID,
+            )
     finally:
         GLOBAL_MCP_MANAGER.stop()
 

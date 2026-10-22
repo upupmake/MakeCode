@@ -4,6 +4,7 @@
 import json
 import sys
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -17,9 +18,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from init import log_error_traceback
+from init import log_error_traceback, resolve_chosen_workdir
 from system.cli import COMMAND_DESCRIPTIONS
-from system.console_render import render_content_assistant_message, render_current_task_plan, render_current_workdir, render_preview_user_message, toggle_sub_agent_console
+from system.console_render import format_runtime_info, render_content_assistant_message, render_current_task_plan, render_current_workdir, render_preview_user_message, toggle_sub_agent_console
 from system.models import get_model_manager
 from tools.extra_tools import (
     get_understand_image_model_display_text,
@@ -27,7 +28,7 @@ from tools.extra_tools import (
     is_understand_image_enabled,
     set_understand_image_config,
 )
-from system.tui_app import choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, prompt_workdir_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
+from system.tui_app import is_simple_mode, choose_model_panel_tui, choose_tui, post_tui, TuiRegion, TUI_BRIDGE, choose_add_model_tui, choose_mcp_switch_tui, manage_models_tui, manage_skills_tui, manage_layout_tui, manage_memories_tui, manage_memory_config_tui, choose_recall_model_tui, manage_extra_tools_tui, choose_image_understanding_model_tui, show_info_panel_tui, show_mcp_view_tui, manage_tasks_tui, show_copy_content_tui, prompt_workdir_tui, set_agent_loop_active, refresh_status, flush_tui_screen, begin_tui_batch_render, end_tui_batch_render, scroll_all_panes_to_bottom
 from utils import hitl as hitl_mod, paths
 from utils.conversations import ConversationListItem, ConversationStore
 from utils.llm_client import strip_native_message_payloads
@@ -365,6 +366,9 @@ class CommandHandler:
             conversation_store: ConversationStore,
             auto_compact_fn,
             apply_workdir_fn=None,
+            conversation_title_regenerate_fn: Callable[[], Awaitable[None]] | None = None,
+            conversation_title_update_fn: Callable[[str], None] | None = None,
+            token_usage_provider: Callable[[], tuple[dict[str, int], int]] | None = None,
     ):
         self.console = console
         self.mcp_manager = mcp_manager
@@ -373,6 +377,181 @@ class CommandHandler:
         self.conversation_store = conversation_store
         self.auto_compact = auto_compact_fn
         self.apply_workdir = apply_workdir_fn
+        self.conversation_title_regenerate_fn = conversation_title_regenerate_fn
+        self.conversation_title_update_fn = conversation_title_update_fn
+        self.token_usage_provider = token_usage_provider
+
+    async def handle_title(self, query: str) -> bool:
+        if self.conversation_store.active_path is None:
+            self.console.print(
+                "\n[bold yellow]当前还没有活动对话，请先发送一条消息。[/bold yellow]"
+            )
+            return True
+        argument = query.removeprefix("/title").strip()
+        if argument:
+            if self.conversation_title_update_fn is None:
+                self.console.print(
+                    "\n[bold yellow]当前模式不支持设置对话标题。[/bold yellow]"
+                )
+                return True
+            try:
+                self.conversation_title_update_fn(argument)
+            except Exception as exc:
+                self.console.print(
+                    f"\n[bold red]🏷️ 设置标题失败：{escape(str(exc))}[/bold red]"
+                )
+            else:
+                self.console.print(
+                    f"\n[bold green]🏷️ 对话标题已更新：{escape(argument)}[/bold green]"
+                )
+            return True
+
+        options = []
+        if self.conversation_title_regenerate_fn is not None:
+            options.append("重新生成标题")
+        options.append("取消")
+        choice = choose_tui(
+            "设置对话标题？\n可重新生成标题，或直接输入自定义标题。",
+            options,
+            allow_custom=self.conversation_title_update_fn is not None,
+        )
+        if choice in {"<cancelled>", "取消", "<empty_input>"}:
+            self.console.print(
+                "\n[#aaaaaa]已取消修改对话标题。[/#aaaaaa]"
+            )
+            return True
+        if choice == "重新生成标题":
+            if self.conversation_title_regenerate_fn is not None:
+                await self.conversation_title_regenerate_fn()
+            return True
+        if self.conversation_title_update_fn is not None:
+            try:
+                self.conversation_title_update_fn(choice.strip())
+            except Exception as exc:
+                self.console.print(
+                    f"\n[bold red]🏷️ 设置标题失败：{escape(str(exc))}[/bold red]"
+                )
+            else:
+                self.console.print(
+                    f"\n[bold green]🏷️ 对话标题已更新：{escape(choice.strip())}[/bold green]"
+                )
+        return True
+
+    def handle_status(self, history: list) -> None:
+        session_turns = sum(
+            1 for message in history if message.get("role") == "user"
+        )
+        try:
+            memory_count = get_active_memory_count()
+        except Exception:
+            memory_count = 0
+        try:
+            skills_count = len(getattr(self.skill_loader, "skills", []))
+        except Exception:
+            skills_count = 0
+        try:
+            mcp_status = self.mcp_manager.get_status_info()
+            server_count = len(mcp_status.get("loaded_servers", []))
+            tool_count = int(mcp_status.get("tool_count", 0))
+        except Exception:
+            server_count = 0
+            tool_count = 0
+        lines = [
+            "",
+            format_runtime_info(),
+            f"📂 工作目录: {paths.workdir()}",
+            f"💬 会话轮数: {session_turns} · 🧠 记忆: {memory_count}"
+            f" · 📚 Skills: {skills_count}"
+            f" · MCP: {server_count}S/{tool_count}T",
+        ]
+        if self.token_usage_provider is not None:
+            try:
+                breakdown, threshold = self.token_usage_provider()
+                total = sum(breakdown.values())
+                ratio = total / threshold * 100 if threshold else 0
+                lines.append(
+                    f"📈 Token: {total:,} / {threshold:,} ({ratio:.1f}%)"
+                )
+            except Exception:
+                pass
+        self.console.print("\n".join(lines))
+
+    def handle_tokens(self) -> None:
+        if self.token_usage_provider is None:
+            self.console.print(
+                "\n[bold yellow]当前模式不支持 Token 统计。[/bold yellow]"
+            )
+            return
+        try:
+            breakdown, threshold = self.token_usage_provider()
+        except Exception as exc:
+            self.console.print(
+                f"\n[bold red]读取 Token 用量失败：{escape(str(exc))}[/bold red]"
+            )
+            return
+        labels = (
+            ("system", "system（含工具定义）"),
+            ("user", "user"),
+            ("reasoning", "reasoning"),
+            ("assistant", "assistant"),
+            ("tool", "tool"),
+        )
+        lines = ["", "📈 上下文 Token 使用"]
+        total = 0
+        for key, label in labels:
+            tokens = int(breakdown.get(key, 0))
+            total += tokens
+            ratio = tokens / threshold * 100 if threshold else 0
+            lines.append(f"  {label}: {tokens:,} ({ratio:.1f}%)")
+        total_ratio = total / threshold * 100 if threshold else 0
+        lines.append(
+            f"  合计: {total:,} / {threshold:,} ({total_ratio:.1f}%)"
+        )
+        self.console.print("\n".join(lines))
+
+    def handle_release_notes(self) -> None:
+        from version import CURRENT_VERSION
+        from system.updater import _parse_version, fetch_latest_version_info
+
+        try:
+            version_info = fetch_latest_version_info(raise_errors=True)
+        except Exception as exc:
+            self.console.print(
+                f"\n[bold red]获取发布日志失败：{escape(str(exc))}[/bold red]"
+            )
+            return
+        if not version_info:
+            self.console.print(
+                "\n[bold yellow]未能获取最新版本信息。[/bold yellow]"
+            )
+            return
+
+        latest_version = str(version_info.get("version", "")).strip()
+        if not latest_version:
+            self.console.print(
+                "\n[bold yellow]最新版本信息缺少版本号。[/bold yellow]"
+            )
+            return
+        release_log = (
+            str(version_info.get("release_log", "")).strip()
+            or "暂无发布日志。"
+        )
+        latest = _parse_version(latest_version)
+        current = _parse_version(CURRENT_VERSION)
+        sections = [release_log]
+        if latest > current:
+            sections.append(
+                f"发现新版本 `v{latest_version}`。如需更新，请执行 `/update`。"
+            )
+        elif latest == current:
+            sections.append("当前已是最新版本。")
+        else:
+            sections.append("当前版本高于最新发布版本，无需更新。")
+        self.console.print(
+            f"\n[bold]📝 发布日志 · 当前 v{CURRENT_VERSION} · "
+            f"最新 v{latest_version}[/bold]"
+        )
+        self.console.print(Markdown("\n\n".join(sections)))
 
     def handle_mcp_view(self) -> bool:
         """处理 /mcp-view 命令"""
@@ -446,11 +625,19 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
 
     def handle_mcp_switch(self) -> bool:
         """处理 /mcp-switch 命令"""
-        self.console.print(
-            "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
-            "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，Enter/Space 切换状态，按 t 管理所选服务的工具，按 e 编辑配置；也可通过底部按钮添加服务、编辑配置、管理工具、确认应用或取消。[/#aaaaaa]",
-            tui_region=TuiRegion.BACKGROUND,
-        )
+        if is_simple_mode():
+            self.console.print(
+                "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
+                "[#aaaaaa]输入序号切换启用/禁用；t 序号管理工具；a 添加；"
+                "e 序号编辑；d 序号删除；y 应用；q 取消。[/#aaaaaa]",
+                tui_region=TuiRegion.BACKGROUND,
+            )
+        else:
+            self.console.print(
+                "\n[bold cyan]🔧 正在打开 MCP 服务管理面板...[/bold cyan]\n"
+                "[#aaaaaa]操作说明：用 ↑/↓ 选择服务，Enter/Space 切换状态，按 t 管理所选服务的工具，按 e 编辑配置；也可通过底部按钮添加服务、编辑配置、管理工具、确认应用或取消。[/#aaaaaa]",
+                tui_region=TuiRegion.BACKGROUND,
+            )
         try:
             server_switches = self.mcp_manager.list_server_switches()
         except FileNotFoundError:
@@ -1038,12 +1225,23 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
 
         raw_path = query.removeprefix("/cd").strip()
         if not raw_path:
-            if sys.platform in {"darwin", "win32"}:
+            if is_simple_mode():
+                choice = prompt_workdir_tui()
+                if choice == "abort":
+                    return False
+                raw_path = str(
+                    resolve_chosen_workdir(
+                        choice,
+                        Path(paths.workdir()).resolve(),
+                    )
+                )
+            elif sys.platform in {"darwin", "win32"}:
                 TUI_BRIDGE.open_directory_picker_for_input()
+                return False
             else:
                 self.console.print("[bold yellow]用法：/cd <目录路径>[/bold yellow]")
                 render_current_workdir()
-            return False
+                return False
         if (raw_path.startswith('"') and raw_path.endswith('"')) or (raw_path.startswith("'") and raw_path.endswith("'")):
             raw_path = raw_path[1:-1].strip()
 
@@ -1071,6 +1269,10 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
         return True
 
     def _reset_hitl_session(self) -> None:
+        if is_simple_mode():
+            hitl_mod.SESSION_WHITELIST.clear()
+            hitl_mod.PATH_WHITELIST.clear()
+            return
         if not hitl_mod.get_hitl_status():
             hitl_mod.toggle_hitl(enabled=True)
             self.console.print("[#aaaaaa]🛡️ Human-in-the-Loop 已恢复为开启状态[/#aaaaaa]")
@@ -1506,6 +1708,10 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /update - 检查更新
+        if query == "/release-notes":
+            self.handle_release_notes()
+            return CommandResult(action=CommandAction.CONTINUE)
+
         if query == "/update":
             new_exe_path = self.handle_update()
             if new_exe_path is not None:
@@ -1531,6 +1737,18 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
         # /pwd - 显示当前工作目录
         if query == "/pwd":
             render_current_workdir()
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/title" or query.startswith("/title "):
+            await self.handle_title(query)
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/status":
+            self.handle_status(history)
+            return CommandResult(action=CommandAction.CONTINUE)
+
+        if query == "/tokens":
+            self.handle_tokens()
             return CommandResult(action=CommandAction.CONTINUE)
 
         # /cd - 打开目录选择器或切换当前工作目录，并开启全新会话

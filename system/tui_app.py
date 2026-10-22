@@ -381,6 +381,9 @@ class TuiBridge:
         return future.result()
 
     def clear_temporary_query(self) -> None:
+        if _SIMPLE_BACKEND is not None:
+            _SIMPLE_BACKEND.clear_temporary_query()
+            return
         with self._app_lock:
             app = self._app
         if app is None:
@@ -391,6 +394,9 @@ class TuiBridge:
             app.call_from_thread(app.clear_temporary_query)
 
     def set_temporary_query_enabled(self, enabled: bool) -> None:
+        if _SIMPLE_BACKEND is not None:
+            _SIMPLE_BACKEND.set_temporary_query_enabled(enabled)
+            return
         with self._app_lock:
             app = self._app
         if app is None:
@@ -403,6 +409,8 @@ class TuiBridge:
             future.result()
 
     def consume_temporary_query(self) -> str | None:
+        if _SIMPLE_BACKEND is not None:
+            return _SIMPLE_BACKEND.consume_temporary_query()
         with self._app_lock:
             app = self._app
         if app is None:
@@ -414,6 +422,9 @@ class TuiBridge:
         return future.result()
 
     def restore_temporary_query_to_input(self, fallback_query: str | None = None) -> None:
+        if _SIMPLE_BACKEND is not None:
+            _SIMPLE_BACKEND.restore_temporary_query_to_input(fallback_query)
+            return
         with self._app_lock:
             app = self._app
         if app is None:
@@ -662,6 +673,30 @@ class TuiBridge:
 
 
 TUI_BRIDGE = TuiBridge()
+
+_SIMPLE_BACKEND: Any = None
+
+
+def enable_simple_mode() -> None:
+    global _SIMPLE_BACKEND
+    if _SIMPLE_BACKEND is None:
+        from system.simple_render import SimpleRenderer
+        from utils import hitl
+
+        _SIMPLE_BACKEND = SimpleRenderer()
+        hitl.toggle_hitl(enabled=False)
+
+
+def is_simple_mode() -> bool:
+    return _SIMPLE_BACKEND is not None
+
+
+def read_simple_input(prompt: str, **kwargs):
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.read_input(prompt, **kwargs)
+    from system.simple_prompt import read_prompt
+
+    return read_prompt(prompt, **kwargs)
 
 
 class MakeCodeInput(ImageAwareTextArea):
@@ -3181,6 +3216,22 @@ def post_tui(
     collapsible_kind: str = "reasoning",
     tail_after: RenderableType | str | None = None,
 ) -> None:
+    if _SIMPLE_BACKEND is not None:
+        _SIMPLE_BACKEND.handle(
+            TuiEvent(
+                TuiRegion(region),
+                payload,
+                clear,
+                tail,
+                active,
+                collapsible_title,
+                collapsible_open,
+                collapsible_close,
+                collapsible_kind,
+                tail_after,
+            )
+        )
+        return
     TUI_BRIDGE.post(
         region,
         payload,
@@ -3248,10 +3299,14 @@ def scroll_all_panes_to_bottom() -> None:
 
 
 def prompt_workdir_tui() -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.prompt_workdir()
     return TUI_BRIDGE.prompt_workdir()
 
 
 def choose_model_panel_tui(title: str, options: list[str]) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.choose(title, options)
     with TUI_BRIDGE._app_lock:
         app = TUI_BRIDGE._app
     if app is None:
@@ -3265,62 +3320,92 @@ def choose_model_panel_tui(title: str, options: list[str]) -> str:
 
 
 def choose_delegate_tasks_tui(tasks: list[dict[str, str]]) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.choose_delegate_tasks(tasks)
     return TUI_BRIDGE.choose_delegate_tasks(tasks)
 
 
 def manage_models_tui(model_manager: Any) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.manage_models(model_manager)
     return TUI_BRIDGE.manage_models(model_manager)
 
 
 def manage_skills_tui(skill_loader: Any) -> str | dict[str, Any]:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.manage_skills(skill_loader)
     return TUI_BRIDGE.manage_skills(skill_loader)
 
 
 def manage_layout_tui() -> str | dict[str, int]:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.manage_layout()
     return TUI_BRIDGE.manage_layout()
 
 
 def manage_memories_tui(memory_provider: Any) -> list[str]:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.manage_memories(memory_provider)
     return TUI_BRIDGE.manage_memories(memory_provider)
 
 
 def manage_memory_config_tui(values: dict[str, Any]) -> str | dict[str, Any]:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.manage_memory_config(values)
     return TUI_BRIDGE.manage_memory_config(values)
 
 
 def choose_recall_model_tui(options: list[str]) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.choose_recall_model(options)
     return TUI_BRIDGE.choose_recall_model(options)
 
 
 def manage_extra_tools_tui(values: dict[str, Any]) -> str | dict[str, Any]:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.manage_extra_tools(values)
     return TUI_BRIDGE.manage_extra_tools(values)
 
 
 def choose_image_understanding_model_tui(options: list[str]) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.choose_image_understanding_model(options)
     return TUI_BRIDGE.choose_image_understanding_model(options)
 
 
 def choose_mcp_switch_tui(server_switches: list[dict[str, Any]], mcp_manager: Any) -> str | dict:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.choose_mcp_switch(server_switches, mcp_manager)
     return TUI_BRIDGE.choose_mcp_switch(server_switches, mcp_manager)
 
 
 def show_info_panel_tui(title: str, content: RenderableType) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.show_info_panel(title, content)
     return TUI_BRIDGE.show_info_panel(title, content)
 
 
 def show_mcp_view_tui(summary: RenderableType, tools: list[dict[str, Any]]) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.show_mcp_view(summary, tools)
     return TUI_BRIDGE.show_mcp_view(summary, tools)
 
 
 def manage_tasks_tui(task_manager: Any) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.manage_tasks(task_manager)
     return TUI_BRIDGE.manage_tasks(task_manager)
 
 
 def show_copy_content_tui(messages: list[dict[str, Any]]) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.show_copy_content(messages)
     return TUI_BRIDGE.show_copy_content(messages)
 
 
 def choose_add_model_tui() -> dict[str, str] | None:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.choose_add_model()
     return TUI_BRIDGE.choose_add_model()
 
 
@@ -3333,6 +3418,15 @@ def choose_tui(
     preview_handler: Callable[[str], tuple[str, RenderableType]] | None = None,
     search_texts: list[str] | None = None,
 ) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.choose(
+            title,
+            options,
+            allow_custom=allow_custom,
+            delete_handler=delete_handler,
+            preview_handler=preview_handler,
+            search_texts=search_texts,
+        )
     return TUI_BRIDGE.choose(
         title,
         options,

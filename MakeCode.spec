@@ -20,6 +20,7 @@ project_hiddenimports = [
 for package in ('system', 'tools', 'utils'):
     project_hiddenimports.extend(collect_submodules(package))
 language_pack_hiddenimports = collect_submodules('tree_sitter_language_pack')
+prompt_toolkit_hiddenimports = collect_submodules('prompt_toolkit')
 certificate_datas = collect_data_files('certifi')
 jieba_datas = collect_data_files('jieba')
 
@@ -63,11 +64,12 @@ a = Analysis(
     datas=[
         (os.path.join(project_root, 'tiktoken_cache'), 'tiktoken_cache'),
     ] + updater_datas + ts_cache_datas + certificate_datas + jieba_datas + copy_metadata('fastmcp') + copy_metadata('tree-sitter-language-pack'),
-    hiddenimports=project_hiddenimports + language_pack_hiddenimports + [
+    hiddenimports=project_hiddenimports + language_pack_hiddenimports + prompt_toolkit_hiddenimports + [
         'tiktoken_ext.openai_public',
         'tiktoken_ext',
         'rich',
         'textual',
+        'prompt_toolkit',
         'pyzstd',
         'tree_sitter',
         'jieba',
