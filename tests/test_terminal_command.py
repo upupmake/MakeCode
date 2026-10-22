@@ -151,22 +151,24 @@ def test_posix_process_tree_termination_targets_process_group():
     process = RunningFakeProcess()
 
     with patch.object(common.os, "name", "posix"), \
-            patch.object(common.os, "killpg", create=True) as killpg:
+            patch.object(common.os, "killpg", create=True) as killpg, \
+            patch.object(common.signal, "SIGKILL", 9, create=True):
         common._terminate_process_tree(process)
 
-    killpg.assert_any_call(1234, common.signal.SIGTERM)
-    killpg.assert_any_call(1234, common.signal.SIGKILL)
+        killpg.assert_any_call(1234, common.signal.SIGTERM)
+        killpg.assert_any_call(1234, common.signal.SIGKILL)
 
 
 def test_posix_process_tree_termination_cleans_group_after_leader_exit():
     process = FakeProcess(0)
 
     with patch.object(common.os, "name", "posix"), \
-            patch.object(common.os, "killpg", create=True) as killpg:
+            patch.object(common.os, "killpg", create=True) as killpg, \
+            patch.object(common.signal, "SIGKILL", 9, create=True):
         common._terminate_process_tree(process)
 
-    killpg.assert_any_call(1234, common.signal.SIGTERM)
-    killpg.assert_any_call(1234, common.signal.SIGKILL)
+        killpg.assert_any_call(1234, common.signal.SIGTERM)
+        killpg.assert_any_call(1234, common.signal.SIGKILL)
 
 
 def test_windows_process_tree_termination_skips_exited_leader():
