@@ -336,10 +336,11 @@ class ConversationStore:
         )
 
     def activate(self, snapshot: ConversationSnapshot) -> None:
-        manifest = self._validate_manifest(snapshot.path)
-        self._validate_sidecar_paths(snapshot.root)
-        if manifest["conversation_id"] != snapshot.conversation_id:
-            raise ValueError("Conversation snapshot ID mismatch")
+        if self.persist:
+            manifest = self._validate_manifest(snapshot.path)
+            self._validate_sidecar_paths(snapshot.root)
+            if manifest["conversation_id"] != snapshot.conversation_id:
+                raise ValueError("Conversation snapshot ID mismatch")
         self._active_id = snapshot.conversation_id
         self._active_path = snapshot.path
         self._active_title = snapshot.title
@@ -358,6 +359,22 @@ class ConversationStore:
         new_root = self.root / conversation_id
         if new_root.exists():
             raise FileExistsError(f"Conversation already exists: {conversation_id}")
+        if not self.persist:
+            self.create(conversation_id)
+            path = self._active_path
+            assert path is not None
+            return ConversationSnapshot(
+                conversation_id=conversation_id,
+                path=path,
+                root=path.parent,
+                title=snapshot.title,
+                created_at=self._active_created_at or _now(),
+                updated_at=_now(),
+                messages=list(snapshot.messages),
+                task_plan=snapshot.task_plan,
+                sub_agent_history=list(snapshot.sub_agent_history),
+                runtime=snapshot.runtime,
+            )
         self.root.mkdir(parents=True, exist_ok=True)
         shutil.copytree(snapshot.root, new_root, symlinks=True)
         manifest_path = new_root / CONVERSATION_FILE

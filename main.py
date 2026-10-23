@@ -13,9 +13,13 @@ if __name__ == "__main__":
     if external_cli_exit_code is not None:
         raise SystemExit(external_cli_exit_code)
     if cli_module.HEADLESS_OPTIONS is not None:
-        from system.headless import run_headless
+        try:
+            from system.headless import run_headless
 
-        raise SystemExit(run_headless(cli_module.HEADLESS_OPTIONS))
+            headless_exit_code = run_headless(cli_module.HEADLESS_OPTIONS)
+        except KeyboardInterrupt:
+            headless_exit_code = 130
+        raise SystemExit(headless_exit_code)
 
 
 import contextlib

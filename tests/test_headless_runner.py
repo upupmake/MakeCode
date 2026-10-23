@@ -8,6 +8,7 @@ import pytest
 import system.headless as headless_module
 from system.agent_runtime import TurnResult
 from system.cli import HeadlessOptions
+from system.headless import HeadlessUsageError
 from utils.conversations import ConversationStore
 
 
@@ -27,6 +28,9 @@ class FakeRuntime:
 
     def restore(self, snapshot):
         self.restored = snapshot
+
+    def close(self):
+        pass
 
     async def run_turn(self, prompt):
         self.prompt = prompt
@@ -105,6 +109,23 @@ def test_prompt_without_value_reads_stdin(runner_env, monkeypatch):
     assert FakeRuntime.instances[0].prompt == "from stdin"
 
 
+def test_signal_before_turn_aborts_without_calling_model(runner_env, capsys, monkeypatch):
+    import asyncio
+
+    runner = headless_module.HeadlessRunner(HeadlessOptions(prompt="hi"))
+    runner._stop_event = asyncio.Event()
+    runner._stop_event.set()
+    runtime = FakeRuntime()
+    store = ConversationStore(runner_env / "conversations")
+    store.create()
+
+    result = asyncio.run(runner._run_turns(runtime, store))
+
+    assert result == 130
+    assert runtime.prompt is None
+    assert capsys.readouterr().out == ""
+
+
 def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch):
     async def run_turn(self, prompt):
         handler = self.kwargs["event_handler"]
@@ -143,6 +164,40 @@ def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch)
     ]
     assert payloads[0]["subtype"] == "init"
     assert payloads[-1]["subtype"] == "success"
+
+
+def test_fork_session_activates_new_session_for_stream_init(runner_env, capsys):
+    source = ConversationStore(runner_env / "conversations")
+    source.save_messages([{"role": "user", "content": "previous"}])
+    source_id = source.active_id
+
+    result = headless_module.run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            resume=source_id,
+            fork_session=True,
+            output_format="stream-json",
+        )
+    )
+
+    payloads = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    ]
+    forked = FakeRuntime.instances[0].restored.conversation_id
+    assert result == 0
+    assert forked != source_id
+    assert payloads[0]["type"] == "system"
+    assert payloads[0]["session_id"] == forked
+
+
+def test_invalid_resume_id_is_usage_error(runner_env):
+    runner = headless_module.HeadlessRunner(HeadlessOptions(prompt="hi", resume="not-an-id"))
+    store = ConversationStore(runner_env / "conversations")
+
+    with pytest.raises(HeadlessUsageError):
+        runner._resolve_session(store)
 
 
 def test_resume_loads_snapshot(runner_env):

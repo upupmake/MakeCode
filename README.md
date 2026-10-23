@@ -877,7 +877,7 @@ printf '%s\n' \
 | `plan` | 只读；写入和命令被拒绝 |
 | `bypassPermissions` | 全部放行，仅在可信环境使用 |
 
-`--allowedTools` / `--disallowedTools` 可进一步限制工具集合，`--disallowedTools` 优先。
+`--allowedTools` / `--disallowedTools` 可进一步限制工具集合，支持具体工具名（如 `FileEdit`）或命名空间名（如 `File`、`Terminal`），`--disallowedTools` 优先。
 
 输出格式：
 
@@ -891,7 +891,7 @@ printf '%s\n' \
 
 - 不提供 `--max-budget-usd`、`--max-turns`、`--max-tokens`，模型预算默认不设上限。
 - headless 不经过 TUI 斜杠命令层，`/skill` 等交互命令不会展开。
-- `AskUser` 在 headless 下不可用；`DelegateTasks` 当前返回拒绝并交给 Orchestrator 直接执行。
+- `AskUser` 与 `DelegateTasks` 在 headless 下不注册；需要执行的任务由 Orchestrator 直接完成。
 - `--input-format stream-json` 目前只处理文本内容块。
 
 ### 6.5 内置快捷命令（Slash Commands）

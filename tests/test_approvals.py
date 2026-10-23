@@ -64,6 +64,15 @@ def test_policy_provider_tool_allow_and_deny_lists():
     )
     assert denied.approve(request).allow is False
 
+    namespace_allowed = PolicyApprovalProvider("default", allowed_tools=["File"])
+    assert namespace_allowed.approve(request).allow is True
+
+    namespace_denied = PolicyApprovalProvider(
+        "bypassPermissions",
+        disallowed_tools=["File"],
+    )
+    assert namespace_denied.approve(request).allow is False
+
 
 def test_tui_provider_maps_choices():
     def provider_for(choice):

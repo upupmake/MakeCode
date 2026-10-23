@@ -32,6 +32,17 @@ class FakeClient:
             yield event
 
 
+class BlockingClient(FakeClient):
+    def __init__(self):
+        super().__init__([])
+        self.started = asyncio.Event()
+
+    async def generate_stream(self, messages, tools):
+        self.started.set()
+        await asyncio.Event().wait()
+        yield
+
+
 def _done(text):
     return {
         "type": "done",
@@ -112,6 +123,35 @@ def test_run_turn_reports_missing_model(tmp_path):
     assert result.is_error is True
     assert result.error == "No model configured"
     assert result.session_id == store.active_id
+
+
+def test_cancel_current_response_cancels_running_turn(tmp_path, monkeypatch):
+    import system.stream_cancel as stream_cancel
+
+    monkeypatch.setattr(stream_cancel, "post_tui", lambda *args, **kwargs: None)
+    store = ConversationStore(tmp_path / "conversations")
+
+    async def scenario():
+        client = BlockingClient()
+        runtime = AgentRuntime(
+            store=store,
+            registry=ToolRegistry(include_ask_user=False),
+            llm_client_factory=lambda **kwargs: client,
+        )
+        stream_cancel.start_cancel_listener()
+        try:
+            task = asyncio.create_task(runtime.run_turn("hi"))
+            await client.started.wait()
+            assert stream_cancel.cancel_current_response() is True
+            return await asyncio.wait_for(task, timeout=2)
+        finally:
+            stream_cancel.stop_cancel_listener()
+
+    result = asyncio.run(scenario())
+
+    assert result.cancelled is True
+    assert result.is_error is False
+    assert result.text == ""
 
 
 def test_restore_loads_snapshot_messages(tmp_path):

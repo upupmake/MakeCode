@@ -65,6 +65,23 @@ def test_stream_json_writer_emits_init_events_and_result():
     assert payloads[-1]["result"] == "hello"
 
 
+def test_stream_json_writer_parses_json_string_tool_input():
+    stream = StringIO()
+    writer = StreamJsonWriter(stream, session_id="conv_test")
+
+    writer.handle_runtime_event(
+        {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "FileRead",
+            "input": '{"path": "a"}',
+        }
+    )
+
+    payload = _lines(stream)[0]
+    assert payload["input"] == {"path": "a"}
+
+
 def test_stream_json_writer_suppresses_partial_deltas_by_default():
     stream = StringIO()
     writer = StreamJsonWriter(stream, session_id="conv_test")

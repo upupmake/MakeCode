@@ -38,6 +38,7 @@ from utils.tasks import (
     TASK_MANAGER_TOOLS_HANDLERS,
 )
 from utils.teams import TEAM_TOOL_MODELS, TEAM_TOOLS, TEAM_TOOLS_HANDLERS
+from utils.tool_aliases import resolve_tool_name
 from utils.tool_validation import merge_tool_model_registries
 
 
@@ -78,19 +79,108 @@ class ToolRegistry:
         allowed_tools: Iterable[str] | None = None,
         disallowed_tools: Iterable[str] | None = None,
         include_ask_user: bool = True,
+        include_delegate_tasks: bool = True,
         include_understand_image: bool | None = None,
     ) -> None:
         self.allowed_tools = frozenset(allowed_tools or ())
         self.disallowed_tools = frozenset(disallowed_tools or ())
         self.include_ask_user = include_ask_user
+        self.include_delegate_tasks = include_delegate_tasks
         self.include_understand_image = include_understand_image
 
+    @staticmethod
+    def _leaf_names(tool: dict[str, Any]) -> set[str]:
+        if tool.get("type") == "namespace":
+            names: set[str] = set()
+            for child in tool.get("tools", []):
+                if isinstance(child, dict):
+                    names.update(ToolRegistry._leaf_names(child))
+            return names
+        name = _tool_name(tool)
+        return {name} if name else set()
+
+    @classmethod
+    def _all_leaf_names(cls, tools: Iterable[dict[str, Any]]) -> set[str]:
+        names: set[str] = set()
+        for tool in tools:
+            names.update(cls._leaf_names(tool))
+        return names
+
+    @classmethod
+    def _expand_selectors(
+        cls,
+        tools: Iterable[dict[str, Any]],
+        selectors: Iterable[str],
+    ) -> set[str]:
+        tool_list = list(tools)
+        all_names = cls._all_leaf_names(tool_list)
+        selected: set[str] = set()
+        for selector in selectors:
+            name = resolve_tool_name(str(selector).strip())
+            if not name:
+                continue
+            if name in all_names:
+                selected.add(name)
+            for tool in tool_list:
+                if tool.get("type") == "namespace" and tool.get("name") == name:
+                    selected.update(cls._leaf_names(tool))
+        return selected
+
+    def _selected_names(
+        self,
+        tools: Iterable[dict[str, Any]],
+        *,
+        extra_names: Iterable[str] = (),
+        plan_mode: bool = False,
+    ) -> set[str]:
+        tool_list = list(tools)
+        extra = {resolve_tool_name(str(name)) for name in extra_names}
+        all_names = self._all_leaf_names(tool_list) | extra
+        if self.allowed_tools:
+            selected = self._expand_selectors(tool_list, self.allowed_tools)
+            selected.update(
+                resolve_tool_name(str(name))
+                for name in self.allowed_tools
+                if resolve_tool_name(str(name)) in extra
+            )
+        else:
+            selected = set(all_names)
+        selected -= self._expand_selectors(tool_list, self.disallowed_tools)
+        selected -= {
+            resolve_tool_name(str(name))
+            for name in self.disallowed_tools
+            if resolve_tool_name(str(name)) in extra
+        }
+        if plan_mode:
+            selected -= self._expand_selectors(tool_list, PLAN_MODE_BLOCKLIST)
+            selected -= set(PLAN_MODE_BLOCKLIST) & extra
+        return selected
+
+    @classmethod
+    def _filter_tool(
+        cls,
+        tool: dict[str, Any],
+        selected: set[str],
+    ) -> dict[str, Any] | None:
+        if tool.get("type") == "namespace":
+            children = [
+                filtered
+                for child in tool.get("tools", [])
+                if isinstance(child, dict)
+                and (filtered := cls._filter_tool(child, selected)) is not None
+            ]
+            if not children:
+                return None
+            filtered_tool = dict(tool)
+            filtered_tool["tools"] = children
+            return filtered_tool
+        return dict(tool) if _tool_name(tool) in selected else None
+
     def _is_allowed(self, name: str) -> bool:
-        if name in self.disallowed_tools:
-            return False
-        if not self.allowed_tools:
-            return True
-        return name in self.allowed_tools
+        return resolve_tool_name(name) in self._selected_names(self._builtin_tools())
+
+    def is_tool_enabled(self, name: str) -> bool:
+        return self._is_allowed(name)
 
     def _builtin_tools(self) -> list[dict[str, Any]]:
         tools = [
@@ -99,8 +189,9 @@ class ToolRegistry:
             *MEMORY_SELF_MANAGEMENT_TOOLS,
             *SKILL_TOOLS,
             *TASK_MANAGER_TOOLS,
-            *TEAM_TOOLS,
         ]
+        if self.include_delegate_tasks:
+            tools.extend(TEAM_TOOLS)
         if self.include_ask_user:
             tools.extend(ASK_USER_TOOLS)
         if (
@@ -122,39 +213,43 @@ class ToolRegistry:
             *self._builtin_tools(),
             *(GLOBAL_MCP_MANAGER.get_tools() if mcp_tools is None else mcp_tools),
         ]
-        if plan_mode if plan_mode is not None else is_plan_mode():
-            tools = [tool for tool in tools if _tool_name(tool) not in PLAN_MODE_BLOCKLIST]
-        tools = [tool for tool in tools if self._is_allowed(_tool_name(tool))]
+        plan = is_plan_mode() if plan_mode is None else plan_mode
+        selected = self._selected_names(tools, plan_mode=plan)
+        filtered = [
+            filtered_tool
+            for tool in tools
+            if (filtered_tool := self._filter_tool(tool, selected)) is not None
+        ]
         if llm_client is not None:
             return cast(
                 list[dict[str, Any]],
-                [dict(tool) for tool in llm_client.format_tools(tools)],
+                [dict(tool) for tool in llm_client.format_tools(filtered)],
             )
         return cast(
             list[dict[str, Any]],
-            [dict(tool) for tool in format_tools_for_current_model(tools)],
+            [dict(tool) for tool in format_tools_for_current_model(filtered)],
         )
 
     def handlers(self, mcp_handlers: dict[str, Any] | None = None) -> dict[str, Any]:
+        mcp_handlers = dict(mcp_handlers or {})
         handlers = {
             **self.BASE_SUPER_TOOLS_HANDLERS,
-            **(mcp_handlers or {}),
+            **mcp_handlers,
         }
-        if not self.include_ask_user:
-            handlers = {
-                name: handler
-                for name, handler in handlers.items()
-                if not name.startswith("AskUser")
-            }
+        selected = self._selected_names(
+            self._builtin_tools(),
+            extra_names=mcp_handlers,
+        )
         return {
             name: handler
             for name, handler in handlers.items()
-            if self._is_allowed(name)
+            if resolve_tool_name(name) in selected
         }
 
     def tool_models(self) -> dict[str, Any]:
+        selected = self._selected_names(self._builtin_tools())
         return {
             name: model
             for name, model in self.BASE_SUPER_TOOL_MODELS.items()
-            if self._is_allowed(name)
+            if resolve_tool_name(name) in selected
         }

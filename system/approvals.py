@@ -7,7 +7,37 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+from utils.tool_aliases import resolve_tool_name
+
 ApprovalScope = Literal["once", "session", "path"]
+
+TOOL_SELECTOR_MEMBERS: dict[str, frozenset[str]] = {
+    "File": frozenset(
+        {"FileRead", "FileCreate", "FileEdit", "FilePatch", "ContentSearch", "FileSearch"}
+    ),
+    "Terminal": frozenset({"RunTerminalCommand"}),
+    "TaskManager": frozenset(
+        {
+            "CreateTasks",
+            "UpdateTasksContent",
+            "UpdateTasksStatus",
+            "UpdateTasksDependencies",
+            "DeleteAllTasks",
+            "GetRunnableTasks",
+            "GetTaskTable",
+        }
+    ),
+    "Skills": frozenset({"LoadSkill"}),
+    "Team": frozenset({"DelegateTasks"}),
+}
+
+
+def _matches_selector(selector: str, action_name: str) -> bool:
+    selector = resolve_tool_name(selector)
+    action_name = resolve_tool_name(action_name)
+    return action_name == selector or action_name in TOOL_SELECTOR_MEMBERS.get(
+        selector, ()
+    )
 
 
 @dataclass(frozen=True)
@@ -95,12 +125,18 @@ class PolicyApprovalProvider:
         self.disallowed_tools = frozenset(disallowed_tools or ())
 
     def approve(self, request: ApprovalRequest) -> ApprovalDecision:
-        if request.action_name in self.disallowed_tools:
+        if any(
+            _matches_selector(selector, request.action_name)
+            for selector in self.disallowed_tools
+        ):
             return ApprovalDecision(
                 allow=False,
                 reason=f"工具 {request.action_name} 已被 --disallowedTools 禁止。",
             )
-        if request.action_name in self.allowed_tools:
+        if any(
+            _matches_selector(selector, request.action_name)
+            for selector in self.allowed_tools
+        ):
             return ApprovalDecision(allow=True)
 
         if self.mode == "bypassPermissions":

@@ -131,12 +131,21 @@ class StreamJsonWriter:
             )
             return
         if event_type == "tool_use":
+            tool_input = event.get("input")
+            if isinstance(tool_input, str):
+                try:
+                    parsed_input = json.loads(tool_input)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if isinstance(parsed_input, dict):
+                        tool_input = parsed_input
             self.write(
                 {
                     "type": "tool_use",
                     "id": event.get("id"),
                     "name": event.get("name"),
-                    "input": event.get("input"),
+                    "input": tool_input,
                     "session_id": self._session_id,
                 }
             )

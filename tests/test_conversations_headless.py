@@ -143,6 +143,20 @@ def test_fork_copies_messages_and_rewrites_conversation_ids(tmp_path):
     assert snapshot.root != forked.root
 
 
+def test_fork_without_persistence_stays_in_memory(tmp_path):
+    persisted = ConversationStore(tmp_path / "conversations")
+    path = persisted.save_messages([{"role": "user", "content": "hello"}])
+    snapshot = persisted.load(path)
+    ephemeral = ConversationStore(tmp_path / "conversations", persist=False)
+
+    forked = ephemeral.fork(snapshot)
+
+    assert ephemeral.active_id == forked.conversation_id
+    assert forked.conversation_id != snapshot.conversation_id
+    assert forked.messages == snapshot.messages
+    assert forked.path.exists() is False
+
+
 def test_conversation_lock_blocks_a_second_holder(tmp_path):
     root = tmp_path / "conversation"
     first = ConversationLock(root)

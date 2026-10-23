@@ -39,10 +39,13 @@ class StreamJsonInputLoop:
     async def run(self) -> int:
         self._loop = asyncio.get_running_loop()
         threading.Thread(target=self._read_stdin, daemon=True).start()
+        exit_code = 0
         while True:
             message = await self._next_message()
             if message is _EOF or message is None:
-                return 0
+                return exit_code
+            if self.stop_event is not None and self.stop_event.is_set():
+                return exit_code
             query = self._query_text(message)
             if not query:
                 self.writer.write(
@@ -57,10 +60,14 @@ class StreamJsonInputLoop:
                 self.writer.write_user_message(message)
             start_cancel_listener()
             try:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    return exit_code
                 result = await self.runtime.run_turn(query)
             finally:
                 stop_cancel_listener()
             self.writer.write_result(result)
+            if result.is_error:
+                exit_code = 1
 
     async def _next_message(self) -> Any:
         if self.stop_event is not None and self.stop_event.is_set():

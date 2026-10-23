@@ -75,6 +75,34 @@ def test_stream_input_reports_invalid_json_and_continues(monkeypatch):
     assert payloads[1]["type"] == "result"
 
 
+def test_stream_input_returns_nonzero_after_error(monkeypatch):
+    class ErrorRuntime(FakeRuntime):
+        async def run_turn(self, query):
+            return TurnResult(
+                text="",
+                session_id="conv_test",
+                messages=[],
+                is_error=True,
+                error="boom",
+            )
+
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        StringIO(json.dumps({"type": "user", "content": "hi"}) + "\n"),
+    )
+    stream = StringIO()
+    exit_code = asyncio.run(
+        StreamJsonInputLoop(
+            ErrorRuntime(),
+            StreamJsonWriter(stream, session_id="conv_test"),
+        ).run()
+    )
+
+    assert exit_code == 1
+    assert json.loads(stream.getvalue())["subtype"] == "error"
+
+
 def test_parse_line_accepts_interrupt_control():
     assert StreamJsonInputLoop._parse_line(
         json.dumps({"type": "control", "action": "interrupt"})

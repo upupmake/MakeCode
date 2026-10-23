@@ -7,6 +7,7 @@ import contextlib
 import json
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -80,7 +81,7 @@ class HeadlessRunner:
             return 1
 
     async def _run_async(self) -> int:
-        for stream in (sys.stdout, sys.stderr):
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
             if stream is not None and hasattr(stream, "reconfigure"):
                 with contextlib.suppress(Exception):
                     stream.reconfigure(encoding="utf-8", errors="replace")
@@ -88,6 +89,7 @@ class HeadlessRunner:
         self._stop_event = asyncio.Event()
         self._enter_headless_mode()
         self._install_signal_handlers()
+        runtime: AgentRuntime | None = None
         try:
             self._prepare_environment()
             self._prepare_model()
@@ -111,10 +113,12 @@ class HeadlessRunner:
                     allowed_tools=self.options.allowed_tools,
                     disallowed_tools=self.options.disallowed_tools,
                     include_ask_user=False,
+                    include_delegate_tasks=False,
                 ),
                 event_handler=self._handle_event,
                 append_system_prompt=self.options.append_system_prompt,
                 plan_mode=self.options.permission_mode == "plan",
+                headless=True,
             )
             if snapshot is not None:
                 runtime.restore(snapshot)
@@ -123,6 +127,8 @@ class HeadlessRunner:
                     return await self._run_turns(runtime, store)
             return await self._run_turns(runtime, store)
         finally:
+            if runtime is not None:
+                runtime.close()
             self._stop_mcp()
             self._close_debug_stream()
             self._restore_signal_handlers()
@@ -143,10 +149,28 @@ class HeadlessRunner:
                 stop_event=self._stop_event,
             ).run()
             return self._signal_exit_code or exit_code
+        if self._stop_event is not None and self._stop_event.is_set():
+            exit_code = self._write_result(
+                TurnResult(
+                    text="",
+                    session_id=store.active_id or "",
+                    messages=[],
+                    cancelled=True,
+                )
+            )
+            return self._signal_exit_code or exit_code
         prompt = self._read_prompt()
         start_cancel_listener()
         try:
-            result = await runtime.run_turn(prompt)
+            if self._stop_event is not None and self._stop_event.is_set():
+                result = TurnResult(
+                    text="",
+                    session_id=store.active_id or "",
+                    messages=[],
+                    cancelled=True,
+                )
+            else:
+                result = await runtime.run_turn(prompt)
         finally:
             stop_cancel_listener()
         exit_code = self._write_result(result)
@@ -266,31 +290,55 @@ class HeadlessRunner:
             raise HeadlessUsageError("prompt 为空。")
         return prompt
 
+    @staticmethod
+    def _normalize_session_id(store: ConversationStore, value: str) -> str:
+        try:
+            return store.normalize_conversation_id(value)
+        except ValueError as exc:
+            raise HeadlessUsageError(f"无效的会话 ID: {value}") from exc
+
     def _resolve_session(self, store: ConversationStore) -> ConversationSnapshot | None:
         if self.options.resume:
-            conversation_id = store.normalize_conversation_id(self.options.resume)
+            conversation_id = self._normalize_session_id(store, self.options.resume)
             path = store.root / conversation_id / CONVERSATION_FILE
             if not path.exists():
                 raise HeadlessConfigError(f"会话不存在: {conversation_id}")
-            snapshot = store.load(path)
+            try:
+                snapshot = store.load(path)
+            except (OSError, ValueError) as exc:
+                raise HeadlessConfigError(
+                    f"无法读取会话 {conversation_id}: {exc}"
+                ) from exc
             if self.options.fork_session:
-                return store.fork(snapshot)
+                forked = store.fork(snapshot)
+                store.activate(forked)
+                return forked
             store.activate(snapshot)
             return snapshot
         if self.options.continue_latest:
-            latest = store.find_latest()
+            try:
+                latest = store.find_latest()
+            except (OSError, ValueError) as exc:
+                raise HeadlessConfigError(f"无法读取最近会话: {exc}") from exc
             if latest is None:
                 store.create()
                 return None
             if self.options.fork_session:
-                return store.fork(latest)
+                forked = store.fork(latest)
+                store.activate(forked)
+                return forked
             store.activate(latest)
             return latest
         if self.options.session_id:
-            conversation_id = store.normalize_conversation_id(self.options.session_id)
+            conversation_id = self._normalize_session_id(store, self.options.session_id)
             path = store.root / conversation_id / CONVERSATION_FILE
             if path.exists():
-                snapshot = store.load(path)
+                try:
+                    snapshot = store.load(path)
+                except (OSError, ValueError) as exc:
+                    raise HeadlessConfigError(
+                        f"无法读取会话 {conversation_id}: {exc}"
+                    ) from exc
                 store.activate(snapshot)
                 return snapshot
             store.create(conversation_id)
@@ -307,6 +355,12 @@ class HeadlessRunner:
         )
         GLOBAL_MCP_MANAGER.initialize(console=console)
         GLOBAL_MCP_MANAGER.start_background()
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if GLOBAL_MCP_MANAGER.wait_until_ready(timeout=0.2):
+                break
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
 
     def _stop_mcp(self) -> None:
         with contextlib.suppress(Exception):

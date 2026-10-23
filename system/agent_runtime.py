@@ -17,7 +17,11 @@ from typing import Any
 
 from prompts import get_orchestrator_system_prompt
 from system.models import get_current_model_config
-from system.stream_cancel import is_cancelled
+from system.stream_cancel import (
+    is_cancelled,
+    register_response_task,
+    unregister_response_task,
+)
 from system.tool_registry import ToolRegistry
 from utils import paths
 from utils import tasks as tasks_module
@@ -83,6 +87,7 @@ class AgentRuntime:
         event_handler: Callable[[dict[str, Any]], None] | None = None,
         append_system_prompt: str | None = None,
         plan_mode: bool = False,
+        headless: bool = False,
     ) -> None:
         self.store = store or CONVERSATION_STORE
         self.registry = registry or ToolRegistry()
@@ -90,6 +95,7 @@ class AgentRuntime:
         self.event_handler = event_handler
         self.append_system_prompt = append_system_prompt
         self.plan_mode = plan_mode
+        self.headless = headless
         self.messages: list[dict[str, Any]] = []
         self._handlers: dict[str, Any] = {}
         self._tool_models: dict[str, Any] = {}
@@ -142,6 +148,14 @@ class AgentRuntime:
             "headless",
             plan_mode=self.plan_mode,
         )
+        if self.headless:
+            prompt += (
+                "\n\n# Headless Mode\n"
+                "You are running non-interactively. AskUser and interactive HITL prompts "
+                "are unavailable; do not wait for user input. Sub-agent delegation and "
+                "DelegateTasks are unavailable; execute tasks directly. Actions denied by "
+                "the configured permission policy must not be retried unchanged."
+            )
         if self.append_system_prompt:
             prompt = f"{prompt}\n\n{self.append_system_prompt}"
         return prompt
@@ -365,11 +379,19 @@ class AgentRuntime:
     def _save(self) -> None:
         self.store.save_messages(self.messages, runtime=self._runtime_metadata())
 
+    def close(self) -> None:
+        """Release tool handlers so MCP clients can be collected before shutdown."""
+        self._handlers.clear()
+        self._tool_models.clear()
+
     async def run_turn(self, query: str) -> TurnResult:
         started = time.perf_counter()
         self._handlers = {}
         self._permission_denials = []
         client = None
+        response_task = asyncio.current_task()
+        if response_task is not None:
+            register_response_task(response_task)
         try:
             self._activate_workspace()
             self.messages.append({"role": "user", "content": query})
@@ -385,7 +407,11 @@ class AgentRuntime:
                 plan_mode=self.plan_mode or is_plan_mode(),
             )
             self._handlers = self.registry.handlers(mcp_handlers)
-            self._handlers["ManageLongTermMemory"] = self._manage_long_term_memory
+            if (
+                not (self.plan_mode or is_plan_mode())
+                and self.registry.is_tool_enabled("ManageLongTermMemory")
+            ):
+                self._handlers["ManageLongTermMemory"] = self._manage_long_term_memory
             self._tool_models = self.registry.tool_models()
             self._prepare_messages(definitions)
             if any(message.get("role") == "user" for message in self.messages):
@@ -405,6 +431,10 @@ class AgentRuntime:
                 usage=usage,
                 started=started,
             )
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                self._save()
+            return self._result("", cancelled=True, started=started)
         except Exception as exc:
             return self._result(
                 "",
@@ -413,8 +443,11 @@ class AgentRuntime:
                 started=started,
             )
         finally:
+            if response_task is not None:
+                unregister_response_task(response_task)
             if client is not None:
-                await close_async_llm_client(client)
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await close_async_llm_client(client)
 
     def _result(
         self,

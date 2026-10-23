@@ -904,7 +904,7 @@ Permission modes:
 | `plan` | Read-only; writes and commands are denied |
 | `bypassPermissions` | Allow everything; trusted environments only |
 
-`--allowedTools` / `--disallowedTools` narrow the tool set; `--disallowedTools` wins.
+`--allowedTools` / `--disallowedTools` narrow the tool set; both concrete tool names (such as `FileEdit`) and namespace names (such as `File` or `Terminal`) are accepted, and `--disallowedTools` wins.
 
 Output formats:
 
@@ -918,7 +918,7 @@ Current limitations:
 
 - `--max-budget-usd`, `--max-turns`, and `--max-tokens` are intentionally not supported; model budgets are unlimited.
 - Headless mode bypasses the TUI slash-command layer, so commands such as `/skill` are not expanded.
-- `AskUser` is unavailable; `DelegateTasks` currently declines and leaves the work to the Orchestrator.
+- `AskUser` and `DelegateTasks` are not registered in headless mode; work is executed directly by the Orchestrator.
 - `--input-format stream-json` currently accepts text content blocks only.
 
 ### 6.5 Built-in Slash Commands
