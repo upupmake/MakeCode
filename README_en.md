@@ -906,6 +906,8 @@ Permission modes:
 
 `--allowedTools` / `--disallowedTools` narrow the tool set; both concrete tool names (such as `FileEdit`) and namespace names (such as `File` or `Terminal`) are accepted, and `--disallowedTools` wins.
 
+For Claude Code compatibility the prompt may also be passed positionally: `MakeCode -p --output-format json "question"`, and `-p` may be combined with `--input-format stream-json`. `--permission-mode` additionally accepts `manual` and `dontAsk` (both equivalent to `default`), and tool lists accept comma-separated values.
+
 Output formats:
 
 - `text`: stdout contains only the final assistant text; diagnostics go to stderr.

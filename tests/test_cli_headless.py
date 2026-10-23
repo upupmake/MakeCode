@@ -25,6 +25,49 @@ def test_print_without_prompt_reads_stdin_marker():
     assert options.prompt == ""
 
 
+def test_positional_prompt_matches_claude_code_form():
+    # claude -p --output-format json "prompt"
+    options = parse("-p", "--output-format", "json", "hello")
+    assert options is not None
+    assert options.prompt == "hello"
+    assert options.output_format == "json"
+
+    # claude "prompt" -p
+    options = parse("hello", "-p")
+    assert options is not None
+    assert options.prompt == "hello"
+
+
+def test_prompt_cannot_be_provided_twice():
+    with pytest.raises(SystemExit) as exc_info:
+        cli_module.run_external_cli(["-p", "first", "second"])
+
+    assert exc_info.value.code == 2
+
+
+def test_positional_prompt_requires_print_mode():
+    with pytest.raises(SystemExit) as exc_info:
+        cli_module.run_external_cli(["hello"])
+
+    assert exc_info.value.code == 2
+
+
+def test_print_mode_accepts_stream_json_input_like_claude_code():
+    options = parse(
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    )
+
+    assert options is not None
+    assert options.prompt == ""
+    assert options.input_format == "stream-json"
+    assert options.output_format == "stream-json"
+
+
 def test_output_format_json_and_session_options():
     options = parse(
         "-p",
@@ -51,6 +94,33 @@ def test_output_format_json_and_session_options():
     assert options.allowed_tools == ("FileEdit", "Bash")
     assert options.disallowed_tools == ("RunTerminalCommand",)
     assert options.append_system_prompt == "be concise"
+
+
+def test_tool_lists_accept_comma_separated_values():
+    options = parse(
+        "-p",
+        "hello",
+        "--allowedTools",
+        "File, Terminal,RunTerminalCommand",
+        "--disallowedTools",
+        "FileCreate,FileEdit",
+    )
+
+    assert options is not None
+    assert options.allowed_tools == ("File", "Terminal", "RunTerminalCommand")
+    assert options.disallowed_tools == ("FileCreate", "FileEdit")
+
+
+def test_permission_mode_aliases_follow_claude_code():
+    assert parse("-p", "hello", "--permission-mode", "manual").permission_mode == "default"
+    assert parse("-p", "hello", "--permission-mode", "dontAsk").permission_mode == "default"
+
+
+def test_debug_short_flag_is_accepted():
+    options = parse("-p", "hello", "-d")
+
+    assert options is not None
+    assert options.debug == ""
 
 
 def test_resume_continue_and_fork_options():

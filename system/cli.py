@@ -4,7 +4,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from version import CURRENT_VERSION
@@ -89,7 +89,20 @@ COMMAND_DESCRIPTIONS = {
 
 class CliParser:
     EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-    PERMISSION_MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
+    PERMISSION_MODES = (
+        "default",
+        "acceptEdits",
+        "plan",
+        "bypassPermissions",
+        "manual",
+        "dontAsk",
+    )
+    # Claude Code compatible aliases: both behave like a non-interactive
+    # "ask the user, but there is no user" mode.
+    PERMISSION_MODE_ALIASES: ClassVar[dict[str, str]] = {
+        "manual": "default",
+        "dontAsk": "default",
+    }
 
     def __init__(self) -> None:
         self._parser = self._build()
@@ -100,8 +113,30 @@ class CliParser:
     def error(self, message: str) -> None:
         self._parser.error(message)
 
+    @staticmethod
+    def _tool_selectors(values: Sequence[str] | None) -> tuple[str, ...]:
+        selectors: list[str] = []
+        for value in values or ():
+            selectors.extend(
+                part.strip() for part in str(value).split(",") if part.strip()
+            )
+        return tuple(selectors)
+
     def headless_options(self, args: argparse.Namespace) -> HeadlessOptions | None:
-        requested = args.print_prompt is not None or args.input_format == "stream-json"
+        positional_prompt = args.prompt
+        if positional_prompt is not None and args.print_prompt is None:
+            self.error("位置参数 prompt 需要与 -p/--print 一起使用")
+        prompt = args.print_prompt
+        if positional_prompt is not None:
+            if prompt:
+                self.error("prompt 只能提供一次：使用 -p 的值或位置参数")
+            prompt = positional_prompt
+
+        requested = (
+            args.print_prompt is not None
+            or positional_prompt is not None
+            or args.input_format == "stream-json"
+        )
         if not requested:
             if args.output_format != "text":
                 self.error("--output-format 需要与 -p 或 --input-format stream-json 一起使用")
@@ -113,8 +148,8 @@ class CliParser:
             self.error("-p/--print 不能与 --simple 一起使用")
         if args.load is not None:
             self.error("-p/--print 不能与 --load 一起使用")
-        if args.input_format == "stream-json" and args.print_prompt is not None:
-            self.error("-p/--print 不能与 --input-format stream-json 一起使用")
+        if args.input_format == "stream-json" and prompt:
+            self.error("--input-format stream-json 不接受 prompt 参数")
         if args.fork_session and not (args.resume is not None or args.continue_latest):
             self.error("--fork-session 需要与 -r/--resume 或 -c/--continue 一起使用")
         if args.session_id is not None and (args.resume is not None or args.continue_latest):
@@ -131,7 +166,7 @@ class CliParser:
             self.error("--replay-user-messages 需要 stream-json 输入和输出")
 
         return HeadlessOptions(
-            prompt=args.print_prompt,
+            prompt=prompt,
             input_format=args.input_format,
             output_format=args.output_format,
             session_id=args.session_id,
@@ -141,9 +176,12 @@ class CliParser:
             workdir=args.workdir,
             model=args.model,
             effort=args.effort,
-            permission_mode=args.permission_mode,
-            allowed_tools=tuple(args.allowed_tools or ()),
-            disallowed_tools=tuple(args.disallowed_tools or ()),
+            permission_mode=self.PERMISSION_MODE_ALIASES.get(
+                args.permission_mode,
+                args.permission_mode,
+            ),
+            allowed_tools=self._tool_selectors(args.allowed_tools),
+            disallowed_tools=self._tool_selectors(args.disallowed_tools),
             no_session_persistence=args.no_session_persistence,
             append_system_prompt=args.append_system_prompt,
             include_partial_messages=args.include_partial_messages,
@@ -169,6 +207,11 @@ class CliParser:
         commands.add_argument("--update", action="store_true", help="检查、下载并安装最新版本")
         commands.add_argument("--load", nargs="?", const="", metavar="CONVERSATION_ID", help="启动后加载会话；可指定会话 ID")
         commands.add_argument("-p", "--print", dest="print_prompt", nargs="?", const="", metavar="PROMPT", help="非交互执行一轮并退出；PROMPT 省略时从 stdin 读取")
+        parser.add_argument(
+            "prompt",
+            nargs="?",
+            help="位置参数形式的 prompt，需与 -p/--print 一起使用（兼容 Claude Code 的 -p \"prompt\"）",
+        )
         parser.add_argument("-y", "--yes", action="store_true", help="与 --update 配合使用，跳过安装确认")
         parser.add_argument(
             "--simple",
@@ -191,8 +234,13 @@ class CliParser:
         parser.add_argument("--append-system-prompt", help="追加系统提示")
         parser.add_argument("--include-partial-messages", action="store_true", help="输出流式文本增量（仅 stream-json）")
         parser.add_argument("--replay-user-messages", action="store_true", help="回显用户消息（仅 stream-json 双向模式）")
-        parser.add_argument("--debug", nargs="?", const="", default=None, help="启用调试输出")
+        parser.add_argument("-d", "--debug", nargs="?", const="", default=None, help="启用调试输出")
         parser.add_argument("--debug-file", type=Path, help="调试日志文件")
+        parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help="兼容 Claude Code：stream-json 输出无需该参数，接受后忽略",
+        )
         return parser
 
 

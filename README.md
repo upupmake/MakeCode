@@ -879,6 +879,8 @@ printf '%s\n' \
 
 `--allowedTools` / `--disallowedTools` 可进一步限制工具集合，支持具体工具名（如 `FileEdit`）或命名空间名（如 `File`、`Terminal`），`--disallowedTools` 优先。
 
+为兼容 Claude Code 的 `-p` 用法，prompt 也可以写成位置参数：`MakeCode -p --output-format json "问题"`，并允许 `-p` 与 `--input-format stream-json` 同时使用。`--permission-mode` 额外接受 `manual` 和 `dontAsk`（等价于 `default`），工具列表支持逗号分隔。
+
 输出格式：
 
 - `text`：stdout 只输出最终 assistant 文本，诊断信息走 stderr。
