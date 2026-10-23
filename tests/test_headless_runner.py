@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 from io import StringIO
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -10,7 +11,7 @@ import system.headless as headless_module
 from system.agent_runtime import TurnResult
 from system.cli import HeadlessOptions
 from system.headless import HeadlessConfigError, HeadlessUsageError
-from utils.conversations import ConversationStore
+from utils.conversations import ConversationLockError, ConversationStore
 
 
 class FakeRuntime:
@@ -160,6 +161,40 @@ def test_mcp_timeout_aborts_before_request(monkeypatch):
         runner._start_mcp()
 
 
+def test_session_lock_conflict_is_config_error(runner_env, capsys, monkeypatch):
+    class BusyLock:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            raise ConversationLockError("busy")
+
+        def __exit__(self, *exc_info):
+            return False
+
+    monkeypatch.setattr(headless_module, "ConversationLock", BusyLock)
+
+    result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
+
+    captured = capsys.readouterr()
+    assert result == 3
+    assert captured.out == ""
+    assert "正在被其他进程使用" in captured.err
+
+
+def test_debug_file_open_failure_is_usage_error(runner_env, capsys):
+    options = HeadlessOptions(
+        prompt="hi",
+        debug_file=Path("/nonexistent-dir-xyz/debug.jsonl"),
+    )
+
+    result = headless_module.run_headless(options)
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "无法打开调试日志" in captured.err
+
+
 def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch):
     async def run_turn(self, prompt):
         handler = self.kwargs["event_handler"]
@@ -197,6 +232,7 @@ def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch)
         "result",
     ]
     assert payloads[0]["subtype"] == "init"
+    assert "FileRead" in payloads[0]["tools"]
     assert payloads[-1]["subtype"] == "success"
 
 

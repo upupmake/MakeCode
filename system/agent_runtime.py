@@ -131,7 +131,9 @@ class AgentRuntime:
     def _activate_workspace(self) -> None:
         path = self.store.ensure_active()
         if not self.store.persist:
+            tasks_module.TASK_MANAGER.persist = False
             return
+        tasks_module.TASK_MANAGER.persist = True
         conversation_id = self.store.active_id
         if conversation_id is None:
             return

@@ -35,6 +35,7 @@ from utils.conversations import (
     CONVERSATION_FILE,
     CONVERSATION_STORE,
     ConversationLock,
+    ConversationLockError,
     ConversationSnapshot,
     ConversationStore,
 )
@@ -108,6 +109,12 @@ class HeadlessRunner:
             self._start_mcp()
             store = ConversationStore(persist=not self.options.no_session_persistence)
             snapshot = self._resolve_session(store)
+            registry = ToolRegistry(
+                allowed_tools=self.options.allowed_tools,
+                disallowed_tools=self.options.disallowed_tools,
+                include_ask_user=False,
+                include_delegate_tasks=False,
+            )
             if self.options.output_format == "stream-json":
                 self._stream_writer = StreamJsonWriter(
                     session_id=store.active_id or "",
@@ -117,15 +124,11 @@ class HeadlessRunner:
                     model=self._current_model_name(),
                     cwd=str(self._workdir),
                     permission_mode=self.options.permission_mode,
+                    tools=self._tool_names(registry),
                 )
             runtime = AgentRuntime(
                 store=store,
-                registry=ToolRegistry(
-                    allowed_tools=self.options.allowed_tools,
-                    disallowed_tools=self.options.disallowed_tools,
-                    include_ask_user=False,
-                    include_delegate_tasks=False,
-                ),
+                registry=registry,
                 event_handler=self._handle_event,
                 append_system_prompt=self.options.append_system_prompt,
                 plan_mode=self.options.permission_mode == "plan",
@@ -134,8 +137,13 @@ class HeadlessRunner:
             if snapshot is not None:
                 runtime.restore(snapshot)
             if store.persist and store.active_root is not None:
-                with ConversationLock(store.active_root):
-                    return await self._run_turns(runtime, store)
+                try:
+                    with ConversationLock(store.active_root):
+                        return await self._run_turns(runtime, store)
+                except ConversationLockError as exc:
+                    raise HeadlessConfigError(
+                        f"会话正在被其他进程使用: {store.active_root}"
+                    ) from exc
             return await self._run_turns(runtime, store)
         finally:
             if runtime is not None:
@@ -258,6 +266,20 @@ class HeadlessRunner:
         config = get_current_model_config()
         return getattr(config, "model_id", None)
 
+    def _tool_names(self, registry: ToolRegistry) -> list[str]:
+        mcp_tools, _ = GLOBAL_MCP_MANAGER.get_registry_snapshot()
+        definitions = registry.definitions(
+            mcp_tools=mcp_tools,
+            plan_mode=self.options.permission_mode == "plan",
+        )
+        names = []
+        for tool in definitions:
+            function = tool.get("function")
+            name = function.get("name") if isinstance(function, dict) else tool.get("name")
+            if name:
+                names.append(str(name))
+        return sorted(set(names))
+
     def _prepare_model(self) -> None:
         from system.models import get_model_manager
 
@@ -287,9 +309,14 @@ class HeadlessRunner:
 
     def _prepare_debug_stream(self) -> None:
         if self.options.debug_file is not None:
-            self._debug_stream = self._debug_stack.enter_context(
-                Path(self.options.debug_file).open("a", encoding="utf-8")  # noqa: SIM115
-            )
+            try:
+                self._debug_stream = self._debug_stack.enter_context(
+                    Path(self.options.debug_file).open("a", encoding="utf-8")  # noqa: SIM115
+                )
+            except OSError as exc:
+                raise HeadlessUsageError(
+                    f"无法打开调试日志 {self.options.debug_file}: {exc}"
+                ) from exc
         elif self.options.debug is not None:
             self._debug_stream = sys.stderr
 
@@ -322,6 +349,10 @@ class HeadlessRunner:
             conversation_id = self._normalize_session_id(store, self.options.resume)
             path = store.root / conversation_id / CONVERSATION_FILE
             if not path.exists():
+                if path.parent.exists():
+                    raise HeadlessConfigError(
+                        f"会话尚未完成初始化，可能正被其他进程使用: {conversation_id}"
+                    )
                 raise HeadlessConfigError(f"会话不存在: {conversation_id}")
             try:
                 snapshot = store.load(path)
