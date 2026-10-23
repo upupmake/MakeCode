@@ -18,8 +18,9 @@ def build_init_payload(
     cwd: str,
     permission_mode: str,
     tools: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "type": "system",
         "subtype": "init",
         "session_id": session_id,
@@ -29,6 +30,9 @@ def build_init_payload(
         "permission_mode": permission_mode,
         "api_version": 1,
     }
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 class TuiSink:

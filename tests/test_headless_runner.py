@@ -55,24 +55,42 @@ def runner_env(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_text_mode_prints_only_final_text(runner_env, capsys):
+def test_text_mode_keeps_stdout_clean_and_emits_init_json(runner_env, capsys):
     result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
 
     captured = capsys.readouterr()
+    init = json.loads(captured.err)
     assert result == 0
     assert captured.out == "ok\n"
-    assert captured.err == ""
+    assert init["type"] == "system"
+    assert init["subtype"] == "init"
+    assert init["mode"] == "one-shot"
+    assert init["output_format"] == "text"
+    assert init["session_id"].startswith("conv_")
+    assert init["tool_count"] == len(init["tools"]) > 0
     assert FakeRuntime.instances[0].prompt == "hi"
 
 
-def test_json_mode_prints_one_result_object(runner_env, capsys):
+def test_json_mode_emits_init_and_result_objects(runner_env, capsys):
     options = HeadlessOptions(prompt="hi", output_format="json")
 
     result = headless_module.run_headless(options)
 
     captured = capsys.readouterr()
-    payload = json.loads(captured.out)
+    payloads = [
+        json.loads(line)
+        for line in captured.out.splitlines()
+        if line.strip()
+    ]
     assert result == 0
+    assert [payload["type"] for payload in payloads] == ["system", "result"]
+    init = payloads[0]
+    assert init["subtype"] == "init"
+    assert init["mode"] == "one-shot"
+    assert init["input_format"] == "text"
+    assert init["output_format"] == "json"
+    assert init["session_persisted"] is True
+    payload = payloads[-1]
     assert payload["type"] == "result"
     assert payload["subtype"] == "success"
     assert payload["result"] == "ok"
@@ -98,21 +116,31 @@ def test_persistent_json_mode_emits_init_before_results(runner_env, capsys, monk
     assert payloads[0]["type"] == "system"
     assert payloads[0]["subtype"] == "init"
     assert payloads[0]["session_id"].startswith("conv_")
+    assert payloads[0]["mode"] == "persistent"
+    assert payloads[0]["input_format"] == "text"
+    assert payloads[0]["output_format"] == "json"
+    assert payloads[0]["tool_count"] == len(payloads[0]["tools"]) > 0
+    assert isinstance(payloads[0]["mcp_servers"], list)
+    assert set(payloads[0]["skills"]) == {"enabled", "active", "total"}
     assert payloads[-1]["type"] == "result"
     assert payloads[-1]["result"] == "ok"
 
 
-def test_persistent_text_mode_writes_ready_marker_to_stderr(runner_env, capsys, monkeypatch):
+def test_persistent_text_mode_writes_init_json_to_stderr(runner_env, capsys, monkeypatch):
     monkeypatch.setattr(sys, "stdin", StringIO("hello\n"))
     options = HeadlessOptions(prompt=None, input_format="text")
 
     result = headless_module.run_headless(options)
 
     captured = capsys.readouterr()
+    init = json.loads(captured.err)
     assert result == 0
     assert captured.out == "ok\n"
-    assert "MakeCode 已就绪" in captured.err
-    assert "session=conv_" in captured.err
+    assert init["type"] == "system"
+    assert init["subtype"] == "init"
+    assert init["mode"] == "persistent"
+    assert init["session_id"].startswith("conv_")
+    assert init["tool_count"] == len(init["tools"]) > 0
 
 
 def test_error_result_returns_nonzero_and_writes_stderr(runner_env, capsys, monkeypatch):
@@ -279,6 +307,8 @@ def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch)
     ]
     assert payloads[0]["subtype"] == "init"
     assert "FileRead" in payloads[0]["tools"]
+    assert payloads[0]["mode"] == "one-shot"
+    assert payloads[0]["output_format"] == "stream-json"
     assert payloads[-1]["subtype"] == "success"
 
 
@@ -336,3 +366,44 @@ def test_resume_loads_snapshot(runner_env):
     assert restored is not None
     assert restored.conversation_id == conversation_id
     assert restored.messages[-1]["content"] == "previous"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX termios only")
+def test_prepare_terminal_input_restores_cooked_enter(monkeypatch):
+    import os
+    import pty
+    import termios
+
+    class TtyStream:
+        def __init__(self, fd):
+            self._fd = fd
+
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            return self._fd
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        attributes = termios.tcgetattr(slave_fd)
+        attributes[0] &= ~termios.ICRNL
+        attributes[3] &= ~(termios.ICANON | termios.ECHO | termios.ISIG)
+        termios.tcsetattr(slave_fd, termios.TCSANOW, attributes)
+        monkeypatch.setattr(headless_module.sys, "stdin", TtyStream(slave_fd))
+
+        runner = headless_module.HeadlessRunner(HeadlessOptions(prompt=None))
+        runner._prepare_terminal_input()
+
+        updated = termios.tcgetattr(slave_fd)
+        assert updated[0] & termios.ICRNL
+        assert updated[3] & (termios.ICANON | termios.ECHO | termios.ISIG)
+
+        runner._restore_terminal_input()
+
+        restored = termios.tcgetattr(slave_fd)
+        assert not restored[0] & termios.ICRNL
+        assert not restored[3] & (termios.ICANON | termios.ECHO | termios.ISIG)
+    finally:
+        os.close(master_fd)
+        os.close(slave_fd)

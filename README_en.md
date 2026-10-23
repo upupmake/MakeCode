@@ -914,13 +914,13 @@ printf 'first: remember 7391\nsecond: what is the code?\n' \
 
 Combining `-p` with `--input-format` also enters persistent mode: the input format decides how stdin is read, and pressing Enter submits one message. Only a bare `-p` (without `--input-format`) reads stdin until EOF and then runs one turn.
 
-Persistent modes emit a readiness marker before reading stdin:
+After a successful headless startup (single-turn `-p` or persistent mode, regardless of output format), MakeCode emits one information-dense `system/init` JSON object with `version`, `session_id`, `mode` (`one-shot`/`persistent`), input/output formats, model details, `cwd`, platform/Python, tool list and count, MCP servers, Skills, permission mode, and session persistence state. The destination follows `--output-format`:
 
-| Output | Marker |
+| Output | Startup JSON |
 |---|---|
-| `text` | one stderr line: `MakeCode 已就绪: session=... model=... tools=N permission_mode=...` |
-| `json` | first stdout line: `{"type":"system","subtype":"init",...}` |
-| `stream-json` | first stdout line: `{"type":"system","subtype":"init",...}` |
+| `text` | one JSON line on stderr (stdout carries only the final text) |
+| `json` | first stdout line |
+| `stream-json` | first stdout line (`system/init` event) |
 
 Permission modes:
 
@@ -937,8 +937,8 @@ For Claude Code compatibility the prompt may also be passed positionally: `MakeC
 
 Output formats:
 
-- `text`: stdout contains only the final assistant text; diagnostics go to stderr.
-- `json`: one `result` object with `result`, `session_id`, `usage`, `is_error`, `permission_denials`, and `duration_ms`.
+- `text`: stdout contains only the final assistant text; the startup `system/init` JSON and diagnostics go to stderr.
+- `json`: one `system/init` line followed by one `result` object per turn with `result`, `session_id`, `usage`, `is_error`, `permission_denials`, and `duration_ms`.
 - `stream-json`: newline-delimited `system/init`, optional `assistant_delta`, `assistant`, `tool_use`, `tool_result`, and `result` events.
 
 Exit codes: `0` success, `1` runtime error, `2` usage error, `3` config/model error, `130` SIGINT, `143` SIGTERM.

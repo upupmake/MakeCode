@@ -6,11 +6,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
+import platform
 import signal
 import sys
 import time
 from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import urlsplit
 
 from rich.console import Console
 
@@ -41,6 +44,7 @@ from utils.conversations import (
 )
 from utils.mcp_manager import GLOBAL_MCP_MANAGER
 from utils.skills import SKILL_LOADER
+from version import CURRENT_VERSION
 
 
 class HeadlessError(RuntimeError):
@@ -79,6 +83,7 @@ class HeadlessRunner:
         self._previous_provider: Any = None
         self._previous_hitl = True
         self._mcp_log_filter: _McpTerminationLogFilter | None = None
+        self._tty_attributes: tuple[int, list[Any]] | None = None
 
     def run(self) -> int:
         try:
@@ -101,6 +106,7 @@ class HeadlessRunner:
         self._stop_event = asyncio.Event()
         self._enter_headless_mode()
         self._install_signal_handlers()
+        self._prepare_terminal_input()
         runtime: AgentRuntime | None = None
         try:
             self._prepare_environment()
@@ -121,21 +127,18 @@ class HeadlessRunner:
                 raise HeadlessUsageError(
                     f"未知的工具: {', '.join(unknown_tools)}"
                 )
-            needs_tool_names = (
-                self.options.output_format == "stream-json"
-                or self.options.prompt is None
-            )
-            tool_names = (
-                self._tool_names(registry, mcp_tools)
-                if needs_tool_names
-                else None
-            )
+            tool_names = self._tool_names(registry, mcp_tools)
             init_payload = build_init_payload(
                 session_id=store.active_id or "",
                 model=self._current_model_name(),
                 cwd=str(self._workdir),
                 permission_mode=self.options.permission_mode,
                 tools=tool_names,
+                extra=self._startup_fields(
+                    snapshot=snapshot,
+                    tool_names=tool_names,
+                    mcp_tools=mcp_tools,
+                ),
             )
             if self.options.output_format == "stream-json":
                 self._stream_writer = StreamJsonWriter(
@@ -143,8 +146,8 @@ class HeadlessRunner:
                     include_partial=self.options.include_partial_messages,
                 )
                 self._stream_writer.write(init_payload)
-            elif self.options.prompt is None:
-                self._write_ready_marker(init_payload)
+            else:
+                self._write_startup_payload(init_payload)
             runtime = AgentRuntime(
                 store=store,
                 registry=registry,
@@ -170,7 +173,109 @@ class HeadlessRunner:
             self._stop_mcp()
             self._close_debug_stream()
             self._restore_signal_handlers()
+            self._restore_terminal_input()
             self._leave_headless_mode()
+
+    def _prepare_terminal_input(self) -> None:
+        """Make interactive stdin line-oriented before the input loop starts.
+
+        A program that crashed while owning the terminal can leave ICRNL off,
+        so Enter arrives as CR, readline() never sees a line terminator and
+        the terminal echoes the key as ``^M``. Restore the flags the
+        line-based input loops rely on and remember the previous state.
+        """
+        if not self._uses_stdin():
+            return
+        if sys.stdin is None:
+            return
+        try:
+            if not sys.stdin.isatty():
+                return
+            import termios
+
+            fd = sys.stdin.fileno()
+            previous = termios.tcgetattr(fd)
+        except (ImportError, OSError, ValueError):
+            return
+        updated = list(previous)
+        updated[0] |= termios.ICRNL
+        updated[3] |= termios.ICANON | termios.ECHO | termios.ISIG
+        if updated == previous:
+            return
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, updated)
+        except (OSError, ValueError):
+            return
+        self._tty_attributes = (fd, previous)
+
+    def _restore_terminal_input(self) -> None:
+        saved = self._tty_attributes
+        if saved is None:
+            return
+        self._tty_attributes = None
+        fd, previous = saved
+        try:
+            import termios
+
+            termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+        except (ImportError, OSError, ValueError):
+            pass
+
+    def _uses_stdin(self) -> bool:
+        return self.options.input_format == "stream-json" or self.options.prompt is None
+
+    def _startup_fields(
+        self,
+        *,
+        snapshot: ConversationSnapshot | None,
+        tool_names: list[str],
+        mcp_tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        from system.models import get_current_model_config
+
+        model_config = get_current_model_config()
+        return {
+            "version": CURRENT_VERSION,
+            "mode": "persistent" if self._uses_stdin() else "one-shot",
+            "input_format": self.options.input_format,
+            "output_format": self.options.output_format,
+            "model_alias": (model_config.alias if model_config else "") or None,
+            "model_format": model_config.message_format if model_config else None,
+            "model_effort": model_config.reasoning_effort if model_config else None,
+            "model_host": self._model_host(model_config),
+            "platform": sys.platform,
+            "arch": platform.machine(),
+            "python": platform.python_version(),
+            "pid": os.getpid(),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "tool_count": len(tool_names),
+            "allowed_tools": list(self.options.allowed_tools),
+            "disallowed_tools": list(self.options.disallowed_tools),
+            "mcp_servers": sorted(GLOBAL_MCP_MANAGER.server_configs),
+            "mcp_tool_count": len(mcp_tools),
+            "skills": {
+                "enabled": SKILL_LOADER.is_enabled,
+                "active": len(SKILL_LOADER.skills),
+                "total": len(SKILL_LOADER.all_skills),
+            },
+            "session_persisted": not self.options.no_session_persistence,
+            "resumed": snapshot is not None,
+            "include_partial_messages": self.options.include_partial_messages,
+            "replay_user_messages": self.options.replay_user_messages,
+        }
+
+    @staticmethod
+    def _model_host(model_config: Any) -> str | None:
+        if model_config is None:
+            return None
+        base_url = model_config.base_url
+        try:
+            parsed = urlsplit(
+                base_url if "://" in base_url else f"https://{base_url}"
+            )
+        except ValueError:
+            return None
+        return parsed.netloc.rsplit("@", 1)[-1] or None
 
     async def _run_turns(self, runtime: AgentRuntime, store: ConversationStore) -> int:
         if self.options.input_format == "stream-json":
@@ -456,20 +561,10 @@ class HeadlessRunner:
         self._debug_stream.write(json.dumps(event, ensure_ascii=False) + "\n")
         self._debug_stream.flush()
 
-    def _write_ready_marker(self, payload: dict[str, Any]) -> None:
-        if self.options.output_format == "json":
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
-            return
-        tools = payload.get("tools") or []
-        sys.stderr.write(
-            "MakeCode 已就绪: "
-            f"session={payload.get('session_id')} "
-            f"model={payload.get('model')} "
-            f"tools={len(tools)} "
-            f"permission_mode={payload.get('permission_mode')}\n"
-        )
-        sys.stderr.flush()
+    def _write_startup_payload(self, payload: dict[str, Any]) -> None:
+        stream = sys.stdout if self.options.output_format == "json" else sys.stderr
+        stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        stream.flush()
 
     def _write_result(self, result: TurnResult) -> int:
         if self._stream_writer is not None:

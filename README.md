@@ -887,13 +887,13 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
 
 同时指定 `-p` 和 `--input-format` 时同样进入常驻模式，由输入格式决定读取方式，按下回车即提交一条消息。只有单独的 `-p`（不带 `--input-format`）才是“读到 stdin EOF 后执行一轮”。
 
-常驻模式在开始读取 stdin 前会输出启动标志：
+每次 headless 启动成功后（无论 `-p` 单轮还是常驻多轮、无论输出格式），都会先输出一条高信息密度的 `system/init` JSON，包含 `version`、`session_id`、`mode`（`one-shot`/`persistent`）、输入输出格式、模型信息、`cwd`、平台/Python、工具列表与数量、MCP 服务、Skills、权限模式、会话持久化状态等字段。输出位置随 `--output-format` 决定：
 
-| 输出格式 | 启动标志 |
+| 输出格式 | 启动 JSON 位置 |
 |---|---|
-| `text` | stderr 一行 `MakeCode 已就绪: session=... model=... tools=N permission_mode=...` |
-| `json` | stdout 第一行 `{"type":"system","subtype":"init",...}` |
-| `stream-json` | stdout 第一行 `{"type":"system","subtype":"init",...}` |
+| `text` | stderr 一行 JSON（stdout 只保留最终文本） |
+| `json` | stdout 第一行 JSON |
+| `stream-json` | stdout 第一行 `system/init` 事件 |
 
 权限模式：
 
@@ -910,8 +910,8 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
 
 输出格式：
 
-- `text`：stdout 只输出最终 assistant 文本，诊断信息走 stderr。
-- `json`：结束时输出一条 `result` 对象，包含 `result`、`session_id`、`usage`、`is_error`、`permission_denials`、`duration_ms`。
+- `text`：stdout 只输出最终 assistant 文本；启动 `system/init` JSON 和诊断信息走 stderr。
+- `json`：先输出一条 `system/init`，之后每轮输出一条 `result` 对象，包含 `result`、`session_id`、`usage`、`is_error`、`permission_denials`、`duration_ms`。
 - `stream-json`：逐行输出 `system/init`、`assistant_delta`（可选）、`assistant`、`tool_use`、`tool_result`、`result`。
 
 退出码：`0` 成功、`1` 运行错误、`2` 参数错误、`3` 配置/模型错误、`130` SIGINT、`143` SIGTERM。
