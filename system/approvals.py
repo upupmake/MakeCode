@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+from utils.plan_mode import is_plan_mode_command_allowed
 from utils.tool_aliases import resolve_tool_name
 
 ApprovalScope = Literal["once", "session", "path"]
@@ -143,7 +144,14 @@ class PolicyApprovalProvider:
             return ApprovalDecision(allow=True)
 
         if self.mode == "plan":
-            if request.action_type == "cmd" or (
+            if request.action_type == "cmd":
+                if is_plan_mode_command_allowed(request.details):
+                    return ApprovalDecision(allow=True)
+                return ApprovalDecision(
+                    allow=False,
+                    reason="Plan Mode 只允许只读命令。",
+                )
+            if (
                 request.action_type == "tool"
                 and request.action_name in self.WRITE_TOOLS
             ):

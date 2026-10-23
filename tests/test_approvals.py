@@ -31,7 +31,11 @@ def test_deny_provider_rejects_with_reason():
 
 
 def test_policy_provider_modes():
-    request_cmd = ApprovalRequest(action_type="cmd", action_name="git status")
+    request_cmd = ApprovalRequest(
+        action_type="cmd",
+        action_name="git status",
+        details="git status",
+    )
     request_edit = ApprovalRequest(action_type="tool", action_name="FileEdit")
     request_read = ApprovalRequest(action_type="tool", action_name="FileRead")
 
@@ -45,7 +49,10 @@ def test_policy_provider_modes():
     plan = PolicyApprovalProvider("plan")
     assert plan.approve(request_read).allow is True
     assert plan.approve(request_edit).allow is False
-    assert plan.approve(request_cmd).allow is False
+    assert plan.approve(request_cmd).allow is True
+    assert plan.approve(
+        ApprovalRequest("cmd", "rm -rf", "rm -rf build")
+    ).allow is False
 
     bypass = PolicyApprovalProvider("bypassPermissions")
     assert bypass.approve(request_cmd).allow is True
