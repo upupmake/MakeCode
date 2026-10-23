@@ -186,3 +186,55 @@ def test_system_prompt_includes_headless_note_and_append_prompt(tmp_path):
 
     assert "APPENDED MARKER" in prompt
     assert "# Headless Mode" in prompt
+
+
+def test_system_prompt_is_built_once_for_cache_stability(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_prompt(workdir, label, plan_mode=False):
+        calls.append(workdir)
+        return f"prompt-{len(calls)}"
+
+    monkeypatch.setattr(runtime_module, "get_orchestrator_system_prompt", fake_prompt)
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        headless=True,
+    )
+
+    first = runtime._system_prompt()
+    second = runtime._system_prompt()
+
+    assert first == second
+    assert len(calls) == 1
+
+
+def test_run_turn_aggregates_provider_usage(tmp_path):
+    class UsageClient(FakeClient):
+        async def generate_stream(self, messages, tools):
+            yield {
+                "type": "done",
+                "result": SimpleNamespace(
+                    text="ok",
+                    tool_calls=[],
+                    assistant_message={"role": "assistant", "content": "ok"},
+                    usage={
+                        "input_tokens": 100,
+                        "input_tokens_details": {"cached_tokens": 60},
+                        "output_tokens": 5,
+                    },
+                ),
+            }
+
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        llm_client_factory=lambda **kwargs: UsageClient([]),
+    )
+
+    result = asyncio.run(runtime.run_turn("hi"))
+
+    assert result.usage["input_tokens"] == 100
+    assert result.usage["cached_tokens"] == 60
+    assert result.usage["output_tokens"] == 5
+    assert result.usage["context_tokens"] > 0

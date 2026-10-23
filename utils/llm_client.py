@@ -1095,6 +1095,40 @@ def build_anthropic_request_messages(
     return "\n\n".join(system_parts), request_messages
 
 
+def apply_anthropic_cache_breakpoint(
+    request_messages: list[dict[str, Any]],
+) -> None:
+    """Cache the growing conversation prefix by marking the last message.
+
+    The system block is already marked in ``AnthropicMessagesClient``. This adds
+    a second breakpoint at the end of the request so each turn can read the
+    previous turn's prefix from cache instead of re-billing it as fresh input.
+    The first request has no assistant turn yet, so marking it would only create
+    a cache entry that nothing reads; skip it to avoid unnecessary writes.
+    """
+    if not request_messages:
+        return
+    if not any(message.get("role") == "assistant" for message in request_messages):
+        return
+    last_message = request_messages[-1]
+    content = last_message.get("content")
+    if isinstance(content, str):
+        if content:
+            last_message["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        return
+    if not isinstance(content, list) or not content:
+        return
+    last_block = content[-1]
+    if isinstance(last_block, dict):
+        last_block["cache_control"] = {"type": "ephemeral"}
+
+
 def format_openai_responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
     for tool in tools:
@@ -1566,6 +1600,7 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
             messages,
             self.conversation_root,
         )
+        apply_anthropic_cache_breakpoint(request_messages)
         kwargs = {
             "model": self.model,
             "max_tokens": 64_000,

@@ -22,6 +22,7 @@ from utils.llm_client import (
     _create_async_chat_client,
     _TrackedAsyncAnthropic,
     _TrackedAsyncOpenAI,
+    apply_anthropic_cache_breakpoint,
     build_anthropic_request_messages,
     build_llm_result,
     build_openai_prompt_cache_key,
@@ -31,6 +32,39 @@ from utils.llm_client import (
     sanitize_openai_messages,
     strip_native_message_payloads,
 )
+
+
+def test_anthropic_cache_breakpoint_marks_last_message_only():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "second"},
+    ]
+    _, request_messages = build_anthropic_request_messages(messages)
+
+    apply_anthropic_cache_breakpoint(request_messages)
+
+    assert request_messages[-1]["content"] == [
+        {
+            "type": "text",
+            "text": "second",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert request_messages[-2]["content"] == [{"type": "text", "text": "reply"}]
+
+
+def test_anthropic_cache_breakpoint_skips_first_request():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "first"},
+    ]
+    _, request_messages = build_anthropic_request_messages(messages)
+
+    apply_anthropic_cache_breakpoint(request_messages)
+
+    assert request_messages[-1]["content"] == [{"type": "text", "text": "first"}]
 
 
 @pytest.fixture

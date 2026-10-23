@@ -100,6 +100,8 @@ class AgentRuntime:
         self._handlers: dict[str, Any] = {}
         self._tool_models: dict[str, Any] = {}
         self._permission_denials: list[dict[str, Any]] = []
+        self._system_prompt_cache: str | None = None
+        self._turn_usage: dict[str, int] = {}
 
     def restore(self, snapshot: ConversationSnapshot) -> None:
         self.store.activate(snapshot)
@@ -145,6 +147,10 @@ class AgentRuntime:
         SKILL_LOADER.refresh_workspace()
 
     def _system_prompt(self) -> str:
+        # Built once per runtime so the cached prefix stays byte-identical even
+        # if skills files or the wall clock change mid-session.
+        if self._system_prompt_cache is not None:
+            return self._system_prompt_cache
         prompt = get_orchestrator_system_prompt(
             str(paths.workdir()),
             "headless",
@@ -160,7 +166,37 @@ class AgentRuntime:
             )
         if self.append_system_prompt:
             prompt = f"{prompt}\n\n{self.append_system_prompt}"
+        self._system_prompt_cache = prompt
         return prompt
+
+    @staticmethod
+    def _normalize_usage(usage: Any) -> dict[str, int]:
+        if not isinstance(usage, dict):
+            return {}
+        cached_tokens = None
+        for key in ("input_tokens_details", "prompt_tokens_details"):
+            details = usage.get(key)
+            if isinstance(details, dict) and details.get("cached_tokens") is not None:
+                cached_tokens = details.get("cached_tokens")
+                break
+        if cached_tokens is None:
+            cached_tokens = usage.get("cache_read_input_tokens")
+        input_tokens = usage.get("input_tokens")
+        if input_tokens is None:
+            input_tokens = usage.get("prompt_tokens")
+        output_tokens = usage.get("output_tokens")
+        if output_tokens is None:
+            output_tokens = usage.get("completion_tokens")
+        return {
+            "input_tokens": int(input_tokens or 0),
+            "cached_tokens": int(cached_tokens or 0),
+            "cache_creation_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+            "output_tokens": int(output_tokens or 0),
+        }
+
+    def _accumulate_usage(self, usage: Any) -> None:
+        for key, value in self._normalize_usage(usage).items():
+            self._turn_usage[key] = self._turn_usage.get(key, 0) + value
 
     def _prepare_messages(self, definitions: list[dict[str, Any]]) -> None:
         system_message = {"role": "system", "content": self._system_prompt()}
@@ -311,6 +347,7 @@ class AgentRuntime:
                     self._emit({"type": "reasoning_delta", "text": event["content"]})
                 elif event_type == "done":
                     result = event["result"]
+                    self._accumulate_usage(getattr(result, "usage", None))
                     response_text = result.text or response_text
                     tool_calls = result.tool_calls
                     raw_message = result.assistant_message
@@ -390,6 +427,7 @@ class AgentRuntime:
         started = time.perf_counter()
         self._handlers = {}
         self._permission_denials = []
+        self._turn_usage = {}
         client = None
         response_task = asyncio.current_task()
         if response_task is not None:
@@ -427,6 +465,7 @@ class AgentRuntime:
                     tools_definition=definitions,
                 )
             }
+            usage.update(self._turn_usage)
             return self._result(
                 text,
                 cancelled=cancelled,
