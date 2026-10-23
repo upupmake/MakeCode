@@ -207,6 +207,7 @@ class CliParser:
         commands.add_argument("--mcp-add", nargs=argparse.REMAINDER, metavar="ARG", help="添加禁用状态的 MCP 服务配置并退出")
         commands.add_argument("--skills-list", action="store_true", help="列出当前工作区可用 Skills 并退出")
         commands.add_argument("--memory-list", action="store_true", help="列出当前工作区长期记忆并退出")
+        commands.add_argument("--session-json", metavar="CONVERSATION_ID", help="按会话 ID 输出完整会话 JSON 并退出")
         commands.add_argument("--check-update", action="store_true", help="检查新版本但不下载或安装")
         commands.add_argument("--update", action="store_true", help="检查、下载并安装最新版本")
         commands.add_argument("--load", nargs="?", const="", metavar="CONVERSATION_ID", help="启动后加载会话；可指定会话 ID")
@@ -454,6 +455,39 @@ def _memory_list() -> int:
     return 0
 
 
+def _session_json(conversation_id: str, workdir: Path | None) -> int:
+    from utils.conversations import CONVERSATION_FILE, ConversationStore
+
+    if workdir is not None:
+        root = Path(workdir).expanduser().resolve()
+        if not root.is_dir():
+            print(f"工作目录不存在: {root}", file=sys.stderr)
+            return 1
+        store = ConversationStore(root / ".makecode" / "conversations")
+    else:
+        store = ConversationStore()
+    try:
+        normalized = store.normalize_conversation_id(conversation_id)
+    except ValueError:
+        print(f"无效的会话 ID: {conversation_id}", file=sys.stderr)
+        return 1
+
+    path = store.root / normalized / CONVERSATION_FILE
+    if not path.exists():
+        print(f"会话不存在: {normalized}", file=sys.stderr)
+        return 1
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"无法读取会话 {normalized}: {exc}", file=sys.stderr)
+        return 1
+
+    sys.stdout.write(content)
+    if not content.endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
+
+
 def _check_update() -> int:
     from system.updater import check_update
 
@@ -596,6 +630,8 @@ def run_external_cli(argv: Sequence[str]) -> int | None:
         return _skills_list()
     if args.memory_list:
         return _memory_list()
+    if args.session_json is not None:
+        return _session_json(args.session_json, args.workdir)
     if args.check_update:
         return _check_update()
     if args.update:

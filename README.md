@@ -809,6 +809,7 @@ python main.py
 | `--mcp-add <name> ...` | 使用与 `/mcp-add` 相同的参数添加 MCP 配置；新服务默认禁用且不会立即连接 |
 | `--skills-list` | 按当前工作区的目录优先级列出全部 Skills 及项目级启用状态 |
 | `--memory-list` | 按更新时间升序列出当前工作区的 active 长期记忆 |
+| `--session-json <CONVERSATION_ID>` | 输出指定会话的完整 `conversation.json`；可配合 `--workdir` 指定工作区 |
 | `--check-update` | 联网检查是否有新版本，但不下载或安装 |
 | `--update` | 冻结版检查、下载并安装更新；展示更新说明后要求确认 |
 | `--load [CONVERSATION_ID]` | 启动时跳过工作目录选择；不指定 ID 时打开会话选择面板，指定 ID 时直接加载对应会话，找不到时回退到选择面板 |
@@ -824,7 +825,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 ./MakeCode.command --skills-list       # macOS
 ```
 
-`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64 和 macOS ARM64；源码运行仍需手动更新。
+`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list`、`--session-json` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--session-json` 接受 `conv_...`、32 位十六进制或标准 UUID。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64 和 macOS ARM64；源码运行仍需手动更新。
 
 `--simple` 不会退出，而是以纯终端模式启动交互循环：不启动 Textual TUI，输出按事件顺序直接渲染到 stdout，适合对 TUI 终端控制序列支持不佳的环境。该模式只输出已完成的 Markdown 段落（不逐帧刷新尾部）；HITL、AskUser、`/load` 选择等交互会降级为终端菜单或文本输入；`/models`、`/skills-list`、`/memory-panel`、`/memory-config`、`/mcp-switch`、`/extra-tools`、`/copy`、`/layout`、`/title`、`/status`、`/tokens`、`/release-notes` 等管理命令均可在简单模式下直接使用。菜单支持方向键（包括小键盘方向键）选择，输入框支持左右移动光标、上下键跨行移动，并在首/末行继续翻阅历史；主输入是多行编辑框，支持 Ctrl+N 在光标处换行、Backspace/Delete 删除换行、Ctrl+V/Ctrl+O 附加剪贴板图片，也可直接粘贴图片文件路径，多行粘贴会保留换行，图片占位符可按整块删除或用方向键跳过；Tab 可补全斜杠命令、`/cd` 目录和启动工作目录，补全菜单可用上下键选择候选项且不会改动输入框的对话历史；Ctrl+P 切换计划/执行，Ctrl+C 取消当前输入（退出使用 `/quit`），Agent 运行期间按 Ctrl+G 可追加临时指令；会话标题加载或生成后会同步更新终端标题。可与 `--load` 组合：
 
