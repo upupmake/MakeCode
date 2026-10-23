@@ -65,7 +65,7 @@ jobs:
           TSLP_OFFLINE: '1'
         run: |
           python -m pip install --upgrade pip --retries 10 --timeout 60
-          python -m pip install --retries 10 --timeout 60 -r requirements.txt pyinstaller==6.19.0 pytest pytest-cov==7.1.0
+          python -m pip install --retries 10 --timeout 60 -r requirements.txt pyinstaller==6.19.0 pytest
 
       - name: Verify bundled tree-sitter parser cache
         env:
@@ -88,8 +88,6 @@ jobs:
           python -m pytest
           tests/
           -q
-          --cov
-          --cov-report=term
 
       - name: Build updater
         if: runner.os == 'Windows' || runner.os == 'macOS'
@@ -312,8 +310,6 @@ jobs:
           python -m pytest
           tests/
           -q
-          --cov
-          --cov-report=term-missing
 
       - name: Build updater
         run: pyinstaller --clean --noconfirm updater.spec
