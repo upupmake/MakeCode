@@ -22,6 +22,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
+        # pip cache is intentionally disabled: the GitHub Actions cache egress
+        # quota stalls or fails CI runs, and a cold install is more reliable.
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -53,6 +55,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
+        # pip cache is intentionally disabled: see the quality job above.
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
