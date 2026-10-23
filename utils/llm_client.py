@@ -200,7 +200,8 @@ def _set_client_request_retry(
     if request_id is None:
         return
     try:
-        from system.tui_app import TuiRegion, post_tui, set_client_request_retry
+        from system.tui_proxies import post_tui, set_client_request_retry
+        from system.tui_types import TuiRegion
 
         set_client_request_retry(request_id, retry_count, max_retries)
         reason_text = reason or (
@@ -292,7 +293,7 @@ def _client_request_active():
     request_token = _CURRENT_CLIENT_REQUEST_ID.set(request_id)
     active_started = False
     try:
-        from system.tui_app import set_client_request_active
+        from system.tui_proxies import set_client_request_active
 
         set_client_request_active(True, request_id=request_id)
         active_started = True
@@ -303,7 +304,7 @@ def _client_request_active():
     finally:
         if active_started:
             try:
-                from system.tui_app import set_client_request_active
+                from system.tui_proxies import set_client_request_active
 
                 set_client_request_active(False, request_id=request_id)
             except Exception:
@@ -1095,6 +1096,38 @@ def build_anthropic_request_messages(
     return "\n\n".join(system_parts), request_messages
 
 
+def apply_anthropic_cache_breakpoint(
+    request_messages: list[dict[str, Any]],
+) -> None:
+    """Cache the growing conversation prefix by marking the last message.
+
+    The system block is already marked in ``AnthropicMessagesClient``. This adds
+    a second breakpoint at the end of the request so the next turn can read the
+    previous turn's whole prefix from cache instead of re-billing it as fresh
+    input. It is applied to every request, including the first one, because the
+    next turn reads it.
+    """
+    if not request_messages:
+        return
+    last_message = request_messages[-1]
+    content = last_message.get("content")
+    if isinstance(content, str):
+        if content:
+            last_message["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        return
+    if not isinstance(content, list) or not content:
+        return
+    last_block = content[-1]
+    if isinstance(last_block, dict):
+        last_block["cache_control"] = {"type": "ephemeral"}
+
+
 def format_openai_responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
     for tool in tools:
@@ -1566,6 +1599,7 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
             messages,
             self.conversation_root,
         )
+        apply_anthropic_cache_breakpoint(request_messages)
         kwargs = {
             "model": self.model,
             "max_tokens": 64_000,

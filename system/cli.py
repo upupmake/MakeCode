@@ -2,14 +2,47 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from version import CURRENT_VERSION
 
+
+@dataclass(frozen=True)
+class HeadlessOptions:
+    prompt: str | None
+    input_format: Literal["text", "stream-json"] = "text"
+    output_format: Literal["text", "json", "stream-json"] = "text"
+    session_id: str | None = None
+    continue_latest: bool = False
+    resume: str | None = None
+    fork_session: bool = False
+    workdir: Path | None = None
+    model: str | None = None
+    effort: str | None = None
+    permission_mode: str = "default"
+    allowed_tools: tuple[str, ...] = ()
+    disallowed_tools: tuple[str, ...] = ()
+    no_session_persistence: bool = False
+    append_system_prompt: str | None = None
+    include_partial_messages: bool = False
+    replay_user_messages: bool = False
+    debug: str | None = None
+    debug_file: Path | None = None
+
+
+@dataclass(frozen=True)
+class CliInvocation:
+    mode: Literal["management", "tui", "simple", "headless"] = "tui"
+    headless: HeadlessOptions | None = None
+
+
 STARTUP_LOAD_REQUESTED = False
 STARTUP_LOAD_ID: str | None = None
 SIMPLE_MODE = False
+HEADLESS_OPTIONS: HeadlessOptions | None = None
 
 
 COMMAND_DESCRIPTIONS = {
@@ -54,29 +87,178 @@ COMMAND_DESCRIPTIONS = {
 }
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="MakeCode",
-        description="AI-powered multi-agent command-line orchestrator.",
+class CliParser:
+    EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+    PERMISSION_MODES = (
+        "default",
+        "acceptEdits",
+        "plan",
+        "bypassPermissions",
+        "manual",
+        "dontAsk",
     )
-    commands = parser.add_mutually_exclusive_group()
-    commands.add_argument("-V", "--version", action="store_true", help="显示版本并退出")
-    commands.add_argument("--commands", action="store_true", help="列出 TUI 中可用的斜杠命令并退出")
-    commands.add_argument("--models-list", action="store_true", help="列出已配置模型并退出")
-    commands.add_argument("--mcp-list", action="store_true", help="列出已配置 MCP 服务并退出")
-    commands.add_argument("--mcp-add", nargs=argparse.REMAINDER, metavar="ARG", help="添加禁用状态的 MCP 服务配置并退出")
-    commands.add_argument("--skills-list", action="store_true", help="列出当前工作区可用 Skills 并退出")
-    commands.add_argument("--memory-list", action="store_true", help="列出当前工作区长期记忆并退出")
-    commands.add_argument("--check-update", action="store_true", help="检查新版本但不下载或安装")
-    commands.add_argument("--update", action="store_true", help="检查、下载并安装最新版本")
-    commands.add_argument("--load", nargs="?", const="", metavar="CONVERSATION_ID", help="启动后加载会话；可指定会话 ID")
-    parser.add_argument("-y", "--yes", action="store_true", help="与 --update 配合使用，跳过安装确认")
-    parser.add_argument(
-        "--simple",
-        action="store_true",
-        help="使用纯终端简单模式启动：不启动 Textual TUI，按顺序把输出直接渲染到终端",
-    )
-    return parser
+    # Claude Code compatible aliases: both behave like a non-interactive
+    # "ask the user, but there is no user" mode.
+    PERMISSION_MODE_ALIASES: ClassVar[dict[str, str]] = {
+        "manual": "default",
+        "dontAsk": "default",
+    }
+
+    def __init__(self) -> None:
+        self._parser = self._build()
+
+    def parse(self, argv: Sequence[str]) -> argparse.Namespace:
+        return self._parser.parse_args(argv)
+
+    def error(self, message: str) -> None:
+        self._parser.error(message)
+
+    @staticmethod
+    def _tool_selectors(values: Sequence[str] | None) -> tuple[str, ...]:
+        selectors: list[str] = []
+        for value in values or ():
+            selectors.extend(
+                part.strip() for part in str(value).split(",") if part.strip()
+            )
+        return tuple(selectors)
+
+    def headless_options(self, args: argparse.Namespace) -> HeadlessOptions | None:
+        positional_prompt = args.prompt
+        if positional_prompt is not None and args.print_prompt is None:
+            self.error("位置参数 prompt 需要与 -p/--print 一起使用")
+        prompt = args.print_prompt
+        if positional_prompt is not None:
+            if prompt:
+                self.error("prompt 只能提供一次：使用 -p 的值或位置参数")
+            prompt = positional_prompt
+        # Bare -p normally means "read one prompt from stdin". When an input
+        # format is given explicitly, the format defines how stdin is consumed
+        # (one message per line), so keep the persistent loop instead.
+        if prompt == "" and args.input_format is not None:
+            prompt = None
+
+        input_format: Literal["text", "stream-json"] = (
+            "stream-json"
+            if args.input_format in ("json", "stream-json")
+            else "text"
+        )
+        requested = (
+            args.print_prompt is not None
+            or positional_prompt is not None
+            or args.input_format is not None
+        )
+        if not requested:
+            if args.output_format != "text":
+                self.error("--output-format 需要与 -p 或 --input-format stream-json 一起使用")
+            if args.continue_latest or args.resume is not None or args.session_id or args.fork_session:
+                self.error("-c/--continue、-r/--resume、--session-id 需要与 -p 一起使用")
+            return None
+
+        if args.simple:
+            self.error("-p/--print 和 headless 输入模式不能与 --simple 一起使用")
+        if args.load is not None:
+            self.error("-p/--print 和 headless 输入模式不能与 --load 一起使用")
+        if args.input_format in ("json", "stream-json") and prompt:
+            self.error("--input-format json/stream-json 不接受 prompt 参数")
+        if args.fork_session and not (args.resume is not None or args.continue_latest):
+            self.error("--fork-session 需要与 -r/--resume 或 -c/--continue 一起使用")
+        if args.session_id is not None and (args.resume is not None or args.continue_latest):
+            self.error("--session-id 不能与 -r/--resume 或 -c/--continue 同时使用")
+        if args.resume == "":
+            self.error("-r/--resume 在 headless 模式需要会话 ID")
+        if args.include_partial_messages and args.output_format != "stream-json":
+            self.error("--include-partial-messages 需要 --output-format stream-json")
+        if args.replay_user_messages and (
+            args.input_format not in ("json", "stream-json")
+            or args.output_format != "stream-json"
+        ):
+            self.error("--replay-user-messages 需要 json/stream-json 输入和 stream-json 输出")
+
+        return HeadlessOptions(
+            prompt=prompt,
+            input_format=input_format,
+            output_format=args.output_format,
+            session_id=args.session_id,
+            continue_latest=args.continue_latest,
+            resume=args.resume,
+            fork_session=args.fork_session,
+            workdir=args.workdir,
+            model=args.model,
+            effort=args.effort,
+            permission_mode=self.PERMISSION_MODE_ALIASES.get(
+                args.permission_mode,
+                args.permission_mode,
+            ),
+            allowed_tools=self._tool_selectors(args.allowed_tools),
+            disallowed_tools=self._tool_selectors(args.disallowed_tools),
+            no_session_persistence=args.no_session_persistence,
+            append_system_prompt=args.append_system_prompt,
+            include_partial_messages=args.include_partial_messages,
+            replay_user_messages=args.replay_user_messages,
+            debug=args.debug,
+            debug_file=args.debug_file,
+        )
+
+    def _build(self) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(
+            prog="MakeCode",
+            description="AI-powered multi-agent command-line orchestrator.",
+        )
+        commands = parser.add_mutually_exclusive_group()
+        commands.add_argument("-V", "--version", action="store_true", help="显示版本并退出")
+        commands.add_argument("--commands", action="store_true", help="列出 TUI 中可用的斜杠命令并退出")
+        commands.add_argument("--models-list", action="store_true", help="列出已配置模型并退出")
+        commands.add_argument("--mcp-list", action="store_true", help="列出已配置 MCP 服务并退出")
+        commands.add_argument("--mcp-add", nargs=argparse.REMAINDER, metavar="ARG", help="添加禁用状态的 MCP 服务配置并退出")
+        commands.add_argument("--skills-list", action="store_true", help="列出当前工作区可用 Skills 并退出")
+        commands.add_argument("--memory-list", action="store_true", help="列出当前工作区长期记忆并退出")
+        commands.add_argument("--session-json", metavar="CONVERSATION_ID", help="按会话 ID 输出完整会话 JSON 并退出")
+        commands.add_argument("--check-update", action="store_true", help="检查新版本但不下载或安装")
+        commands.add_argument("--update", action="store_true", help="检查、下载并安装最新版本")
+        commands.add_argument("--load", nargs="?", const="", metavar="CONVERSATION_ID", help="启动后加载会话；可指定会话 ID")
+        commands.add_argument("-p", "--print", dest="print_prompt", nargs="?", const="", metavar="PROMPT", help="非交互执行一轮并退出；PROMPT 省略时从 stdin 读取")
+        parser.add_argument(
+            "prompt",
+            nargs="?",
+            help="位置参数形式的 prompt，需与 -p/--print 一起使用（兼容 Claude Code 的 -p \"prompt\"）",
+        )
+        parser.add_argument("-y", "--yes", action="store_true", help="与 --update 配合使用，跳过安装确认")
+        parser.add_argument(
+            "--simple",
+            action="store_true",
+            help="使用纯终端简单模式启动：不启动 Textual TUI，按顺序把输出直接渲染到终端",
+        )
+        parser.add_argument(
+            "--input-format",
+            choices=("text", "json", "stream-json"),
+            help="输入格式（仅 headless）：text 逐行文本、json/stream-json 逐行 JSON",
+        )
+        parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text", help="输出格式（仅 headless）：text、json 或 stream-json")
+        parser.add_argument("--session-id", metavar="CONVERSATION_ID", help="指定会话 ID；不存在时创建，存在时续接")
+        parser.add_argument("-c", "--continue", dest="continue_latest", action="store_true", help="续接当前工作区最近一次会话")
+        parser.add_argument("-r", "--resume", nargs="?", const="", metavar="CONVERSATION_ID", help="按会话 ID 恢复")
+        parser.add_argument("--fork-session", action="store_true", help="恢复时创建新会话 ID，不污染原会话")
+        parser.add_argument("--workdir", type=Path, help="指定工作目录")
+        parser.add_argument("--model", help="覆盖当前模型")
+        parser.add_argument("--effort", choices=self.EFFORT_LEVELS, help="覆盖推理强度")
+        parser.add_argument("--permission-mode", choices=self.PERMISSION_MODES, default="default", help="headless 权限模式")
+        parser.add_argument("--allowedTools", "--allowed-tools", dest="allowed_tools", nargs="+", default=[], help="允许的工具列表")
+        parser.add_argument("--disallowedTools", "--disallowed-tools", dest="disallowed_tools", nargs="+", default=[], help="禁止的工具列表")
+        parser.add_argument("--no-session-persistence", action="store_true", help="不将会话写入磁盘")
+        parser.add_argument("--append-system-prompt", help="追加系统提示")
+        parser.add_argument("--include-partial-messages", action="store_true", help="输出流式文本增量（仅 stream-json）")
+        parser.add_argument("--replay-user-messages", action="store_true", help="回显用户消息（仅 stream-json 双向模式）")
+        parser.add_argument("-d", "--debug", nargs="?", const="", default=None, help="启用调试输出")
+        parser.add_argument("--debug-file", type=Path, help="调试日志文件")
+        parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help="兼容 Claude Code：stream-json 输出无需该参数，接受后忽略",
+        )
+        return parser
+
+
+CLI_PARSER = CliParser()
 
 
 def _print_commands() -> None:
@@ -278,6 +460,39 @@ def _memory_list() -> int:
     return 0
 
 
+def _session_json(conversation_id: str, workdir: Path | None) -> int:
+    from utils.conversations import CONVERSATION_FILE, ConversationStore
+
+    if workdir is not None:
+        root = Path(workdir).expanduser().resolve()
+        if not root.is_dir():
+            print(f"工作目录不存在: {root}", file=sys.stderr)
+            return 1
+        store = ConversationStore(root / ".makecode" / "conversations")
+    else:
+        store = ConversationStore()
+    try:
+        normalized = store.normalize_conversation_id(conversation_id)
+    except ValueError:
+        print(f"无效的会话 ID: {conversation_id}", file=sys.stderr)
+        return 1
+
+    path = store.root / normalized / CONVERSATION_FILE
+    if not path.exists():
+        print(f"会话不存在: {normalized}", file=sys.stderr)
+        return 1
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"无法读取会话 {normalized}: {exc}", file=sys.stderr)
+        return 1
+
+    sys.stdout.write(content)
+    if not content.endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
+
+
 def _check_update() -> int:
     from system.updater import check_update
 
@@ -390,20 +605,20 @@ def _update(*, assume_yes: bool) -> int:
 
 
 def run_external_cli(argv: Sequence[str]) -> int | None:
-    global STARTUP_LOAD_REQUESTED, STARTUP_LOAD_ID, SIMPLE_MODE
+    global STARTUP_LOAD_REQUESTED, STARTUP_LOAD_ID, SIMPLE_MODE, HEADLESS_OPTIONS
     STARTUP_LOAD_REQUESTED = False
     STARTUP_LOAD_ID = None
     SIMPLE_MODE = False
+    HEADLESS_OPTIONS = None
     if not argv:
         return None
     if argv[0] == "--mcp-add":
         return _mcp_add(argv[1:])
 
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = CLI_PARSER.parse(argv)
     SIMPLE_MODE = bool(args.simple)
     if args.yes and not args.update:
-        parser.error("-y/--yes 只能与 --update 一起使用")
+        CLI_PARSER.error("-y/--yes 只能与 --update 一起使用")
     if args.version:
         print(f"MakeCode {CURRENT_VERSION}")
         return 0
@@ -420,6 +635,8 @@ def run_external_cli(argv: Sequence[str]) -> int | None:
         return _skills_list()
     if args.memory_list:
         return _memory_list()
+    if args.session_json is not None:
+        return _session_json(args.session_json, args.workdir)
     if args.check_update:
         return _check_update()
     if args.update:
@@ -428,4 +645,5 @@ def run_external_cli(argv: Sequence[str]) -> int | None:
         STARTUP_LOAD_REQUESTED = True
         STARTUP_LOAD_ID = args.load or None
         return None
+    HEADLESS_OPTIONS = CLI_PARSER.headless_options(args)
     return None

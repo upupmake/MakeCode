@@ -90,6 +90,7 @@ def test_help_exits_before_interactive_startup():
     assert "--mcp-add" in result.stdout
     assert "--skills-list" in result.stdout
     assert "--memory-list" in result.stdout
+    assert "--session-json" in result.stdout
     assert "--check-update" in result.stdout
     assert "--update" in result.stdout
     assert "--load" in result.stdout
@@ -340,6 +341,76 @@ def test_memory_list_reads_active_records_in_updated_order(tmp_path, monkeypatch
     assert "older insight" in output
     assert "older reuse" in output
     assert "deleted" not in output
+
+
+def test_session_json_outputs_complete_conversation(tmp_path, capsys):
+    from utils.conversations import ConversationStore
+
+    store = ConversationStore(tmp_path / ".makecode" / "conversations")
+    store.create()
+    store.save_messages([
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ])
+    conversation_id = store.active_id
+
+    assert run_external_cli([
+        "--session-json",
+        conversation_id,
+        "--workdir",
+        str(tmp_path),
+    ]) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["conversation_id"] == conversation_id
+    assert [message["role"] for message in payload["messages"]] == [
+        "user",
+        "assistant",
+    ]
+    assert captured.err == ""
+
+
+def test_session_json_accepts_uuid_and_reports_missing_session(tmp_path, capsys):
+    from utils.conversations import ConversationStore
+
+    store = ConversationStore(tmp_path / ".makecode" / "conversations")
+    store.create()
+    store.save_messages([{"role": "user", "content": "hello"}])
+    conversation_id = store.active_id
+    uuid_like = conversation_id[len("conv_"):]
+
+    assert run_external_cli([
+        "--session-json",
+        uuid_like,
+        "--workdir",
+        str(tmp_path),
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["conversation_id"] == conversation_id
+
+    missing = "conv_" + "f" * 32
+    assert run_external_cli([
+        "--session-json",
+        missing,
+        "--workdir",
+        str(tmp_path),
+    ]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "会话不存在" in captured.err
+
+
+def test_session_json_rejects_invalid_id(tmp_path, capsys):
+    assert run_external_cli([
+        "--session-json",
+        "not-a-session",
+        "--workdir",
+        str(tmp_path),
+    ]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "无效的会话 ID" in captured.err
 
 
 def test_mcp_add_writes_disabled_config_without_printing_secrets(tmp_path, monkeypatch, capsys):

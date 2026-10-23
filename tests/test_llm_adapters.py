@@ -22,6 +22,7 @@ from utils.llm_client import (
     _create_async_chat_client,
     _TrackedAsyncAnthropic,
     _TrackedAsyncOpenAI,
+    apply_anthropic_cache_breakpoint,
     build_anthropic_request_messages,
     build_llm_result,
     build_openai_prompt_cache_key,
@@ -31,6 +32,102 @@ from utils.llm_client import (
     sanitize_openai_messages,
     strip_native_message_payloads,
 )
+
+
+def test_anthropic_cache_breakpoint_marks_last_message_only():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "second"},
+    ]
+    _, request_messages = build_anthropic_request_messages(messages)
+
+    apply_anthropic_cache_breakpoint(request_messages)
+
+    assert request_messages[-1]["content"] == [
+        {
+            "type": "text",
+            "text": "second",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert request_messages[-2]["content"] == [{"type": "text", "text": "reply"}]
+
+
+def test_anthropic_cache_breakpoint_marks_first_request():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "first"},
+    ]
+    _, request_messages = build_anthropic_request_messages(messages)
+
+    apply_anthropic_cache_breakpoint(request_messages)
+
+    assert request_messages[-1]["content"] == [
+        {
+            "type": "text",
+            "text": "first",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        lambda messages: sanitize_openai_messages(messages),
+        lambda messages: build_openai_responses_request(messages)[1],
+        lambda messages: build_anthropic_request_messages(messages)[1],
+    ],
+    ids=["openai_chat", "openai_responses", "anthropic"],
+)
+def test_replayed_assistant_prefix_is_byte_stable_across_turns(builder):
+    assistant = {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "reason",
+        "content_blocks": [
+            {"type": "reasoning", "text": "reason"},
+            {"type": "text", "text": "answer"},
+        ],
+        "message_metadata": {
+            "source_format": "openai_responses",
+            "source_model": "test",
+            "native_blocks": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "encrypted_content": "opaque",
+                    "summary": [],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "answer"}],
+                },
+            ],
+        },
+    }
+    history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "first"},
+        assistant,
+        {"role": "user", "content": "second"},
+    ]
+
+    first_request = builder(history)
+    extended_request = builder(
+        [
+            *history,
+            {"role": "assistant", "content": "next"},
+            {"role": "user", "content": "third"},
+        ]
+    )
+
+    first_prefix = _strip_cache_control(first_request)
+    extended_prefix = _strip_cache_control(extended_request)
+    assert extended_prefix[: len(first_prefix)] == first_prefix
 
 
 @pytest.fixture
@@ -762,7 +859,14 @@ async def test_anthropic_stream_builds_lossless_unified_result(stop_reason):
     assert raw_client.messages.stream.call_args.kwargs == {
         "model": "claude-test",
         "max_tokens": 64_000,
-        "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "hello",
+                    "cache_control": {"type": "ephemeral"},
+                }],
+            }],
         "thinking": {"type": "adaptive", "display": "summarized"},
         "output_config": {"effort": "xhigh"},
         "cache_control": {"type": "ephemeral"},
@@ -1110,12 +1214,62 @@ async def test_openai_responses_stream_builds_lossless_unified_result():
     }
     kwargs = create.call_args.kwargs
     assert kwargs["store"] is False
+    assert kwargs["stream"] is True
     assert kwargs["instructions"] == "system"
     assert kwargs["input"] == [{"role": "user", "content": "hello"}]
     assert kwargs["reasoning"] == {"effort": "high", "summary": "auto"}
     assert kwargs["tools"] == tools
     assert kwargs["prompt_cache_key"].startswith("mc-pc2-")
     assert stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_openai_chat_requests_are_always_streaming():
+    recorded = {}
+
+    class FakeStream:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._chunks:
+                raise StopAsyncIteration
+            return self._chunks.pop(0)
+
+        async def close(self):
+            pass
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            recorded.update(kwargs)
+            chunk = SimpleNamespace(
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2),
+                choices=[],
+            )
+            return FakeStream([chunk])
+
+    raw_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions())
+    )
+    client = AsyncChatAPIClient(
+        raw_client,
+        "test",
+        "medium",
+        base_url="https://gateway.example/v1",
+        api_key="key",
+    )
+
+    events = [
+        event
+        async for event in client.generate_stream([{"role": "user", "content": "hi"}])
+    ]
+
+    assert recorded["stream"] is True
+    assert recorded["stream_options"] == {"include_usage": True}
+    assert events[-1]["type"] == "done"
 
 
 def test_llm_timeout_is_provider_neutral():
@@ -2518,9 +2672,25 @@ async def auxiliary_gateway(request, monkeypatch, isolated_responses_runtime, tm
             await client.close()
 
 
+def _strip_cache_control(value):
+    if isinstance(value, dict):
+        return {
+            key: _strip_cache_control(item)
+            for key, item in value.items()
+            if key != "cache_control"
+        }
+    if isinstance(value, list):
+        return [_strip_cache_control(item) for item in value]
+    return value
+
+
 def assert_auxiliary_tool_continuation(first, second):
     history_field = "input" if "input" in first else "messages"
-    assert second[history_field][:len(first[history_field])] == first[history_field]
+    # Anthropic cache breakpoints mark the first request's tail; the marker is
+    # request metadata, not history, so compare the underlying content only.
+    first_history = _strip_cache_control(first[history_field])
+    second_history = _strip_cache_control(second[history_field])
+    assert second_history[:len(first_history)] == first_history
     for field in ("tools", "system", "instructions", "prompt_cache_key"):
         assert first.get(field) == second.get(field)
     assert "call_aux" in json.dumps(second)

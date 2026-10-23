@@ -9,7 +9,8 @@ from urllib.parse import urlsplit, urlunsplit
 from fastmcp import Client
 from rich.markup import escape
 
-from system.tui_app import TuiRegion, post_tui, refresh_status
+from system.tui_proxies import post_tui, refresh_status
+from system.tui_types import TuiRegion
 from utils import paths
 from utils.mcp_config import add_mcp_server_config, update_mcp_server_config
 
@@ -43,6 +44,7 @@ class GlobalMCPManager:
 
         self._db_lock = threading.Lock()
         self._is_running = False
+        self._ready_event = threading.Event()
 
     def initialize(self, console):
         self.console = console
@@ -167,6 +169,7 @@ class GlobalMCPManager:
                     print_formatted_text(
                         f"[bold red]⚠️ 创建 MCP 配置文件失败: {escape(str(e))}[/bold red]"
                     )
+            self._ready_event.set()
             return
 
         try:
@@ -178,6 +181,7 @@ class GlobalMCPManager:
                 print_formatted_text(
                     f"[bold red]⚠️ 加载 MCP 配置失败: {escape(str(e))}[/bold red]"
                 )
+            self._ready_event.set()
             return
 
         if not self.server_configs:
@@ -185,6 +189,7 @@ class GlobalMCPManager:
                 print_formatted_text(
                     f"[bold yellow]⚠️ MCP 服务为空，暂无可用服务。\n   路径: {escape(str(self.config_path))}[/bold yellow]"
                 )
+            self._ready_event.set()
             return
 
         if self.console:
@@ -192,12 +197,23 @@ class GlobalMCPManager:
             print_formatted_text(
                 f"[cyan]🔄 识别到 {len(self.server_configs)} 个 MCP 服务 ({escape(names)})[/cyan]\n"
             )
+        self._ready_event.clear()
         self.loop = asyncio.new_event_loop()
         self._stop_event = asyncio.Event()
         self._is_running = True
 
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
+
+    def wait_until_ready(self, timeout: float = 30.0) -> bool:
+        """Wait for the first MCP connection pass to finish.
+
+        Returns True for a manager that never started (for example because no
+        servers are configured) and for a lifecycle that completed or failed.
+        """
+        if not self._is_running:
+            return True
+        return self._ready_event.wait(timeout)
 
     def _run_loop(self):
         current_loop = self.loop
@@ -212,6 +228,7 @@ class GlobalMCPManager:
                 )
         finally:
             self._is_running = False
+            self._ready_event.set()
             try:
                 if current_loop and not current_loop.is_closed():
                     import gc
@@ -468,6 +485,7 @@ class GlobalMCPManager:
             with self._db_lock:
                 self._rebuild_global_registry_locked()
             refresh_status()
+            self._ready_event.set()
 
             await self._stop_event.wait()
         except Exception as e:
@@ -491,6 +509,7 @@ class GlobalMCPManager:
                 self._status_tools = []
                 self._pending_runtime = {}
             refresh_status()
+            self._ready_event.set()
 
     def get_tools(self) -> list:
         with self._db_lock:
@@ -521,6 +540,7 @@ class GlobalMCPManager:
                 self.thread.join(timeout=5)
 
         self._is_running = False
+        self._ready_event.set()
 
     def restart(self, config_path: Path | None = None):
         self.stop()

@@ -128,3 +128,16 @@ def test_update_tasks_dependencies_rolls_back_cycle(tmp_path: Path) -> None:
 
     assert manager._data["tasks"]["1"]["depend_on"] == []
     assert manager._data["tasks"]["2"]["depend_on"] == []
+
+
+def test_in_memory_mode_skips_disk_write(tmp_path: Path) -> None:
+    conversation = tmp_path / "conv_test"
+    manager = TaskManager(conversation, "conv_test")
+    manager.persist = False
+
+    created = manager.create_tasks(
+        [{"subject": "one", "description": "", "depend_on": []}]
+    )
+
+    assert [task["subject"] for task in created] == ["one"]
+    assert conversation.joinpath("task_plan.json").exists() is False

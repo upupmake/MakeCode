@@ -249,6 +249,7 @@ class TaskManager:
         self.conversation_root = conversation_root
         self.conversation_id = conversation_id
         self.path = conversation_root / TASK_PLAN_FILE if conversation_root is not None else None
+        self.persist = True
         if data is not None:
             self._validate_loaded_data(data, conversation_id)
             self._data: dict[str, Any] = data
@@ -263,6 +264,9 @@ class TaskManager:
         }
 
     def _save(self) -> None:
+        if not self.persist:
+            render_task_pane()
+            return
         self._validate_storage_path()
         path = self.path
         if path is None:
@@ -618,7 +622,8 @@ class TaskManager:
 
 
 def render_task_pane() -> None:
-    from system.tui_app import TuiRegion, post_tui
+    from system.tui_proxies import post_tui
+    from system.tui_types import TuiRegion
 
     task_table = TASK_MANAGER.get_task_table()
     summary = task_table.get("summary", {})

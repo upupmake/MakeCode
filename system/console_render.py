@@ -25,7 +25,8 @@ from system.tool_render import (
     format_tool_value,
     tool_result_status,
 )
-from system.tui_app import TuiRegion, is_simple_mode, post_tui
+from system.tui_proxies import is_simple_mode, post_tui
+from system.tui_types import TuiRegion
 from utils import paths
 
 

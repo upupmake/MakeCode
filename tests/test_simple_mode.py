@@ -201,9 +201,11 @@ def test_prompt_hitl_tui_routes_to_simple_backend(monkeypatch):
 
 
 def test_enable_simple_mode_creates_backend(monkeypatch):
+    from system.output_bus import OUTPUT_BUS
     from utils import hitl
 
     monkeypatch.setattr(tui_app, "_SIMPLE_BACKEND", None)
+    original_sink = OUTPUT_BUS.get_sink()
     hitl.toggle_hitl(enabled=True)
 
     try:
@@ -212,6 +214,7 @@ def test_enable_simple_mode_creates_backend(monkeypatch):
         assert isinstance(tui_app._SIMPLE_BACKEND, SimpleRenderer)
         assert not hitl.get_hitl_status()
     finally:
+        OUTPUT_BUS.set_sink(original_sink)
         hitl.toggle_hitl(enabled=True)
 
 

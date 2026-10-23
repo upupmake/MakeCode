@@ -4,7 +4,8 @@ from pathlib import Path
 from pydantic import Field
 from rich.markup import escape
 
-from system.tui_app import TuiRegion, post_tui
+from system.tui_proxies import post_tui
+from system.tui_types import TuiRegion
 from utils import paths
 from utils.skill_catalog import (
     discover_skills,

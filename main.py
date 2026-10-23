@@ -12,6 +12,14 @@ if __name__ == "__main__":
     external_cli_exit_code = cli_module.run_external_cli(sys.argv[1:])
     if external_cli_exit_code is not None:
         raise SystemExit(external_cli_exit_code)
+    if cli_module.HEADLESS_OPTIONS is not None:
+        try:
+            from system.headless import run_headless
+
+            headless_exit_code = run_headless(cli_module.HEADLESS_OPTIONS)
+        except KeyboardInterrupt:
+            headless_exit_code = 130
+        raise SystemExit(headless_exit_code)
 
 
 import contextlib
@@ -1352,6 +1360,8 @@ def _run_textual_main(
 
 
 def _launch_macos_terminal_if_needed() -> bool:
+    if cli_module.HEADLESS_OPTIONS is not None:
+        return False
     if (
         sys.platform != "darwin"
         or not getattr(sys, "frozen", False)

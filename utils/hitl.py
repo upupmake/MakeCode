@@ -1,8 +1,8 @@
 from contextvars import ContextVar
 from pathlib import Path
 
+from system.approvals import APPROVALS, ApprovalRequest
 from system.console_render import console_lock
-from system.tui_app import choose_tui, prompt_hitl_tui
 
 # Global Session Whitelist
 SESSION_WHITELIST: set[str] = set()
@@ -33,6 +33,20 @@ def toggle_hitl(enabled: bool | None = None) -> bool:
 def get_hitl_status() -> bool:
     """获取当前 HITL 状态"""
     return HITL_ENABLED
+
+
+def choose_tui(*args, **kwargs):
+    """Lazy proxy so importing HITL never imports the Textual TUI."""
+    from system.tui_app import choose_tui as _choose_tui
+
+    return _choose_tui(*args, **kwargs)
+
+
+def prompt_hitl_tui(*args, **kwargs):
+    """Lazy proxy so importing HITL never imports the Textual TUI."""
+    from system.tui_app import prompt_hitl_tui as _prompt_hitl_tui
+
+    return _prompt_hitl_tui(*args, **kwargs)
 
 
 def interactive_hitl_prompt(action_key: str, details: str) -> str:
@@ -74,6 +88,20 @@ def check_permission(action_type: str, action_name: str, details: str) -> tuple[
         # Double check in case another thread added it while waiting
         if action_key in SESSION_WHITELIST:
             return True, ""
+
+        provider = APPROVALS.get_provider()
+        if provider is not None:
+            decision = provider.approve(
+                ApprovalRequest(
+                    action_type=action_type,
+                    action_name=action_name,
+                    details=details,
+                    agent_role=current_agent_role.get(),
+                )
+            )
+            if decision.allow and decision.scope == "session":
+                SESSION_WHITELIST.add(action_key)
+            return decision.allow, decision.reason
 
         choice = interactive_hitl_prompt(action_key, details)
 
@@ -118,6 +146,24 @@ def check_path_permission(resolved_path: Path, tool_name: str) -> tuple[bool, st
         agent_name = current_agent_role.get()
         path_str = resolved_path.as_posix()
         whitelist_dir = resolved_path.as_posix() if resolved_path.is_dir() else resolved_path.parent.as_posix()
+
+        provider = APPROVALS.get_provider()
+        if provider is not None:
+            decision = provider.approve(
+                ApprovalRequest(
+                    action_type="path",
+                    action_name=tool_name,
+                    details=f"Path: {path_str}",
+                    agent_role=agent_name,
+                    path=path_str,
+                )
+            )
+            if decision.allow:
+                if decision.scope in {"session", "path"}:
+                    PATH_WHITELIST.add(whitelist_dir)
+                return True, ""
+            return False, decision.reason or "用户拒绝了工作区外路径访问。"
+
         options = [
             "允许本次访问",
             "允许本会话访问该目录",
@@ -172,6 +218,25 @@ def check_paths_permission(resolved_paths: list[Path], tool_name: str) -> tuple[
             path.as_posix() if path.is_dir() else path.parent.as_posix()
             for path in pending
         })
+
+        provider = APPROVALS.get_provider()
+        if provider is not None:
+            decision = provider.approve(
+                ApprovalRequest(
+                    action_type="path",
+                    action_name=tool_name,
+                    details=f"Paths:\n{path_lines}",
+                    agent_role=current_agent_role.get(),
+                    paths=tuple(path.as_posix() for path in pending),
+                )
+            )
+            if decision.allow:
+                if decision.scope in {"session", "path"}:
+                    for directory in whitelist_dirs:
+                        PATH_WHITELIST.add(directory)
+                return True, ""
+            return False, decision.reason or "用户拒绝了工作区外路径访问。"
+
         options = [
             "允许本次批量访问",
             "允许这些目录本会话访问",

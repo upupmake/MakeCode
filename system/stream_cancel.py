@@ -9,7 +9,8 @@ import asyncio
 import contextlib
 import threading
 
-from system.tui_app import TuiRegion, post_tui
+from system.tui_proxies import post_tui
+from system.tui_types import TuiRegion
 
 _cancel_requested = False
 _response_active = False

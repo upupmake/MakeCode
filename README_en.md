@@ -836,6 +836,7 @@ The following options execute and exit immediately without starting the workspac
 | `--mcp-add <name> ...` | Add MCP configuration using the same arguments as `/mcp-add`; the new service remains disabled and is not connected immediately |
 | `--skills-list` | List all Skills and their project-level enabled state using the current workspace directory priority |
 | `--memory-list` | List active long-term memories in the current workspace by ascending update time |
+| `--session-json <CONVERSATION_ID>` | Print the complete `conversation.json` for a session; combine with `--workdir` to pick the workspace |
 | `--check-update` | Check online for a newer version without downloading or installing it |
 | `--update` | Check, download, and install updates in frozen Windows/Linux/macOS builds; asks for confirmation after displaying release notes |
 | `--load [CONVERSATION_ID]` | Skip the startup workspace chooser; without an ID open the conversation picker, or load the specified conversation and fall back to the picker if it is not found |
@@ -851,7 +852,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 ./MakeCode.command --skills-list       # macOS
 ```
 
-`--models-list`, `--mcp-list`, `--skills-list`, `--memory-list`, and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. `--mcp-add` only changes configuration and keeps the new service disabled without connecting it. `--update` reuses the TUI `/update` HTTPS download, size/SHA256 verification, and transactional replacement flow. It requires terminal confirmation by default; non-interactive environments must explicitly pass `-y`/`--yes`. It supports frozen Windows X64, Linux X64, and macOS ARM64 builds; source runs still require a manual update.
+`--models-list`, `--mcp-list`, `--skills-list`, `--memory-list`, `--session-json`, and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. `--session-json` accepts `conv_...`, 32 hex characters, or a standard UUID. `--mcp-add` only changes configuration and keeps the new service disabled without connecting it. `--update` reuses the TUI `/update` HTTPS download, size/SHA256 verification, and transactional replacement flow. It requires terminal confirmation by default; non-interactive environments must explicitly pass `-y`/`--yes`. It supports frozen Windows X64, Linux X64, and macOS ARM64 builds; source runs still require a manual update.
 
 `--simple` does not exit. It starts an interactive plain-terminal loop without the Textual TUI and renders output directly to stdout in event order, which is useful for terminals with poor TUI control-sequence support. Only completed Markdown blocks are printed (the live tail is not redrawn); HITL, AskUser, and `/load` selection fall back to terminal menus or text prompts; management commands such as `/models`, `/skills-list`, `/memory-panel`, `/memory-config`, `/mcp-switch`, `/extra-tools`, `/copy`, `/layout`, `/title`, `/status`, `/tokens`, and `/release-notes` work directly in simple mode. Menus support arrow-key navigation (including keypad arrows), and text inputs support left/right cursor movement plus up/down to move between lines, with history at the first/last line; the main input is a multi-line editor supporting Ctrl+N to split the line at the cursor, Backspace/Delete to remove line breaks, and Ctrl+V/Ctrl+O to attach clipboard images; image file paths can also be pasted directly, with multi-line pastes preserving line breaks; image placeholders can be deleted as a unit or skipped with the arrow keys; Tab completes slash commands, `/cd` directories, and the startup work directory, and the completion menu can be navigated with the up/down arrows without changing the input history; Ctrl+P toggles Plan/Act mode, and Ctrl+C cancels the current input (use `/quit` to exit); press Ctrl+G while the agent is running to append a temporary instruction; the terminal title is updated after a conversation title is loaded or generated. It can be combined with `--load`:
 
@@ -861,6 +862,93 @@ python main.py --simple --load
 ```
 
 Older terminals degrade automatically: `TERM=dumb` uses plain `input()` and numbered menus without prompt_toolkit control sequences; basic terminals such as `vt100` use ASCII hints, 16-color output, and Tab-triggered completion. Set `MAKECODE_SIMPLE_PROFILE=plain|basic|full` to override the detected profile. On Windows the profile follows the hosting terminal rather than the OS version: Windows Terminal (`WT_SESSION`), the VS Code terminal, ConEmu, WezTerm, Alacritty, and Kitty enable the full profile and keep Unicode icons; when an app is started from Explorer or through the default-terminal handoff it may not inherit `WT_SESSION`, so MakeCode also checks whether stdout is a ConPTY console with `ENABLE_VIRTUAL_TERMINAL_PROCESSING` enabled (`PseudoConsoleWindow`) and still selects the full profile; only legacy conhost, which does not satisfy these conditions, converts emoji/icons to ASCII labels such as `[tool]` and `[ok]`. Set `MAKECODE_SIMPLE_UNICODE=1` to force Unicode icons.
+
+### 6.4.1 Headless Non-Interactive Mode
+
+`-p/--print` skips the TUI, runs one turn, and exits. It is intended for scripts, IDEs, and other agents.
+
+```bash
+python3.13 main.py -p "Explain this project"
+echo "Review this code" | python3.13 main.py -p
+python3.13 main.py -p "Reply OK" --output-format json
+python3.13 main.py -p "Reply OK" --output-format stream-json --include-partial-messages
+```
+
+Sessions:
+
+```bash
+python3.13 main.py -p "first turn" --session-id conv_0123456789abcdef0123456789abcdef
+python3.13 main.py -r conv_0123456789abcdef0123456789abcdef -p "second turn"
+python3.13 main.py -c -p "continue the latest session in this workspace"
+python3.13 main.py -r conv_0123456789abcdef0123456789abcdef --fork-session -p "branch this session"
+```
+
+`--session-id` accepts `conv_...`, 32 hex characters, or a UUID. A missing session is created; an existing one is resumed. `--no-session-persistence` keeps history only in memory.
+
+Persistent multi-turn input (newline-delimited JSON on stdin):
+
+```bash
+printf '%s\n' \
+  '{"type":"user","message":{"role":"user","content":"first"}}' \
+  '{"type":"user","content":"second"}' \
+  | python3.13 main.py --input-format stream-json --output-format stream-json
+```
+
+Input and output formats are independent:
+
+| `--input-format` | Meaning |
+|---|---|
+| `text` | one user message per stdin line |
+| `json` (alias `stream-json`) | one JSON object per stdin line |
+
+`--output-format` accepts `text`, `json`, and `stream-json`, and any input format may be combined with any output format. `--replay-user-messages` and `--include-partial-messages` require `stream-json` output. JSON input supports `{"type":"control","action":"interrupt"}`.
+
+Plain-text persistent mode is also available: explicitly passing `--input-format text` without `-p` treats every stdin line as one turn.
+
+```bash
+printf 'first: remember 7391\nsecond: what is the code?\n' \
+  | python3.13 main.py --input-format text
+```
+
+`--output-format` may be `text` (final text per turn), `json` (one result object per turn), or `stream-json` (event stream per turn).
+
+Combining `-p` with `--input-format` also enters persistent mode: the input format decides how stdin is read, and pressing Enter submits one message. Only a bare `-p` (without `--input-format`) reads stdin until EOF and then runs one turn.
+
+Persistent modes emit a readiness marker before reading stdin:
+
+| Output | Marker |
+|---|---|
+| `text` | one stderr line: `MakeCode 已就绪: session=... model=... tools=N permission_mode=...` |
+| `json` | first stdout line: `{"type":"system","subtype":"init",...}` |
+| `stream-json` | first stdout line: `{"type":"system","subtype":"init",...}` |
+
+Permission modes:
+
+| Mode | Behavior |
+|------|----------|
+| `default` | Deny anything that would need approval and return the reason to the model |
+| `acceptEdits` | Allow `FileCreate`/`FileEdit`/`FilePatch`; commands still require approval |
+| `plan` | Read-only; writes and commands are denied |
+| `bypassPermissions` | Allow everything; trusted environments only |
+
+`--allowedTools` / `--disallowedTools` narrow the tool set; both concrete tool names (such as `FileEdit`) and namespace names (such as `File` or `Terminal`) are accepted, and `--disallowedTools` wins.
+
+For Claude Code compatibility the prompt may also be passed positionally: `MakeCode -p --output-format json "question"`, and `-p` may be combined with `--input-format stream-json`. `--permission-mode` additionally accepts `manual` and `dontAsk` (both equivalent to `default`), and tool lists accept comma-separated values.
+
+Output formats:
+
+- `text`: stdout contains only the final assistant text; diagnostics go to stderr.
+- `json`: one `result` object with `result`, `session_id`, `usage`, `is_error`, `permission_denials`, and `duration_ms`.
+- `stream-json`: newline-delimited `system/init`, optional `assistant_delta`, `assistant`, `tool_use`, `tool_result`, and `result` events.
+
+Exit codes: `0` success, `1` runtime error, `2` usage error, `3` config/model error, `130` SIGINT, `143` SIGTERM.
+
+Current limitations:
+
+- `--max-budget-usd`, `--max-turns`, and `--max-tokens` are intentionally not supported; model budgets are unlimited.
+- Headless mode bypasses the TUI slash-command layer, so commands such as `/skill` are not expanded.
+- `AskUser` and `DelegateTasks` are not registered in headless mode; work is executed directly by the Orchestrator.
+- `--input-format stream-json` currently accepts text content blocks only.
 
 ### 6.5 Built-in Slash Commands
 

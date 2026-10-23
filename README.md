@@ -809,6 +809,7 @@ python main.py
 | `--mcp-add <name> ...` | 使用与 `/mcp-add` 相同的参数添加 MCP 配置；新服务默认禁用且不会立即连接 |
 | `--skills-list` | 按当前工作区的目录优先级列出全部 Skills 及项目级启用状态 |
 | `--memory-list` | 按更新时间升序列出当前工作区的 active 长期记忆 |
+| `--session-json <CONVERSATION_ID>` | 输出指定会话的完整 `conversation.json`；可配合 `--workdir` 指定工作区 |
 | `--check-update` | 联网检查是否有新版本，但不下载或安装 |
 | `--update` | 冻结版检查、下载并安装更新；展示更新说明后要求确认 |
 | `--load [CONVERSATION_ID]` | 启动时跳过工作目录选择；不指定 ID 时打开会话选择面板，指定 ID 时直接加载对应会话，找不到时回退到选择面板 |
@@ -824,7 +825,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 ./MakeCode.command --skills-list       # macOS
 ```
 
-`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64 和 macOS ARM64；源码运行仍需手动更新。
+`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list`、`--session-json` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--session-json` 接受 `conv_...`、32 位十六进制或标准 UUID。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64 和 macOS ARM64；源码运行仍需手动更新。
 
 `--simple` 不会退出，而是以纯终端模式启动交互循环：不启动 Textual TUI，输出按事件顺序直接渲染到 stdout，适合对 TUI 终端控制序列支持不佳的环境。该模式只输出已完成的 Markdown 段落（不逐帧刷新尾部）；HITL、AskUser、`/load` 选择等交互会降级为终端菜单或文本输入；`/models`、`/skills-list`、`/memory-panel`、`/memory-config`、`/mcp-switch`、`/extra-tools`、`/copy`、`/layout`、`/title`、`/status`、`/tokens`、`/release-notes` 等管理命令均可在简单模式下直接使用。菜单支持方向键（包括小键盘方向键）选择，输入框支持左右移动光标、上下键跨行移动，并在首/末行继续翻阅历史；主输入是多行编辑框，支持 Ctrl+N 在光标处换行、Backspace/Delete 删除换行、Ctrl+V/Ctrl+O 附加剪贴板图片，也可直接粘贴图片文件路径，多行粘贴会保留换行，图片占位符可按整块删除或用方向键跳过；Tab 可补全斜杠命令、`/cd` 目录和启动工作目录，补全菜单可用上下键选择候选项且不会改动输入框的对话历史；Ctrl+P 切换计划/执行，Ctrl+C 取消当前输入（退出使用 `/quit`），Agent 运行期间按 Ctrl+G 可追加临时指令；会话标题加载或生成后会同步更新终端标题。可与 `--load` 组合：
 
@@ -834,6 +835,93 @@ python main.py --simple --load
 ```
 
 旧终端会自动降级：`TERM=dumb` 使用纯 `input()` 和序号菜单，不发送 prompt_toolkit 的终端控制序列；`vt100` 等基础终端使用 ASCII 提示、16 色和按 Tab 触发的补全。也可用 `MAKECODE_SIMPLE_PROFILE=plain|basic|full` 手动指定。Windows 不按系统版本一刀切，而是识别当前终端：Windows Terminal（`WT_SESSION`）、VS Code 终端、ConEmu、WezTerm、Alacritty、Kitty 等会启用 full 档并保留 Unicode 图标；从资源管理器双击或经默认终端接管启动时，进程环境里可能没有 `WT_SESSION`，此时会检查 stdout 是否为启用 `ENABLE_VIRTUAL_TERMINAL_PROCESSING` 的 ConPTY 控制台（`PseudoConsoleWindow`），命中同样启用 full；传统 conhost 不满足这些条件，才把 emoji/图标转换为 `[tool]`、`[ok]` 等 ASCII 标记。如需强制保留 Unicode 图标，设置 `MAKECODE_SIMPLE_UNICODE=1`。
+
+### 6.4.1 Headless 非交互模式
+
+`-p/--print` 不启动 TUI，执行一轮后退出，适合脚本、IDE 和其他 Agent 调用。
+
+```bash
+python3.13 main.py -p "解释这个项目的结构"
+echo "解释这段代码" | python3.13 main.py -p
+python3.13 main.py -p "只输出 OK" --output-format json
+python3.13 main.py -p "只输出 OK" --output-format stream-json --include-partial-messages
+```
+
+会话续接：
+
+```bash
+python3.13 main.py -p "第一轮" --session-id conv_0123456789abcdef0123456789abcdef
+python3.13 main.py -r conv_0123456789abcdef0123456789abcdef -p "第二轮"
+python3.13 main.py -c -p "继续当前工作区最近的会话"
+python3.13 main.py -r conv_0123456789abcdef0123456789abcdef --fork-session -p "从该会话开一个分支"
+```
+
+`--session-id` 接受 `conv_...`、32 位十六进制或标准 UUID；会话不存在时创建，存在时续接。`--no-session-persistence` 只保留进程内历史，不写磁盘。
+
+常驻多轮（stdin 逐行发送 JSON，进程保持运行）：
+
+```bash
+printf '%s\n' \
+  '{"type":"user","message":{"role":"user","content":"第一轮"}}' \
+  '{"type":"user","content":"第二轮"}' \
+  | python3.13 main.py --input-format stream-json --output-format stream-json
+```
+
+输入格式与输出格式互相独立：
+
+| `--input-format` | 含义 |
+|---|---|
+| `text` | stdin 每行一条文本消息 |
+| `json`（别名 `stream-json`） | stdin 每行一个 JSON 对象 |
+
+`--output-format` 可选 `text`、`json`、`stream-json`，任意输入格式都可以搭配任意输出格式。`--replay-user-messages` 需要 `stream-json` 输出，`--include-partial-messages` 同样需要 `stream-json` 输出。JSON 输入支持 `{"type":"control","action":"interrupt"}` 取消当前轮。
+
+也可以直接使用纯文本逐行输入，每行是一轮：
+
+```bash
+printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
+  | python3.13 main.py --input-format text
+```
+
+显式指定 `--input-format text` 且不提供 `-p` 时进入常驻模式；`--output-format` 可选 `text`（每轮输出最终文本）、`json`（每轮一条 result）或 `stream-json`（每轮一组事件）。
+
+同时指定 `-p` 和 `--input-format` 时同样进入常驻模式，由输入格式决定读取方式，按下回车即提交一条消息。只有单独的 `-p`（不带 `--input-format`）才是“读到 stdin EOF 后执行一轮”。
+
+常驻模式在开始读取 stdin 前会输出启动标志：
+
+| 输出格式 | 启动标志 |
+|---|---|
+| `text` | stderr 一行 `MakeCode 已就绪: session=... model=... tools=N permission_mode=...` |
+| `json` | stdout 第一行 `{"type":"system","subtype":"init",...}` |
+| `stream-json` | stdout 第一行 `{"type":"system","subtype":"init",...}` |
+
+权限模式：
+
+| 模式 | 行为 |
+|------|------|
+| `default` | 需要人工确认的操作一律拒绝，把原因返回给模型 |
+| `acceptEdits` | 自动放行 `FileCreate`/`FileEdit`/`FilePatch`，命令仍需确认 |
+| `plan` | 只读；写入和命令被拒绝 |
+| `bypassPermissions` | 全部放行，仅在可信环境使用 |
+
+`--allowedTools` / `--disallowedTools` 可进一步限制工具集合，支持具体工具名（如 `FileEdit`）或命名空间名（如 `File`、`Terminal`），`--disallowedTools` 优先。
+
+为兼容 Claude Code 的 `-p` 用法，prompt 也可以写成位置参数：`MakeCode -p --output-format json "问题"`，并允许 `-p` 与 `--input-format stream-json` 同时使用。`--permission-mode` 额外接受 `manual` 和 `dontAsk`（等价于 `default`），工具列表支持逗号分隔。
+
+输出格式：
+
+- `text`：stdout 只输出最终 assistant 文本，诊断信息走 stderr。
+- `json`：结束时输出一条 `result` 对象，包含 `result`、`session_id`、`usage`、`is_error`、`permission_denials`、`duration_ms`。
+- `stream-json`：逐行输出 `system/init`、`assistant_delta`（可选）、`assistant`、`tool_use`、`tool_result`、`result`。
+
+退出码：`0` 成功、`1` 运行错误、`2` 参数错误、`3` 配置/模型错误、`130` SIGINT、`143` SIGTERM。
+
+当前限制：
+
+- 不提供 `--max-budget-usd`、`--max-turns`、`--max-tokens`，模型预算默认不设上限。
+- headless 不经过 TUI 斜杠命令层，`/skill` 等交互命令不会展开。
+- `AskUser` 与 `DelegateTasks` 在 headless 下不注册；需要执行的任务由 Orchestrator 直接完成。
+- `--input-format stream-json` 目前只处理文本内容块。
 
 ### 6.5 内置快捷命令（Slash Commands）
 
