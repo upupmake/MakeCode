@@ -922,7 +922,7 @@ headless 默认使用 `bypassPermissions`，即完全关闭 HITL：终端命令�
 
 - 不提供 `--max-budget-usd`、`--max-turns`、`--max-tokens`，模型预算默认不设上限。
 - headless 不经过 TUI 斜杠命令层，`/skill` 等交互命令不会展开。
-- `AskUser` 与 `DelegateTasks` 在 headless 下不注册；需要执行的任务由 Orchestrator 直接完成。
+- `AskUser` 与 `DelegateTasks`（发起子代理）在 headless 下完全禁止：不注册、不可调用；需要执行的任务由 Orchestrator 直接完成。
 - `--input-format stream-json` 目前只处理文本内容块。
 
 ### 6.5 内置快捷命令（Slash Commands）

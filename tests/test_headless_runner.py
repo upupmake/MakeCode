@@ -227,6 +227,16 @@ def test_headless_bypass_permissions_disables_hitl():
     assert hitl.get_hitl_status() is previous
 
 
+def test_headless_init_excludes_interactive_and_delegate_tools(runner_env, capsys):
+    result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
+
+    init = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result == 0
+    assert "AskUser" not in init["tools"]
+    assert "DelegateTasks" not in init["tools"]
+    assert "Task" not in init["tools"]
+
+
 def test_mcp_timeout_aborts_before_request(monkeypatch):
     class SlowMCPManager:
         def initialize(self, console):

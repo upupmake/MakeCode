@@ -949,7 +949,7 @@ Current limitations:
 
 - `--max-budget-usd`, `--max-turns`, and `--max-tokens` are intentionally not supported; model budgets are unlimited.
 - Headless mode bypasses the TUI slash-command layer, so commands such as `/skill` are not expanded.
-- `AskUser` and `DelegateTasks` are not registered in headless mode; work is executed directly by the Orchestrator.
+- `AskUser` and `DelegateTasks` (sub-agent spawning) are completely disabled in headless mode: they are neither registered nor callable; work is executed directly by the Orchestrator.
 - `--input-format stream-json` currently accepts text content blocks only.
 
 ### 6.5 Built-in Slash Commands
