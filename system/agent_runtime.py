@@ -88,6 +88,7 @@ class AgentRuntime:
         append_system_prompt: str | None = None,
         plan_mode: bool = False,
         headless: bool = False,
+        ask_user_available: bool = False,
     ) -> None:
         self.store = store or CONVERSATION_STORE
         self.registry = registry or ToolRegistry()
@@ -96,6 +97,7 @@ class AgentRuntime:
         self.append_system_prompt = append_system_prompt
         self.plan_mode = plan_mode
         self.headless = headless
+        self.ask_user_available = ask_user_available
         self.messages: list[dict[str, Any]] = []
         self._handlers: dict[str, Any] = {}
         self._tool_models: dict[str, Any] = {}
@@ -157,13 +159,24 @@ class AgentRuntime:
             plan_mode=self.plan_mode,
         )
         if self.headless:
-            prompt += (
-                "\n\n# Headless Mode\n"
-                "You are running non-interactively. AskUser and interactive HITL prompts "
-                "are unavailable; do not wait for user input. Sub-agent delegation and "
-                "DelegateTasks are unavailable; execute tasks directly. Actions denied by "
-                "the configured permission policy must not be retried unchanged."
-            )
+            if self.ask_user_available:
+                prompt += (
+                    "\n\n# Headless Mode\n"
+                    "You are running through a CLI channel. AskUser is available: call it "
+                    "when a decision genuinely depends on user preference or scope, then "
+                    "wait for its tool result. Interactive HITL prompts are unavailable. "
+                    "Sub-agent delegation and DelegateTasks are unavailable; execute tasks "
+                    "directly. Actions denied by the configured permission policy must not "
+                    "be retried unchanged."
+                )
+            else:
+                prompt += (
+                    "\n\n# Headless Mode\n"
+                    "You are running non-interactively. AskUser and interactive HITL prompts "
+                    "are unavailable; do not wait for user input. Sub-agent delegation and "
+                    "DelegateTasks are unavailable; execute tasks directly. Actions denied by "
+                    "the configured permission policy must not be retried unchanged."
+                )
         if self.append_system_prompt:
             prompt = f"{prompt}\n\n{self.append_system_prompt}"
         self._system_prompt_cache = prompt

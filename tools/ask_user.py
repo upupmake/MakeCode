@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
+from system.ask_user_backend import ASK_USER
 from system.console_render import console_lock
 from system.tui_proxies import choose_tui
 from system.window_attention import request_window_attention
@@ -74,6 +75,14 @@ def ask_user(question: str, options: list, **kwargs) -> str:
         parsed_options = validated.options
     except Exception as exc:
         return f"Error: Invalid arguments provided to AskUser. {exc}"
+
+    backend = ASK_USER.get_backend()
+    if backend is not None:
+        answer = backend.ask(
+            question,
+            [option.model_dump() for option in parsed_options],
+        )
+        return json.dumps(answer, ensure_ascii=False)
 
     with console_lock:
         labels = [

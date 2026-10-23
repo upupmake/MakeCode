@@ -271,3 +271,29 @@ def test_anthropic_usage_is_normalized_to_total_input(tmp_path):
     assert result.usage["cached_tokens"] == 17280
     assert result.usage["uncached_input_tokens"] == 41
     assert result.usage["output_tokens"] == 3
+
+
+def test_headless_prompt_reports_ask_user_available(tmp_path):
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=True),
+        headless=True,
+        ask_user_available=True,
+    )
+
+    prompt = runtime._system_prompt()
+
+    assert "AskUser is available" in prompt
+    assert "AskUser and interactive HITL prompts are unavailable" not in prompt
+
+
+def test_headless_prompt_reports_ask_user_unavailable(tmp_path):
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        headless=True,
+    )
+
+    prompt = runtime._system_prompt()
+
+    assert "AskUser and interactive HITL prompts are unavailable" in prompt

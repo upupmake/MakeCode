@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from system.agent_runtime import AgentRuntime, TurnResult
+from system.headless_ask import AskUserChannel
 from system.output_sinks import StreamJsonWriter
 from system.stream_cancel import (
     cancel_current_response,
@@ -30,12 +31,14 @@ class StreamJsonInputLoop:
         replay_user_messages: bool = False,
         stop_event: asyncio.Event | None = None,
         write_result: Callable[[TurnResult], int] | None = None,
+        ask_channel: AskUserChannel | None = None,
     ) -> None:
         self.runtime = runtime
         self.writer = writer
         self.replay_user_messages = replay_user_messages
         self.stop_event = stop_event
         self._write_result = write_result
+        self.ask_channel = ask_channel
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -107,8 +110,12 @@ class StreamJsonInputLoop:
         while True:
             line = sys.stdin.readline()
             if line == "":
+                if self.ask_channel is not None:
+                    self.ask_channel.close()
                 self._put(_EOF)
                 return
+            if self.ask_channel is not None and self.ask_channel.handle_line(line):
+                continue
             line = line.strip()
             if not line:
                 continue
@@ -178,8 +185,14 @@ class TextInputLoop(StreamJsonInputLoop):
         write_result: Callable[[TurnResult], int],
         *,
         stop_event: asyncio.Event | None = None,
+        ask_channel: AskUserChannel | None = None,
     ) -> None:
-        super().__init__(runtime, None, stop_event=stop_event)
+        super().__init__(
+            runtime,
+            None,
+            stop_event=stop_event,
+            ask_channel=ask_channel,
+        )
         self._write_result = write_result
 
     async def run(self) -> int:
@@ -210,8 +223,12 @@ class TextInputLoop(StreamJsonInputLoop):
         while True:
             line = sys.stdin.readline()
             if line == "":
+                if self.ask_channel is not None:
+                    self.ask_channel.close()
                 self._put(_EOF)
                 return
+            if self.ask_channel is not None and self.ask_channel.handle_line(line):
+                continue
             line = line.strip()
             if not line:
                 continue

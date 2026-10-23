@@ -904,7 +904,24 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
 | `plan` | 只读；写入和命令被拒绝 |
 | `bypassPermissions` | 全部放行，仅在可信环境使用 |
 
-headless 默认使用 `bypassPermissions`，即完全关闭 HITL：终端命令和文件修改无需确认即可执行，同时不注册 `AskUser`，因此不会出现任何人工交互。需要限制时显式传入 `--permission-mode default`、`acceptEdits` 或 `plan`。
+headless 默认使用 `bypassPermissions`，即完全关闭 HITL：终端命令和文件修改无需确认即可执行。需要限制时显式传入 `--permission-mode default`、`acceptEdits` 或 `plan`。
+
+`AskUser` 不需要显式开关：headless 会按可用交互通道自动决定是否注入该工具：
+
+- `--input-format stream-json`：始终注入，回答通过 `control_response` 传入。
+- 持久文本模式（省略 `-p`）或一次性 `-p "prompt"`：stdin 为 TTY 时注入，问题与选项输出到 stderr，回答从 stdin 读取。
+- `-p` 不带值（prompt 由 stdin 读到 EOF）时不注入，因为 prompt 读取后已没有回答通道。
+- 管道 stdin 且没有 stream-json 控制协议时视为没有交互通道，不注入。
+
+启用后：
+
+- 文本模式把问题与选项输出到 stderr，从 stdin 读取序号、选项原文或自定义回答；空行等价于 `<empty_input>`，EOF 或取消返回 `<cancelled>`。
+- `--output-format stream-json` 时在 stdout 输出 `control_request`（`subtype` 为 `ask_user`，含 `request_id`、`question`、`options`），调用方用相同 `request_id` 的 `control_response` 回复：`{"type":"control_response","request_id":"ask_1","response":{"choice":"..."}}`；也可发送 `{"type":"control","action":"interrupt"}` 取消。
+- 文本输入搭配 `--output-format stream-json` 时，同时输出 `control_request` 和 stderr 菜单；回答按输入格式读取，即从 stdin 读取一行文本。
+- 自定义回答使用 `{"choice":"...","custom":true}`；`<cancelled>` 与 `<empty_input>` 表示未做出选择。
+- init JSON 的 `ask_user` 字段为 `enabled`/`disabled`，`ask_user_channel` 为 `text` 或 `stream-json`。
+
+若 `--input-format stream-json` 搭配 `--output-format text/json`，提问走 stderr 菜单；回答优先解析 `control_response`，也接受直接输入序号或文本。
 
 `--allowedTools` / `--disallowedTools` 可进一步限制工具集合，支持具体工具名（如 `FileEdit`）或命名空间名（如 `File`、`Terminal`），`--disallowedTools` 优先。
 
@@ -922,7 +939,7 @@ headless 默认使用 `bypassPermissions`，即完全关闭 HITL：终端命令�
 
 - 不提供 `--max-budget-usd`、`--max-turns`、`--max-tokens`，模型预算默认不设上限。
 - headless 不经过 TUI 斜杠命令层，`/skill` 等交互命令不会展开。
-- `AskUser` 与 `DelegateTasks`（发起子代理）在 headless 下完全禁止：不注册、不可调用；需要执行的任务由 Orchestrator 直接完成。
+- `DelegateTasks`（发起子代理）在 headless 下完全禁止：不注册、不可调用；`AskUser` 在存在交互通道时自动注册，无通道时不注册。需要执行的任务由 Orchestrator 直接完成。
 - `--input-format stream-json` 目前只处理文本内容块。
 
 ### 6.5 内置快捷命令（Slash Commands）

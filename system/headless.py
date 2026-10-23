@@ -20,6 +20,7 @@ from rich.console import Console
 from init import set_workdir
 from system.agent_runtime import AgentRuntime, TurnResult
 from system.approvals import APPROVALS, PolicyApprovalProvider
+from system.ask_user_backend import ASK_USER
 from system.cli import HeadlessOptions
 from system.output_bus import OUTPUT_BUS
 from system.output_sinks import NullSink, StreamJsonWriter, build_init_payload
@@ -82,8 +83,11 @@ class HeadlessRunner:
         self._previous_sink: Any = None
         self._previous_provider: Any = None
         self._previous_hitl = True
+        self._previous_ask_backend: Any = None
         self._mcp_log_filter: _McpTerminationLogFilter | None = None
         self._tty_attributes: tuple[int, list[Any]] | None = None
+        self._ask_channel: Any = None
+        self._ask_user_enabled = False
 
     def run(self) -> int:
         try:
@@ -112,13 +116,14 @@ class HeadlessRunner:
             self._prepare_environment()
             self._prepare_model()
             self._prepare_debug_stream()
+            self._ask_user_enabled = self._resolve_ask_user_enabled()
             self._start_mcp()
             store = ConversationStore(persist=not self.options.no_session_persistence)
             snapshot = self._resolve_session(store)
             registry = ToolRegistry(
                 allowed_tools=self.options.allowed_tools,
                 disallowed_tools=self.options.disallowed_tools,
-                include_ask_user=False,
+                include_ask_user=self._ask_user_enabled,
                 include_delegate_tasks=False,
             )
             mcp_tools = GLOBAL_MCP_MANAGER.get_tools()
@@ -127,6 +132,24 @@ class HeadlessRunner:
                 raise HeadlessUsageError(
                     f"未知的工具: {', '.join(unknown_tools)}"
                 )
+            if self.options.output_format == "stream-json":
+                self._stream_writer = StreamJsonWriter(
+                    session_id=store.active_id or "",
+                    include_partial=self.options.include_partial_messages,
+                )
+            if self._ask_user_enabled:
+                from system.headless_ask import AskUserChannel
+
+                self._ask_channel = AskUserChannel(
+                    answer_format=(
+                        "stream-json"
+                        if self.options.input_format == "stream-json"
+                        else "text"
+                    ),
+                    writer=self._stream_writer,
+                    direct_stdin=self.options.prompt is not None,
+                )
+                ASK_USER.set_backend(self._ask_channel)
             tool_names = self._tool_names(registry, mcp_tools)
             init_payload = build_init_payload(
                 session_id=store.active_id or "",
@@ -140,11 +163,7 @@ class HeadlessRunner:
                     mcp_tools=mcp_tools,
                 ),
             )
-            if self.options.output_format == "stream-json":
-                self._stream_writer = StreamJsonWriter(
-                    session_id=store.active_id or "",
-                    include_partial=self.options.include_partial_messages,
-                )
+            if self._stream_writer is not None:
                 self._stream_writer.write(init_payload)
             else:
                 self._write_startup_payload(init_payload)
@@ -155,6 +174,7 @@ class HeadlessRunner:
                 append_system_prompt=self.options.append_system_prompt,
                 plan_mode=self.options.permission_mode == "plan",
                 headless=True,
+                ask_user_available=self._ask_user_enabled,
             )
             if snapshot is not None:
                 runtime.restore(snapshot)
@@ -224,6 +244,15 @@ class HeadlessRunner:
     def _uses_stdin(self) -> bool:
         return self.options.input_format == "stream-json" or self.options.prompt is None
 
+    def _resolve_ask_user_enabled(self) -> bool:
+        if self.options.input_format == "stream-json":
+            return True
+        if self.options.prompt == "":
+            # The one-shot prompt itself is read from stdin to EOF, so no
+            # answer channel remains afterwards.
+            return False
+        return sys.stdin is not None and sys.stdin.isatty()
+
     def _startup_fields(
         self,
         *,
@@ -262,6 +291,14 @@ class HeadlessRunner:
             "resumed": snapshot is not None,
             "include_partial_messages": self.options.include_partial_messages,
             "replay_user_messages": self.options.replay_user_messages,
+            "ask_user": "enabled" if self._ask_user_enabled else "disabled",
+            "ask_user_channel": (
+                "stream-json"
+                if self.options.input_format == "stream-json"
+                else "text"
+            )
+            if self._ask_user_enabled
+            else None,
         }
 
     @staticmethod
@@ -289,6 +326,7 @@ class HeadlessRunner:
                 write_result=(
                     None if self._stream_writer is not None else self._write_result
                 ),
+                ask_channel=self._ask_channel,
             ).run()
             return self._signal_exit_code or exit_code
         if self.options.prompt is None:
@@ -298,6 +336,7 @@ class HeadlessRunner:
                 runtime,
                 self._write_result,
                 stop_event=self._stop_event,
+                ask_channel=self._ask_channel,
             ).run()
             return self._signal_exit_code or exit_code
         if self._stop_event is not None and self._stop_event.is_set():
@@ -353,6 +392,7 @@ class HeadlessRunner:
         self._previous_sink = OUTPUT_BUS.get_sink()
         self._previous_provider = APPROVALS.get_provider()
         self._previous_hitl = hitl.get_hitl_status()
+        self._previous_ask_backend = ASK_USER.get_backend()
         self._mcp_log_filter = _McpTerminationLogFilter()
         logging.getLogger("mcp.client.streamable_http").addFilter(
             self._mcp_log_filter
@@ -371,6 +411,10 @@ class HeadlessRunner:
         )
 
     def _leave_headless_mode(self) -> None:
+        if self._ask_channel is not None:
+            self._ask_channel.close()
+            self._ask_channel = None
+        ASK_USER.set_backend(None)
         if self._mcp_log_filter is not None:
             logging.getLogger("mcp.client.streamable_http").removeFilter(
                 self._mcp_log_filter
@@ -378,6 +422,7 @@ class HeadlessRunner:
             self._mcp_log_filter = None
         APPROVALS.set_provider(self._previous_provider)
         hitl.toggle_hitl(enabled=self._previous_hitl)
+        ASK_USER.set_backend(self._previous_ask_backend)
         set_headless_mode(False)
         OUTPUT_BUS.set_sink(self._previous_sink)
 

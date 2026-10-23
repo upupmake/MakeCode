@@ -39,6 +39,11 @@ class FakeRuntime:
         return self.result
 
 
+class TtyStringIO(StringIO):
+    def isatty(self):
+        return True
+
+
 @pytest.fixture
 def runner_env(monkeypatch, tmp_path):
     FakeRuntime.instances = []
@@ -235,6 +240,114 @@ def test_headless_init_excludes_interactive_and_delegate_tools(runner_env, capsy
     assert "AskUser" not in init["tools"]
     assert "DelegateTasks" not in init["tools"]
     assert "Task" not in init["tools"]
+
+
+def test_persistent_text_ask_user_is_enabled_with_tty(
+    runner_env, capsys, monkeypatch
+):
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("hello\n"))
+
+    result = headless_module.run_headless(HeadlessOptions(prompt=None))
+
+    init = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result == 0
+    assert "AskUser" in init["tools"]
+    assert init["ask_user"] == "enabled"
+    assert init["ask_user_channel"] == "text"
+    assert FakeRuntime.instances[0].kwargs["ask_user_available"] is True
+
+
+def test_stream_json_auto_enables_ask_user(runner_env, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", StringIO(""))
+
+    result = headless_module.run_headless(
+        HeadlessOptions(
+            prompt=None,
+            input_format="stream-json",
+            output_format="stream-json",
+        )
+    )
+
+    init = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result == 0
+    assert "AskUser" in init["tools"]
+    assert init["ask_user"] == "enabled"
+    assert init["ask_user_channel"] == "stream-json"
+    assert FakeRuntime.instances[0].kwargs["ask_user_available"] is True
+
+
+def test_auto_enables_ask_user_for_persistent_tty(monkeypatch):
+    class TtyStdin:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(headless_module.sys, "stdin", TtyStdin())
+    runner = headless_module.HeadlessRunner(HeadlessOptions(prompt=None))
+
+    assert runner._resolve_ask_user_enabled() is True
+
+
+def test_persistent_text_without_tty_disables_ask_user(
+    runner_env, capsys, monkeypatch
+):
+    monkeypatch.setattr(sys, "stdin", StringIO("hello\n"))
+
+    result = headless_module.run_headless(HeadlessOptions(prompt=None))
+
+    init = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result == 0
+    assert "AskUser" not in init["tools"]
+    assert init["ask_user"] == "disabled"
+    assert init["ask_user_channel"] is None
+
+
+def test_headless_restores_ask_user_backend(runner_env, monkeypatch):
+    from system.ask_user_backend import ASK_USER
+
+    previous = ASK_USER.get_backend()
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("hello\n"))
+
+    result = headless_module.run_headless(HeadlessOptions(prompt=None))
+
+    assert result == 0
+    assert ASK_USER.get_backend() is previous
+
+
+def test_one_shot_tty_enables_ask_user(runner_env, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", TtyStringIO(""))
+
+    result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
+
+    init = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result == 0
+    assert "AskUser" in init["tools"]
+    assert init["ask_user"] == "enabled"
+    assert init["ask_user_channel"] == "text"
+    assert FakeRuntime.instances[0].kwargs["ask_user_available"] is True
+
+
+def test_one_shot_without_tty_disables_ask_user(runner_env, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", StringIO(""))
+
+    result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
+
+    init = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result == 0
+    assert "AskUser" not in init["tools"]
+    assert init["ask_user"] == "disabled"
+
+
+def test_prompt_read_from_stdin_disables_ask_user(
+    runner_env, capsys, monkeypatch
+):
+    monkeypatch.setattr(sys, "stdin", StringIO("from stdin\n"))
+
+    result = headless_module.run_headless(HeadlessOptions(prompt=""))
+
+    init = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result == 0
+    assert "AskUser" not in init["tools"]
+    assert init["ask_user"] == "disabled"
 
 
 def test_mcp_timeout_aborts_before_request(monkeypatch):

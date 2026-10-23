@@ -931,7 +931,24 @@ Permission modes:
 | `plan` | Read-only; writes and commands are denied |
 | `bypassPermissions` | Allow everything; trusted environments only |
 
-Headless mode defaults to `bypassPermissions`, fully disabling HITL: terminal commands and file edits run without confirmation, and `AskUser` is not registered, so no human interaction occurs. Pass `--permission-mode default`, `acceptEdits`, or `plan` explicitly to restrict it.
+Headless mode defaults to `bypassPermissions`, fully disabling HITL: terminal commands and file edits run without confirmation. Pass `--permission-mode default`, `acceptEdits`, or `plan` explicitly to restrict it.
+
+`AskUser` has no explicit switch. Headless mode decides automatically from the available interaction channel:
+
+- `--input-format stream-json`: always registered; answers arrive through `control_response`.
+- Persistent text mode (no `-p`) or one-shot `-p "prompt"`: registered when stdin is a TTY; the question and options go to stderr and the answer is read from stdin.
+- `-p` without a value (the prompt is read from stdin to EOF): not registered, since no answer channel remains.
+- Piped stdin without the stream-json control protocol is treated as having no interaction channel, so the tool is not registered.
+
+When enabled:
+
+- Text mode renders the question and options to stderr and reads a number, the option text, or custom text from stdin; an empty line maps to `<empty_input>`, while EOF or cancellation returns `<cancelled>`.
+- With `--output-format stream-json`, a `control_request` (`subtype: ask_user` with `request_id`, `question`, and `options`) is written to stdout. Reply with a `control_response` carrying the same `request_id`: `{"type":"control_response","request_id":"ask_1","response":{"choice":"..."}}`. Sending `{"type":"control","action":"interrupt"}` cancels it.
+- With text input and `--output-format stream-json`, both the `control_request` and the stderr menu are emitted; the answer follows the input format and is read as one text line from stdin.
+- Custom answers use `{"choice":"...","custom":true}`; `<cancelled>` and `<empty_input>` mean no decision was made.
+- The init JSON reports `ask_user` as `enabled`/`disabled` and `ask_user_channel` as `text` or `stream-json`.
+
+If `--input-format stream-json` is combined with `--output-format text/json`, the question is rendered to stderr; `control_response` is parsed first, but a plain number or text answer is also accepted.
 
 `--allowedTools` / `--disallowedTools` narrow the tool set; both concrete tool names (such as `FileEdit`) and namespace names (such as `File` or `Terminal`) are accepted, and `--disallowedTools` wins.
 
@@ -949,7 +966,7 @@ Current limitations:
 
 - `--max-budget-usd`, `--max-turns`, and `--max-tokens` are intentionally not supported; model budgets are unlimited.
 - Headless mode bypasses the TUI slash-command layer, so commands such as `/skill` are not expanded.
-- `AskUser` and `DelegateTasks` (sub-agent spawning) are completely disabled in headless mode: they are neither registered nor callable; work is executed directly by the Orchestrator.
+- `DelegateTasks` (sub-agent spawning) is completely disabled in headless mode: it is neither registered nor callable. `AskUser` is registered automatically when an interaction channel exists and omitted otherwise. Work is executed directly by the Orchestrator.
 - `--input-format stream-json` currently accepts text content blocks only.
 
 ### 6.5 Built-in Slash Commands

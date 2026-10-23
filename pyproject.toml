@@ -52,6 +52,8 @@ files = [
     "utils/text_sanitize.py",
     "utils/vision.py",
     "system/cli.py",
+    "system/ask_user_backend.py",
+    "system/headless_ask.py",
     "system/clipboard.py",
     "system/models.py",
     "system/updater.py",
