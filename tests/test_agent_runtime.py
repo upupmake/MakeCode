@@ -236,5 +236,38 @@ def test_run_turn_aggregates_provider_usage(tmp_path):
 
     assert result.usage["input_tokens"] == 100
     assert result.usage["cached_tokens"] == 60
+    assert result.usage["uncached_input_tokens"] == 40
     assert result.usage["output_tokens"] == 5
     assert result.usage["context_tokens"] > 0
+
+
+def test_anthropic_usage_is_normalized_to_total_input(tmp_path):
+    class UsageClient(FakeClient):
+        async def generate_stream(self, messages, tools):
+            yield {
+                "type": "done",
+                "result": SimpleNamespace(
+                    text="ok",
+                    tool_calls=[],
+                    assistant_message={"role": "assistant", "content": "ok"},
+                    usage={
+                        "input_tokens": 41,
+                        "cache_read_input_tokens": 17280,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 3,
+                    },
+                ),
+            }
+
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        llm_client_factory=lambda **kwargs: UsageClient([]),
+    )
+
+    result = asyncio.run(runtime.run_turn("hi"))
+
+    assert result.usage["input_tokens"] == 17321
+    assert result.usage["cached_tokens"] == 17280
+    assert result.usage["uncached_input_tokens"] == 41
+    assert result.usage["output_tokens"] == 3

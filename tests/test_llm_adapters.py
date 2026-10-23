@@ -73,6 +73,63 @@ def test_anthropic_cache_breakpoint_marks_first_request():
     ]
 
 
+@pytest.mark.parametrize(
+    "builder",
+    [
+        lambda messages: sanitize_openai_messages(messages),
+        lambda messages: build_openai_responses_request(messages)[1],
+        lambda messages: build_anthropic_request_messages(messages)[1],
+    ],
+    ids=["openai_chat", "openai_responses", "anthropic"],
+)
+def test_replayed_assistant_prefix_is_byte_stable_across_turns(builder):
+    assistant = {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "reason",
+        "content_blocks": [
+            {"type": "reasoning", "text": "reason"},
+            {"type": "text", "text": "answer"},
+        ],
+        "message_metadata": {
+            "source_format": "openai_responses",
+            "source_model": "test",
+            "native_blocks": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "encrypted_content": "opaque",
+                    "summary": [],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "answer"}],
+                },
+            ],
+        },
+    }
+    history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "first"},
+        assistant,
+        {"role": "user", "content": "second"},
+    ]
+
+    first_request = builder(history)
+    extended_request = builder(
+        [
+            *history,
+            {"role": "assistant", "content": "next"},
+            {"role": "user", "content": "third"},
+        ]
+    )
+
+    first_prefix = _strip_cache_control(first_request)
+    extended_prefix = _strip_cache_control(extended_request)
+    assert extended_prefix[: len(first_prefix)] == first_prefix
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"

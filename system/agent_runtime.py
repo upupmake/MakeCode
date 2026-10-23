@@ -187,10 +187,23 @@ class AgentRuntime:
         output_tokens = usage.get("output_tokens")
         if output_tokens is None:
             output_tokens = usage.get("completion_tokens")
+        creation_tokens = int(usage.get("cache_creation_input_tokens") or 0)
+        cached_tokens = int(cached_tokens or 0)
+        # Anthropic reports only uncached input in ``input_tokens`` while
+        # OpenAI reports the whole prompt. Normalize both to total prompt tokens
+        # so cache hit ratios are comparable across protocols.
+        if "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage:
+            total_input_tokens = int(input_tokens or 0) + cached_tokens + creation_tokens
+        else:
+            total_input_tokens = int(input_tokens or 0)
         return {
-            "input_tokens": int(input_tokens or 0),
-            "cached_tokens": int(cached_tokens or 0),
-            "cache_creation_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+            "input_tokens": total_input_tokens,
+            "cached_tokens": cached_tokens,
+            "cache_creation_tokens": creation_tokens,
+            "uncached_input_tokens": max(
+                total_input_tokens - cached_tokens - creation_tokens,
+                0,
+            ),
             "output_tokens": int(output_tokens or 0),
         }
 
