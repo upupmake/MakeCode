@@ -911,6 +911,14 @@ printf 'first: remember 7391\nsecond: what is the code?\n' \
 
 `--output-format` may be `text` (final text per turn), `json` (one result object per turn), or `stream-json` (event stream per turn).
 
+Persistent modes emit a readiness marker before reading stdin:
+
+| Output | Marker |
+|---|---|
+| `text` | one stderr line: `MakeCode 已就绪: session=... model=... tools=N permission_mode=...` |
+| `json` | first stdout line: `{"type":"system","subtype":"init",...}` |
+| `stream-json` | first stdout line: `{"type":"system","subtype":"init",...}` |
+
 Permission modes:
 
 | Mode | Behavior |

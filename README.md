@@ -884,6 +884,14 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
 
 显式指定 `--input-format text` 且不提供 `-p` 时进入常驻模式；`--output-format` 可选 `text`（每轮输出最终文本）、`json`（每轮一条 result）或 `stream-json`（每轮一组事件）。
 
+常驻模式在开始读取 stdin 前会输出启动标志：
+
+| 输出格式 | 启动标志 |
+|---|---|
+| `text` | stderr 一行 `MakeCode 已就绪: session=... model=... tools=N permission_mode=...` |
+| `json` | stdout 第一行 `{"type":"system","subtype":"init",...}` |
+| `stream-json` | stdout 第一行 `{"type":"system","subtype":"init",...}` |
+
 权限模式：
 
 | 模式 | 行为 |

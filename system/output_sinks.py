@@ -11,6 +11,26 @@ from typing import Any, TextIO
 from system.tui_types import TuiEvent
 
 
+def build_init_payload(
+    *,
+    session_id: str,
+    model: str | None,
+    cwd: str,
+    permission_mode: str,
+    tools: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "system",
+        "subtype": "init",
+        "session_id": session_id,
+        "model": model,
+        "cwd": cwd,
+        "tools": tools or [],
+        "permission_mode": permission_mode,
+        "api_version": 1,
+    }
+
+
 class TuiSink:
     def __init__(self, post: Callable[..., None]) -> None:
         self._post = post
@@ -88,16 +108,13 @@ class StreamJsonWriter:
         tools: list[str] | None = None,
     ) -> None:
         self.write(
-            {
-                "type": "system",
-                "subtype": "init",
-                "session_id": self._session_id,
-                "model": model,
-                "cwd": cwd,
-                "tools": tools or [],
-                "permission_mode": permission_mode,
-                "api_version": 1,
-            }
+            build_init_payload(
+                session_id=self._session_id,
+                model=model,
+                cwd=cwd,
+                permission_mode=permission_mode,
+                tools=tools,
+            )
         )
 
     def write_user_message(self, message: dict[str, Any]) -> None:

@@ -19,7 +19,7 @@ from system.agent_runtime import AgentRuntime, TurnResult
 from system.approvals import APPROVALS, PolicyApprovalProvider
 from system.cli import HeadlessOptions
 from system.output_bus import OUTPUT_BUS
-from system.output_sinks import NullSink, StreamJsonWriter
+from system.output_sinks import NullSink, StreamJsonWriter, build_init_payload
 from system.stream_cancel import (
     cancel_current_response,
     start_cancel_listener,
@@ -121,17 +121,30 @@ class HeadlessRunner:
                 raise HeadlessUsageError(
                     f"未知的工具: {', '.join(unknown_tools)}"
                 )
+            needs_tool_names = (
+                self.options.output_format == "stream-json"
+                or self.options.prompt is None
+            )
+            tool_names = (
+                self._tool_names(registry, mcp_tools)
+                if needs_tool_names
+                else None
+            )
+            init_payload = build_init_payload(
+                session_id=store.active_id or "",
+                model=self._current_model_name(),
+                cwd=str(self._workdir),
+                permission_mode=self.options.permission_mode,
+                tools=tool_names,
+            )
             if self.options.output_format == "stream-json":
                 self._stream_writer = StreamJsonWriter(
                     session_id=store.active_id or "",
                     include_partial=self.options.include_partial_messages,
                 )
-                self._stream_writer.init(
-                    model=self._current_model_name(),
-                    cwd=str(self._workdir),
-                    permission_mode=self.options.permission_mode,
-                    tools=self._tool_names(registry, mcp_tools),
-                )
+                self._stream_writer.write(init_payload)
+            elif self.options.prompt is None:
+                self._write_ready_marker(init_payload)
             runtime = AgentRuntime(
                 store=store,
                 registry=registry,
@@ -442,6 +455,21 @@ class HeadlessRunner:
             return
         self._debug_stream.write(json.dumps(event, ensure_ascii=False) + "\n")
         self._debug_stream.flush()
+
+    def _write_ready_marker(self, payload: dict[str, Any]) -> None:
+        if self.options.output_format == "json":
+            sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+            return
+        tools = payload.get("tools") or []
+        sys.stderr.write(
+            "MakeCode 已就绪: "
+            f"session={payload.get('session_id')} "
+            f"model={payload.get('model')} "
+            f"tools={len(tools)} "
+            f"permission_mode={payload.get('permission_mode')}\n"
+        )
+        sys.stderr.flush()
 
     def _write_result(self, result: TurnResult) -> int:
         if self._stream_writer is not None:

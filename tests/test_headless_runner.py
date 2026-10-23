@@ -79,6 +79,42 @@ def test_json_mode_prints_one_result_object(runner_env, capsys):
     assert payload["session_id"] == "conv_test"
 
 
+def test_persistent_json_mode_emits_init_before_results(runner_env, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", StringIO("hello\n"))
+    options = HeadlessOptions(
+        prompt=None,
+        input_format="text",
+        output_format="json",
+    )
+
+    result = headless_module.run_headless(options)
+
+    payloads = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    ]
+    assert result == 0
+    assert payloads[0]["type"] == "system"
+    assert payloads[0]["subtype"] == "init"
+    assert payloads[0]["session_id"].startswith("conv_")
+    assert payloads[-1]["type"] == "result"
+    assert payloads[-1]["result"] == "ok"
+
+
+def test_persistent_text_mode_writes_ready_marker_to_stderr(runner_env, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", StringIO("hello\n"))
+    options = HeadlessOptions(prompt=None, input_format="text")
+
+    result = headless_module.run_headless(options)
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == "ok\n"
+    assert "MakeCode 已就绪" in captured.err
+    assert "session=conv_" in captured.err
+
+
 def test_error_result_returns_nonzero_and_writes_stderr(runner_env, capsys, monkeypatch):
     original_init = FakeRuntime.__init__
 
