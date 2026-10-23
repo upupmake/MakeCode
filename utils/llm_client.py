@@ -200,7 +200,8 @@ def _set_client_request_retry(
     if request_id is None:
         return
     try:
-        from system.tui_app import TuiRegion, post_tui, set_client_request_retry
+        from system.tui_proxies import post_tui, set_client_request_retry
+        from system.tui_types import TuiRegion
 
         set_client_request_retry(request_id, retry_count, max_retries)
         reason_text = reason or (
@@ -292,7 +293,7 @@ def _client_request_active():
     request_token = _CURRENT_CLIENT_REQUEST_ID.set(request_id)
     active_started = False
     try:
-        from system.tui_app import set_client_request_active
+        from system.tui_proxies import set_client_request_active
 
         set_client_request_active(True, request_id=request_id)
         active_started = True
@@ -303,7 +304,7 @@ def _client_request_active():
     finally:
         if active_started:
             try:
-                from system.tui_app import set_client_request_active
+                from system.tui_proxies import set_client_request_active
 
                 set_client_request_active(False, request_id=request_id)
             except Exception:

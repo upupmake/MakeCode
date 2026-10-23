@@ -70,6 +70,26 @@ def refresh_status(*args, **kwargs) -> None:
     return _refresh_status(*args, **kwargs)
 
 
+def set_client_request_active(active: bool, request_id: int | None = None) -> None:
+    if _headless_mode:
+        return
+    from system.tui_app import set_client_request_active as _set_client_request_active
+
+    return _set_client_request_active(active, request_id=request_id)
+
+
+def set_client_request_retry(
+    request_id: int,
+    retry_count: int,
+    max_retries: int,
+) -> None:
+    if _headless_mode:
+        return
+    from system.tui_app import set_client_request_retry as _set_client_request_retry
+
+    return _set_client_request_retry(request_id, retry_count, max_retries)
+
+
 def choose_delegate_tasks_tui(*args, **kwargs):
     if _headless_mode:
         return "orchestrator"

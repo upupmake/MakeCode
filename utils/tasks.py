@@ -622,7 +622,8 @@ class TaskManager:
 
 
 def render_task_pane() -> None:
-    from system.tui_app import TuiRegion, post_tui
+    from system.tui_proxies import post_tui
+    from system.tui_types import TuiRegion
 
     task_table = TASK_MANAGER.get_task_table()
     summary = task_table.get("summary", {})
