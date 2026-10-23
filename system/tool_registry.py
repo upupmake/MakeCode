@@ -182,6 +182,28 @@ class ToolRegistry:
     def is_tool_enabled(self, name: str) -> bool:
         return self._is_allowed(name)
 
+    def unmatched_allowed_selectors(
+        self,
+        mcp_tools: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
+        """Return allow-list entries that cannot match any registered tool."""
+        tools = [
+            *self._builtin_tools(),
+            *(GLOBAL_MCP_MANAGER.get_tools() if mcp_tools is None else mcp_tools),
+        ]
+        leaf_names = self._all_leaf_names(tools)
+        namespace_names = {
+            str(tool.get("name"))
+            for tool in tools
+            if tool.get("type") == "namespace" and tool.get("name")
+        }
+        unknown = []
+        for selector in self.allowed_tools:
+            name = resolve_tool_name(str(selector).strip())
+            if name not in leaf_names and name not in namespace_names:
+                unknown.append(str(selector))
+        return unknown
+
     def _builtin_tools(self) -> list[dict[str, Any]]:
         tools = [
             *COMMON_TOOLS,

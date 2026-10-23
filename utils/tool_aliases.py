@@ -3,6 +3,15 @@
 TOOL_NAME_ALIASES = {
     "Read": "FileRead",
     "ReadFile": "FileRead",
+    # Claude Code tool names, so existing scripts and prompts keep working.
+    "Write": "FileCreate",
+    "Edit": "FileEdit",
+    "MultiEdit": "FileEdit",
+    "Bash": "RunTerminalCommand",
+    "Glob": "FileSearch",
+    "Grep": "ContentSearch",
+    "Skill": "LoadSkill",
+    "Task": "DelegateTasks",
 }
 
 

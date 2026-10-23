@@ -115,6 +115,12 @@ class HeadlessRunner:
                 include_ask_user=False,
                 include_delegate_tasks=False,
             )
+            mcp_tools = GLOBAL_MCP_MANAGER.get_tools()
+            unknown_tools = registry.unmatched_allowed_selectors(mcp_tools)
+            if unknown_tools:
+                raise HeadlessUsageError(
+                    f"未知的工具: {', '.join(unknown_tools)}"
+                )
             if self.options.output_format == "stream-json":
                 self._stream_writer = StreamJsonWriter(
                     session_id=store.active_id or "",
@@ -124,7 +130,7 @@ class HeadlessRunner:
                     model=self._current_model_name(),
                     cwd=str(self._workdir),
                     permission_mode=self.options.permission_mode,
-                    tools=self._tool_names(registry),
+                    tools=self._tool_names(registry, mcp_tools),
                 )
             runtime = AgentRuntime(
                 store=store,
@@ -266,8 +272,11 @@ class HeadlessRunner:
         config = get_current_model_config()
         return getattr(config, "model_id", None)
 
-    def _tool_names(self, registry: ToolRegistry) -> list[str]:
-        mcp_tools, _ = GLOBAL_MCP_MANAGER.get_registry_snapshot()
+    def _tool_names(
+        self,
+        registry: ToolRegistry,
+        mcp_tools: list[dict[str, Any]],
+    ) -> list[str]:
         definitions = registry.definitions(
             mcp_tools=mcp_tools,
             plan_mode=self.options.permission_mode == "plan",

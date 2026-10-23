@@ -96,3 +96,23 @@ def test_headless_disables_delegate_and_ask_user_tools():
     assert "DelegateTasks" not in names
     assert "AskUser" not in handlers
     assert "DelegateTasks" not in handlers
+
+
+def test_claude_code_aliases_work_in_tool_selectors():
+    registry = ToolRegistry(
+        allowed_tools=["Bash", "Edit"],
+        include_ask_user=False,
+        include_delegate_tasks=False,
+    )
+
+    assert _names(_definitions(registry)) == {"RunTerminalCommand", "FileEdit"}
+
+
+def test_unmatched_allow_selectors_are_reported():
+    registry = ToolRegistry(
+        allowed_tools=["Bash", "NotARealTool"],
+        include_ask_user=False,
+        include_delegate_tasks=False,
+    )
+
+    assert registry.unmatched_allowed_selectors([]) == ["NotARealTool"]

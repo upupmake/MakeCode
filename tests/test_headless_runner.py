@@ -195,6 +195,16 @@ def test_debug_file_open_failure_is_usage_error(runner_env, capsys):
     assert "无法打开调试日志" in captured.err
 
 
+def test_unknown_allowed_tool_is_usage_error(runner_env, capsys):
+    options = HeadlessOptions(prompt="hi", allowed_tools=("NotARealTool",))
+
+    result = headless_module.run_headless(options)
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "未知的工具" in captured.err
+
+
 def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch):
     async def run_turn(self, prompt):
         handler = self.kwargs["event_handler"]
