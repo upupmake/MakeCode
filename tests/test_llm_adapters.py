@@ -55,7 +55,7 @@ def test_anthropic_cache_breakpoint_marks_last_message_only():
     assert request_messages[-2]["content"] == [{"type": "text", "text": "reply"}]
 
 
-def test_anthropic_cache_breakpoint_skips_first_request():
+def test_anthropic_cache_breakpoint_marks_first_request():
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "first"},
@@ -64,7 +64,13 @@ def test_anthropic_cache_breakpoint_skips_first_request():
 
     apply_anthropic_cache_breakpoint(request_messages)
 
-    assert request_messages[-1]["content"] == [{"type": "text", "text": "first"}]
+    assert request_messages[-1]["content"] == [
+        {
+            "type": "text",
+            "text": "first",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
 
 @pytest.fixture
@@ -796,7 +802,14 @@ async def test_anthropic_stream_builds_lossless_unified_result(stop_reason):
     assert raw_client.messages.stream.call_args.kwargs == {
         "model": "claude-test",
         "max_tokens": 64_000,
-        "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "hello",
+                    "cache_control": {"type": "ephemeral"},
+                }],
+            }],
         "thinking": {"type": "adaptive", "display": "summarized"},
         "output_config": {"effort": "xhigh"},
         "cache_control": {"type": "ephemeral"},
@@ -2552,9 +2565,25 @@ async def auxiliary_gateway(request, monkeypatch, isolated_responses_runtime, tm
             await client.close()
 
 
+def _strip_cache_control(value):
+    if isinstance(value, dict):
+        return {
+            key: _strip_cache_control(item)
+            for key, item in value.items()
+            if key != "cache_control"
+        }
+    if isinstance(value, list):
+        return [_strip_cache_control(item) for item in value]
+    return value
+
+
 def assert_auxiliary_tool_continuation(first, second):
     history_field = "input" if "input" in first else "messages"
-    assert second[history_field][:len(first[history_field])] == first[history_field]
+    # Anthropic cache breakpoints mark the first request's tail; the marker is
+    # request metadata, not history, so compare the underlying content only.
+    first_history = _strip_cache_control(first[history_field])
+    second_history = _strip_cache_control(second[history_field])
+    assert second_history[:len(first_history)] == first_history
     for field in ("tools", "system", "instructions", "prompt_cache_key"):
         assert first.get(field) == second.get(field)
     assert "call_aux" in json.dumps(second)

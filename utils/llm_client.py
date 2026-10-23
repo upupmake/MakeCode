@@ -1101,14 +1101,12 @@ def apply_anthropic_cache_breakpoint(
     """Cache the growing conversation prefix by marking the last message.
 
     The system block is already marked in ``AnthropicMessagesClient``. This adds
-    a second breakpoint at the end of the request so each turn can read the
-    previous turn's prefix from cache instead of re-billing it as fresh input.
-    The first request has no assistant turn yet, so marking it would only create
-    a cache entry that nothing reads; skip it to avoid unnecessary writes.
+    a second breakpoint at the end of the request so the next turn can read the
+    previous turn's whole prefix from cache instead of re-billing it as fresh
+    input. It is applied to every request, including the first one, because the
+    next turn reads it.
     """
     if not request_messages:
-        return
-    if not any(message.get("role") == "assistant" for message in request_messages):
         return
     last_message = request_messages[-1]
     content = last_message.get("content")
