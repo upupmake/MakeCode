@@ -2632,6 +2632,7 @@ async def test_tracked_anthropic_retries_transient_gateway_not_found_response():
     try:
         with patch("system.tui_app.set_client_request_active"), \
                 patch("system.tui_app.set_client_request_retry") as set_retry, \
+                patch("system.tui_app.post_tui"), \
                 patch.object(llm_client_module.AsyncAnthropic, "_sleep_for_retry", new=AsyncMock()):
             with llm_client_module._client_request_active():
                 response = await client.messages.create(
