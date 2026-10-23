@@ -914,13 +914,13 @@ printf 'first: remember 7391\nsecond: what is the code?\n' \
 
 Combining `-p` with `--input-format` also enters persistent mode: the input format decides how stdin is read, and pressing Enter submits one message. Only a bare `-p` (without `--input-format`) reads stdin until EOF and then runs one turn.
 
-After a successful headless startup (single-turn `-p` or persistent mode, regardless of output format), MakeCode emits one information-dense `system/init` JSON object with `version`, `session_id`, `mode` (`one-shot`/`persistent`), input/output formats, model details, `cwd`, platform/Python, tool list and count, MCP servers, Skills, permission mode, and session persistence state. The destination follows `--output-format`:
+After a successful headless startup (single-turn `-p` or persistent mode, regardless of output format), MakeCode emits one information-dense `system/init` JSON object on the **first stdout line**, with `version`, `session_id`, `mode` (`one-shot`/`persistent`), input/output formats, model details, `cwd`, platform/Python, tool list and count, MCP servers, Skills, permission mode, and session persistence state. Later output follows `--output-format`:
 
-| Output | Startup JSON |
+| Output | stdout |
 |---|---|
-| `text` | one JSON line on stderr (stdout carries only the final text) |
-| `json` | first stdout line |
-| `stream-json` | first stdout line (`system/init` event) |
+| `text` | init JSON line, then the final answer text |
+| `json` | init JSON line, then one `result` per turn |
+| `stream-json` | `system/init` event, then the event stream and one `result` per turn |
 
 Permission modes:
 
@@ -931,13 +931,15 @@ Permission modes:
 | `plan` | Read-only; writes and commands are denied |
 | `bypassPermissions` | Allow everything; trusted environments only |
 
+Headless mode defaults to `bypassPermissions`, fully disabling HITL: terminal commands and file edits run without confirmation, and `AskUser` is not registered, so no human interaction occurs. Pass `--permission-mode default`, `acceptEdits`, or `plan` explicitly to restrict it.
+
 `--allowedTools` / `--disallowedTools` narrow the tool set; both concrete tool names (such as `FileEdit`) and namespace names (such as `File` or `Terminal`) are accepted, and `--disallowedTools` wins.
 
 For Claude Code compatibility the prompt may also be passed positionally: `MakeCode -p --output-format json "question"`, and `-p` may be combined with `--input-format stream-json`. `--permission-mode` additionally accepts `manual` and `dontAsk` (both equivalent to `default`), and tool lists accept comma-separated values.
 
 Output formats:
 
-- `text`: stdout contains only the final assistant text; the startup `system/init` JSON and diagnostics go to stderr.
+- `text`: stdout starts with the `system/init` JSON line followed by the final assistant text; diagnostics go to stderr.
 - `json`: one `system/init` line followed by one `result` object per turn with `result`, `session_id`, `usage`, `is_error`, `permission_denials`, and `duration_ms`.
 - `stream-json`: newline-delimited `system/init`, optional `assistant_delta`, `assistant`, `tool_use`, `tool_result`, and `result` events.
 

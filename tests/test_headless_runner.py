@@ -55,13 +55,15 @@ def runner_env(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_text_mode_keeps_stdout_clean_and_emits_init_json(runner_env, capsys):
+def test_text_mode_emits_init_json_then_answer(runner_env, capsys):
     result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
 
     captured = capsys.readouterr()
-    init = json.loads(captured.err)
+    lines = captured.out.splitlines()
+    init = json.loads(lines[0])
     assert result == 0
-    assert captured.out == "ok\n"
+    assert lines[1:] == ["ok"]
+    assert captured.err == ""
     assert init["type"] == "system"
     assert init["subtype"] == "init"
     assert init["mode"] == "one-shot"
@@ -126,16 +128,18 @@ def test_persistent_json_mode_emits_init_before_results(runner_env, capsys, monk
     assert payloads[-1]["result"] == "ok"
 
 
-def test_persistent_text_mode_writes_init_json_to_stderr(runner_env, capsys, monkeypatch):
+def test_persistent_text_mode_emits_init_json_on_stdout(runner_env, capsys, monkeypatch):
     monkeypatch.setattr(sys, "stdin", StringIO("hello\n"))
     options = HeadlessOptions(prompt=None, input_format="text")
 
     result = headless_module.run_headless(options)
 
     captured = capsys.readouterr()
-    init = json.loads(captured.err)
+    lines = captured.out.splitlines()
+    init = json.loads(lines[0])
     assert result == 0
-    assert captured.out == "ok\n"
+    assert lines[1:] == ["ok"]
+    assert captured.err == ""
     assert init["type"] == "system"
     assert init["subtype"] == "init"
     assert init["mode"] == "persistent"
@@ -161,8 +165,10 @@ def test_error_result_returns_nonzero_and_writes_stderr(runner_env, capsys, monk
     result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
 
     captured = capsys.readouterr()
+    lines = captured.out.splitlines()
     assert result == 1
-    assert captured.out == ""
+    assert json.loads(lines[0])["subtype"] == "init"
+    assert lines[1:] == []
     assert "boom" in captured.err
 
 
@@ -206,6 +212,21 @@ def test_headless_mode_filters_mcp_termination_warning(caplog):
     assert "Session termination failed" not in caplog.text
 
 
+def test_headless_bypass_permissions_disables_hitl():
+    from utils import hitl
+
+    previous = hitl.get_hitl_status()
+    runner = headless_module.HeadlessRunner(HeadlessOptions(prompt="hi"))
+
+    try:
+        runner._enter_headless_mode()
+        assert hitl.get_hitl_status() is False
+    finally:
+        runner._leave_headless_mode()
+
+    assert hitl.get_hitl_status() is previous
+
+
 def test_mcp_timeout_aborts_before_request(monkeypatch):
     class SlowMCPManager:
         def initialize(self, console):
@@ -242,7 +263,7 @@ def test_session_lock_conflict_is_config_error(runner_env, capsys, monkeypatch):
 
     captured = capsys.readouterr()
     assert result == 3
-    assert captured.out == ""
+    assert json.loads(captured.out.splitlines()[0])["subtype"] == "init"
     assert "正在被其他进程使用" in captured.err
 
 

@@ -359,7 +359,9 @@ class HeadlessRunner:
         )
         OUTPUT_BUS.set_sink(NullSink())
         set_headless_mode(True)
-        hitl.toggle_hitl(enabled=True)
+        hitl.toggle_hitl(
+            enabled=self.options.permission_mode != "bypassPermissions"
+        )
         APPROVALS.set_provider(
             PolicyApprovalProvider(
                 self.options.permission_mode,
@@ -562,9 +564,8 @@ class HeadlessRunner:
         self._debug_stream.flush()
 
     def _write_startup_payload(self, payload: dict[str, Any]) -> None:
-        stream = sys.stdout if self.options.output_format == "json" else sys.stderr
-        stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        stream.flush()
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
 
     def _write_result(self, result: TurnResult) -> int:
         if self._stream_writer is not None:

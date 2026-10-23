@@ -887,13 +887,13 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
 
 同时指定 `-p` 和 `--input-format` 时同样进入常驻模式，由输入格式决定读取方式，按下回车即提交一条消息。只有单独的 `-p`（不带 `--input-format`）才是“读到 stdin EOF 后执行一轮”。
 
-每次 headless 启动成功后（无论 `-p` 单轮还是常驻多轮、无论输出格式），都会先输出一条高信息密度的 `system/init` JSON，包含 `version`、`session_id`、`mode`（`one-shot`/`persistent`）、输入输出格式、模型信息、`cwd`、平台/Python、工具列表与数量、MCP 服务、Skills、权限模式、会话持久化状态等字段。输出位置随 `--output-format` 决定：
+每次 headless 启动成功后（无论 `-p` 单轮还是常驻多轮、无论输出格式），都会在 **stdout 第一行**输出一条高信息密度的 `system/init` JSON，包含 `version`、`session_id`、`mode`（`one-shot`/`persistent`）、输入输出格式、模型信息、`cwd`、平台/Python、工具列表与数量、MCP 服务、Skills、权限模式、会话持久化状态等字段。之后的输出随 `--output-format` 决定：
 
-| 输出格式 | 启动 JSON 位置 |
+| 输出格式 | stdout 内容 |
 |---|---|
-| `text` | stderr 一行 JSON（stdout 只保留最终文本） |
-| `json` | stdout 第一行 JSON |
-| `stream-json` | stdout 第一行 `system/init` 事件 |
+| `text` | 第一行 init JSON，随后是最终回答文本 |
+| `json` | 第一行 init JSON，之后每轮一条 `result` |
+| `stream-json` | 第一行 `system/init` 事件，之后是事件流与每轮 `result` |
 
 权限模式：
 
@@ -904,13 +904,15 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
 | `plan` | 只读；写入和命令被拒绝 |
 | `bypassPermissions` | 全部放行，仅在可信环境使用 |
 
+headless 默认使用 `bypassPermissions`，即完全关闭 HITL：终端命令和文件修改无需确认即可执行，同时不注册 `AskUser`，因此不会出现任何人工交互。需要限制时显式传入 `--permission-mode default`、`acceptEdits` 或 `plan`。
+
 `--allowedTools` / `--disallowedTools` 可进一步限制工具集合，支持具体工具名（如 `FileEdit`）或命名空间名（如 `File`、`Terminal`），`--disallowedTools` 优先。
 
 为兼容 Claude Code 的 `-p` 用法，prompt 也可以写成位置参数：`MakeCode -p --output-format json "问题"`，并允许 `-p` 与 `--input-format stream-json` 同时使用。`--permission-mode` 额外接受 `manual` 和 `dontAsk`（等价于 `default`），工具列表支持逗号分隔。
 
 输出格式：
 
-- `text`：stdout 只输出最终 assistant 文本；启动 `system/init` JSON 和诊断信息走 stderr。
+- `text`：stdout 第一行是 `system/init` JSON，随后输出最终 assistant 文本；诊断信息走 stderr。
 - `json`：先输出一条 `system/init`，之后每轮输出一条 `result` 对象，包含 `result`、`session_id`、`usage`、`is_error`、`permission_denials`、`duration_ms`。
 - `stream-json`：逐行输出 `system/init`、`assistant_delta`（可选）、`assistant`、`tool_use`、`tool_result`、`result`。
 

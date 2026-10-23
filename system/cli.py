@@ -22,7 +22,7 @@ class HeadlessOptions:
     workdir: Path | None = None
     model: str | None = None
     effort: str | None = None
-    permission_mode: str = "default"
+    permission_mode: str = "bypassPermissions"
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     no_session_persistence: bool = False
@@ -241,7 +241,7 @@ class CliParser:
         parser.add_argument("--workdir", type=Path, help="指定工作目录")
         parser.add_argument("--model", help="覆盖当前模型")
         parser.add_argument("--effort", choices=self.EFFORT_LEVELS, help="覆盖推理强度")
-        parser.add_argument("--permission-mode", choices=self.PERMISSION_MODES, default="default", help="headless 权限模式")
+        parser.add_argument("--permission-mode", choices=self.PERMISSION_MODES, default="bypassPermissions", help="headless 权限模式（默认 bypassPermissions，完全关闭 HITL）")
         parser.add_argument("--allowedTools", "--allowed-tools", dest="allowed_tools", nargs="+", default=[], help="允许的工具列表")
         parser.add_argument("--disallowedTools", "--disallowed-tools", dest="disallowed_tools", nargs="+", default=[], help="禁止的工具列表")
         parser.add_argument("--no-session-persistence", action="store_true", help="不将会话写入磁盘")

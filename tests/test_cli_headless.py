@@ -15,7 +15,7 @@ def test_print_prompt_builds_headless_options():
     assert options.prompt == "hello"
     assert options.input_format == "text"
     assert options.output_format == "text"
-    assert options.permission_mode == "default"
+    assert options.permission_mode == "bypassPermissions"
 
 
 def test_print_without_prompt_reads_stdin_marker():
