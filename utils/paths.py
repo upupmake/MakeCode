@@ -129,6 +129,12 @@ def memory_config_file() -> Path:
 
 
 def mcp_config_file(*, create: bool = True) -> Path:
+    override = os.environ.get("MAKECODE_MCP_CONFIG")
+    if override:
+        path = Path(override).expanduser()
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        return path
     return install_makecode_dir(create=create) / "mcp_config.json"
 
 
