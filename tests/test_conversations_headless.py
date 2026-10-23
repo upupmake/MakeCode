@@ -47,6 +47,20 @@ def test_create_rejects_existing_conversation(tmp_path):
         store.create("conv_0123456789abcdef0123456789abcdef")
 
 
+def test_create_reuses_directory_created_only_for_lock(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    conversation_id = "conv_0123456789abcdef0123456789abcdef"
+    conversation_root = tmp_path / "conversations" / conversation_id
+    conversation_root.mkdir(parents=True)
+    (conversation_root / ".lock").write_bytes(b"")
+
+    path = store.create(conversation_id)
+    store.save_messages([{"role": "user", "content": "hello"}])
+
+    assert path.exists()
+    assert store.active_id == conversation_id
+
+
 def test_find_latest_returns_newest_conversation(tmp_path):
     store = ConversationStore(tmp_path / "conversations")
     first = store.save_messages([{"role": "user", "content": "first"}])

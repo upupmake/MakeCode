@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 from io import StringIO
 from typing import ClassVar
@@ -124,6 +125,20 @@ def test_signal_before_turn_aborts_without_calling_model(runner_env, capsys, mon
     assert result == 130
     assert runtime.prompt is None
     assert capsys.readouterr().out == ""
+
+
+def test_headless_mode_filters_mcp_termination_warning(caplog):
+    logger = logging.getLogger("mcp.client.streamable_http")
+    runner = headless_module.HeadlessRunner(HeadlessOptions(prompt="hi"))
+
+    with caplog.at_level(logging.WARNING, logger="mcp.client.streamable_http"):
+        runner._enter_headless_mode()
+        try:
+            logger.warning("Session termination failed: 404")
+        finally:
+            runner._leave_headless_mode()
+
+    assert "Session termination failed" not in caplog.text
 
 
 def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch):

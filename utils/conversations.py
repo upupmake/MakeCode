@@ -191,7 +191,7 @@ class ConversationStore:
         else:
             conversation_id = self.normalize_conversation_id(conversation_id)
         path = self.root / conversation_id / CONVERSATION_FILE
-        if path.parent.exists():
+        if path.exists():
             raise FileExistsError(f"Conversation already exists: {conversation_id}")
         if self.persist:
             self.root.mkdir(parents=True, exist_ok=True)

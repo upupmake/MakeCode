@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import signal
 import sys
 import time
@@ -53,6 +54,13 @@ class HeadlessConfigError(HeadlessError):
     exit_code = 3
 
 
+class _McpTerminationLogFilter(logging.Filter):
+    """Drop the harmless 404 that streamable-http servers return on shutdown."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Session termination failed" not in record.getMessage()
+
+
 class HeadlessRunner:
     def __init__(self, options: HeadlessOptions) -> None:
         self.options = options
@@ -67,6 +75,7 @@ class HeadlessRunner:
         self._previous_sink: Any = None
         self._previous_provider: Any = None
         self._previous_hitl = True
+        self._mcp_log_filter: _McpTerminationLogFilter | None = None
 
     def run(self) -> int:
         try:
@@ -202,6 +211,10 @@ class HeadlessRunner:
         self._previous_sink = OUTPUT_BUS.get_sink()
         self._previous_provider = APPROVALS.get_provider()
         self._previous_hitl = hitl.get_hitl_status()
+        self._mcp_log_filter = _McpTerminationLogFilter()
+        logging.getLogger("mcp.client.streamable_http").addFilter(
+            self._mcp_log_filter
+        )
         OUTPUT_BUS.set_sink(NullSink())
         set_headless_mode(True)
         hitl.toggle_hitl(enabled=True)
@@ -214,6 +227,11 @@ class HeadlessRunner:
         )
 
     def _leave_headless_mode(self) -> None:
+        if self._mcp_log_filter is not None:
+            logging.getLogger("mcp.client.streamable_http").removeFilter(
+                self._mcp_log_filter
+            )
+            self._mcp_log_filter = None
         APPROVALS.set_provider(self._previous_provider)
         hitl.toggle_hitl(enabled=self._previous_hitl)
         set_headless_mode(False)
