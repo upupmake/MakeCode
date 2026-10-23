@@ -174,6 +174,15 @@ class HeadlessRunner:
                 stop_event=self._stop_event,
             ).run()
             return self._signal_exit_code or exit_code
+        if self.options.prompt is None:
+            from system.headless_input import TextInputLoop
+
+            exit_code = await TextInputLoop(
+                runtime,
+                self._write_result,
+                stop_event=self._stop_event,
+            ).run()
+            return self._signal_exit_code or exit_code
         if self._stop_event is not None and self._stop_event.is_set():
             exit_code = self._write_result(
                 TurnResult(

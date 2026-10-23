@@ -152,6 +152,35 @@ def test_stream_json_input_requires_stream_json_output():
     assert options.output_format == "stream-json"
 
 
+def test_explicit_text_input_without_prompt_enters_persistent_mode():
+    options = parse("--input-format", "text")
+
+    assert options is not None
+    assert options.prompt is None
+    assert options.input_format == "text"
+    assert options.output_format == "text"
+
+
+def test_text_input_allows_any_output_format():
+    options = parse("--input-format", "text", "--output-format", "json")
+
+    assert options is not None
+    assert options.input_format == "text"
+    assert options.output_format == "json"
+
+
+def test_print_still_wins_over_persistent_text_mode():
+    options = parse("--input-format", "text", "-p", "hello")
+
+    assert options is not None
+    assert options.prompt == "hello"
+
+
+def test_default_invocation_still_starts_tui():
+    assert cli_module.run_external_cli([]) is None
+    assert cli_module.HEADLESS_OPTIONS is None
+
+
 @pytest.mark.parametrize(
     "args",
     [

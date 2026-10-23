@@ -132,10 +132,13 @@ class CliParser:
                 self.error("prompt 只能提供一次：使用 -p 的值或位置参数")
             prompt = positional_prompt
 
+        input_format: Literal["text", "stream-json"] = (
+            "text" if args.input_format is None else args.input_format
+        )
         requested = (
             args.print_prompt is not None
             or positional_prompt is not None
-            or args.input_format == "stream-json"
+            or args.input_format is not None
         )
         if not requested:
             if args.output_format != "text":
@@ -145,9 +148,9 @@ class CliParser:
             return None
 
         if args.simple:
-            self.error("-p/--print 不能与 --simple 一起使用")
+            self.error("-p/--print 和 headless 输入模式不能与 --simple 一起使用")
         if args.load is not None:
-            self.error("-p/--print 不能与 --load 一起使用")
+            self.error("-p/--print 和 headless 输入模式不能与 --load 一起使用")
         if args.input_format == "stream-json" and prompt:
             self.error("--input-format stream-json 不接受 prompt 参数")
         if args.fork_session and not (args.resume is not None or args.continue_latest):
@@ -167,7 +170,7 @@ class CliParser:
 
         return HeadlessOptions(
             prompt=prompt,
-            input_format=args.input_format,
+            input_format=input_format,
             output_format=args.output_format,
             session_id=args.session_id,
             continue_latest=args.continue_latest,
@@ -218,7 +221,7 @@ class CliParser:
             action="store_true",
             help="使用纯终端简单模式启动：不启动 Textual TUI，按顺序把输出直接渲染到终端",
         )
-        parser.add_argument("--input-format", choices=("text", "stream-json"), default="text", help="输入格式（仅 headless）：text 或 stream-json")
+        parser.add_argument("--input-format", choices=("text", "stream-json"), help="输入格式（仅 headless）：text 逐行多轮、stream-json 事件流")
         parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text", help="输出格式（仅 headless）：text、json 或 stream-json")
         parser.add_argument("--session-id", metavar="CONVERSATION_ID", help="指定会话 ID；不存在时创建，存在时续接")
         parser.add_argument("-c", "--continue", dest="continue_latest", action="store_true", help="续接当前工作区最近一次会话")

@@ -895,6 +895,15 @@ printf '%s\n' \
 
 `--input-format stream-json` requires `--output-format stream-json`. It supports `{"type":"control","action":"interrupt"}` and `--replay-user-messages`.
 
+Plain-text persistent mode is also available: explicitly passing `--input-format text` without `-p` treats every stdin line as one turn.
+
+```bash
+printf 'first: remember 7391\nsecond: what is the code?\n' \
+  | python3.13 main.py --input-format text
+```
+
+`--output-format` may be `text` (final text per turn), `json` (one result object per turn), or `stream-json` (event stream per turn).
+
 Permission modes:
 
 | Mode | Behavior |

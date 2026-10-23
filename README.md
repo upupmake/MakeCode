@@ -868,6 +868,15 @@ printf '%s\n' \
 
 `--input-format stream-json` 必须配合 `--output-format stream-json`；支持 `{"type":"control","action":"interrupt"}` 取消当前轮，以及 `--replay-user-messages` 回显用户消息。
 
+也可以直接使用纯文本逐行输入，每行是一轮：
+
+```bash
+printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
+  | python3.13 main.py --input-format text
+```
+
+显式指定 `--input-format text` 且不提供 `-p` 时进入常驻模式；`--output-format` 可选 `text`（每轮输出最终文本）、`json`（每轮一条 result）或 `stream-json`（每轮一组事件）。
+
 权限模式：
 
 | 模式 | 行为 |

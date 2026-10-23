@@ -4,7 +4,7 @@ import sys
 from io import StringIO
 
 from system.agent_runtime import TurnResult
-from system.headless_input import StreamJsonInputLoop
+from system.headless_input import StreamJsonInputLoop, TextInputLoop
 from system.output_sinks import StreamJsonWriter
 
 
@@ -107,3 +107,34 @@ def test_parse_line_accepts_interrupt_control():
     assert StreamJsonInputLoop._parse_line(
         json.dumps({"type": "control", "action": "interrupt"})
     ) == ("control", "interrupt")
+
+
+def test_text_input_loop_runs_one_turn_per_line(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", StringIO("first\n\nsecond\n"))
+    runtime = FakeRuntime()
+    results = []
+
+    exit_code = asyncio.run(
+        TextInputLoop(runtime, lambda result: results.append(result.text) or 0).run()
+    )
+
+    assert exit_code == 0
+    assert runtime.queries == ["first", "second"]
+    assert results == ["first", "second"]
+
+
+def test_text_input_loop_keeps_error_exit_code(monkeypatch):
+    class ErrorRuntime(FakeRuntime):
+        async def run_turn(self, query):
+            return TurnResult(
+                text="",
+                session_id="conv_test",
+                messages=[],
+                is_error=True,
+                error="boom",
+            )
+
+    monkeypatch.setattr(sys, "stdin", StringIO("hi\n"))
+    exit_code = asyncio.run(TextInputLoop(ErrorRuntime(), lambda result: 1).run())
+
+    assert exit_code == 1

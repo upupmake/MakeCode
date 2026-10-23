@@ -1214,12 +1214,62 @@ async def test_openai_responses_stream_builds_lossless_unified_result():
     }
     kwargs = create.call_args.kwargs
     assert kwargs["store"] is False
+    assert kwargs["stream"] is True
     assert kwargs["instructions"] == "system"
     assert kwargs["input"] == [{"role": "user", "content": "hello"}]
     assert kwargs["reasoning"] == {"effort": "high", "summary": "auto"}
     assert kwargs["tools"] == tools
     assert kwargs["prompt_cache_key"].startswith("mc-pc2-")
     assert stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_openai_chat_requests_are_always_streaming():
+    recorded = {}
+
+    class FakeStream:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._chunks:
+                raise StopAsyncIteration
+            return self._chunks.pop(0)
+
+        async def close(self):
+            pass
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            recorded.update(kwargs)
+            chunk = SimpleNamespace(
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2),
+                choices=[],
+            )
+            return FakeStream([chunk])
+
+    raw_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions())
+    )
+    client = AsyncChatAPIClient(
+        raw_client,
+        "test",
+        "medium",
+        base_url="https://gateway.example/v1",
+        api_key="key",
+    )
+
+    events = [
+        event
+        async for event in client.generate_stream([{"role": "user", "content": "hi"}])
+    ]
+
+    assert recorded["stream"] is True
+    assert recorded["stream_options"] == {"include_usage": True}
+    assert events[-1]["type"] == "done"
 
 
 def test_llm_timeout_is_provider_neutral():

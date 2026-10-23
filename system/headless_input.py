@@ -7,9 +7,10 @@ import contextlib
 import json
 import sys
 import threading
+from collections.abc import Callable
 from typing import Any
 
-from system.agent_runtime import AgentRuntime
+from system.agent_runtime import AgentRuntime, TurnResult
 from system.output_sinks import StreamJsonWriter
 from system.stream_cancel import (
     cancel_current_response,
@@ -24,7 +25,7 @@ class StreamJsonInputLoop:
     def __init__(
         self,
         runtime: AgentRuntime,
-        writer: StreamJsonWriter,
+        writer: StreamJsonWriter | None,
         *,
         replay_user_messages: bool = False,
         stop_event: asyncio.Event | None = None,
@@ -37,6 +38,9 @@ class StreamJsonInputLoop:
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def run(self) -> int:
+        writer = self.writer
+        if writer is None:
+            raise RuntimeError("StreamJsonInputLoop requires a StreamJsonWriter")
         self._loop = asyncio.get_running_loop()
         threading.Thread(target=self._read_stdin, daemon=True).start()
         exit_code = 0
@@ -48,16 +52,16 @@ class StreamJsonInputLoop:
                 return exit_code
             query = self._query_text(message)
             if not query:
-                self.writer.write(
+                writer.write(
                     {
                         "type": "error",
                         "error": "用户消息没有可用的文本内容。",
-                        "session_id": self.writer.session_id,
+                        "session_id": writer.session_id,
                     }
                 )
                 continue
             if self.replay_user_messages:
-                self.writer.write_user_message(message)
+                writer.write_user_message(message)
             start_cancel_listener()
             try:
                 if self.stop_event is not None and self.stop_event.is_set():
@@ -65,7 +69,7 @@ class StreamJsonInputLoop:
                 result = await self.runtime.run_turn(query)
             finally:
                 stop_cancel_listener()
-            self.writer.write_result(result)
+            writer.write_result(result)
             if result.is_error:
                 exit_code = 1
 
@@ -156,3 +160,52 @@ class StreamJsonInputLoop:
             ]
             return "\n".join(parts).strip()
         return ""
+
+
+class TextInputLoop(StreamJsonInputLoop):
+    """Persistent multi-turn mode where each stdin line is one user message."""
+
+    def __init__(
+        self,
+        runtime: AgentRuntime,
+        write_result: Callable[[TurnResult], int],
+        *,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
+        super().__init__(runtime, None, stop_event=stop_event)
+        self._write_result = write_result
+
+    async def run(self) -> int:
+        self._loop = asyncio.get_running_loop()
+        threading.Thread(target=self._read_stdin, daemon=True).start()
+        exit_code = 0
+        while True:
+            message = await self._next_message()
+            if message is _EOF or message is None:
+                return exit_code
+            if self.stop_event is not None and self.stop_event.is_set():
+                return exit_code
+            query = self._query_text(message)
+            if not query:
+                continue
+            start_cancel_listener()
+            try:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    return exit_code
+                result = await self.runtime.run_turn(query)
+            finally:
+                stop_cancel_listener()
+            turn_exit_code = self._write_result(result)
+            if turn_exit_code != 0:
+                exit_code = turn_exit_code
+
+    def _read_stdin(self) -> None:
+        while True:
+            line = sys.stdin.readline()
+            if line == "":
+                self._put(_EOF)
+                return
+            line = line.strip()
+            if not line:
+                continue
+            self._put({"role": "user", "content": line})
