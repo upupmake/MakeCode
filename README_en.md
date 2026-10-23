@@ -862,6 +862,65 @@ python main.py --simple --load
 
 Older terminals degrade automatically: `TERM=dumb` uses plain `input()` and numbered menus without prompt_toolkit control sequences; basic terminals such as `vt100` use ASCII hints, 16-color output, and Tab-triggered completion. Set `MAKECODE_SIMPLE_PROFILE=plain|basic|full` to override the detected profile. On Windows the profile follows the hosting terminal rather than the OS version: Windows Terminal (`WT_SESSION`), the VS Code terminal, ConEmu, WezTerm, Alacritty, and Kitty enable the full profile and keep Unicode icons; when an app is started from Explorer or through the default-terminal handoff it may not inherit `WT_SESSION`, so MakeCode also checks whether stdout is a ConPTY console with `ENABLE_VIRTUAL_TERMINAL_PROCESSING` enabled (`PseudoConsoleWindow`) and still selects the full profile; only legacy conhost, which does not satisfy these conditions, converts emoji/icons to ASCII labels such as `[tool]` and `[ok]`. Set `MAKECODE_SIMPLE_UNICODE=1` to force Unicode icons.
 
+### 6.4.1 Headless Non-Interactive Mode
+
+`-p/--print` skips the TUI, runs one turn, and exits. It is intended for scripts, IDEs, and other agents.
+
+```bash
+python3.13 main.py -p "Explain this project"
+echo "Review this code" | python3.13 main.py -p
+python3.13 main.py -p "Reply OK" --output-format json
+python3.13 main.py -p "Reply OK" --output-format stream-json --include-partial-messages
+```
+
+Sessions:
+
+```bash
+python3.13 main.py -p "first turn" --session-id conv_0123456789abcdef0123456789abcdef
+python3.13 main.py -r conv_0123456789abcdef0123456789abcdef -p "second turn"
+python3.13 main.py -c -p "continue the latest session in this workspace"
+python3.13 main.py -r conv_0123456789abcdef0123456789abcdef --fork-session -p "branch this session"
+```
+
+`--session-id` accepts `conv_...`, 32 hex characters, or a UUID. A missing session is created; an existing one is resumed. `--no-session-persistence` keeps history only in memory.
+
+Persistent multi-turn input (newline-delimited JSON on stdin):
+
+```bash
+printf '%s\n' \
+  '{"type":"user","message":{"role":"user","content":"first"}}' \
+  '{"type":"user","content":"second"}' \
+  | python3.13 main.py --input-format stream-json --output-format stream-json
+```
+
+`--input-format stream-json` requires `--output-format stream-json`. It supports `{"type":"control","action":"interrupt"}` and `--replay-user-messages`.
+
+Permission modes:
+
+| Mode | Behavior |
+|------|----------|
+| `default` | Deny anything that would need approval and return the reason to the model |
+| `acceptEdits` | Allow `FileCreate`/`FileEdit`/`FilePatch`; commands still require approval |
+| `plan` | Read-only; writes and commands are denied |
+| `bypassPermissions` | Allow everything; trusted environments only |
+
+`--allowedTools` / `--disallowedTools` narrow the tool set; `--disallowedTools` wins.
+
+Output formats:
+
+- `text`: stdout contains only the final assistant text; diagnostics go to stderr.
+- `json`: one `result` object with `result`, `session_id`, `usage`, `is_error`, `permission_denials`, and `duration_ms`.
+- `stream-json`: newline-delimited `system/init`, optional `assistant_delta`, `assistant`, `tool_use`, `tool_result`, and `result` events.
+
+Exit codes: `0` success, `1` runtime error, `2` usage error, `3` config/model error, `130` SIGINT, `143` SIGTERM.
+
+Current limitations:
+
+- `--max-budget-usd`, `--max-turns`, and `--max-tokens` are intentionally not supported; model budgets are unlimited.
+- Headless mode bypasses the TUI slash-command layer, so commands such as `/skill` are not expanded.
+- `AskUser` is unavailable; `DelegateTasks` currently declines and leaves the work to the Orchestrator.
+- `--input-format stream-json` currently accepts text content blocks only.
+
 ### 6.5 Built-in Slash Commands
 
 In the interactive CLI, you can type `/` to trigger quick commands (with auto-completion support):

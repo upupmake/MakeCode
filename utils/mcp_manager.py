@@ -9,7 +9,8 @@ from urllib.parse import urlsplit, urlunsplit
 from fastmcp import Client
 from rich.markup import escape
 
-from system.tui_app import TuiRegion, post_tui, refresh_status
+from system.tui_proxies import post_tui, refresh_status
+from system.tui_types import TuiRegion
 from utils import paths
 from utils.mcp_config import add_mcp_server_config, update_mcp_server_config
 

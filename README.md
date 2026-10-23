@@ -835,6 +835,65 @@ python main.py --simple --load
 
 旧终端会自动降级：`TERM=dumb` 使用纯 `input()` 和序号菜单，不发送 prompt_toolkit 的终端控制序列；`vt100` 等基础终端使用 ASCII 提示、16 色和按 Tab 触发的补全。也可用 `MAKECODE_SIMPLE_PROFILE=plain|basic|full` 手动指定。Windows 不按系统版本一刀切，而是识别当前终端：Windows Terminal（`WT_SESSION`）、VS Code 终端、ConEmu、WezTerm、Alacritty、Kitty 等会启用 full 档并保留 Unicode 图标；从资源管理器双击或经默认终端接管启动时，进程环境里可能没有 `WT_SESSION`，此时会检查 stdout 是否为启用 `ENABLE_VIRTUAL_TERMINAL_PROCESSING` 的 ConPTY 控制台（`PseudoConsoleWindow`），命中同样启用 full；传统 conhost 不满足这些条件，才把 emoji/图标转换为 `[tool]`、`[ok]` 等 ASCII 标记。如需强制保留 Unicode 图标，设置 `MAKECODE_SIMPLE_UNICODE=1`。
 
+### 6.4.1 Headless 非交互模式
+
+`-p/--print` 不启动 TUI，执行一轮后退出，适合脚本、IDE 和其他 Agent 调用。
+
+```bash
+python3.13 main.py -p "解释这个项目的结构"
+echo "解释这段代码" | python3.13 main.py -p
+python3.13 main.py -p "只输出 OK" --output-format json
+python3.13 main.py -p "只输出 OK" --output-format stream-json --include-partial-messages
+```
+
+会话续接：
+
+```bash
+python3.13 main.py -p "第一轮" --session-id conv_0123456789abcdef0123456789abcdef
+python3.13 main.py -r conv_0123456789abcdef0123456789abcdef -p "第二轮"
+python3.13 main.py -c -p "继续当前工作区最近的会话"
+python3.13 main.py -r conv_0123456789abcdef0123456789abcdef --fork-session -p "从该会话开一个分支"
+```
+
+`--session-id` 接受 `conv_...`、32 位十六进制或标准 UUID；会话不存在时创建，存在时续接。`--no-session-persistence` 只保留进程内历史，不写磁盘。
+
+常驻多轮（stdin 逐行发送 JSON，进程保持运行）：
+
+```bash
+printf '%s\n' \
+  '{"type":"user","message":{"role":"user","content":"第一轮"}}' \
+  '{"type":"user","content":"第二轮"}' \
+  | python3.13 main.py --input-format stream-json --output-format stream-json
+```
+
+`--input-format stream-json` 必须配合 `--output-format stream-json`；支持 `{"type":"control","action":"interrupt"}` 取消当前轮，以及 `--replay-user-messages` 回显用户消息。
+
+权限模式：
+
+| 模式 | 行为 |
+|------|------|
+| `default` | 需要人工确认的操作一律拒绝，把原因返回给模型 |
+| `acceptEdits` | 自动放行 `FileCreate`/`FileEdit`/`FilePatch`，命令仍需确认 |
+| `plan` | 只读；写入和命令被拒绝 |
+| `bypassPermissions` | 全部放行，仅在可信环境使用 |
+
+`--allowedTools` / `--disallowedTools` 可进一步限制工具集合，`--disallowedTools` 优先。
+
+输出格式：
+
+- `text`：stdout 只输出最终 assistant 文本，诊断信息走 stderr。
+- `json`：结束时输出一条 `result` 对象，包含 `result`、`session_id`、`usage`、`is_error`、`permission_denials`、`duration_ms`。
+- `stream-json`：逐行输出 `system/init`、`assistant_delta`（可选）、`assistant`、`tool_use`、`tool_result`、`result`。
+
+退出码：`0` 成功、`1` 运行错误、`2` 参数错误、`3` 配置/模型错误、`130` SIGINT、`143` SIGTERM。
+
+当前限制：
+
+- 不提供 `--max-budget-usd`、`--max-turns`、`--max-tokens`，模型预算默认不设上限。
+- headless 不经过 TUI 斜杠命令层，`/skill` 等交互命令不会展开。
+- `AskUser` 在 headless 下不可用；`DelegateTasks` 当前返回拒绝并交给 Orchestrator 直接执行。
+- `--input-format stream-json` 目前只处理文本内容块。
+
 ### 6.5 内置快捷命令（Slash Commands）
 
 在交互式 CLI 中，支持输入斜杠 `/` 来触发快捷命令（带有输入补全提示）：

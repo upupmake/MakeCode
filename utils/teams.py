@@ -25,7 +25,8 @@ from system.console_render import (
     get_sub_agent_console,
 )
 from system.models import get_current_model_config
-from system.tui_app import TuiRegion, choose_delegate_tasks_tui, post_tui
+from system.tui_proxies import choose_delegate_tasks_tui, post_tui
+from system.tui_types import TuiRegion
 from system.window_attention import request_window_attention
 
 

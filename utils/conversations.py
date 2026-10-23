@@ -1,11 +1,14 @@
 import json
+import os
 import re
 import shutil
+import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from utils import paths
 from utils.common import sanitize_title
@@ -13,6 +16,8 @@ from utils.tool_validation import normalize_tool_messages
 from utils.vision import image_blocks_from_content, resolve_image_attachment
 
 SCHEMA_VERSION = 1
+RUNTIME_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, RUNTIME_SCHEMA_VERSION})
 CONVERSATION_FILE = "conversation.json"
 TASK_PLAN_FILE = "task_plan.json"
 SUB_AGENT_HISTORY_FILE = "sub_agents/history.json"
@@ -110,6 +115,7 @@ class ConversationSnapshot:
     messages: list
     task_plan: dict[str, Any] | None
     sub_agent_history: list[dict[str, Any]]
+    runtime: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -121,12 +127,14 @@ class ConversationListItem:
 
 
 class ConversationStore:
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, *, persist: bool = True) -> None:
         self.root = root or paths.workspace_conversations_dir()
+        self.persist = persist
         self._active_id: str | None = None
         self._active_path: Path | None = None
         self._active_title: str | None = None
         self._active_created_at: str | None = None
+        self._active_runtime: dict[str, Any] | None = None
 
     @property
     def active_id(self) -> str | None:
@@ -144,6 +152,10 @@ class ConversationStore:
     def active_title(self) -> str | None:
         return self._active_title
 
+    @property
+    def active_runtime(self) -> dict[str, Any] | None:
+        return self._active_runtime
+
     def refresh_workspace(self) -> None:
         self.root = paths.workspace_conversations_dir()
         self.reset()
@@ -153,19 +165,66 @@ class ConversationStore:
         self._active_path = None
         self._active_title = None
         self._active_created_at = None
+        self._active_runtime = None
+
+    @staticmethod
+    def normalize_conversation_id(value: str) -> str:
+        candidate = value.strip()
+        if candidate.startswith("conv_"):
+            candidate = candidate[5:]
+        if re.fullmatch(r"[0-9a-fA-F]{32}", candidate):
+            return f"conv_{candidate.lower()}"
+        compact = candidate.replace("-", "")
+        if re.fullmatch(r"[0-9a-fA-F]{32}", compact):
+            return f"conv_{compact.lower()}"
+        raise ValueError(f"Invalid conversation ID: {value}")
+
+    def create(
+        self,
+        conversation_id: str | None = None,
+        *,
+        title: str | None = None,
+        runtime: dict[str, Any] | None = None,
+    ) -> Path:
+        if conversation_id is None:
+            conversation_id = f"conv_{uuid.uuid4().hex}"
+        else:
+            conversation_id = self.normalize_conversation_id(conversation_id)
+        path = self.root / conversation_id / CONVERSATION_FILE
+        if path.parent.exists():
+            raise FileExistsError(f"Conversation already exists: {conversation_id}")
+        if self.persist:
+            self.root.mkdir(parents=True, exist_ok=True)
+            self._validate_conversation_path(path)
+        self._active_id = conversation_id
+        self._active_path = path
+        self._active_title = title
+        self._active_created_at = _now()
+        self._active_runtime = runtime
+        return path
 
     def ensure_active(self) -> Path:
         if self._active_path is not None:
             return self._active_path
-        conversation_id = f"conv_{uuid.uuid4().hex}"
-        self._active_id = conversation_id
-        self._active_path = self.root / conversation_id / CONVERSATION_FILE
-        self._active_title = None
-        self._active_created_at = _now()
-        return self._active_path
+        return self.create()
 
-    def save_messages(self, messages: list) -> Path:
+    def find_latest(self) -> ConversationSnapshot | None:
+        items = self.list_conversations()
+        if not items:
+            return None
+        return self.load(items[0].path)
+
+    def save_messages(
+        self,
+        messages: list,
+        *,
+        runtime: dict[str, Any] | None = None,
+    ) -> Path:
         path = self.ensure_active()
+        if runtime is not None:
+            self._active_runtime = runtime
+        if not self.persist:
+            return path
         self._validate_conversation_path(path)
         self._validate_sidecar_paths(path.parent)
         if path.exists():
@@ -188,6 +247,9 @@ class ConversationStore:
             "messages": messages,
             "artifacts": artifacts,
         }
+        if self._active_runtime is not None:
+            data["schema_version"] = RUNTIME_SCHEMA_VERSION
+            data["runtime"] = self._active_runtime
         _write_object(path, data)
         return path
 
@@ -270,6 +332,7 @@ class ConversationStore:
             messages=manifest["messages"],
             task_plan=task_plan,
             sub_agent_history=sub_agent_history,
+            runtime=manifest.get("runtime"),
         )
 
     def activate(self, snapshot: ConversationSnapshot) -> None:
@@ -281,6 +344,35 @@ class ConversationStore:
         self._active_path = snapshot.path
         self._active_title = snapshot.title
         self._active_created_at = snapshot.created_at
+        self._active_runtime = snapshot.runtime
+
+    def fork(
+        self,
+        snapshot: ConversationSnapshot,
+        conversation_id: str | None = None,
+    ) -> ConversationSnapshot:
+        if conversation_id is None:
+            conversation_id = f"conv_{uuid.uuid4().hex}"
+        else:
+            conversation_id = self.normalize_conversation_id(conversation_id)
+        new_root = self.root / conversation_id
+        if new_root.exists():
+            raise FileExistsError(f"Conversation already exists: {conversation_id}")
+        self.root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(snapshot.root, new_root, symlinks=True)
+        manifest_path = new_root / CONVERSATION_FILE
+        manifest = _read_object(manifest_path)
+        manifest["conversation_id"] = conversation_id
+        manifest["created_at"] = _now()
+        manifest["updated_at"] = _now()
+        for sidecar_name in (TASK_PLAN_FILE, SUB_AGENT_HISTORY_FILE):
+            sidecar_path = new_root / sidecar_name
+            if sidecar_path.exists():
+                sidecar = _read_object(sidecar_path)
+                sidecar["conversation_id"] = conversation_id
+                _write_object(sidecar_path, sidecar)
+        _write_object(manifest_path, manifest)
+        return self.load(manifest_path)
 
     def delete(self, path: Path) -> None:
         path = Path(path)
@@ -295,7 +387,7 @@ class ConversationStore:
         self._validate_conversation_path(path)
         data = _read_object(path)
         conversation_id = data.get("conversation_id")
-        if data.get("schema_version") != SCHEMA_VERSION:
+        if data.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(f"Unsupported conversation schema: {path}")
         if conversation_id != path.parent.name:
             raise ValueError(f"Conversation ID does not match directory: {path}")
@@ -317,6 +409,9 @@ class ConversationStore:
         title = data.get("title")
         if title is not None and not isinstance(title, str):
             raise ValueError(f"Invalid conversation title: {path}")
+        runtime = data.get("runtime")
+        if runtime is not None and not isinstance(runtime, dict):
+            raise ValueError(f"Invalid conversation runtime metadata: {path}")
         base_artifacts = {
             "task_plan": TASK_PLAN_FILE,
             "sub_agent_history": SUB_AGENT_HISTORY_FILE,
@@ -384,6 +479,79 @@ class ConversationStore:
             raise ValueError(f"Unsupported conversation sidecar schema: {path}")
         if data.get("conversation_id") != conversation_id:
             raise ValueError(f"Conversation sidecar ID mismatch: {path}")
+
+
+class ConversationLockError(RuntimeError):
+    pass
+
+
+class ConversationLock:
+    """Exclusive per-conversation lock shared by TUI and headless processes."""
+
+    def __init__(self, root: Path, *, timeout: float = 0.0) -> None:
+        self.root = Path(root)
+        self.timeout = max(timeout, 0.0)
+        self._file: BinaryIO | None = None
+        self._stack = ExitStack()
+
+    def __enter__(self) -> "ConversationLock":
+        return self.acquire()
+
+    def __exit__(self, *exc_info) -> None:
+        self.release()
+
+    def acquire(self) -> "ConversationLock":
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._file = self._stack.enter_context(open(self.root / ".lock", "a+b"))  # noqa: SIM115 - lock lifetime is the context
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                self._lock_file()
+                return self
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    self._stack.close()
+                    self._file = None
+                    raise ConversationLockError(
+                        f"Conversation is already in use: {self.root}"
+                    ) from exc
+                time.sleep(0.05)
+
+    def _lock_file(self) -> None:
+        assert self._file is not None
+        if os.name == "nt":
+            import msvcrt
+
+            self._file.seek(0)
+            self._file.write(b"\0")
+            self._file.flush()
+            self._file.seek(0)
+            msvcrt.locking(  # type: ignore[attr-defined]
+                self._file.fileno(), msvcrt.LK_NBLCK, 1  # type: ignore[attr-defined]
+            )
+            return
+        import fcntl
+
+        fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def release(self) -> None:
+        if self._file is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                self._file.seek(0)
+                msvcrt.locking(  # type: ignore[attr-defined]
+                    self._file.fileno(), msvcrt.LK_UNLCK, 1  # type: ignore[attr-defined]
+                )
+            else:
+                import fcntl
+
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._stack.close()
+            self._file = None
 
 
 CONVERSATION_STORE = ConversationStore()

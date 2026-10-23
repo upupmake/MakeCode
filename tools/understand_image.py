@@ -10,7 +10,8 @@ import httpx
 from pydantic import Field, field_validator
 
 from init import log_error_traceback
-from system.tui_app import TuiRegion, post_tui
+from system.tui_proxies import post_tui
+from system.tui_types import TuiRegion
 from tools.extra_tools import is_understand_image_enabled
 from utils.common import safe_path
 from utils.llm_client import (

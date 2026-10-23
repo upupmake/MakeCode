@@ -31,7 +31,8 @@ from system.console_render import (
 )
 from system.models import get_current_model_config
 from system.stream_render import StreamRenderer
-from system.tui_app import TuiRegion, post_tui
+from system.tui_proxies import post_tui
+from system.tui_types import TuiRegion
 from utils import paths, text_tokens
 from utils.llm_client import (
     close_async_llm_client,

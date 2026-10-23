@@ -7,7 +7,8 @@ from rich.text import Text
 
 from system.console_render import render_copyable_markdown, render_model_markdown
 from system.stream_cancel import is_cancelled
-from system.tui_app import TuiRegion, post_tui
+from system.tui_proxies import post_tui
+from system.tui_types import TuiRegion
 
 
 class StreamRenderer:

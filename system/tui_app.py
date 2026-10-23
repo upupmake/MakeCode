@@ -39,6 +39,8 @@ from textual.widgets import (
 
 from system.clipboard import copy_to_system_clipboard, strip_invisible_characters
 from system.image_input import ImageAwareTextArea
+from system.output_bus import OUTPUT_BUS
+from system.output_sinks import SimpleSink, TuiSink
 from system.tui_modals import (
     AddModelModal,
     ChoiceModal,
@@ -709,6 +711,9 @@ class TuiBridge:
 
 TUI_BRIDGE = TuiBridge()
 
+if OUTPUT_BUS.get_sink() is None:
+    OUTPUT_BUS.set_sink(TuiSink(TUI_BRIDGE.post))
+
 _SIMPLE_BACKEND: Any = None
 
 
@@ -719,6 +724,7 @@ def enable_simple_mode() -> None:
         from utils import hitl
 
         _SIMPLE_BACKEND = SimpleRenderer()
+        OUTPUT_BUS.set_sink(SimpleSink(_SIMPLE_BACKEND))
         hitl.toggle_hitl(enabled=False)
 
 
@@ -3275,21 +3281,22 @@ def post_tui(
     collapsible_kind: str = "reasoning",
     tail_after: RenderableType | str | None = None,
 ) -> None:
+    event = TuiEvent(
+        TuiRegion(region),
+        payload,
+        clear,
+        tail,
+        active,
+        collapsible_title,
+        collapsible_open,
+        collapsible_close,
+        collapsible_kind,
+        tail_after,
+    )
     if _SIMPLE_BACKEND is not None:
-        _SIMPLE_BACKEND.handle(
-            TuiEvent(
-                TuiRegion(region),
-                payload,
-                clear,
-                tail,
-                active,
-                collapsible_title,
-                collapsible_open,
-                collapsible_close,
-                collapsible_kind,
-                tail_after,
-            )
-        )
+        _SIMPLE_BACKEND.handle(event)
+        return
+    if OUTPUT_BUS.emit(event):
         return
     TUI_BRIDGE.post(
         region,

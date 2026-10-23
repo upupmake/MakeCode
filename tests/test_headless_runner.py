@@ -1,0 +1,167 @@
+import json
+import sys
+from io import StringIO
+from typing import ClassVar
+
+import pytest
+
+import system.headless as headless_module
+from system.agent_runtime import TurnResult
+from system.cli import HeadlessOptions
+from utils.conversations import ConversationStore
+
+
+class FakeRuntime:
+    instances: ClassVar[list] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.restored = None
+        self.prompt = None
+        self.result = TurnResult(
+            text="ok",
+            session_id="conv_test",
+            messages=[],
+        )
+        FakeRuntime.instances.append(self)
+
+    def restore(self, snapshot):
+        self.restored = snapshot
+
+    async def run_turn(self, prompt):
+        self.prompt = prompt
+        return self.result
+
+
+@pytest.fixture
+def runner_env(monkeypatch, tmp_path):
+    FakeRuntime.instances = []
+
+    def store_factory(*, persist=True):
+        return ConversationStore(tmp_path / "conversations", persist=persist)
+
+    monkeypatch.setattr(headless_module, "AgentRuntime", FakeRuntime)
+    monkeypatch.setattr(headless_module, "ConversationStore", store_factory)
+    monkeypatch.setattr(headless_module.HeadlessRunner, "_prepare_environment", lambda self: None)
+    monkeypatch.setattr(headless_module.HeadlessRunner, "_prepare_model", lambda self: None)
+    monkeypatch.setattr(headless_module.HeadlessRunner, "_start_mcp", lambda self: None)
+    monkeypatch.setattr(headless_module.HeadlessRunner, "_stop_mcp", lambda self: None)
+    return tmp_path
+
+
+def test_text_mode_prints_only_final_text(runner_env, capsys):
+    result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == "ok\n"
+    assert captured.err == ""
+    assert FakeRuntime.instances[0].prompt == "hi"
+
+
+def test_json_mode_prints_one_result_object(runner_env, capsys):
+    options = HeadlessOptions(prompt="hi", output_format="json")
+
+    result = headless_module.run_headless(options)
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert payload["type"] == "result"
+    assert payload["subtype"] == "success"
+    assert payload["result"] == "ok"
+    assert payload["session_id"] == "conv_test"
+
+
+def test_error_result_returns_nonzero_and_writes_stderr(runner_env, capsys, monkeypatch):
+    original_init = FakeRuntime.__init__
+
+    def failing_init(self, **kwargs):
+        original_init(self, **kwargs)
+        self.result = TurnResult(
+            text="",
+            session_id="conv_test",
+            messages=[],
+            is_error=True,
+            error="boom",
+        )
+
+    monkeypatch.setattr(FakeRuntime, "__init__", failing_init)
+
+    result = headless_module.run_headless(HeadlessOptions(prompt="hi"))
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert "boom" in captured.err
+
+
+def test_prompt_without_value_reads_stdin(runner_env, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", StringIO("from stdin\n"))
+
+    result = headless_module.run_headless(HeadlessOptions(prompt=""))
+
+    assert result == 0
+    assert FakeRuntime.instances[0].prompt == "from stdin"
+
+
+def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch):
+    async def run_turn(self, prompt):
+        handler = self.kwargs["event_handler"]
+        handler({"type": "text_delta", "text": "ok"})
+        handler(
+            {
+                "type": "assistant_done",
+                "message": {"role": "assistant", "content": "ok"},
+                "text": "ok",
+                "tool_calls": [],
+            }
+        )
+        return self.result
+
+    monkeypatch.setattr(FakeRuntime, "run_turn", run_turn)
+
+    result = headless_module.run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="stream-json",
+            include_partial_messages=True,
+        )
+    )
+
+    payloads = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    ]
+    assert result == 0
+    assert [payload["type"] for payload in payloads] == [
+        "system",
+        "assistant_delta",
+        "assistant",
+        "result",
+    ]
+    assert payloads[0]["subtype"] == "init"
+    assert payloads[-1]["subtype"] == "success"
+
+
+def test_resume_loads_snapshot(runner_env):
+    store = ConversationStore(runner_env / "conversations")
+    store.save_messages(
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "previous"},
+        ]
+    )
+    conversation_id = store.active_id
+    FakeRuntime.instances = []
+
+    result = headless_module.run_headless(
+        HeadlessOptions(prompt="hi", resume=conversation_id)
+    )
+
+    assert result == 0
+    restored = FakeRuntime.instances[0].restored
+    assert restored is not None
+    assert restored.conversation_id == conversation_id
+    assert restored.messages[-1]["content"] == "previous"
