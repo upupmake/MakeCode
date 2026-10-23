@@ -20,7 +20,7 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
 - **File Access Control** 模块提供工作区边界保护与细粒度文件级并发锁。
 - **Prompt 集中管理** 将所有 LLM Prompt 统一维护，便于扩展与参数化。
 - **集中路径模块（`utils/paths.py`）** 统一管理工作区目录与安装目录派生路径，所有模块统一通过共享 getter 访问 `.makecode/` 子目录。
-- **跨平台打包支持** 提供 Windows X64、macOS ARM64 与 Linux X64 发布包；macOS 通过顶层 `MakeCode.command` 启动，Linux 直接运行 `MakeCode/MakeCode`。
+- **跨平台打包支持** 提供 Windows X64、macOS ARM64、Linux X64 与 Linux ARM64 发布包；macOS 通过顶层 `MakeCode.command` 启动，Linux 直接运行 `MakeCode/MakeCode`。
 - **Textual 多区 TUI** 将主智能体输出分发到 `Content / Tools / Task / Background / Sub-Agent / Status` 等独立面板，并支持自定义面板比例。
 
 这个项目的目标不是只回答问题，而是让智能体具备**可规划、可执行、可追踪、可扩展**的工程工作流能力。
@@ -457,7 +457,7 @@ MakeCode 支持主智能体主动读取本地图片或网络图片，并额外�
 
 MakeCode 内置了完整的自动更新系统，支持版本检查、完整目录下载与事务升级。
 
-> **平台限制**：应用内自动更新支持 Windows X64、Linux X64 和 macOS ARM64。源码运行仍需手动更新。
+> **平台限制**：应用内自动更新支持 Windows X64、Linux X64、Linux ARM64 和 macOS ARM64。源码运行仍需手动更新。
 
 #### 核心组件
 
@@ -736,7 +736,7 @@ flowchart TD
 
 ## 5. 环境要求
 
-- 支持平台：Windows X64、macOS ARM64、Linux X64（GLIBC 2.31+）
+- 支持平台：Windows X64、macOS ARM64、Linux X64、Linux ARM64（GLIBC 2.31+）
 - 源码运行需要 Python 3.10+
 - 可用的 OpenAI Chat 或 Anthropic Messages 接口
 - 模型支持对应的异步流式消息接口
@@ -788,6 +788,7 @@ python main.py
 - **Windows X64**：解压 `MakeCode-Windows-X64.zip` 后运行 `MakeCode.exe`。
 - **macOS ARM64**：解压 `MakeCode-macOS-ARM64.zip` 后双击顶层 `MakeCode.command`；脚本会在 Terminal 中启动 `MakeCode/MakeCode`。直接启动无 TTY 的冻结程序时也会自动重新拉起 Terminal。若访达解压把 `_internal/Python` 符号链接变成普通文件，启动器会在启动前自动修复。
 - **Linux X64**：解压 `MakeCode-Linux-X64.zip` 后运行 `./MakeCode/MakeCode`。若解压工具未保留执行权限，先运行 `chmod +x MakeCode/MakeCode`。
+- **Linux ARM64**：解压 `MakeCode-Linux-ARM64.zip` 后运行 `./MakeCode/MakeCode`。与 X64 使用相同的 GLIBC 2.31+ 基线；若解压工具未保留执行权限，先运行 `chmod +x MakeCode/MakeCode`。
 
 启动后会进入向导流程：
 
@@ -825,7 +826,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 ./MakeCode.command --skills-list       # macOS
 ```
 
-`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list`、`--session-json` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--session-json` 接受 `conv_...`、32 位十六进制或标准 UUID。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64 和 macOS ARM64；源码运行仍需手动更新。
+`--models-list`、`--mcp-list`、`--skills-list`、`--memory-list`、`--session-json` 和 `--check-update` 都是只读命令，不创建模型客户端、不连接 MCP，也不启动 TUI。`--session-json` 接受 `conv_...`、32 位十六进制或标准 UUID。`--mcp-add` 只修改配置并将新服务保持为禁用状态，不连接服务。`--update` 复用 TUI `/update` 的 HTTPS 下载、size/SHA256 校验与事务替换流程；默认必须在终端确认，非交互环境需显式传入 `-y`/`--yes`。它支持冻结版 Windows X64、Linux X64、Linux ARM64 和 macOS ARM64；源码运行仍需手动更新。
 
 `--simple` 不会退出，而是以纯终端模式启动交互循环：不启动 Textual TUI，输出按事件顺序直接渲染到 stdout，适合对 TUI 终端控制序列支持不佳的环境。该模式只输出已完成的 Markdown 段落（不逐帧刷新尾部）；HITL、AskUser、`/load` 选择等交互会降级为终端菜单或文本输入；`/models`、`/skills-list`、`/memory-panel`、`/memory-config`、`/mcp-switch`、`/extra-tools`、`/copy`、`/layout`、`/title`、`/status`、`/tokens`、`/release-notes` 等管理命令均可在简单模式下直接使用。菜单支持方向键（包括小键盘方向键）选择，输入框支持左右移动光标、上下键跨行移动，并在首/末行继续翻阅历史；主输入是多行编辑框，支持 Ctrl+N 在光标处换行、Backspace/Delete 删除换行、Ctrl+V/Ctrl+O 附加剪贴板图片，也可直接粘贴图片文件路径，多行粘贴会保留换行，图片占位符可按整块删除或用方向键跳过；Tab 可补全斜杠命令、`/cd` 目录和启动工作目录，补全菜单可用上下键选择候选项且不会改动输入框的对话历史；Ctrl+P 切换计划/执行，Ctrl+C 取消当前输入（退出使用 `/quit`），Agent 运行期间按 Ctrl+G 可追加临时指令；会话标题加载或生成后会同步更新终端标题。可与 `--load` 组合：
 

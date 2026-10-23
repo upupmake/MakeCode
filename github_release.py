@@ -23,6 +23,7 @@ REQUIRED_RELEASE_ASSETS = {
     "MakeCode-Windows-X64.zip",
     "MakeCode-macOS-ARM64.zip",
     "MakeCode-Linux-X64.zip",
+    "MakeCode-Linux-ARM64.zip",
     "version.json",
 }
 
@@ -194,6 +195,7 @@ def get_release_body(log_path: Path, version: str) -> str:
     lines.append("- `MakeCode-Windows-X64.zip` — Windows X64 完整应用目录")
     lines.append("- `MakeCode-macOS-ARM64.zip` — macOS ARM64 完整应用目录")
     lines.append("- `MakeCode-Linux-X64.zip` — Linux X64 完整应用目录")
+    lines.append("- `MakeCode-Linux-ARM64.zip` — Linux ARM64 完整应用目录")
     lines.append("- `version.json` — 版本信息文件")
 
     return "\n".join(lines)

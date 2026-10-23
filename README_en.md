@@ -21,7 +21,7 @@ MakeCode is an Agent CLI designed for engineering workflows. It follows an **Orc
 - The **File Access Control** module provides workspace boundary protection and fine-grained file-level concurrency locks.
 - **Centralized Prompt Management** unifies all LLM prompts for easier maintenance and parameterization.
 - The **Centralized Path Module (`utils/paths.py`)** unifies workspace and install-directory path derivation; all consumers access `.makecode/` subpaths through shared getters.
-- **Cross-platform packaging** provides Windows X64, macOS ARM64, and Linux X64 releases; macOS uses the top-level `MakeCode.command` launcher, while Linux runs `MakeCode/MakeCode` directly.
+- **Cross-platform packaging** provides Windows X64, macOS ARM64, Linux X64, and Linux ARM64 releases; macOS uses the top-level `MakeCode.command` launcher, while Linux runs `MakeCode/MakeCode` directly.
 - The **Textual multi-pane TUI** dispatches orchestrator output into independent panes (`Content / Tools / Task / Background / Sub-Agent / Status`), with customizable pane ratios.
 
 The goal is not just to answer questions, but to provide an agent workflow that is **plannable, executable, traceable,
@@ -479,7 +479,7 @@ The orchestrator can analyze a local image file or a public image URL by making 
 
 MakeCode includes a complete built-in auto-update system supporting version checks, complete directory downloads, and transactional upgrades.
 
-> **Platform limitation**: In-app auto-update supports Windows X64, Linux X64, and macOS ARM64. Source runs still require a manual update.
+> **Platform limitation**: In-app auto-update supports Windows X64, Linux X64, Linux ARM64, and macOS ARM64. Source runs still require a manual update.
 
 #### Core Components
 
@@ -762,7 +762,7 @@ A typical flow looks like this:
 
 ## 5. Requirements
 
-- Supported platforms: Windows X64, macOS ARM64, and Linux X64 (GLIBC 2.31+)
+- Supported platforms: Windows X64, macOS ARM64, Linux X64, and Linux ARM64 (GLIBC 2.31+)
 - Source runs require Python 3.10+
 - Access to an OpenAI Chat or Anthropic Messages endpoint
 - A model that supports the corresponding async streaming message interface
@@ -815,6 +815,7 @@ For packaged releases:
 - **Windows X64**: Extract `MakeCode-Windows-X64.zip`, then run `MakeCode.exe`.
 - **macOS ARM64**: Extract `MakeCode-macOS-ARM64.zip`, then double-click the top-level `MakeCode.command`; it starts `MakeCode/MakeCode` in Terminal. Starting the frozen executable without a TTY also relaunches it in Terminal automatically. If Finder extraction turns the `_internal/Python` symlink into a regular file, the launcher restores it before start.
 - **Linux X64**: Extract `MakeCode-Linux-X64.zip`, then run `./MakeCode/MakeCode`. If your extraction tool does not preserve executable permissions, first run `chmod +x MakeCode/MakeCode`.
+- **Linux ARM64**: Extract `MakeCode-Linux-ARM64.zip`, then run `./MakeCode/MakeCode`. It uses the same GLIBC 2.31+ baseline as X64; if your extraction tool does not preserve executable permissions, first run `chmod +x MakeCode/MakeCode`.
 
 After startup, you will enter a wizard flow:
 
@@ -852,7 +853,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 ./MakeCode.command --skills-list       # macOS
 ```
 
-`--models-list`, `--mcp-list`, `--skills-list`, `--memory-list`, `--session-json`, and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. `--session-json` accepts `conv_...`, 32 hex characters, or a standard UUID. `--mcp-add` only changes configuration and keeps the new service disabled without connecting it. `--update` reuses the TUI `/update` HTTPS download, size/SHA256 verification, and transactional replacement flow. It requires terminal confirmation by default; non-interactive environments must explicitly pass `-y`/`--yes`. It supports frozen Windows X64, Linux X64, and macOS ARM64 builds; source runs still require a manual update.
+`--models-list`, `--mcp-list`, `--skills-list`, `--memory-list`, `--session-json`, and `--check-update` are read-only: they do not create model clients, connect to MCP services, or start the TUI. `--session-json` accepts `conv_...`, 32 hex characters, or a standard UUID. `--mcp-add` only changes configuration and keeps the new service disabled without connecting it. `--update` reuses the TUI `/update` HTTPS download, size/SHA256 verification, and transactional replacement flow. It requires terminal confirmation by default; non-interactive environments must explicitly pass `-y`/`--yes`. It supports frozen Windows X64, Linux X64, Linux ARM64, and macOS ARM64 builds; source runs still require a manual update.
 
 `--simple` does not exit. It starts an interactive plain-terminal loop without the Textual TUI and renders output directly to stdout in event order, which is useful for terminals with poor TUI control-sequence support. Only completed Markdown blocks are printed (the live tail is not redrawn); HITL, AskUser, and `/load` selection fall back to terminal menus or text prompts; management commands such as `/models`, `/skills-list`, `/memory-panel`, `/memory-config`, `/mcp-switch`, `/extra-tools`, `/copy`, `/layout`, `/title`, `/status`, `/tokens`, and `/release-notes` work directly in simple mode. Menus support arrow-key navigation (including keypad arrows), and text inputs support left/right cursor movement plus up/down to move between lines, with history at the first/last line; the main input is a multi-line editor supporting Ctrl+N to split the line at the cursor, Backspace/Delete to remove line breaks, and Ctrl+V/Ctrl+O to attach clipboard images; image file paths can also be pasted directly, with multi-line pastes preserving line breaks; image placeholders can be deleted as a unit or skipped with the arrow keys; Tab completes slash commands, `/cd` directories, and the startup work directory, and the completion menu can be navigated with the up/down arrows without changing the input history; Ctrl+P toggles Plan/Act mode, and Ctrl+C cancels the current input (use `/quit` to exit); press Ctrl+G while the agent is running to append a temporary instruction; the terminal title is updated after a conversation title is loaded or generated. It can be combined with `--load`:
 

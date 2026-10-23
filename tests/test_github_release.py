@@ -120,6 +120,7 @@ def test_tree_sitter_dependencies_are_pinned_to_compatible_versions():
 
 def test_bundled_tree_sitter_parsers_match_pinned_release():
     expected_hashes = {
+        "parsers-linux-aarch64.tar.zst": "0ec614cb4dac12551cd7be4273b6c561a342face69b50e1b486db0baf7260ea2",
         "parsers-linux-x86_64.tar.zst": "935c0990f08cde9f41ff5519de5129b6b73acebcc80a6db647a1aadf5ca19a77",
         "parsers-macos-arm64.tar.zst": "7097f715d07688e6c12740908c712e67d5672aeb05971dec3b65d19cf7080159",
         "parsers-windows-x86_64.tar.zst": "03e64093297c3bde2139704af580fc80e34eac1bb08b98f737a325a6f6ee6766",
@@ -128,3 +129,11 @@ def test_bundled_tree_sitter_parsers_match_pinned_release():
     for file_name, expected_hash in expected_hashes.items():
         archive = Path("ts_cache") / file_name
         assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected_hash
+
+
+def test_release_workflow_builds_and_publishes_linux_arm64():
+    workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
+
+    assert "ubuntu-22.04-arm" in workflow
+    assert '"linux-aarch64": "MakeCode-Linux-ARM64.zip"' in workflow
+    assert "MakeCode-Linux-ARM64.zip" in github_release.REQUIRED_RELEASE_ASSETS

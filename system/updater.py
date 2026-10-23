@@ -32,9 +32,11 @@ def _current_platform_key() -> str | None:
             return None
         return "windows-x86_64"
     if sys.platform.startswith("linux"):
-        if machine not in {"amd64", "x86_64"}:
-            return None
-        return "linux-x86_64"
+        if machine in {"amd64", "x86_64"}:
+            return "linux-x86_64"
+        if machine in {"arm64", "aarch64"}:
+            return "linux-aarch64"
+        return None
     if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
         return "macos-arm64"
     return None
@@ -162,6 +164,7 @@ def download_update(version_info: dict, progress_callback=None) -> Path | None:
     archive_name = {
         "windows-x86_64": "MakeCode-Windows-X64.zip",
         "linux-x86_64": "MakeCode-Linux-X64.zip",
+        "linux-aarch64": "MakeCode-Linux-ARM64.zip",
         "macos-arm64": "MakeCode-macOS-ARM64.zip",
     }[platform_key]
     tmp_dir = tempfile.mkdtemp(prefix="makecode_update_")

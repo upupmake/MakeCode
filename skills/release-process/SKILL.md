@@ -68,17 +68,18 @@ DOWNLOAD_URL = f"{GITHUB_RELEASE_BASE_URL}/MakeCode-Windows-X64.zip"
 - Windows X64：先构建 updater，再构建 PyInstaller onedir 主程序；验证 `MakeCode.exe`、`_internal/` 和内置 updater；生成 `MakeCode-Windows-X64.zip`。
 - macOS ARM64：先构建 updater，再构建 PyInstaller onedir 主程序；验证内置 updater；将顶层 `assets/MakeCode.command` 与 `MakeCode/` 目录一起生成 `MakeCode-macOS-ARM64.zip`；不得发布或恢复 `.app`/BUNDLE 方案。
 - Linux X64：在固定的 `python:3.12-bullseye` 容器中先构建 updater，再构建 onedir 主程序；生成 `MakeCode-Linux-X64.zip`，支持基线为 GLIBC 2.31+。
+- Linux ARM64：使用 `ubuntu-22.04-arm` 与同一 `python:3.12-bullseye` arm64 容器执行与 X64 相同的构建、测试和 GLIBC 2.31 校验；生成 `MakeCode-Linux-ARM64.zip`。
 
-三个平台的构建任务负责执行测试和静态检查，包括 TOC、目录结构、警告日志、入口文件，以及 Linux ELF/GLIBC 要求。工作流禁止启动 `dist/` 下的程序。
+四个平台的构建任务负责执行测试和静态检查，包括 TOC、目录结构、警告日志、入口文件，以及 Linux ELF/GLIBC 要求。工作流禁止启动 `dist/` 下的程序。
 
 ### 2.3 发布资产与自动收尾
 
 Release 汇总任务只接收各平台 Actions artifacts，并完成：
 
-1. 校验三平台 ZIP 均存在，分别计算大小和 SHA-256。
+1. 校验四个平台的 ZIP 均存在，分别计算大小和 SHA-256。
 2. 从 Release body 的日志标记中提取发布日志，生成 `version.json`（顶层字段描述 Windows 资产，`platforms` 字段包含全部平台）。
-3. 将三个 ZIP 和 `version.json` 上传到 GitHub Release。
-4. 通过 `python github_release.py --finalize-release` 收尾：再次确认四个资产齐全后才将新 Release 设为 latest，`latest/download` 链接随之自动指向新版本资产；随后删除同一 `MAJOR.MINOR` 版本线内更早的 Release 和对应 tags。
+3. 将四个 ZIP 和 `version.json` 上传到 GitHub Release。
+4. 通过 `python github_release.py --finalize-release` 收尾：再次确认五个资产齐全后才将新 Release 设为 latest，`latest/download` 链接随之自动指向新版本资产；随后删除同一 `MAJOR.MINOR` 版本线内更早的 Release 和对应 tags。
 
 自动收尾的前提：任何一步失败（某平台构建失败、version.json 生成失败、资产上传失败、finalize 资产校验不齐全），旧 Release/tag 一律保持不变，新版本不会成为 latest——因此本地无需手动设置 latest，也无需人工干预失败场景。
 
@@ -124,7 +125,7 @@ python github_release.py
 - [ ] **所有变更已提交**（`version.py` + 代码变更）— 构建前完成
 - [ ] `RELEASE_LOG.md` 已准备并包含本次日志
 - [ ] GitHub Release/tag 已创建且指向本次发布提交（创建时为非 latest）
-- [ ] 标签触发的 Windows/macOS/Linux Actions 构建成功，四资产（三平台 ZIP + `version.json`）上传后新 Release 已自动设为 latest，`latest/download/version.json` 可访问且版本号为新版本
+- [ ] 标签触发的 Windows/macOS/Linux（X64/ARM64）Actions 构建成功，五资产（四平台 ZIP + `version.json`）上传后新 Release 已自动设为 latest，`latest/download/version.json` 可访问且版本号为新版本
 - [ ] 同一 `MAJOR.MINOR` 版本线内更早的 Release/tag 已自动清理，其他版本线稳定版本仍保留（发布 6.1.8 只清理旧 6.1.x，保留 6.0.x、5.x.x）
 - [ ] **确认工作区干净**：运行 `git status` 确认无未提交的文件
 
@@ -136,7 +137,7 @@ python github_release.py
 
 用户端启动时会：
 1. 冻结版 Windows/Linux/macOS 请求 GitHub latest Release 的 `version.json` 获取最新版本信息
-2. 从 `platforms` 严格选择 `windows-x86_64`、`linux-x86_64` 或 `macos-arm64` 资产并下载、校验和安装
+2. 从 `platforms` 严格选择 `windows-x86_64`、`linux-x86_64`、`linux-aarch64` 或 `macos-arm64` 资产并下载、校验和安装
 
 冻结版 Windows/Linux/macOS 同时支持 TUI `/update` 与外部 `--update`。外部命令必须在工作区、模型客户端、MCP 和 TUI 初始化前执行，展示版本与发布日志后默认通过 `[y/N]` 确认；仅显式传入 `-y`/`--yes` 时可跳过确认，非交互终端未传免确认参数时必须拒绝下载。源码运行不支持外部自动安装。`--check-update` 继续保持只读，不下载或安装。
 
@@ -206,7 +207,7 @@ git add -A && git commit -m "release: vX.Y.Z"
 # 3. 创建临时发布日志 RELEASE_LOG.md，写入 markdown 格式发布内容
 # 4. 推送发布提交后创建 GitHub Release/tag
 python github_release.py
-# 5. 等待 Actions 构建三平台 ZIP、上传四资产并自动设为 latest（见 2.3）
+# 5. 等待 Actions 构建四平台 ZIP、上传五资产并自动设为 latest（见 2.3）
 # 6. 确认工作区干净
 git status  # 应输出 "nothing to commit, working tree clean"
 ```

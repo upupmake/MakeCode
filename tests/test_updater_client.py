@@ -180,6 +180,38 @@ def test_download_update_uses_linux_platform_asset(tmp_path):
     assert urlopen.call_args.kwargs["context"] is ssl_context
 
 
+def test_linux_arm64_platform_key():
+    with (
+        patch.object(updater.sys, "platform", "linux"),
+        patch.object(updater.platform, "machine", return_value="aarch64"),
+    ):
+        assert updater._current_platform_key() == "linux-aarch64"
+
+
+def test_download_update_uses_linux_arm64_platform_asset(tmp_path):
+    content = b"linux-arm64-update"
+    asset = {
+        "download_url": "https://example.com/MakeCode-Linux-ARM64.zip",
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "size": len(content),
+    }
+    manifest = {"platforms": {"linux-aarch64": asset}}
+
+    ssl_context = object()
+    with (
+        patch.object(updater, "UPDATE_PLATFORM_KEY", "linux-aarch64"),
+        patch.object(updater.tempfile, "mkdtemp", return_value=str(tmp_path)),
+        patch.object(updater, "_create_ssl_context", return_value=ssl_context),
+        patch.object(updater.urllib.request, "urlopen", return_value=_Response(content)) as urlopen,
+    ):
+        archive = updater.download_update(manifest)
+
+    assert archive == tmp_path / "MakeCode-Linux-ARM64.zip"
+    assert archive.read_bytes() == content
+    assert urlopen.call_args.args[0].full_url == asset["download_url"]
+    assert urlopen.call_args.kwargs["context"] is ssl_context
+
+
 def test_launch_updater_runs_outside_install_directory(tmp_path):
     updater_dir = tmp_path / "updater"
     updater_dir.mkdir()

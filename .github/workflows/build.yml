@@ -266,20 +266,32 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: Build on Linux X64 (GLIBC 2.31)
+    name: Build on Linux ${{ matrix.label }} (GLIBC 2.31)
     needs: quality
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            label: X64
+            node_arch: x64
+          - runner: ubuntu-22.04-arm
+            label: ARM64
+            node_arch: arm64
     container:
       image: python:3.12-bullseye
 
     steps:
       - name: Install system dependencies
+        env:
+          NODE_ARCH: ${{ matrix.node_arch }}
         run: |
           apt-get -o Acquire::Check-Valid-Until=false update
-          apt-get install -y --no-install-recommends --no-upgrade zip xz-utils
+          apt-get install -y --no-install-recommends --no-upgrade binutils zip xz-utils
           command -v curl
           command -v git
-          curl -fsSL https://nodejs.org/dist/v20.19.5/node-v20.19.5-linux-x64.tar.xz \
+          curl -fsSL "https://nodejs.org/dist/v20.19.5/node-v20.19.5-linux-${NODE_ARCH}.tar.xz" \
             | tar -xJ -C /usr/local --strip-components=1
 
       - name: Checkout repository
@@ -369,7 +381,11 @@ jobs:
           certificate_bundle = Path("dist/MakeCode/_internal/certifi/cacert.pem")
           if not certificate_bundle.is_file():
               raise SystemExit(f"Bundled CA certificate file is missing: {certificate_bundle}")
-          parser_archive = "parsers-linux-x86_64.tar.zst"
+          import platform
+
+          machine = platform.machine().lower()
+          linux_arch = "aarch64" if machine in {"arm64", "aarch64"} else "x86_64"
+          parser_archive = f"parsers-linux-{linux_arch}.tar.zst"
           if parser_archive not in analysis:
               raise SystemExit(f"Platform parser archive missing from bundle: {parser_archive}")
 
@@ -468,7 +484,9 @@ jobs:
               if path.is_file() and is_elf(path):
                   check_elf(path, path.as_posix())
 
-          archive = Path("ts_cache/parsers-linux-x86_64.tar.zst")
+          machine = platform.machine().lower()
+          linux_arch = "aarch64" if machine in {"arm64", "aarch64"} else "x86_64"
+          archive = Path(f"ts_cache/parsers-linux-{linux_arch}.tar.zst")
           with tempfile.TemporaryDirectory(prefix="makecode-glibc-") as temp_dir:
               extracted = Path(temp_dir)
               with pyzstd.open(archive, "rb") as compressed:
@@ -599,6 +617,7 @@ jobs:
               "windows-x86_64": "MakeCode-Windows-X64.zip",
               "macos-arm64": "MakeCode-macOS-ARM64.zip",
               "linux-x86_64": "MakeCode-Linux-X64.zip",
+              "linux-aarch64": "MakeCode-Linux-ARM64.zip",
           }
           platforms = {}
           for platform_key, asset_name in asset_names.items():

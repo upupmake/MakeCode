@@ -17,6 +17,7 @@ EXPECTED_PACKAGE_VERSIONS = {
     "tree-sitter-language-pack": "1.14.3",
 }
 EXPECTED_ARCHIVE_SHA256 = {
+    "linux-aarch64": "0ec614cb4dac12551cd7be4273b6c561a342face69b50e1b486db0baf7260ea2",
     "linux-x86_64": "935c0990f08cde9f41ff5519de5129b6b73acebcc80a6db647a1aadf5ca19a77",
     "macos-arm64": "7097f715d07688e6c12740908c712e67d5672aeb05971dec3b65d19cf7080159",
     "windows-x86_64": "03e64093297c3bde2139704af580fc80e34eac1bb08b98f737a325a6f6ee6766",
