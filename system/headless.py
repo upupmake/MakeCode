@@ -62,6 +62,8 @@ class _McpTerminationLogFilter(logging.Filter):
 
 
 class HeadlessRunner:
+    MCP_READY_TIMEOUT = 30.0
+
     def __init__(self, options: HeadlessOptions) -> None:
         self.options = options
         self._debug_stream: TextIO | None = None
@@ -373,12 +375,20 @@ class HeadlessRunner:
         )
         GLOBAL_MCP_MANAGER.initialize(console=console)
         GLOBAL_MCP_MANAGER.start_background()
-        deadline = time.monotonic() + 30.0
+        ready = False
+        deadline = time.monotonic() + self.MCP_READY_TIMEOUT
         while time.monotonic() < deadline:
             if GLOBAL_MCP_MANAGER.wait_until_ready(timeout=0.2):
+                ready = True
                 break
             if self._stop_event is not None and self._stop_event.is_set():
                 break
+        if not ready:
+            if self._stop_event is not None and self._stop_event.is_set():
+                return
+            raise HeadlessConfigError(
+                f"MCP 初始化在 {self.MCP_READY_TIMEOUT:g} 秒内未完成，已中止请求。"
+            )
 
     def _stop_mcp(self) -> None:
         with contextlib.suppress(Exception):

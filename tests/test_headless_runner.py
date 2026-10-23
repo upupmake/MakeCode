@@ -9,7 +9,7 @@ import pytest
 import system.headless as headless_module
 from system.agent_runtime import TurnResult
 from system.cli import HeadlessOptions
-from system.headless import HeadlessUsageError
+from system.headless import HeadlessConfigError, HeadlessUsageError
 from utils.conversations import ConversationStore
 
 
@@ -139,6 +139,25 @@ def test_headless_mode_filters_mcp_termination_warning(caplog):
             runner._leave_headless_mode()
 
     assert "Session termination failed" not in caplog.text
+
+
+def test_mcp_timeout_aborts_before_request(monkeypatch):
+    class SlowMCPManager:
+        def initialize(self, console):
+            pass
+
+        def start_background(self):
+            pass
+
+        def wait_until_ready(self, timeout=0):
+            return False
+
+    runner = headless_module.HeadlessRunner(HeadlessOptions(prompt="hi"))
+    runner.MCP_READY_TIMEOUT = 0.01
+    monkeypatch.setattr(headless_module, "GLOBAL_MCP_MANAGER", SlowMCPManager())
+
+    with pytest.raises(HeadlessConfigError, match="MCP 初始化"):
+        runner._start_mcp()
 
 
 def test_stream_json_mode_emits_protocol_events(runner_env, capsys, monkeypatch):
