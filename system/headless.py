@@ -277,17 +277,10 @@ class HeadlessRunner:
         registry: ToolRegistry,
         mcp_tools: list[dict[str, Any]],
     ) -> list[str]:
-        definitions = registry.definitions(
-            mcp_tools=mcp_tools,
+        return registry.tool_names(
+            mcp_tools,
             plan_mode=self.options.permission_mode == "plan",
         )
-        names = []
-        for tool in definitions:
-            function = tool.get("function")
-            name = function.get("name") if isinstance(function, dict) else tool.get("name")
-            if name:
-                names.append(str(name))
-        return sorted(set(names))
 
     def _prepare_model(self) -> None:
         from system.models import get_model_manager

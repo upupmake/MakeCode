@@ -116,3 +116,19 @@ def test_unmatched_allow_selectors_are_reported():
     )
 
     assert registry.unmatched_allowed_selectors([]) == ["NotARealTool"]
+
+
+def test_tool_names_do_not_require_a_configured_model():
+    registry = ToolRegistry(
+        allowed_tools=["File"],
+        include_ask_user=False,
+        include_delegate_tasks=False,
+    )
+
+    names = registry.tool_names([])
+
+    assert "FileRead" in names
+    assert "RunTerminalCommand" not in names
+    assert not ({"FileCreate", "FileEdit", "FilePatch"} & set(
+        registry.tool_names([], plan_mode=True)
+    ))

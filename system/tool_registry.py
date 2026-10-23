@@ -204,6 +204,21 @@ class ToolRegistry:
                 unknown.append(str(selector))
         return unknown
 
+    def tool_names(
+        self,
+        mcp_tools: list[dict[str, Any]] | None = None,
+        *,
+        plan_mode: bool = False,
+    ) -> list[str]:
+        """Return the enabled leaf tool names without formatting for a model."""
+        mcp = GLOBAL_MCP_MANAGER.get_tools() if mcp_tools is None else mcp_tools
+        selected = self._selected_names(
+            self._builtin_tools(),
+            extra_names=self._all_leaf_names(mcp),
+            plan_mode=plan_mode,
+        )
+        return sorted(selected)
+
     def _builtin_tools(self) -> list[dict[str, Any]]:
         tools = [
             *COMMON_TOOLS,
