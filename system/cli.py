@@ -131,6 +131,11 @@ class CliParser:
             if prompt:
                 self.error("prompt 只能提供一次：使用 -p 的值或位置参数")
             prompt = positional_prompt
+        # Bare -p normally means "read one prompt from stdin". When an input
+        # format is given explicitly, the format defines how stdin is consumed
+        # (one message per line), so keep the persistent loop instead.
+        if prompt == "" and args.input_format is not None:
+            prompt = None
 
         input_format: Literal["text", "stream-json"] = (
             "stream-json"

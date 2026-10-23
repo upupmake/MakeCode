@@ -63,9 +63,19 @@ def test_print_mode_accepts_stream_json_input_like_claude_code():
     )
 
     assert options is not None
-    assert options.prompt == ""
+    assert options.prompt is None
     assert options.input_format == "stream-json"
     assert options.output_format == "stream-json"
+
+
+def test_print_with_input_format_uses_persistent_loop():
+    for input_format in ("text", "json", "stream-json"):
+        options = parse("-p", "--input-format", input_format)
+        assert options is not None
+        assert options.prompt is None
+        assert options.input_format == (
+            "text" if input_format == "text" else "stream-json"
+        )
 
 
 def test_output_format_json_and_session_options():

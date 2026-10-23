@@ -912,6 +912,8 @@ printf 'first: remember 7391\nsecond: what is the code?\n' \
 
 `--output-format` may be `text` (final text per turn), `json` (one result object per turn), or `stream-json` (event stream per turn).
 
+Combining `-p` with `--input-format` also enters persistent mode: the input format decides how stdin is read, and pressing Enter submits one message. Only a bare `-p` (without `--input-format`) reads stdin until EOF and then runs one turn.
+
 Persistent modes emit a readiness marker before reading stdin:
 
 | Output | Marker |

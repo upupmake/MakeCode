@@ -885,6 +885,8 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
 
 显式指定 `--input-format text` 且不提供 `-p` 时进入常驻模式；`--output-format` 可选 `text`（每轮输出最终文本）、`json`（每轮一条 result）或 `stream-json`（每轮一组事件）。
 
+同时指定 `-p` 和 `--input-format` 时同样进入常驻模式，由输入格式决定读取方式，按下回车即提交一条消息。只有单独的 `-p`（不带 `--input-format`）才是“读到 stdin EOF 后执行一轮”。
+
 常驻模式在开始读取 stdin 前会输出启动标志：
 
 | 输出格式 | 启动标志 |
