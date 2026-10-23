@@ -138,3 +138,29 @@ def test_text_input_loop_keeps_error_exit_code(monkeypatch):
     exit_code = asyncio.run(TextInputLoop(ErrorRuntime(), lambda result: 1).run())
 
     assert exit_code == 1
+
+
+def test_stream_input_without_writer_uses_result_callback(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        StringIO(
+            "not-json\n"
+            + json.dumps({"type": "user", "content": "ok"})
+            + "\n"
+        ),
+    )
+    runtime = FakeRuntime()
+    results = []
+
+    exit_code = asyncio.run(
+        StreamJsonInputLoop(
+            runtime,
+            None,
+            write_result=lambda result: results.append(result.text) or 0,
+        ).run()
+    )
+
+    assert exit_code == 0
+    assert runtime.queries == ["ok"]
+    assert results == ["ok"]

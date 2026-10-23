@@ -29,18 +29,17 @@ class StreamJsonInputLoop:
         *,
         replay_user_messages: bool = False,
         stop_event: asyncio.Event | None = None,
+        write_result: Callable[[TurnResult], int] | None = None,
     ) -> None:
         self.runtime = runtime
         self.writer = writer
         self.replay_user_messages = replay_user_messages
         self.stop_event = stop_event
+        self._write_result = write_result
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def run(self) -> int:
-        writer = self.writer
-        if writer is None:
-            raise RuntimeError("StreamJsonInputLoop requires a StreamJsonWriter")
         self._loop = asyncio.get_running_loop()
         threading.Thread(target=self._read_stdin, daemon=True).start()
         exit_code = 0
@@ -52,16 +51,10 @@ class StreamJsonInputLoop:
                 return exit_code
             query = self._query_text(message)
             if not query:
-                writer.write(
-                    {
-                        "type": "error",
-                        "error": "用户消息没有可用的文本内容。",
-                        "session_id": writer.session_id,
-                    }
-                )
+                self._emit_error("用户消息没有可用的文本内容。")
                 continue
-            if self.replay_user_messages:
-                writer.write_user_message(message)
+            if self.replay_user_messages and self.writer is not None:
+                self.writer.write_user_message(message)
             start_cancel_listener()
             try:
                 if self.stop_event is not None and self.stop_event.is_set():
@@ -69,9 +62,29 @@ class StreamJsonInputLoop:
                 result = await self.runtime.run_turn(query)
             finally:
                 stop_cancel_listener()
-            writer.write_result(result)
-            if result.is_error:
-                exit_code = 1
+            turn_exit_code = self._emit_result(result)
+            if turn_exit_code != 0:
+                exit_code = turn_exit_code
+
+    def _emit_result(self, result: TurnResult) -> int:
+        if self.writer is not None:
+            self.writer.write_result(result)
+            return 0 if not result.is_error else 1
+        if self._write_result is not None:
+            return self._write_result(result)
+        return 1
+
+    def _emit_error(self, message: str) -> None:
+        if self.writer is not None:
+            self.writer.write(
+                {
+                    "type": "error",
+                    "error": message,
+                    "session_id": self.writer.session_id,
+                }
+            )
+        else:
+            print(f"MakeCode: {message}", file=sys.stderr)
 
     async def _next_message(self) -> Any:
         if self.stop_event is not None and self.stop_event.is_set():
@@ -105,13 +118,7 @@ class StreamJsonInputLoop:
                     cancel_current_response()
                 continue
             if kind == "error":
-                self.writer.write(
-                    {
-                        "type": "error",
-                        "error": payload,
-                        "session_id": self.writer.session_id,
-                    }
-                )
+                self._emit_error(payload)
                 continue
             self._put(payload)
 

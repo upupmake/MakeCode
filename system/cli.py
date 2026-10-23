@@ -133,7 +133,9 @@ class CliParser:
             prompt = positional_prompt
 
         input_format: Literal["text", "stream-json"] = (
-            "text" if args.input_format is None else args.input_format
+            "stream-json"
+            if args.input_format in ("json", "stream-json")
+            else "text"
         )
         requested = (
             args.print_prompt is not None
@@ -151,22 +153,21 @@ class CliParser:
             self.error("-p/--print 和 headless 输入模式不能与 --simple 一起使用")
         if args.load is not None:
             self.error("-p/--print 和 headless 输入模式不能与 --load 一起使用")
-        if args.input_format == "stream-json" and prompt:
-            self.error("--input-format stream-json 不接受 prompt 参数")
+        if args.input_format in ("json", "stream-json") and prompt:
+            self.error("--input-format json/stream-json 不接受 prompt 参数")
         if args.fork_session and not (args.resume is not None or args.continue_latest):
             self.error("--fork-session 需要与 -r/--resume 或 -c/--continue 一起使用")
         if args.session_id is not None and (args.resume is not None or args.continue_latest):
             self.error("--session-id 不能与 -r/--resume 或 -c/--continue 同时使用")
         if args.resume == "":
             self.error("-r/--resume 在 headless 模式需要会话 ID")
-        if args.input_format == "stream-json" and args.output_format != "stream-json":
-            self.error("--input-format stream-json 需要 --output-format stream-json")
         if args.include_partial_messages and args.output_format != "stream-json":
             self.error("--include-partial-messages 需要 --output-format stream-json")
         if args.replay_user_messages and (
-            args.input_format != "stream-json" or args.output_format != "stream-json"
+            args.input_format not in ("json", "stream-json")
+            or args.output_format != "stream-json"
         ):
-            self.error("--replay-user-messages 需要 stream-json 输入和输出")
+            self.error("--replay-user-messages 需要 json/stream-json 输入和 stream-json 输出")
 
         return HeadlessOptions(
             prompt=prompt,
@@ -221,7 +222,11 @@ class CliParser:
             action="store_true",
             help="使用纯终端简单模式启动：不启动 Textual TUI，按顺序把输出直接渲染到终端",
         )
-        parser.add_argument("--input-format", choices=("text", "stream-json"), help="输入格式（仅 headless）：text 逐行多轮、stream-json 事件流")
+        parser.add_argument(
+            "--input-format",
+            choices=("text", "json", "stream-json"),
+            help="输入格式（仅 headless）：text 逐行文本、json/stream-json 逐行 JSON",
+        )
         parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text", help="输出格式（仅 headless）：text、json 或 stream-json")
         parser.add_argument("--session-id", metavar="CONVERSATION_ID", help="指定会话 ID；不存在时创建，存在时续接")
         parser.add_argument("-c", "--continue", dest="continue_latest", action="store_true", help="续接当前工作区最近一次会话")

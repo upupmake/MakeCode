@@ -161,10 +161,6 @@ class HeadlessRunner:
 
     async def _run_turns(self, runtime: AgentRuntime, store: ConversationStore) -> int:
         if self.options.input_format == "stream-json":
-            if self._stream_writer is None:
-                raise HeadlessUsageError(
-                    "stream-json 输入必须配合 stream-json 输出。"
-                )
             from system.headless_input import StreamJsonInputLoop
 
             exit_code = await StreamJsonInputLoop(
@@ -172,6 +168,9 @@ class HeadlessRunner:
                 self._stream_writer,
                 replay_user_messages=self.options.replay_user_messages,
                 stop_event=self._stop_event,
+                write_result=(
+                    None if self._stream_writer is not None else self._write_result
+                ),
             ).run()
             return self._signal_exit_code or exit_code
         if self.options.prompt is None:

@@ -893,7 +893,14 @@ printf '%s\n' \
   | python3.13 main.py --input-format stream-json --output-format stream-json
 ```
 
-`--input-format stream-json` requires `--output-format stream-json`. It supports `{"type":"control","action":"interrupt"}` and `--replay-user-messages`.
+Input and output formats are independent:
+
+| `--input-format` | Meaning |
+|---|---|
+| `text` | one user message per stdin line |
+| `json` (alias `stream-json`) | one JSON object per stdin line |
+
+`--output-format` accepts `text`, `json`, and `stream-json`, and any input format may be combined with any output format. `--replay-user-messages` and `--include-partial-messages` require `stream-json` output. JSON input supports `{"type":"control","action":"interrupt"}`.
 
 Plain-text persistent mode is also available: explicitly passing `--input-format text` without `-p` treats every stdin line as one turn.
 

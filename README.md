@@ -866,7 +866,14 @@ printf '%s\n' \
   | python3.13 main.py --input-format stream-json --output-format stream-json
 ```
 
-`--input-format stream-json` 必须配合 `--output-format stream-json`；支持 `{"type":"control","action":"interrupt"}` 取消当前轮，以及 `--replay-user-messages` 回显用户消息。
+输入格式与输出格式互相独立：
+
+| `--input-format` | 含义 |
+|---|---|
+| `text` | stdin 每行一条文本消息 |
+| `json`（别名 `stream-json`） | stdin 每行一个 JSON 对象 |
+
+`--output-format` 可选 `text`、`json`、`stream-json`，任意输入格式都可以搭配任意输出格式。`--replay-user-messages` 需要 `stream-json` 输出，`--include-partial-messages` 同样需要 `stream-json` 输出。JSON 输入支持 `{"type":"control","action":"interrupt"}` 取消当前轮。
 
 也可以直接使用纯文本逐行输入，每行是一轮：
 

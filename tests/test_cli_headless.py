@@ -143,13 +143,32 @@ def test_resume_continue_and_fork_options():
     assert options.fork_session is True
 
 
-def test_stream_json_input_requires_stream_json_output():
+def test_stream_json_input_parses():
     options = parse("--input-format", "stream-json", "--output-format", "stream-json")
 
     assert options is not None
     assert options.prompt is None
     assert options.input_format == "stream-json"
     assert options.output_format == "stream-json"
+
+
+def test_input_and_output_formats_are_independent():
+    for output_format in ("text", "json"):
+        options = parse(
+            "--input-format", "stream-json",
+            "--output-format", output_format,
+        )
+        assert options is not None
+        assert options.input_format == "stream-json"
+        assert options.output_format == output_format
+
+
+def test_json_is_an_alias_for_stream_json_input():
+    options = parse("--input-format", "json", "--output-format", "text")
+
+    assert options is not None
+    assert options.input_format == "stream-json"
+    assert options.output_format == "text"
 
 
 def test_explicit_text_input_without_prompt_enters_persistent_mode():
@@ -189,6 +208,8 @@ def test_default_invocation_still_starts_tui():
         ("-p", "hello", "--input-format", "stream-json"),
         ("-p", "hello", "--include-partial-messages"),
         ("-p", "hello", "--input-format", "stream-json", "--output-format", "stream-json"),
+        ("--input-format", "stream-json", "--output-format", "json", "--replay-user-messages"),
+        ("-p", "hello", "--input-format", "json"),
         ("-p", "hello", "--simple"),
         ("-p", "hello", "--load"),
         ("--output-format", "json"),
