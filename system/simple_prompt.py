@@ -142,23 +142,6 @@ def _build_key_bindings(
         def _newline(event) -> None:
             event.current_buffer.insert_text("\n")
 
-    @Condition
-    def at_first_line() -> bool:
-        return get_app().current_buffer.document.cursor_position_row == 0
-
-    @Condition
-    def at_last_line() -> bool:
-        document = get_app().current_buffer.document
-        return document.cursor_position_row == document.line_count - 1
-
-    @bindings.add("up", filter=at_first_line)
-    def _history_previous(event) -> None:
-        event.current_buffer.history_backward()
-
-    @bindings.add("down", filter=at_last_line)
-    def _history_next(event) -> None:
-        event.current_buffer.history_forward()
-
     def insert_display(event, serialized: str) -> None:
         display_text, entries = _display_serialized(
             serialized,

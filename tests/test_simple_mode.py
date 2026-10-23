@@ -593,6 +593,90 @@ def test_slash_completer_suggests_cd_directories(tmp_path, monkeypatch):
     ]
 
 
+def _run_prompt_with_timed_keys(
+    keys: list[str],
+    *,
+    history: list[str] | None = None,
+    complete_while_typing: bool = False,
+) -> str:
+    import threading
+    import time
+
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import InMemoryHistory
+
+    result: list[str] = []
+    with create_pipe_input() as pipe:
+        bindings = simple_prompt._build_key_bindings(
+            multiline=True,
+            image_handler=None,
+            image_display_handler=None,
+            paste_handler=None,
+            ctrl_p_handler=None,
+            cancel_on_escape=False,
+            image_entries=[],
+        )
+        session = PromptSession(
+            message="You> ",
+            history=InMemoryHistory(list(history or [])),
+            multiline=True,
+            key_bindings=bindings,
+            completer=simple_prompt.SlashCompleter(
+                {"/status": "显示状态", "/start": "开始"}
+            ),
+            complete_while_typing=complete_while_typing,
+            reserve_space_for_menu=6,
+            input=pipe,
+            output=DummyOutput(),
+        )
+
+        def run_prompt() -> None:
+            result.append(session.prompt(handle_sigint=False))
+
+        def feed() -> None:
+            time.sleep(0.1)
+            for key in keys:
+                pipe.send_text(key)
+                time.sleep(0.1)
+
+        prompt_thread = threading.Thread(target=run_prompt, daemon=True)
+        prompt_thread.start()
+        threading.Thread(target=feed, daemon=True).start()
+        prompt_thread.join(timeout=5)
+        assert not prompt_thread.is_alive()
+
+    return result[0]
+
+
+@pytest.mark.parametrize(
+    ("arrow", "expected"),
+    [
+        ("\x1b[A", "/status"),
+        ("\x1b[B", "/start"),
+    ],
+)
+def test_slash_completion_arrows_select_candidates(arrow, expected):
+    assert _run_prompt_with_timed_keys(
+        ["/st" if arrow == "\x1b[A" else "/", "\t", arrow, "\r", "\r"],
+        history=["previous message"],
+    ) == expected
+
+
+def test_slash_completion_arrows_with_auto_completion():
+    assert _run_prompt_with_timed_keys(
+        ["/st", "\x1b[A", "\r", "\r"],
+        history=["previous message"],
+        complete_while_typing=True,
+    ) == "/status"
+
+
+def test_history_arrow_still_works_without_completions():
+    assert _run_prompt_with_timed_keys(
+        ["\x1b[A", "\r"],
+        history=["previous message"],
+    ) == "previous message"
+
+
 def test_read_prompt_falls_back_to_input(monkeypatch):
     monkeypatch.setattr(
         simple_prompt.simple_terminal,
