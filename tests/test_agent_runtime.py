@@ -172,3 +172,17 @@ def test_restore_loads_snapshot_messages(tmp_path):
 
     assert runtime.messages == snapshot.messages
     assert runtime.store.active_id == snapshot.conversation_id
+
+
+def test_system_prompt_includes_headless_note_and_append_prompt(tmp_path):
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        append_system_prompt="APPENDED MARKER",
+        headless=True,
+    )
+
+    prompt = runtime._system_prompt()
+
+    assert "APPENDED MARKER" in prompt
+    assert "# Headless Mode" in prompt
