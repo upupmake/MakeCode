@@ -75,6 +75,21 @@ def test_text_mode_emits_init_json_then_answer(runner_env, capsys):
     assert init["output_format"] == "text"
     assert init["session_id"].startswith("conv_")
     assert init["tool_count"] == len(init["tools"]) > 0
+    assert init["capabilities"] == {
+        "configurable_paths": True,
+        "skills_dirs_override": True,
+    }
+    assert set(init["config_paths"]) == {
+        "shared_config_dir",
+        "workspace_config_dir",
+        "skills_dirs",
+        "mcp_config",
+    }
+    assert init["config_paths"]["skills_dirs"]
+    assert all(
+        Path(directory).is_absolute()
+        for directory in init["config_paths"]["skills_dirs"]
+    )
     assert FakeRuntime.instances[0].prompt == "hi"
 
 

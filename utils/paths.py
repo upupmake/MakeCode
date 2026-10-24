@@ -12,13 +12,34 @@ else:
 _WORKDIR = Path.cwd().resolve()
 
 
+def _env_path(name: str, base: Path) -> Path | None:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return None
+    if "\x00" in value:
+        raise ValueError(f"{name} must not contain NUL bytes")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    return path.resolve()
+
+
+def _ensure_directory(path: Path, *, private: bool = False) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700 if private else 0o777)
+
+
 def install_dir() -> Path:
     return _INSTALL_DIR
 
 
 def install_makecode_dir(*, create: bool = True) -> Path:
+    override = _env_path("MAKECODE_CONFIG_DIR", Path.cwd())
+    if override is not None:
+        if create:
+            _ensure_directory(override, private=True)
+        return override
     if create:
-        _INSTALL_MAKECODE_DIR.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(_INSTALL_MAKECODE_DIR)
     return _INSTALL_MAKECODE_DIR
 
 
@@ -26,10 +47,14 @@ def workdir() -> Path:
     return _WORKDIR
 
 
-def workspace_makecode_dir(*, create: bool = True) -> Path:
-    path = _WORKDIR / ".makecode"
+def workspace_makecode_dir(
+    *, create: bool = True, workdir: Path | None = None
+) -> Path:
+    root = _WORKDIR if workdir is None else Path(workdir).expanduser().resolve()
+    override = _env_path("MAKECODE_WORKSPACE_CONFIG_DIR", root)
+    path = override if override is not None else root / ".makecode"
     if create:
-        path.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(path)
     return path
 
 
@@ -86,34 +111,55 @@ def complete_directory_path(path_fragment: str, base_dir: Path) -> str | None:
     return None
 
 
-def workspace_conversations_dir() -> Path:
-    return workspace_makecode_dir() / "conversations"
+def workspace_conversations_dir(
+    *, create: bool = True, workdir: Path | None = None
+) -> Path:
+    return workspace_makecode_dir(create=create, workdir=workdir) / "conversations"
 
 
-def workspace_memory_dir() -> Path:
-    return workspace_makecode_dir() / "memory"
+def workspace_memory_dir(*, create: bool = True) -> Path:
+    return workspace_makecode_dir(create=create) / "memory"
 
 
-def workspace_memory_db_file() -> Path:
-    return workspace_memory_dir() / "memory.db"
+def workspace_memory_db_file(*, create: bool = True) -> Path:
+    return workspace_memory_dir(create=create) / "memory.db"
 
 
 def install_skills_dir(*, create: bool = True) -> Path:
     path = install_makecode_dir(create=create) / "skills"
     if create:
-        path.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(path)
     return path
 
 
 def workspace_skills_dir(*, create: bool = True) -> Path:
     path = workspace_makecode_dir(create=create) / "skills"
     if create:
-        path.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(path)
     return path
 
 
 def workspace_legacy_skills_dir() -> Path:
     return _WORKDIR / "skills"
+
+
+def skills_dirs_override() -> list[Path] | None:
+    """Return the explicit MAKECODE_SKILLS_DIRS list, or None when unset."""
+    value = os.environ.get("MAKECODE_SKILLS_DIRS")
+    if value is None:
+        return None
+    if "\x00" in value:
+        raise ValueError("MAKECODE_SKILLS_DIRS must not contain NUL bytes")
+    directories: list[Path] = []
+    for entry in value.split(os.pathsep):
+        entry = entry.strip()
+        if not entry:
+            continue
+        path = Path(entry).expanduser()
+        if not path.is_absolute():
+            path = _WORKDIR / path
+        directories.append(path.resolve())
+    return list(dict.fromkeys(directories))
 
 
 def workspace_disabled_skills_file(*, create: bool = True) -> Path:
@@ -131,9 +177,11 @@ def memory_config_file() -> Path:
 def mcp_config_file(*, create: bool = True) -> Path:
     override = os.environ.get("MAKECODE_MCP_CONFIG")
     if override:
+        if "\x00" in override:
+            raise ValueError("MAKECODE_MCP_CONFIG must not contain NUL bytes")
         path = Path(override).expanduser()
         if create:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            _ensure_directory(path.parent)
         return path
     return install_makecode_dir(create=create) / "mcp_config.json"
 
@@ -152,5 +200,5 @@ def install_ts_cache_dir(*, create: bool = True) -> Path:
     else:
         path = _INSTALL_DIR / "ts_cache"
     if create:
-        path.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(path)
     return path

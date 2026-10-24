@@ -435,7 +435,7 @@ def _memory_list() -> int:
     from utils import paths
     from utils.memory_catalog import read_memory_records, sort_memory_records
 
-    memory_file = paths.workspace_makecode_dir(create=False) / "memory" / "memory.db"
+    memory_file = paths.workspace_memory_db_file(create=False)
     print(f"长期记忆数据库: {memory_file}")
     try:
         memories = sort_memory_records(read_memory_records(memory_file))
@@ -461,6 +461,7 @@ def _memory_list() -> int:
 
 
 def _session_json(conversation_id: str, workdir: Path | None) -> int:
+    from utils import paths
     from utils.conversations import CONVERSATION_FILE, ConversationStore
 
     if workdir is not None:
@@ -468,7 +469,9 @@ def _session_json(conversation_id: str, workdir: Path | None) -> int:
         if not root.is_dir():
             print(f"工作目录不存在: {root}", file=sys.stderr)
             return 1
-        store = ConversationStore(root / ".makecode" / "conversations")
+        store = ConversationStore(
+            paths.workspace_conversations_dir(create=False, workdir=root)
+        )
     else:
         store = ConversationStore()
     try:

@@ -63,8 +63,8 @@ MakeCode 是一个面向工程任务的 Agent CLI。它采用"编排器（Orches
 MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和技能库加载均以用户当前选择的 **工作目录（WORKDIR）**
 为基准，而非 Agent 源码所在目录。
 
-- **技能库加载**：系统按优先级扫描安装目录 `.makecode/skills/`、`WORKDIR/.makecode/skills/` 与兼容路径 `WORKDIR/skills/` 中的自定义技能（`SKILL.md`）；项目级禁用状态保存在 `WORKDIR/.makecode/disabled_skills.json`。
-- 启动时以 **Textual TUI 向导面板** 交互式选择工作区目录（当前目录或自定义路径），不再依赖任何环境变量（如历史上的 `MAKECODE_WORKDIR` 已移除）。
+- **技能库加载**：系统按优先级扫描安装目录 `.makecode/skills/`、`WORKDIR/.makecode/skills/` 与兼容路径 `WORKDIR/skills/` 中的自定义技能（`SKILL.md`）；可用 `MAKECODE_SKILLS_DIRS` 显式覆盖扫描目录；项目级禁用状态保存在 `WORKDIR/.makecode/disabled_skills.json`。
+- 启动时以 **Textual TUI 向导面板** 交互式选择工作区目录（当前目录或自定义路径），工作区选择不再依赖环境变量（历史上的 `MAKECODE_WORKDIR` 已移除）；可选的路径覆盖变量见 2.20。
 - 支持按模型配置选择消息格式：
     - `openai_chat`（OpenAI Chat Completions 消息格式）
     - `openai_responses`（OpenAI Responses 协议）
@@ -170,6 +170,8 @@ Team 模块支持：
 3. 工作区旧路径 `workdir/skills/<name>/SKILL.md`（向后兼容）
 
 默认情况下，将自定义技能放入共享配置目录下的 `skills/`（即 `paths.install_skills_dir()`）即可被自动发现；只有用户明确要求当前工作区隔离时，才放入 `workdir/.makecode/skills/`。`SKILL.md` 的 frontmatter 必须包含有效的 `name` 与 `description` 才会被加载。
+
+可通过 `MAKECODE_SKILLS_DIRS` 显式覆盖扫描目录（使用 `os.pathsep` 分隔，Linux/macOS 为 `:`，Windows 为 `;`）。设置后只扫描列出的目录，不再自动追加上述三个默认目录，也不会再扫描旧版 `workdir/skills/`，除非显式列出；列表顺序即优先级，同名技能由靠前的目录覆盖靠后的目录。空字符串表示显式禁用 Skills 扫描。相对路径按当前 workdir 解析。`disabled_skills.json` 仍保存在工作区配置目录中。
 
 项目级禁用配置保存在 `workdir/.makecode/disabled_skills.json`，文件中只记录禁用技能的名称。命中该列表的技能不会注入主智能体或子智能体的 system prompt，也不能通过 `LoadSkill` 加载。可使用 `/skills-list` 打开交互面板，按名称或描述搜索、按启用状态过滤；面板中的操作先写入内存草稿，确认按钮会显示本次启用和禁用数量，只有用户确认后才一次性落盘，取消则丢弃草稿。
 
@@ -513,6 +515,54 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
     - `conversations/`、`memory/memory.db` 和 `transcripts/` 均位于 `workdir/.makecode/`。
     - 用户技能默认位于共享配置目录下的 `skills/`，需要工作区隔离时可放入 `workdir/.makecode/skills/`；旧路径 `workdir/skills/` 仍兼容。
 
+#### 可配置路径（可选，向后兼容）
+
+不设置以下任何环境变量时，所有默认路径、Skills 顺序与 MCP 行为保持不变。
+
+| 环境变量 | 作用 | 未设置时的默认值 | 相对路径解析基准 |
+|---|---|---|---|
+| `MAKECODE_CONFIG_DIR` | 覆盖共享配置根目录 | macOS 打包版：`~/Library/Application Support/MakeCode/`；其他：`<install_dir>/.makecode/` | 当前进程工作目录 |
+| `MAKECODE_WORKSPACE_CONFIG_DIR` | 覆盖当前工作区的 `.makecode` 目录 | `<workdir>/.makecode/` | 当前 workdir |
+| `MAKECODE_SKILLS_DIRS` | 显式指定 Skills 扫描目录，使用 `os.pathsep` 分隔 | `install_skills_dir()`、`workspace_skills_dir()`、`workspace_legacy_skills_dir()` | 当前 workdir |
+| `MAKECODE_MCP_CONFIG` | 显式指定 MCP 配置文件 | `<共享配置根>/mcp_config.json` | 当前进程工作目录（保持原有语义） |
+
+`MAKECODE_CONFIG_DIR` 设置后，以下文件/目录全部位于该根目录：
+
+```text
+model_config.json
+mcp_config.json
+extra_tools.json
+memory_config.json
+layout_config.json
+error.log
+mcp_stderr.log
+skills/
+```
+
+新建配置根目录时权限尽量为 `0700`，不会强行修改已有目录权限。空字符串按“未设置”处理。
+
+`MAKECODE_WORKSPACE_CONFIG_DIR` 设置后，`conversations/`、`memory/`、`skills/`、`disabled_skills.json`、`transcripts/`、`task_plan.json`、`sub_agents/` 等所有工作区状态都跟随该目录；MakeCode 仍在用户指定的 workdir 中执行任务。
+
+`MAKECODE_SKILLS_DIRS` 设置后只扫描显式列出的目录，不再追加任何默认目录。空字符串表示显式禁用 Skills，`--skills-list` 返回空列表。所有路径均不允许包含 NUL 字符，非法路径会直接报错，不会静默回退到默认目录。
+
+MCP 配置优先级：
+
+```text
+MAKECODE_MCP_CONFIG
+  > MAKECODE_CONFIG_DIR/mcp_config.json
+  > 默认 install_makecode_dir()/mcp_config.json
+```
+
+外部 Runner 隔离示例：
+
+```bash
+MAKECODE_CONFIG_DIR=/work/.oneteam/makecode-config \
+MAKECODE_WORKSPACE_CONFIG_DIR=/work/.makecode \
+MAKECODE_SKILLS_DIRS=/work/.oneteam/makecode-config/skills \
+MAKECODE_MCP_CONFIG=/work/.makecode/mcp_config.json \
+makecode -p --input-format stream-json --output-format stream-json --workdir /work
+```
+
 #### 核心 API
 
 - `paths.install_dir()` / `paths.install_makecode_dir()`：分别返回程序安装目录与共享配置目录；macOS 打包版的后者返回 `~/Library/Application Support/MakeCode`。
@@ -527,7 +577,7 @@ Linux 安装目录必须对当前用户可写；安装在 `/opt`、`/usr/local` 
 #### 设计收益
 
 - **一处修改、全局生效**：路径结构变更只需修改 `paths.py`。
-- **避免环境依赖**：已移除历史上的 `MAKECODE_WORKDIR` 环境变量启动支持，工作区完全由 TUI 交互决定。
+- **默认行为稳定**：历史上的 `MAKECODE_WORKDIR` 启动支持已移除；新增的路径环境变量全部为可选覆盖，不设置时默认路径不变。
 - **冻结打包兼容**：自动区分 PyInstaller 冻结环境与源码环境下的安装目录计算。
 
 ### 2.21 工作目录切换与快捷查看（`/pwd` 与 `/cd`）（新增）
@@ -888,7 +938,24 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
 
 同时指定 `-p` 和 `--input-format` 时同样进入常驻模式，由输入格式决定读取方式，按下回车即提交一条消息。只有单独的 `-p`（不带 `--input-format`）才是“读到 stdin EOF 后执行一轮”。
 
-每次 headless 启动成功后（无论 `-p` 单轮还是常驻多轮、无论输出格式），都会在 **stdout 第一行**输出一条高信息密度的 `system/init` JSON，包含 `version`、`session_id`、`mode`（`one-shot`/`persistent`）、输入输出格式、模型信息、`cwd`、平台/Python、工具列表与数量、MCP 服务、Skills、权限模式、会话持久化状态等字段。之后的输出随 `--output-format` 决定：
+每次 headless 启动成功后（无论 `-p` 单轮还是常驻多轮、无论输出格式），都会在 **stdout 第一行**输出一条高信息密度的 `system/init` JSON，包含 `version`、`session_id`、`mode`（`one-shot`/`persistent`）、输入输出格式、模型信息、`cwd`、平台/Python、工具列表与数量、MCP 服务、Skills、权限模式、会话持久化状态等字段。`config_paths` 和 `capabilities` 字段用于外部客户端探测实际路径与能力，未设置新的路径环境变量时也会输出真实默认路径，且不包含 API key 等敏感信息：
+
+```json
+{
+  "config_paths": {
+    "shared_config_dir": "/actual/shared-config",
+    "workspace_config_dir": "/actual/workdir/.makecode",
+    "skills_dirs": ["/actual/shared-config/skills", "/actual/workdir/.makecode/skills"],
+    "mcp_config": "/actual/shared-config/mcp_config.json"
+  },
+  "capabilities": {
+    "configurable_paths": true,
+    "skills_dirs_override": true
+  }
+}
+```
+
+之后的输出随 `--output-format` 决定：
 
 | 输出格式 | stdout 内容 |
 |---|---|

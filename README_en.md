@@ -64,8 +64,8 @@ and extensible**.
 MakeCode employs a strict Workspace isolation mechanism. All paths and skill loading are resolved relative to the user's
 chosen **Workspace Directory (`WORKDIR`)**, not the location of the MakeCode source code.
 
-- **Skill Library Loading**: The system scans install-directory `.makecode/skills/`, `WORKDIR/.makecode/skills/`, and the legacy `WORKDIR/skills/` path in priority order. Project-level disabled state is stored in `WORKDIR/.makecode/disabled_skills.json`.
-- Workspace selection happens through an **interactive Textual TUI wizard panel** (current directory or a custom path); MakeCode no longer depends on any environment variable (the historical `MAKECODE_WORKDIR` has been removed).
+- **Skill Library Loading**: The system scans install-directory `.makecode/skills/`, `WORKDIR/.makecode/skills/`, and the legacy `WORKDIR/skills/` path in priority order. `MAKECODE_SKILLS_DIRS` can override the scan directories explicitly. Project-level disabled state is stored in `WORKDIR/.makecode/disabled_skills.json`.
+- Workspace selection happens through an **interactive Textual TUI wizard panel** (current directory or a custom path); workspace selection no longer depends on environment variables (the historical `MAKECODE_WORKDIR` has been removed). Optional path overrides are documented in 2.20.
 - Supports per-model message format selection:
     - `openai_chat` (OpenAI Chat Completions message format)
     - `openai_responses` (OpenAI Responses protocol)
@@ -185,6 +185,8 @@ Skills are loaded from three directories in the following priority order (higher
 3. Legacy `workdir/skills/<name>/SKILL.md` (backward compatibility)
 
 By default, place custom skills in the `skills/` directory under the shared configuration directory (that is, `paths.install_skills_dir()`) for automatic discovery; use `workdir/.makecode/skills/` only when the user explicitly requests workspace isolation. A `SKILL.md` frontmatter block must contain valid `name` and `description` fields before the skill is loaded.
+
+`MAKECODE_SKILLS_DIRS` can override the scan directories explicitly (`os.pathsep`-separated: `:` on Linux/macOS, `;` on Windows). When set, only the listed directories are scanned; none of the three defaults above are appended, and legacy `workdir/skills/` is ignored unless it is listed explicitly. List order is priority: a skill in an earlier directory overrides a same-name skill in a later one. An empty string explicitly disables skill scanning. Relative paths resolve against the current workdir. `disabled_skills.json` remains a workspace-config file.
 
 Project-level disabled state is stored in `workdir/.makecode/disabled_skills.json`, which contains only disabled skill names. Matching skills are omitted from orchestrator and sub-agent system prompts and cannot be loaded through `LoadSkill`. Use `/skills-list` to open the interactive panel and search by name or description or filter by enabled state. Panel changes stay in an in-memory draft; the confirmation button shows how many skills will be enabled and disabled, and the list is written once only after explicit confirmation. Canceling discards the draft.
 
@@ -535,6 +537,54 @@ To centrally manage workspace paths and install-directory global configuration, 
     - `conversations/`, `memory/memory.db`, and `transcripts/` reside under `workdir/.makecode/`.
     - User skills default to `skills/` under the shared configuration directory; workspace-isolated skills can be placed in `workdir/.makecode/skills/`, and legacy `workdir/skills/` remains supported.
 
+#### Configurable Paths (Optional, Backward Compatible)
+
+When none of the following environment variables are set, all default paths, Skills ordering, and MCP behavior remain unchanged.
+
+| Variable | Purpose | Default when unset | Relative-path base |
+|---|---|---|---|
+| `MAKECODE_CONFIG_DIR` | Override the shared configuration root | Packaged macOS: `~/Library/Application Support/MakeCode/`; otherwise `<install_dir>/.makecode/` | Current process working directory |
+| `MAKECODE_WORKSPACE_CONFIG_DIR` | Override the current workspace `.makecode` directory | `<workdir>/.makecode/` | Current workdir |
+| `MAKECODE_SKILLS_DIRS` | Explicit Skills scan directories, `os.pathsep`-separated | `install_skills_dir()`, `workspace_skills_dir()`, `workspace_legacy_skills_dir()` | Current workdir |
+| `MAKECODE_MCP_CONFIG` | Explicit MCP config file | `<shared config root>/mcp_config.json` | Current process working directory (existing behavior) |
+
+When `MAKECODE_CONFIG_DIR` is set, the following files/directories all live under that root:
+
+```text
+model_config.json
+mcp_config.json
+extra_tools.json
+memory_config.json
+layout_config.json
+error.log
+mcp_stderr.log
+skills/
+```
+
+Newly created config roots use mode `0700` where possible; existing directory permissions are never changed. An empty string is treated as unset.
+
+When `MAKECODE_WORKSPACE_CONFIG_DIR` is set, `conversations/`, `memory/`, `skills/`, `disabled_skills.json`, `transcripts/`, `task_plan.json`, `sub_agents/`, and all other workspace state follow that directory. MakeCode still executes tasks in the user-specified workdir.
+
+When `MAKECODE_SKILLS_DIRS` is set, only the listed directories are scanned and no defaults are appended. An empty string explicitly disables Skills, and `--skills-list` returns an empty list. Paths must not contain NUL bytes; invalid paths fail with a clear error instead of silently falling back to a default directory.
+
+MCP config precedence:
+
+```text
+MAKECODE_MCP_CONFIG
+  > MAKECODE_CONFIG_DIR/mcp_config.json
+  > default install_makecode_dir()/mcp_config.json
+```
+
+Example for an external Runner isolation:
+
+```bash
+MAKECODE_CONFIG_DIR=/work/.oneteam/makecode-config \
+MAKECODE_WORKSPACE_CONFIG_DIR=/work/.makecode \
+MAKECODE_SKILLS_DIRS=/work/.oneteam/makecode-config/skills \
+MAKECODE_MCP_CONFIG=/work/.makecode/mcp_config.json \
+makecode -p --input-format stream-json --output-format stream-json --workdir /work
+```
+
 #### Core API
 
 - `paths.install_dir()` / `paths.install_makecode_dir()`: return the program install directory and shared configuration directory respectively; for packaged macOS builds, the latter returns `~/Library/Application Support/MakeCode`.
@@ -550,7 +600,7 @@ To centrally manage workspace paths and install-directory global configuration, 
 #### Design Benefits
 
 - **Single source of truth**: changing a path structure requires editing only `paths.py`.
-- **No environment variable dependency**: the historical `MAKECODE_WORKDIR` startup support has been removed; workspace is fully determined by TUI interaction.
+- **Stable defaults**: the historical `MAKECODE_WORKDIR` startup support has been removed; the new path environment variables are optional overrides, and default paths are unchanged when they are unset.
 - **Frozen build compatible**: automatically distinguishes PyInstaller-frozen environments from source-code environments when computing the install directory.
 
 ### 2.21 Workspace Directory Commands (`/pwd` and `/cd`) (New)
@@ -915,7 +965,24 @@ printf 'first: remember 7391\nsecond: what is the code?\n' \
 
 Combining `-p` with `--input-format` also enters persistent mode: the input format decides how stdin is read, and pressing Enter submits one message. Only a bare `-p` (without `--input-format`) reads stdin until EOF and then runs one turn.
 
-After a successful headless startup (single-turn `-p` or persistent mode, regardless of output format), MakeCode emits one information-dense `system/init` JSON object on the **first stdout line**, with `version`, `session_id`, `mode` (`one-shot`/`persistent`), input/output formats, model details, `cwd`, platform/Python, tool list and count, MCP servers, Skills, permission mode, and session persistence state. Later output follows `--output-format`:
+After a successful headless startup (single-turn `-p` or persistent mode, regardless of output format), MakeCode emits one information-dense `system/init` JSON object on the **first stdout line**, with `version`, `session_id`, `mode` (`one-shot`/`persistent`), input/output formats, model details, `cwd`, platform/Python, tool list and count, MCP servers, Skills, permission mode, and session persistence state. The `config_paths` and `capabilities` fields let external clients detect the effective paths and capabilities; real default paths are reported even when no new path environment variables are set, and no API keys or other secrets are included:
+
+```json
+{
+  "config_paths": {
+    "shared_config_dir": "/actual/shared-config",
+    "workspace_config_dir": "/actual/workdir/.makecode",
+    "skills_dirs": ["/actual/shared-config/skills", "/actual/workdir/.makecode/skills"],
+    "mcp_config": "/actual/shared-config/mcp_config.json"
+  },
+  "capabilities": {
+    "configurable_paths": true,
+    "skills_dirs_override": true
+  }
+}
+```
+
+Later output follows `--output-format`:
 
 | Output | stdout |
 |---|---|

@@ -212,19 +212,38 @@ class SkillLoader:
         skills_paths = "\n".join(
             f"  - `{skills_dir.absolute().as_posix()}`" for skills_dir in self.skills_dirs
         )
-        default_install_path = paths.install_skills_dir().absolute().as_posix()
-        installation_hint = (
-            "- Unless the user explicitly requests a workspace-local installation, use the software-level default directory above. "
-            "Use the workspace `.makecode/skills/` directory only when explicitly requested by the user.\n"
-            "- To install one skill, move the complete directory containing its `SKILL.md`; for a skill group, "
-            "move the complete collection directory, according to the user's requested scope.\n"
-        )
+        override_dirs = paths.skills_dirs_override()
+        if override_dirs is not None:
+            if not override_dirs:
+                return (
+                    "\n\n# Skills Catalog Status\n"
+                    "- Status: ON\n"
+                    "- Skills scanning is disabled: MAKECODE_SKILLS_DIRS is empty.\n"
+                )
+            default_path_line = ""
+            installation_hint = (
+                "- Skill discovery is restricted to the explicit MAKECODE_SKILLS_DIRS list above; "
+                "install skills into one of those directories.\n"
+                "- To install one skill, move the complete directory containing its `SKILL.md`; for a skill group, "
+                "move the complete collection directory, according to the user's requested scope.\n"
+            )
+        else:
+            default_install_path = paths.install_skills_dir().absolute().as_posix()
+            default_path_line = (
+                f"- Default installation directory for user skills: `{default_install_path}`\n"
+            )
+            installation_hint = (
+                "- Unless the user explicitly requests a workspace-local installation, use the software-level default directory above. "
+                "Use the workspace `.makecode/skills/` directory only when explicitly requested by the user.\n"
+                "- To install one skill, move the complete directory containing its `SKILL.md`; for a skill group, "
+                "move the complete collection directory, according to the user's requested scope.\n"
+            )
         if not self.skills:
             return (
                 "\n\n# Skills Catalog Status\n"
                 "- Status: ON\n"
                 f"- Source directories (highest priority first):\n{skills_paths}\n"
-                f"- Default installation directory for user skills: `{default_install_path}`\n"
+                f"{default_path_line}"
                 f"{installation_hint}"
                 "- No skills are currently available in this workspace."
             )
@@ -233,7 +252,7 @@ class SkillLoader:
             "\n\n# Skills Catalog Status\n"
             "- Status: ON\n"
             f"- Source directories (highest priority first):\n{skills_paths}\n"
-            f"- Default installation directory for user skills: `{default_install_path}`\n"
+            f"{default_path_line}"
             f"{installation_hint}"
             "- The following skills are preloaded into context. When relevant, call `LoadSkill` directly using the exact skill name below.\n\n"
             "## Available Skills\n"

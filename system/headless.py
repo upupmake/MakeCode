@@ -261,8 +261,21 @@ class HeadlessRunner:
         mcp_tools: list[dict[str, Any]],
     ) -> dict[str, Any]:
         from system.models import get_current_model_config
+        from utils import paths
+        from utils.skill_catalog import skill_directories
 
         model_config = get_current_model_config()
+        config_paths = {
+            "shared_config_dir": str(paths.install_makecode_dir(create=False).resolve()),
+            "workspace_config_dir": str(
+                paths.workspace_makecode_dir(create=False).resolve()
+            ),
+            "skills_dirs": [
+                str(directory.resolve())
+                for directory in skill_directories(create=False)
+            ],
+            "mcp_config": str(paths.mcp_config_file(create=False).resolve()),
+        }
         return {
             "version": CURRENT_VERSION,
             "mode": "persistent" if self._uses_stdin() else "one-shot",
@@ -286,6 +299,11 @@ class HeadlessRunner:
                 "enabled": SKILL_LOADER.is_enabled,
                 "active": len(SKILL_LOADER.skills),
                 "total": len(SKILL_LOADER.all_skills),
+            },
+            "config_paths": config_paths,
+            "capabilities": {
+                "configurable_paths": True,
+                "skills_dirs_override": True,
             },
             "session_persisted": not self.options.no_session_persistence,
             "resumed": snapshot is not None,

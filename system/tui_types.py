@@ -32,7 +32,6 @@ class TuiEvent:
     tail_after: Any = None
 
 
-LAYOUT_CONFIG_FILE = paths.layout_config_file()
 LAYOUT_DEFAULT_RATIOS: dict[str, int] = {
     "task": 3,
     "background": 4,
@@ -58,15 +57,16 @@ def normalize_layout_ratios(data: Any) -> dict[str, int]:
 
 def load_layout_ratios() -> dict[str, int]:
     try:
-        data = json.loads(LAYOUT_CONFIG_FILE.read_text(encoding="utf-8"))
+        data = json.loads(paths.layout_config_file().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return dict(LAYOUT_DEFAULT_RATIOS)
     return normalize_layout_ratios(data)
 
 
 def save_layout_ratios(ratios: dict[str, int]) -> None:
-    LAYOUT_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LAYOUT_CONFIG_FILE.write_text(
+    config_file = paths.layout_config_file()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
         json.dumps(normalize_layout_ratios(ratios), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
