@@ -88,7 +88,8 @@ def test_config_dir_override_moves_every_shared_file(isolated_paths, tmp_path, m
         paths.install_skills_dir(),
     }
     assert all(path.parent == config_root.resolve() for path in shared_files)
-    assert config_root.stat().st_mode & 0o077 == 0
+    if os.name != "nt":
+        assert config_root.stat().st_mode & 0o077 == 0
 
     for path in shared_files:
         if path.is_dir():
