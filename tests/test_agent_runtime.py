@@ -297,3 +297,183 @@ def test_headless_prompt_reports_ask_user_unavailable(tmp_path):
     prompt = runtime._system_prompt()
 
     assert "AskUser and interactive HITL prompts are unavailable" in prompt
+
+
+def _compact_runtime(tmp_path):
+    events = []
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        event_handler=events.append,
+    )
+    runtime.messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "request"},
+        {"role": "tool", "content": "old output"},
+    ]
+    return runtime, events
+
+
+def test_compact_emits_tool_output_start_and_end_events(tmp_path, monkeypatch):
+    runtime, events = _compact_runtime(tmp_path)
+    token_values = iter([75, 40])
+    monkeypatch.setattr(runtime_module, "get_context_token_limit", lambda: 100)
+    monkeypatch.setattr(runtime_module, "get_compaction_thresholds", lambda: (70, 90))
+    monkeypatch.setattr(
+        runtime_module,
+        "estimate_tokens",
+        lambda *args, **kwargs: next(token_values),
+    )
+    monkeypatch.setattr(runtime_module, "compact_tool_outputs", lambda messages: True)
+
+    asyncio.run(runtime._compact([]))
+
+    assert events == [
+        {
+            "type": "compact",
+            "phase": "start",
+            "scope": "tool_output",
+            "tokens_before": 75,
+            "threshold_percent": 70,
+        },
+        {
+            "type": "compact",
+            "phase": "end",
+            "scope": "tool_output",
+            "status": "success",
+            "changed": True,
+            "tokens_before": 75,
+            "tokens_after": 40,
+        },
+    ]
+    assert runtime._result("done").compactions == events
+
+
+def test_compact_emits_partial_summary_memory_and_end_events(tmp_path, monkeypatch):
+    runtime, events = _compact_runtime(tmp_path)
+    token_values = iter([95, 30])
+
+    async def fake_partial_compact(
+        messages,
+        context_token_limit,
+        current_context_tokens,
+        reason,
+        *,
+        on_summary_delta=None,
+        on_summary=None,
+        on_memory_start=None,
+        on_memory_end=None,
+    ):
+        on_summary_delta("sum")
+        on_summary_delta("mary")
+        on_summary("summary")
+        on_memory_start()
+        on_memory_end(None)
+        return True
+
+    monkeypatch.setattr(runtime_module, "get_context_token_limit", lambda: 100)
+    monkeypatch.setattr(runtime_module, "get_compaction_thresholds", lambda: (70, 90))
+    monkeypatch.setattr(
+        runtime_module,
+        "estimate_tokens",
+        lambda *args, **kwargs: next(token_values),
+    )
+    monkeypatch.setattr(runtime_module, "partial_compact", fake_partial_compact)
+    monkeypatch.setattr(
+        runtime_module,
+        "compact_tool_outputs",
+        lambda messages: pytest.fail("layer 1 must not run after partial success"),
+    )
+
+    asyncio.run(runtime._compact([]))
+
+    assert [event["phase"] for event in events] == [
+        "start",
+        "summary_delta",
+        "summary_delta",
+        "summary",
+        "memory_start",
+        "memory_end",
+        "end",
+    ]
+    assert events[0]["scope"] == "partial"
+    assert events[1]["text"] == "sum"
+    assert events[2]["text"] == "mary"
+    assert events[3]["summary"] == "summary"
+    assert events[4]["scope"] == "partial"
+    assert events[6]["status"] == "success"
+    assert events[6]["committed"] is True
+    assert events[6]["tokens_before"] == 95
+    assert events[6]["tokens_after"] == 30
+    stored = runtime._result("done").compactions
+    assert [event["phase"] for event in stored] == [
+        "start",
+        "summary",
+        "memory_start",
+        "memory_end",
+        "end",
+    ]
+
+
+def test_compact_falls_back_to_tool_output_after_partial_failure(tmp_path, monkeypatch):
+    runtime, events = _compact_runtime(tmp_path)
+    token_values = iter([95, 40])
+
+    async def failing_partial_compact(*args, **kwargs):
+        raise RuntimeError("summary failed")
+
+    monkeypatch.setattr(runtime_module, "get_context_token_limit", lambda: 100)
+    monkeypatch.setattr(runtime_module, "get_compaction_thresholds", lambda: (70, 90))
+    monkeypatch.setattr(
+        runtime_module,
+        "estimate_tokens",
+        lambda *args, **kwargs: next(token_values),
+    )
+    monkeypatch.setattr(runtime_module, "partial_compact", failing_partial_compact)
+    monkeypatch.setattr(runtime_module, "compact_tool_outputs", lambda messages: True)
+
+    asyncio.run(runtime._compact([]))
+
+    assert [(event["phase"], event["scope"]) for event in events] == [
+        ("start", "partial"),
+        ("end", "partial"),
+        ("start", "tool_output"),
+        ("end", "tool_output"),
+    ]
+    assert events[1]["status"] == "failed"
+    assert events[1]["committed"] is False
+    assert events[1]["error"] == "summary failed"
+    assert events[1]["tokens_after"] == 95
+    assert events[3]["tokens_before"] == 95
+    assert events[3]["tokens_after"] == 40
+
+
+def test_compact_reports_skipped_partial_before_tool_output_fallback(tmp_path, monkeypatch):
+    runtime, events = _compact_runtime(tmp_path)
+    token_values = iter([95, 40])
+
+    async def no_range(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(runtime_module, "get_context_token_limit", lambda: 100)
+    monkeypatch.setattr(runtime_module, "get_compaction_thresholds", lambda: (70, 90))
+    monkeypatch.setattr(
+        runtime_module,
+        "estimate_tokens",
+        lambda *args, **kwargs: next(token_values),
+    )
+    monkeypatch.setattr(runtime_module, "partial_compact", no_range)
+    monkeypatch.setattr(runtime_module, "compact_tool_outputs", lambda messages: False)
+
+    asyncio.run(runtime._compact([]))
+
+    assert [(event["phase"], event["scope"]) for event in events] == [
+        ("start", "partial"),
+        ("end", "partial"),
+        ("start", "tool_output"),
+        ("end", "tool_output"),
+    ]
+    assert events[1]["status"] == "skipped"
+    assert events[1]["error"] is None
+    assert events[3]["status"] == "noop"
+    assert events[3]["tokens_after"] == 95

@@ -70,6 +70,7 @@ class TurnResult:
     session_id: str
     messages: list[dict[str, Any]]
     usage: dict[str, int] = field(default_factory=dict)
+    compactions: list[dict[str, Any]] = field(default_factory=list)
     is_error: bool = False
     error: str | None = None
     cancelled: bool = False
@@ -104,6 +105,7 @@ class AgentRuntime:
         self._permission_denials: list[dict[str, Any]] = []
         self._system_prompt_cache: str | None = None
         self._turn_usage: dict[str, int] = {}
+        self._turn_compactions: list[dict[str, Any]] = []
 
     def restore(self, snapshot: ConversationSnapshot) -> None:
         self.store.activate(snapshot)
@@ -231,6 +233,17 @@ class AgentRuntime:
         else:
             self.messages.insert(0, system_message)
 
+    def _emit_compact(self, phase: str, scope: str, **fields: Any) -> None:
+        event = {
+            "type": "compact",
+            "phase": phase,
+            "scope": scope,
+            **fields,
+        }
+        if phase != "summary_delta":
+            self._turn_compactions.append(event)
+        self._emit(event)
+
     async def _compact(self, definitions: list[dict[str, Any]]) -> None:
         context_token_limit = get_context_token_limit()
         initial_context_tokens = estimate_tokens(
@@ -246,29 +259,99 @@ class AgentRuntime:
                 f"{initial_context_tokens} reached {partial_threshold}% of threshold "
                 f"{context_token_limit}."
             )
-            if await self._maybe_partial_compact(
+            self._emit_compact(
+                "start",
+                "partial",
+                trigger="auto",
+                reason=reason,
+                tokens_before=initial_context_tokens,
+                threshold_percent=partial_threshold,
+            )
+            status, error = await self._maybe_partial_compact(
                 reason,
                 context_token_limit,
                 initial_context_tokens,
-            ):
+            )
+            if status == "success":
+                tokens_after = estimate_tokens(
+                    self.messages,
+                    tools_definition=definitions,
+                )
+                self._emit_compact(
+                    "end",
+                    "partial",
+                    status="success",
+                    committed=True,
+                    tokens_before=initial_context_tokens,
+                    tokens_after=tokens_after,
+                )
                 return
-        compact_tool_outputs(self.messages)
+            self._emit_compact(
+                "end",
+                "partial",
+                status=status,
+                committed=False,
+                tokens_before=initial_context_tokens,
+                tokens_after=initial_context_tokens,
+                error=error,
+            )
+        self._emit_compact(
+            "start",
+            "tool_output",
+            tokens_before=initial_context_tokens,
+            threshold_percent=tool_output_threshold,
+        )
+        changed = compact_tool_outputs(self.messages)
+        tokens_after = (
+            estimate_tokens(self.messages, tools_definition=definitions)
+            if changed
+            else initial_context_tokens
+        )
+        self._emit_compact(
+            "end",
+            "tool_output",
+            status="success" if changed else "noop",
+            changed=changed,
+            tokens_before=initial_context_tokens,
+            tokens_after=tokens_after,
+        )
 
     async def _maybe_partial_compact(
         self,
         reason: str,
         context_token_limit: int,
         initial_context_tokens: int,
-    ) -> bool:
+    ) -> tuple[str, str | None]:
         try:
-            return await partial_compact(
+            compacted = await partial_compact(
                 self.messages,
                 context_token_limit,
                 initial_context_tokens,
                 reason,
+                on_summary_delta=lambda text: self._emit_compact(
+                    "summary_delta",
+                    "partial",
+                    text=text,
+                ),
+                on_summary=lambda summary: self._emit_compact(
+                    "summary",
+                    "partial",
+                    summary=summary,
+                ),
+                on_memory_start=lambda: self._emit_compact(
+                    "memory_start",
+                    "partial",
+                ),
+                on_memory_end=lambda error: self._emit_compact(
+                    "memory_end",
+                    "partial",
+                    status="failed" if error else "success",
+                    error=error,
+                ),
             )
-        except Exception:
-            return False
+        except Exception as exc:
+            return "failed", str(exc)
+        return ("success" if compacted else "skipped"), None
 
     async def _recall(self, query: str) -> None:
         if not get_memory_pre_recall():
@@ -454,6 +537,7 @@ class AgentRuntime:
         self._handlers = {}
         self._permission_denials = []
         self._turn_usage = {}
+        self._turn_compactions = []
         client = None
         response_task = asyncio.current_task()
         if response_task is not None:
@@ -532,6 +616,7 @@ class AgentRuntime:
             session_id=self.store.active_id or "",
             messages=list(self.messages),
             usage=usage or {},
+            compactions=list(self._turn_compactions),
             is_error=is_error,
             error=error,
             cancelled=cancelled,

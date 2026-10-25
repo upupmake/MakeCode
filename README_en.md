@@ -1025,8 +1025,16 @@ For Claude Code compatibility the prompt may also be passed positionally: `MakeC
 Output formats:
 
 - `text`: stdout starts with the `system/init` JSON line followed by the final assistant text; diagnostics go to stderr.
-- `json`: one `system/init` line followed by one `result` object per turn with `result`, `session_id`, `usage`, `is_error`, `permission_denials`, and `duration_ms`.
-- `stream-json`: newline-delimited `system/init`, optional `assistant_delta`, `assistant`, `tool_use`, `tool_result`, and `result` events.
+- `json`: one `system/init` line followed by one `result` object per turn with `result`, `session_id`, `usage`, `compactions`, `is_error`, `permission_denials`, and `duration_ms`.
+- `stream-json`: newline-delimited `system/init`, optional `assistant_delta`, `assistant`, `tool_use`, `tool_result`, `compact`, and `result` events.
+
+Before each turn, headless runs the same two-layer context compaction as the TUI and exposes it through `compact` events. The `json` format collects these events in `result.compactions`; `stream-json` also emits them live.
+
+- First layer `scope=tool_output`: `phase=start` and `phase=end`; the end event contains `status` (`success`/`noop`), `changed`, `tokens_before`, and `tokens_after`.
+- Second layer `scope=partial`: `phase=start` → `phase=summary_delta` (streamed summary text, `stream-json` only) → `phase=summary` (the complete generated summary) → `phase=memory_start` / `phase=memory_end` (post-compaction long-term memory extraction) → `phase=end` (`status` is `success`/`skipped`/`failed`, with `committed` and token changes).
+- If the second layer has no eligible range or fails, the first layer still runs, so a turn may contain multiple compaction events. A failed end event includes `error` with `committed=false`; the generated summary is still exposed through `phase=summary`.
+- `summary_delta` is not written to `result.compactions`; all other `compact` events are recorded in order. `summary_delta` is always emitted by `stream-json` and is not gated by `--include-partial-messages` (that flag only controls `assistant_delta`).
+- `summary_delta` is provisional streaming output while the summary is generated; the final summary is the `phase=summary` event, and `committed` on the `phase=end` event indicates whether it was applied.
 
 Exit codes: `0` success, `1` runtime error, `2` usage error, `3` config/model error, `130` SIGINT, `143` SIGTERM.
 

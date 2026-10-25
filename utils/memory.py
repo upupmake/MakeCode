@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -8,7 +9,7 @@ import tempfile
 import threading
 import uuid
 import warnings
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1560,12 +1561,42 @@ def format_clean_conversation_context(messages: list[dict]) -> str:
     return "\n\n".join(sections)
 
 
+def _notify_compaction_callback(
+        callback: Callable[..., None] | None,
+        *args: Any,
+) -> None:
+    if callback is None:
+        return
+    with contextlib.suppress(Exception):
+        callback(*args)
+
+
+async def _stream_summary_events(
+        stream: AsyncIterator[dict],
+        on_delta: Callable[[str], None] | None,
+) -> AsyncIterator[dict]:
+    try:
+        async for event in stream:
+            if event.get("type") == "text":
+                _notify_compaction_callback(on_delta, event.get("content", ""))
+            yield event
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            with contextlib.suppress(Exception):
+                await close()
+
+
 async def _summarize_messages(
         messages: list[dict],
         reason: str,
         *,
         require_memory_success: bool = False,
         memory_messages: list[dict] | None = None,
+        on_summary_delta: Callable[[str], None] | None = None,
+        on_summary: Callable[[str], None] | None = None,
+        on_memory_start: Callable[[], None] | None = None,
+        on_memory_end: Callable[[str | None], None] | None = None,
 ) -> str:
     conversation_text = format_clean_conversation_context(messages)
     memory_conversation_text = (
@@ -1588,7 +1619,10 @@ async def _summarize_messages(
         try:
             renderer = StreamRenderer(console=_compact_console, update_interval=0.1)
             summary, _, _ = await renderer.render_text_stream_async(
-                summary_client.get_summary_stream_events(conversation_text, reason),
+                _stream_summary_events(
+                    summary_client.get_summary_stream_events(conversation_text, reason),
+                    on_summary_delta,
+                ),
                 set_active=True,
             )
             if summary:
@@ -1596,6 +1630,7 @@ async def _summarize_messages(
         except Exception as e:
             _compact_console.print(f"\n[bold red]流式摘要错误：{e}[/bold red]")
             fallback = await summary_client.get_summary(conversation_text, reason)
+            _notify_compaction_callback(on_summary_delta, fallback)
             _compact_console.print(Markdown(fallback))
             chunks = [fallback]
     finally:
@@ -1606,14 +1641,21 @@ async def _summarize_messages(
         raise RuntimeError("Compaction summary was empty.")
     _compact_console.print("[#aaaaaa]摘要生成流程已结束。[/#aaaaaa]")
 
-    await memory_agent_loop(
-        conversation_text=memory_conversation_text,
-        summary=summary,
-        reason="Automatic memory extraction during context compaction. Extract durable, cross-session memories from the conversation if any valuable ones are found; skip if none.",
-        current_memory_content=render_long_term_memory_markdown(),
-        tools=LONG_TERM_MEMORY_TOOLS,
-        raise_on_error=require_memory_success,
-    )
+    _notify_compaction_callback(on_summary, summary)
+    _notify_compaction_callback(on_memory_start)
+    try:
+        await memory_agent_loop(
+            conversation_text=memory_conversation_text,
+            summary=summary,
+            reason="Automatic memory extraction during context compaction. Extract durable, cross-session memories from the conversation if any valuable ones are found; skip if none.",
+            current_memory_content=render_long_term_memory_markdown(),
+            tools=LONG_TERM_MEMORY_TOOLS,
+            raise_on_error=require_memory_success,
+        )
+    except Exception as exc:
+        _notify_compaction_callback(on_memory_end, str(exc))
+        raise
+    _notify_compaction_callback(on_memory_end, None)
     return summary
 
 
@@ -1635,6 +1677,11 @@ async def partial_compact(
         context_token_limit: int,
         current_context_tokens: int,
         reason: str,
+        *,
+        on_summary_delta: Callable[[str], None] | None = None,
+        on_summary: Callable[[str], None] | None = None,
+        on_memory_start: Callable[[], None] | None = None,
+        on_memory_end: Callable[[str | None], None] | None = None,
 ) -> bool:
     selected_range = _select_partial_compaction_range(
         messages,
@@ -1651,6 +1698,10 @@ async def partial_compact(
         reason,
         require_memory_success=True,
         memory_messages=messages,
+        on_summary_delta=on_summary_delta,
+        on_summary=on_summary,
+        on_memory_start=on_memory_start,
+        on_memory_end=on_memory_end,
     )
     candidate = copy.deepcopy(messages)
     candidate[start:end] = _summary_messages(summary, reason)

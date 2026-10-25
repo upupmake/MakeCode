@@ -998,8 +998,16 @@ headless 默认使用 `bypassPermissions`，即完全关闭 HITL：终端命令�
 输出格式：
 
 - `text`：stdout 第一行是 `system/init` JSON，随后输出最终 assistant 文本；诊断信息走 stderr。
-- `json`：先输出一条 `system/init`，之后每轮输出一条 `result` 对象，包含 `result`、`session_id`、`usage`、`is_error`、`permission_denials`、`duration_ms`。
-- `stream-json`：逐行输出 `system/init`、`assistant_delta`（可选）、`assistant`、`tool_use`、`tool_result`、`result`。
+- `json`：先输出一条 `system/init`，之后每轮输出一条 `result` 对象，包含 `result`、`session_id`、`usage`、`compactions`、`is_error`、`permission_denials`、`duration_ms`。
+- `stream-json`：逐行输出 `system/init`、`assistant_delta`（可选）、`assistant`、`tool_use`、`tool_result`、`compact`（压缩事件）、`result`。
+
+headless 每轮请求前会执行与 TUI 相同的两层上下文压缩，并通过 `compact` 事件暴露。`json` 格式把这些事件收在 `result.compactions`；`stream-json` 还会实时输出。
+
+- 第一层 `scope=tool_output`：`phase=start` 与 `phase=end`；end 包含 `status`（`success`/`noop`）、`changed`、`tokens_before`、`tokens_after`。
+- 第二层 `scope=partial`：`phase=start` → `phase=summary_delta`（摘要流式文本，仅 `stream-json`）→ `phase=summary`（完整生成摘要）→ `phase=memory_start` / `phase=memory_end`（压缩后的长期记忆提取阶段）→ `phase=end`（`status` 为 `success`/`skipped`/`failed`，含 `committed` 与 token 变化）。
+- 第二层未命中可压缩区间或失败时，会继续触发第一层，因此一轮可能出现多组压缩事件；失败时 end 事件包含 `error` 且 `committed=false`，已生成的摘要仍通过 `phase=summary` 暴露。
+- `summary_delta` 不写入 `result.compactions`，其余 `compact` 事件按发生顺序写入。`summary_delta` 由 `stream-json` 无条件输出，不受 `--include-partial-messages` 限制（该参数只控制 `assistant_delta`）。
+- `summary_delta` 是摘要生成过程中的临时流式输出；最终摘要以 `phase=summary` 为准，是否已应用看 `phase=end` 的 `committed`。
 
 退出码：`0` 成功、`1` 运行错误、`2` 参数错误、`3` 配置/模型错误、`130` SIGINT、`143` SIGTERM。
 

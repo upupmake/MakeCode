@@ -117,6 +117,7 @@ def test_json_mode_emits_init_and_result_objects(runner_env, capsys):
     assert payload["subtype"] == "success"
     assert payload["result"] == "ok"
     assert payload["session_id"] == "conv_test"
+    assert payload["compactions"] == []
 
 
 def test_persistent_json_mode_emits_init_before_results(runner_env, capsys, monkeypatch):

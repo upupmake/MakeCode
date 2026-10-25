@@ -4138,6 +4138,141 @@ async def test_partial_compact_replaces_only_selected_groups_after_success():
 
 
 @pytest.mark.anyio
+async def test_partial_compact_streams_summary_and_reports_memory_phase():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest"},
+    ]
+    events = []
+
+    async def summary_stream():
+        yield {"type": "text", "content": "sum"}
+        yield {"type": "text", "content": "mary"}
+
+    fake_client = Mock()
+    fake_client.get_summary_stream_events.return_value = summary_stream()
+
+    with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 3)), \
+            patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
+            patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
+            patch.object(memory, "_compact_console"), \
+            patch.object(memory, "memory_agent_loop", new_callable=AsyncMock, return_value=[]), \
+            patch.object(memory, "render_long_term_memory_markdown", return_value=""), \
+            patch.object(memory, "print_formatted_text"), \
+            patch.object(memory, "post_tui"):
+        compacted = await memory.partial_compact(
+            messages,
+            100,
+            100,
+            "reason",
+            on_summary_delta=events.append,
+            on_summary=lambda summary: events.append(("summary", summary)),
+            on_memory_start=lambda: events.append("memory_start"),
+            on_memory_end=lambda error: events.append(("memory_end", error)),
+        )
+
+    assert compacted is True
+    assert events == [
+        "sum",
+        "mary",
+        ("summary", "summary"),
+        "memory_start",
+        ("memory_end", None),
+    ]
+    assert messages[1]["content"].startswith("[Previous conversation compressed.")
+
+
+@pytest.mark.anyio
+async def test_partial_compact_streams_fallback_summary_when_stream_fails():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest"},
+    ]
+    deltas = []
+
+    async def failing_stream():
+        raise RuntimeError("stream failed")
+        yield {}
+
+    fake_client = Mock()
+    fake_client.get_summary_stream_events.return_value = failing_stream()
+    fake_client.get_summary = AsyncMock(return_value="fallback summary")
+
+    with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 3)), \
+            patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
+            patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
+            patch.object(memory, "_compact_console"), \
+            patch.object(memory, "memory_agent_loop", new_callable=AsyncMock, return_value=[]), \
+            patch.object(memory, "render_long_term_memory_markdown", return_value=""), \
+            patch.object(memory, "print_formatted_text"), \
+            patch.object(memory, "post_tui"):
+        compacted = await memory.partial_compact(
+            messages,
+            100,
+            100,
+            "reason",
+            on_summary_delta=deltas.append,
+        )
+
+    assert compacted is True
+    assert deltas == ["fallback summary"]
+    assert messages[1]["content"].endswith("fallback summary")
+
+
+@pytest.mark.anyio
+async def test_partial_compact_reports_memory_extraction_failure():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest"},
+    ]
+    original = json.loads(json.dumps(messages))
+    events = []
+
+    async def summary_stream():
+        yield {"type": "text", "content": "summary"}
+
+    fake_client = Mock()
+    fake_client.get_summary_stream_events.return_value = summary_stream()
+
+    with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 3)), \
+            patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
+            patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
+            patch.object(memory, "_compact_console"), \
+            patch.object(
+                memory,
+                "memory_agent_loop",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("memory failed"),
+            ), \
+            patch.object(memory, "render_long_term_memory_markdown", return_value=""), \
+            patch.object(memory, "print_formatted_text"), \
+            patch.object(memory, "post_tui"):
+        with pytest.raises(RuntimeError, match="memory failed"):
+            await memory.partial_compact(
+                messages,
+                100,
+                100,
+                "reason",
+                on_summary=lambda summary: events.append(("summary", summary)),
+                on_memory_start=lambda: events.append("memory_start"),
+                on_memory_end=lambda error: events.append(("memory_end", error)),
+            )
+
+    assert events == [
+        ("summary", "summary"),
+        "memory_start",
+        ("memory_end", "memory failed"),
+    ]
+    assert messages == original
+
+
+@pytest.mark.anyio
 async def test_partial_compact_preserves_history_when_summary_or_memory_fails():
     messages = [
         {"role": "system", "content": "system"},

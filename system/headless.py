@@ -647,6 +647,7 @@ class HeadlessRunner:
                 "result": result.text,
                 "session_id": result.session_id,
                 "usage": result.usage,
+                "compactions": result.compactions,
                 "permission_denials": result.permission_denials,
                 "duration_ms": result.duration_ms,
                 "error": result.error,

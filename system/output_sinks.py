@@ -151,6 +151,9 @@ class StreamJsonWriter:
                 }
             )
             return
+        if event_type == "compact":
+            self.write({**event, "session_id": self._session_id})
+            return
         if event_type == "tool_use":
             tool_input = event.get("input")
             if isinstance(tool_input, str):
@@ -198,6 +201,7 @@ class StreamJsonWriter:
                 "result": result.text,
                 "session_id": result.session_id,
                 "usage": result.usage,
+                "compactions": getattr(result, "compactions", []),
                 "permission_denials": result.permission_denials,
                 "duration_ms": result.duration_ms,
                 "error": result.error,

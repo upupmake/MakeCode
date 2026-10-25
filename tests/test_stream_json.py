@@ -97,3 +97,56 @@ def test_stream_json_writer_suppresses_partial_deltas_by_default():
 
     payloads = _lines(stream)
     assert [payload["type"] for payload in payloads] == ["assistant"]
+
+
+def test_stream_json_writer_emits_compact_events_and_result_compactions():
+    stream = StringIO()
+    writer = StreamJsonWriter(stream, session_id="conv_test")
+    writer.handle_runtime_event(
+        {
+            "type": "compact",
+            "phase": "start",
+            "scope": "tool_output",
+            "tokens_before": 100,
+        }
+    )
+    writer.handle_runtime_event(
+        {
+            "type": "compact",
+            "phase": "summary_delta",
+            "scope": "partial",
+            "text": "sum",
+        }
+    )
+    writer.write_result(
+        TurnResult(
+            text="ok",
+            session_id="conv_test",
+            messages=[],
+            compactions=[
+                {
+                    "type": "compact",
+                    "phase": "end",
+                    "scope": "tool_output",
+                    "status": "success",
+                }
+            ],
+        )
+    )
+
+    payloads = _lines(stream)
+    assert [payload["type"] for payload in payloads] == [
+        "compact",
+        "compact",
+        "result",
+    ]
+    assert payloads[0]["session_id"] == "conv_test"
+    assert payloads[1]["text"] == "sum"
+    assert payloads[-1]["compactions"] == [
+        {
+            "type": "compact",
+            "phase": "end",
+            "scope": "tool_output",
+            "status": "success",
+        }
+    ]
