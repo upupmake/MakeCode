@@ -82,6 +82,32 @@ def test_anthropic_cache_breakpoint_marks_first_request():
     ],
     ids=["openai_chat", "openai_responses", "anthropic"],
 )
+def test_request_builders_strip_injected_notification_metadata(builder):
+    message = {
+        "role": "user",
+        "content": '<notification id="ntf_1"><summary>notice</summary></notification>',
+        "notification": True,
+        "notification_id": "ntf_1",
+        "delivery_ids": ["dlv_1"],
+    }
+
+    projected = builder([message])
+
+    assert "<notification" in json.dumps(projected, ensure_ascii=False)
+    assert "notification_id" not in projected
+    assert "delivery_ids" not in projected
+    assert "notification" not in projected
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        lambda messages: sanitize_openai_messages(messages),
+        lambda messages: build_openai_responses_request(messages)[1],
+        lambda messages: build_anthropic_request_messages(messages)[1],
+    ],
+    ids=["openai_chat", "openai_responses", "anthropic"],
+)
 def test_replayed_assistant_prefix_is_byte_stable_across_turns(builder):
     assistant = {
         "role": "assistant",

@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html
 import inspect
+import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +65,195 @@ from utils.tool_validation import (
     validate_builtin_tool_arguments,
 )
 
+logger = logging.getLogger(__name__)
+
+_INJECTION_QUEUE_MAXSIZE = 100
+_NOTIFICATION_VERSION = 1
+_NOTIFICATION_INTENTS = frozenset({"decision", "todo", "fyi"})
+_NOTIFICATION_INSTRUCTION = (
+    "这是运行期间到达的系统通知，不是新的用户任务。\n"
+    "你可以继续当前工作，或按需通过可用工具查看完整内容。\n"
+    "intent=decision 的消息是对你此前提问的答复，必须完整阅读，"
+    "并据此调整后续工作，不能静默忽略。"
+)
+
+
+@dataclass
+class _PendingInjection:
+    """A context block waiting to be appended before the next model request."""
+
+    metadata: dict[str, Any]
+    render: Callable[[set[str]], tuple[str, list[str]] | None]
+
+
+def _xml_text(value: str) -> str:
+    return html.escape(value, quote=False)
+
+
+def _xml_attr(value: str) -> str:
+    return html.escape(value, quote=True)
+
+
+def _normalize_notification_item(
+    notification_id: str,
+    index: int,
+    raw_item: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(raw_item, dict):
+        logger.warning(
+            "忽略通知 %s 的第 %d 项：item 必须是 JSON 对象。",
+            notification_id,
+            index + 1,
+        )
+        return None
+    delivery_id = raw_item.get("delivery_id")
+    if not isinstance(delivery_id, str) or not delivery_id.strip():
+        logger.warning(
+            "忽略通知 %s 的第 %d 项：缺少有效的 delivery_id。",
+            notification_id,
+            index + 1,
+        )
+        return None
+    intent = raw_item.get("intent")
+    if intent not in _NOTIFICATION_INTENTS:
+        logger.warning(
+            "忽略通知 %s 的第 %d 项：不支持 intent %r。",
+            notification_id,
+            index + 1,
+            intent,
+        )
+        return None
+    text = raw_item.get("text")
+    preview = raw_item.get("preview")
+    if intent == "decision":
+        if not isinstance(text, str) or not text:
+            logger.warning(
+                "忽略通知 %s 的第 %d 项：decision 缺少完整 text。",
+                notification_id,
+                index + 1,
+            )
+            return None
+    elif not isinstance(preview, str):
+        logger.warning(
+            "忽略通知 %s 的第 %d 项：%s 缺少 preview。",
+            notification_id,
+            index + 1,
+            intent,
+        )
+        return None
+    sender = raw_item.get("from")
+    created_at = raw_item.get("created_at")
+    message_id = raw_item.get("message_id")
+    return {
+        "delivery_id": delivery_id,
+        "message_id": message_id if isinstance(message_id, str) else "",
+        "intent": intent,
+        "from": sender if isinstance(sender, str) and sender else "user",
+        "created_at": created_at if isinstance(created_at, str) else "",
+        "text": text if isinstance(text, str) else "",
+        "preview": preview if isinstance(preview, str) else "",
+    }
+
+
+def _normalize_notification(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        logger.warning("忽略通知：通知必须是 JSON 对象。")
+        return None
+    notification_id = payload.get("id")
+    if not isinstance(notification_id, str) or not notification_id.strip():
+        logger.warning("忽略通知：缺少有效的 id。")
+        return None
+    version = payload.get("version", _NOTIFICATION_VERSION)
+    if version != _NOTIFICATION_VERSION:
+        logger.warning("忽略通知 %s：不支持 version %r。", notification_id, version)
+        return None
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        logger.warning("忽略通知 %s：items 必须是列表。", notification_id)
+        return None
+    items = []
+    seen_ids: set[str] = set()
+    for index, raw_item in enumerate(raw_items):
+        item = _normalize_notification_item(notification_id, index, raw_item)
+        if item is None or item["delivery_id"] in seen_ids:
+            continue
+        seen_ids.add(item["delivery_id"])
+        items.append(item)
+    return {"id": notification_id, "items": items}
+
+
+def format_notification(notification_id: str, items: list[dict[str, Any]]) -> str:
+    """Render structured notification items as controlled XML context."""
+    count = len(items)
+    decisions = sum(1 for item in items if item["intent"] == "decision")
+    if decisions:
+        summary = (
+            f"当前 Turn 执行期间收到 {count} 条新消息，其中 {decisions} 条需要决策。"
+        )
+    else:
+        summary = f"当前 Turn 执行期间收到 {count} 条新消息。"
+    lines = [
+        f'<notification version="{_NOTIFICATION_VERSION}" '
+        f'id="{_xml_attr(notification_id)}" count="{count}" decisions="{decisions}">',
+        f"  <summary>{_xml_text(summary)}</summary>",
+        "",
+    ]
+    for item in items:
+        delivery_id = _xml_attr(item["delivery_id"])
+        sender = _xml_attr(item["from"])
+        created_at = _xml_attr(item["created_at"])
+        if item["intent"] == "decision":
+            message_id = _xml_attr(item["message_id"])
+            lines.append(
+                f'  <decision delivery_id="{delivery_id}" message_id="{message_id}" '
+                f'from="{sender}" created_at="{created_at}">'
+            )
+            lines.append(f"    <text>{_xml_text(item['text'])}</text>")
+            lines.append("  </decision>")
+        else:
+            intent = _xml_attr(item["intent"])
+            lines.append(
+                f'  <message delivery_id="{delivery_id}" intent="{intent}" '
+                f'from="{sender}" created_at="{created_at}">'
+            )
+            lines.append(f"    <preview>{_xml_text(item['preview'])}</preview>")
+            lines.append("  </message>")
+        lines.append("")
+    lines.append("  <instruction>")
+    lines.extend(f"    {line}" for line in _NOTIFICATION_INSTRUCTION.splitlines())
+    lines.append("  </instruction>")
+    lines.append("</notification>")
+    return "\n".join(lines)
+
+
+def _merge_injection_metadata(
+    rendered: list[tuple[_PendingInjection, str, list[str]]],
+) -> dict[str, Any]:
+    if len(rendered) == 1:
+        record, _, delivery_ids = rendered[0]
+        metadata = dict(record.metadata)
+        if delivery_ids:
+            metadata["delivery_ids"] = delivery_ids
+        return metadata
+    notification_ids = [
+        str(record.metadata["notification_id"])
+        for record, _, _ in rendered
+        if record.metadata.get("notification") is True
+        and record.metadata.get("notification_id")
+    ]
+    delivery_ids = [delivery_id for _, _, ids in rendered for delivery_id in ids]
+    if len(notification_ids) == len(rendered):
+        return {
+            "notification": True,
+            "notification_id": ",".join(notification_ids),
+            "delivery_ids": delivery_ids,
+        }
+    metadata: dict[str, Any] = {"injected": True, "delivery_ids": delivery_ids}
+    for record, _, _ in rendered:
+        for key, value in record.metadata.items():
+            metadata.setdefault(key, value)
+    return metadata
+
 
 @dataclass
 class TurnResult:
@@ -106,6 +297,10 @@ class AgentRuntime:
         self._system_prompt_cache: str | None = None
         self._turn_usage: dict[str, int] = {}
         self._turn_compactions: list[dict[str, Any]] = []
+        self._pending_injections: asyncio.Queue[_PendingInjection] = asyncio.Queue(
+            maxsize=_INJECTION_QUEUE_MAXSIZE
+        )
+        self._turn_injected_ids: set[str] = set()
 
     def restore(self, snapshot: ConversationSnapshot) -> None:
         self.store.activate(snapshot)
@@ -441,6 +636,7 @@ class AgentRuntime:
         definitions: list[dict[str, Any]],
     ) -> tuple[str, bool]:
         while True:
+            self._inject_pending_injections()
             response_text = ""
             tool_calls: list[dict[str, Any]] = []
             raw_message = None
@@ -524,6 +720,117 @@ class AgentRuntime:
                 )
                 self._save()
 
+    def enqueue_injection(
+        self,
+        content: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        dedupe_ids: Iterable[str] = (),
+    ) -> None:
+        """Queue context to append before the next model request.
+
+        Queued injections are merged into a single ``role: user`` message and
+        appended at the top of the agent loop, so a running tool call is never
+        interrupted. ``dedupe_ids`` keep the same payload from being injected
+        twice within one turn. Must be called on the event loop thread.
+        """
+        if not isinstance(content, str) or not content.strip():
+            logger.warning("忽略消息注入：content 不能为空。")
+            return
+        ids = tuple(
+            value
+            for value in dedupe_ids
+            if isinstance(value, str) and value.strip()
+        )
+
+        def render(seen: set[str]) -> tuple[str, list[str]] | None:
+            remaining = [value for value in ids if value not in seen]
+            if ids and not remaining:
+                return None
+            return content, remaining
+
+        self._enqueue_injection(
+            _PendingInjection(dict(metadata or {}), render)
+        )
+
+    def enqueue_notification(self, notification: dict[str, Any]) -> None:
+        """Queue a stream-json control notification for context injection."""
+        normalized = _normalize_notification(notification)
+        if normalized is None:
+            return
+        items = normalized["items"]
+        if not items:
+            return
+        notification_id = str(normalized["id"])
+
+        def render(seen: set[str]) -> tuple[str, list[str]] | None:
+            pending = [
+                item for item in items if item["delivery_id"] not in seen
+            ]
+            if not pending:
+                return None
+            return (
+                format_notification(notification_id, pending),
+                [item["delivery_id"] for item in pending],
+            )
+
+        self._enqueue_injection(
+            _PendingInjection(
+                {"notification": True, "notification_id": notification_id},
+                render,
+            )
+        )
+
+    def _enqueue_injection(self, record: _PendingInjection) -> None:
+        if self._pending_injections.full():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                self._pending_injections.get_nowait()
+            logger.warning(
+                "消息注入队列已满（上限 %d），丢弃最旧的注入项。",
+                _INJECTION_QUEUE_MAXSIZE,
+            )
+        try:
+            self._pending_injections.put_nowait(record)
+        except asyncio.QueueFull:
+            logger.warning("消息注入队列已满，丢弃新的注入项。")
+
+    def _drain_injections(self) -> list[_PendingInjection]:
+        records = []
+        while True:
+            try:
+                records.append(self._pending_injections.get_nowait())
+            except asyncio.QueueEmpty:
+                return records
+
+    def _inject_pending_injections(self) -> None:
+        records = self._drain_injections()
+        if not records:
+            return
+        rendered: list[tuple[_PendingInjection, str, list[str]]] = []
+        for record in records:
+            try:
+                result = record.render(self._turn_injected_ids)
+            except Exception:
+                logger.warning("消息注入渲染失败，已跳过。", exc_info=True)
+                continue
+            if result is None:
+                continue
+            content, delivery_ids = result
+            if not content:
+                continue
+            rendered.append((record, content, delivery_ids))
+            self._turn_injected_ids.update(delivery_ids)
+        if not rendered:
+            return
+        self.messages.append(
+            {
+                "role": "user",
+                "content": "\n\n".join(content for _, content, _ in rendered),
+                **_merge_injection_metadata(rendered),
+            }
+        )
+        self._save()
+
     def _save(self) -> None:
         self.store.save_messages(self.messages, runtime=self._runtime_metadata())
 
@@ -534,6 +841,7 @@ class AgentRuntime:
 
     async def run_turn(self, query: str) -> TurnResult:
         started = time.perf_counter()
+        self._turn_injected_ids = set()
         self._handlers = {}
         self._permission_denials = []
         self._turn_usage = {}

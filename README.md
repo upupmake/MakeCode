@@ -925,7 +925,7 @@ printf '%s\n' \
 | `text` | stdin 每行一条文本消息 |
 | `json`（别名 `stream-json`） | stdin 每行一个 JSON 对象 |
 
-`--output-format` 可选 `text`、`json`、`stream-json`，任意输入格式都可以搭配任意输出格式。`--replay-user-messages` 需要 `stream-json` 输出，`--include-partial-messages` 同样需要 `stream-json` 输出。JSON 输入支持 `{"type":"control","action":"interrupt"}` 取消当前轮。
+`--output-format` 可选 `text`、`json`、`stream-json`，任意输入格式都可以搭配任意输出格式。`--replay-user-messages` 需要 `stream-json` 输出，`--include-partial-messages` 同样需要 `stream-json` 输出。JSON 输入支持 `{"type":"control","action":"interrupt"}` 取消当前轮，以及 `{"type":"control","action":"notification",...}` 在 Turn 内注入通知（见下文“运行期通知注入”）。
 
 也可以直接使用纯文本逐行输入，每行是一轮：
 
@@ -950,7 +950,8 @@ printf '第一轮：记住暗号 7391\n第二轮：暗号是什么？\n' \
   },
   "capabilities": {
     "configurable_paths": true,
-    "skills_dirs_override": true
+    "skills_dirs_override": true,
+    "notification_channel": "stream-json-notification-v1"
   }
 }
 ```
@@ -991,6 +992,60 @@ headless 默认使用 `bypassPermissions`，即完全关闭 HITL：终端命令�
 
 若 `--input-format stream-json` 搭配 `--output-format text/json`，提问走 stderr 菜单；回答优先解析 `control_response`，也接受直接输入序号或文本。
 
+运行期通知注入（`notification channel`）：
+
+MakeCode 提供通用的“下一次模型请求前注入上下文”能力，交互模式的 `Ctrl+G` 临时指令也使用同一类注入点。headless 下，外部客户端可以在 `--input-format stream-json` 的 stdin 中发送控制消息，把消息作为受控上下文注入当前 Turn：
+
+```json
+{
+  "type": "control",
+  "action": "notification",
+  "notification": {
+    "id": "ntf_7f3a9c1e",
+    "version": 1,
+    "count": 2,
+    "decisions": 1,
+    "items": [
+      {
+        "delivery_id": "dlv_123",
+        "message_id": "msg_456",
+        "intent": "decision",
+        "from": "user",
+        "created_at": "2026-10-27T12:34:56Z",
+        "text": "完整的决策答复正文，必须原样展示，不截断。"
+      },
+      {
+        "delivery_id": "dlv_124",
+        "message_id": "msg_457",
+        "intent": "todo",
+        "from": "agent:agt_789",
+        "created_at": "2026-10-27T12:35:00Z",
+        "preview": "待办消息的短摘要。"
+      }
+    ]
+  }
+}
+```
+
+- 能力探测：`system/init` 的 `capabilities.notification_channel` 为 `stream-json-notification-v1` 时支持该控制消息；客户端可据此决定是否发送。
+- 注入时机：`AgentRuntime._agent_loop` 在每次调用 `client.generate_stream` 之前取出队列中的通知。正在执行的工具不会被打断，工具结果回填后的下一次模型请求可以看到通知；不会新开 Turn，也不会产生额外的 `result` 事件。
+- `intent=decision` 的 `text` 必填并完整注入（不截断、不摘要替代）；`todo`/`fyi` 只注入 `preview`，完整内容由智能体按需通过工具获取。`count`/`decisions` 由 MakeCode 按实际注入项重新计算。
+- 所有文本按 XML 转义后放入受控的 `<notification>` 上下文，作为一条 `role: "user"` 消息插入，消息带 `notification`、`notification_id`、`delivery_ids` 元数据；不会写入 system prompt，也不会修改工具定义。
+- 同一 Turn 内相同 `delivery_id` 只注入一次；多个通知会合并为同一条模型消息。通知在最终模型响应之后到达时留在队列中，等下一次 Turn 处理。
+- 队列有上限，满时丢弃最旧的待注入项并记录警告；非法通知记录警告后忽略，不影响当前 Turn。
+- 进程内调用可使用通用 API `AgentRuntime.enqueue_injection(content, metadata=..., dedupe_ids=...)` 注入任意受控上下文；`enqueue_notification()` 只是该能力对上述结构化通知的适配层。
+
+最小集成示例（同一 Turn 内收到 decision 通知，下一次模型请求可见完整 `<notification>`，Turn 不中断）：
+
+```bash
+printf '%s\n' \
+  '{"type":"user","content":"请检查仓库并修复构建"}' \
+  '{"type":"control","action":"notification","notification":{"id":"ntf_1","version":1,"count":1,"decisions":1,"items":[{"delivery_id":"dlv_1","message_id":"msg_1","intent":"decision","from":"user","created_at":"2026-10-27T12:34:56Z","text":"采用方案 B，并保留现有测试。"}]}}' \
+  | makecode --input-format stream-json --output-format stream-json
+```
+
+通知通过事件循环安全入队（`loop.call_soon_threadsafe`），不会与 stdin 读取线程或 `AskUser` 的 `control_response` 处理竞争；`AskUser` 处于 pending 时，通知控制消息也不会被当作回答消费。
+
 `--allowedTools` / `--disallowedTools` 可进一步限制工具集合，支持具体工具名（如 `FileEdit`）或命名空间名（如 `File`、`Terminal`），`--disallowedTools` 优先。
 
 为兼容 Claude Code 的 `-p` 用法，prompt 也可以写成位置参数：`MakeCode -p --output-format json "问题"`，并允许 `-p` 与 `--input-format stream-json` 同时使用。`--permission-mode` 额外接受 `manual` 和 `dontAsk`（等价于 `default`），工具列表支持逗号分隔。
@@ -1017,6 +1072,7 @@ headless 每轮请求前会执行与 TUI 相同的两层上下文压缩，并通
 - headless 不经过 TUI 斜杠命令层，`/skill` 等交互命令不会展开。
 - `DelegateTasks`（发起子代理）在 headless 下完全禁止：不注册、不可调用；`AskUser` 在存在交互通道时自动注册，无通道时不注册。需要执行的任务由 Orchestrator 直接完成。
 - `--input-format stream-json` 目前只处理文本内容块。
+- 运行期通知注入仅支持 `--input-format stream-json`；交互模式继续使用 `Ctrl+G` 临时指令。
 
 ### 6.5 内置快捷命令（Slash Commands）
 

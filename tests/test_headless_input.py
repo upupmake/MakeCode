@@ -11,6 +11,10 @@ from system.output_sinks import StreamJsonWriter
 class FakeRuntime:
     def __init__(self):
         self.queries = []
+        self.notifications = []
+
+    def enqueue_notification(self, notification):
+        self.notifications.append(notification)
 
     async def run_turn(self, query):
         self.queries.append(query)
@@ -107,6 +111,104 @@ def test_parse_line_accepts_interrupt_control():
     assert StreamJsonInputLoop._parse_line(
         json.dumps({"type": "control", "action": "interrupt"})
     ) == ("control", "interrupt")
+
+
+def test_parse_line_accepts_notification_control():
+    notification = {
+        "id": "ntf_test",
+        "version": 1,
+        "count": 1,
+        "decisions": 1,
+        "items": [{"delivery_id": "dlv_1", "intent": "decision", "text": "go"}],
+    }
+
+    assert StreamJsonInputLoop._parse_line(
+        json.dumps(
+            {
+                "type": "control",
+                "action": "notification",
+                "notification": notification,
+            }
+        )
+    ) == ("notification", notification)
+
+
+def test_parse_line_rejects_notification_without_object():
+    kind, message = StreamJsonInputLoop._parse_line(
+        json.dumps({"type": "control", "action": "notification"})
+    )
+
+    assert kind == "error"
+    assert "notification" in message
+
+
+class _RecordingLoop:
+    def __init__(self):
+        self.calls = []
+
+    def call_soon_threadsafe(self, callback, *args):
+        self.calls.append((callback, args))
+
+
+def test_stdin_notification_is_enqueued_through_event_loop(monkeypatch):
+    notification = {
+        "id": "ntf_test",
+        "version": 1,
+        "count": 1,
+        "decisions": 1,
+        "items": [{"delivery_id": "dlv_1", "intent": "decision", "text": "go"}],
+    }
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        StringIO(
+            json.dumps(
+                {
+                    "type": "control",
+                    "action": "notification",
+                    "notification": notification,
+                }
+            )
+            + "\n"
+        ),
+    )
+    runtime = FakeRuntime()
+    input_loop = StreamJsonInputLoop(runtime, None)
+    recorder = _RecordingLoop()
+    input_loop._loop = recorder
+
+    input_loop._read_stdin()
+
+    assert (runtime.enqueue_notification, (notification,)) in recorder.calls
+
+
+def test_notification_does_not_start_a_new_turn(monkeypatch):
+    notification = {
+        "id": "ntf_test",
+        "version": 1,
+        "count": 1,
+        "decisions": 1,
+        "items": [{"delivery_id": "dlv_1", "intent": "decision", "text": "go"}],
+    }
+
+    exit_code, runtime, payloads = _run_loop(
+        monkeypatch,
+        [
+            json.dumps({"type": "user", "content": "first"}),
+            json.dumps(
+                {
+                    "type": "control",
+                    "action": "notification",
+                    "notification": notification,
+                }
+            ),
+        ],
+    )
+
+    assert exit_code == 0
+    assert runtime.queries == ["first"]
+    assert runtime.notifications == [notification]
+    assert [payload["type"] for payload in payloads] == ["result"]
 
 
 def test_text_input_loop_runs_one_turn_per_line(monkeypatch):

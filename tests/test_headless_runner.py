@@ -78,6 +78,7 @@ def test_text_mode_emits_init_json_then_answer(runner_env, capsys):
     assert init["capabilities"] == {
         "configurable_paths": True,
         "skills_dirs_override": True,
+        "notification_channel": "stream-json-notification-v1",
     }
     assert set(init["config_paths"]) == {
         "shared_config_dir",
@@ -290,6 +291,24 @@ def test_stream_json_auto_enables_ask_user(runner_env, capsys, monkeypatch):
     assert init["ask_user"] == "enabled"
     assert init["ask_user_channel"] == "stream-json"
     assert FakeRuntime.instances[0].kwargs["ask_user_available"] is True
+
+
+def test_init_declares_notification_channel(runner_env, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", StringIO(""))
+
+    result = headless_module.run_headless(
+        HeadlessOptions(
+            prompt=None,
+            input_format="stream-json",
+            output_format="stream-json",
+        )
+    )
+
+    init = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result == 0
+    assert init["capabilities"]["notification_channel"] == (
+        "stream-json-notification-v1"
+    )
 
 
 def test_auto_enables_ask_user_for_persistent_tty(monkeypatch):

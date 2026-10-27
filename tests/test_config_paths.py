@@ -365,6 +365,7 @@ def test_system_init_reports_config_paths_and_capabilities(
     assert fields["capabilities"] == {
         "configurable_paths": True,
         "skills_dirs_override": True,
+        "notification_channel": "stream-json-notification-v1",
     }
     assert not default_shared.exists()
     assert not (workspace / ".makecode").exists()

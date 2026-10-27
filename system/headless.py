@@ -304,6 +304,7 @@ class HeadlessRunner:
             "capabilities": {
                 "configurable_paths": True,
                 "skills_dirs_override": True,
+                "notification_channel": "stream-json-notification-v1",
             },
             "session_persisted": not self.options.no_session_persistence,
             "resumed": snapshot is not None,

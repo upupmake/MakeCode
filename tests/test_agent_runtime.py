@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -477,3 +478,329 @@ def test_compact_reports_skipped_partial_before_tool_output_fallback(tmp_path, m
     assert events[1]["error"] is None
     assert events[3]["status"] == "noop"
     assert events[3]["tokens_after"] == 95
+
+
+class RecordingClient(FakeClient):
+    def __init__(self, responses):
+        normalized = [
+            response if isinstance(response, list) else [response]
+            for response in responses
+        ]
+        super().__init__(normalized)
+        self.requests = []
+
+    async def generate_stream(self, messages, tools):
+        self.requests.append(copy.deepcopy(messages))
+        async for event in super().generate_stream(messages, tools):
+            yield event
+
+
+def _call(tool_id, name, arguments):
+    return {"id": tool_id, "name": name, "arguments": arguments}
+
+
+def _tool_done(*tool_calls):
+    return {
+        "type": "done",
+        "result": SimpleNamespace(
+            text="",
+            tool_calls=list(tool_calls),
+            assistant_message={"role": "assistant", "content": None},
+        ),
+    }
+
+
+def _notification(*items, notification_id="ntf_test"):
+    return {
+        "id": notification_id,
+        "version": 1,
+        "count": len(items),
+        "decisions": sum(1 for item in items if item["intent"] == "decision"),
+        "items": list(items),
+    }
+
+
+def _decision_item(delivery_id="dlv_decision", text="完整的决策答复正文。"):
+    return {
+        "delivery_id": delivery_id,
+        "message_id": "msg_1",
+        "intent": "decision",
+        "from": "user",
+        "created_at": "2026-10-27T12:34:56Z",
+        "text": text,
+    }
+
+
+def _todo_item(
+    delivery_id="dlv_todo",
+    preview="待办消息的短摘要。",
+    text="这条全文不应该出现在通知里。",
+):
+    return {
+        "delivery_id": delivery_id,
+        "message_id": "msg_2",
+        "intent": "todo",
+        "from": "agent:agt_789",
+        "created_at": "2026-10-27T12:35:00Z",
+        "preview": preview,
+        "text": text,
+    }
+
+
+def _runtime_with_tool(tmp_path, client, handler, monkeypatch):
+    registry = ToolRegistry(include_ask_user=False)
+    original_handlers = registry.handlers
+
+    def handlers(mcp_handlers):
+        handlers_map = original_handlers(mcp_handlers)
+        handlers_map["EchoInjection"] = handler
+        return handlers_map
+
+    monkeypatch.setattr(registry, "handlers", handlers)
+    return AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=registry,
+        llm_client_factory=lambda **kwargs: client,
+    )
+
+
+def _injected_messages(messages):
+    return [message for message in messages if message.get("notification") is True]
+
+
+def test_notification_is_injected_before_next_model_request(tmp_path, monkeypatch):
+    notification = _notification(
+        _decision_item(
+            text="完整的决策答复正文。\n第二行 <keep> & value."
+        ),
+        _todo_item(),
+    )
+    holder = {}
+
+    def handler(**kwargs):
+        holder["runtime"].enqueue_notification(notification)
+        return "tool ok"
+
+    client = RecordingClient(
+        [_tool_done(_call("t1", "EchoInjection", {})), _done("finished")]
+    )
+    runtime = _runtime_with_tool(tmp_path, client, handler, monkeypatch)
+    holder["runtime"] = runtime
+
+    result = asyncio.run(runtime.run_turn("start"))
+
+    assert result.is_error is False
+    assert len(client.requests) == 2
+    assert _injected_messages(client.requests[0]) == []
+    injected = _injected_messages(client.requests[1])
+    assert len(injected) == 1
+    message = injected[0]
+    assert message["role"] == "user"
+    assert message["notification_id"] == "ntf_test"
+    assert message["delivery_ids"] == ["dlv_decision", "dlv_todo"]
+    content = message["content"]
+    assert content.startswith('<notification version="1" id="ntf_test"')
+    assert 'count="2" decisions="1"' in content
+    assert "其中 1 条需要决策" in content
+    assert "完整的决策答复正文。\n第二行 &lt;keep&gt; &amp; value." in content
+    assert "<text>完整的决策答复正文。" in content
+    assert "<preview>待办消息的短摘要。</preview>" in content
+    assert "这条全文不应该出现在通知里。" not in content
+    assert content.count("</notification>") == 1
+
+
+def test_notification_delivery_ids_are_injected_once_per_turn(tmp_path, monkeypatch):
+    notification = _notification(_decision_item())
+    holder = {}
+
+    def handler(**kwargs):
+        holder["runtime"].enqueue_notification(notification)
+        return "ok"
+
+    client = RecordingClient(
+        [
+            _tool_done(_call("t1", "EchoInjection", {})),
+            _tool_done(_call("t2", "EchoInjection", {})),
+            _done("finished"),
+        ]
+    )
+    runtime = _runtime_with_tool(tmp_path, client, handler, monkeypatch)
+    holder["runtime"] = runtime
+
+    result = asyncio.run(runtime.run_turn("start"))
+
+    assert len(client.requests) == 3
+    for request in client.requests[1:]:
+        injected = _injected_messages(request)
+        assert len(injected) == 1
+        assert injected[0]["content"].count('delivery_id="dlv_decision"') == 1
+    assert len(_injected_messages(result.messages)) == 1
+
+
+def test_multiple_notifications_merge_into_one_model_message(tmp_path, monkeypatch):
+    holder = {}
+
+    def handler(**kwargs):
+        runtime = holder["runtime"]
+        runtime.enqueue_notification(
+            _notification(_todo_item(), notification_id="ntf_a")
+        )
+        runtime.enqueue_notification(
+            _notification(_decision_item(), notification_id="ntf_b")
+        )
+        return "ok"
+
+    client = RecordingClient(
+        [_tool_done(_call("t1", "EchoInjection", {})), _done("finished")]
+    )
+    runtime = _runtime_with_tool(tmp_path, client, handler, monkeypatch)
+    holder["runtime"] = runtime
+
+    asyncio.run(runtime.run_turn("start"))
+
+    injected = _injected_messages(client.requests[1])
+    assert len(injected) == 1
+    message = injected[0]
+    assert message["notification_id"] == "ntf_a,ntf_b"
+    assert message["delivery_ids"] == ["dlv_todo", "dlv_decision"]
+    assert message["content"].count("<notification ") == 2
+
+
+def test_notification_preserves_decision_text_and_escapes_xml(tmp_path, monkeypatch):
+    text = '第一行\n第二行 <tag attr="x"> & 结束 </notification>'
+    notification = _notification(_decision_item(text=text))
+    holder = {}
+
+    def handler(**kwargs):
+        holder["runtime"].enqueue_notification(notification)
+        return "ok"
+
+    client = RecordingClient(
+        [_tool_done(_call("t1", "EchoInjection", {})), _done("finished")]
+    )
+    runtime = _runtime_with_tool(tmp_path, client, handler, monkeypatch)
+    holder["runtime"] = runtime
+
+    asyncio.run(runtime.run_turn("start"))
+
+    content = _injected_messages(client.requests[1])[0]["content"]
+    assert "第一行\n第二行 &lt;tag attr=\"x\"&gt; &amp; 结束" in content
+    assert "&lt;/notification&gt;" in content
+    assert content.count("</notification>") == 1
+
+
+def test_duplicate_invalid_and_empty_notifications_are_ignored(tmp_path, monkeypatch):
+    duplicate = _notification(_decision_item(delivery_id="dlv_dup"))["items"][0]
+    holder = {}
+
+    def handler(**kwargs):
+        runtime = holder["runtime"]
+        runtime.enqueue_notification(None)
+        runtime.enqueue_notification({})
+        runtime.enqueue_notification({"id": "ntf_bad", "version": 99, "items": []})
+        runtime.enqueue_notification({"id": "ntf_bad", "items": "nope"})
+        runtime.enqueue_notification(
+            _notification({"delivery_id": "", "intent": "todo", "preview": "x"})
+        )
+        runtime.enqueue_notification(
+            _notification(
+                {"delivery_id": "d1", "intent": "unknown", "preview": "x"}
+            )
+        )
+        runtime.enqueue_notification(
+            _notification({"delivery_id": "d2", "intent": "decision"})
+        )
+        runtime.enqueue_notification(
+            _notification({"delivery_id": "d3", "intent": "todo"})
+        )
+        runtime.enqueue_notification(_notification())
+        runtime.enqueue_notification(
+            _notification(duplicate, dict(duplicate), notification_id="ntf_dup")
+        )
+        return "ok"
+
+    client = RecordingClient(
+        [_tool_done(_call("t1", "EchoInjection", {})), _done("finished")]
+    )
+    runtime = _runtime_with_tool(tmp_path, client, handler, monkeypatch)
+    holder["runtime"] = runtime
+
+    result = asyncio.run(runtime.run_turn("start"))
+
+    assert result.is_error is False
+    injected = _injected_messages(client.requests[1])
+    assert len(injected) == 1
+    assert injected[0]["content"].count('delivery_id="dlv_dup"') == 1
+    assert injected[0]["delivery_ids"] == ["dlv_dup"]
+
+
+def test_generic_injection_uses_caller_defined_content(tmp_path, monkeypatch):
+    holder = {}
+
+    def handler(**kwargs):
+        runtime = holder["runtime"]
+        runtime.enqueue_injection(
+            "CALLER DEFINED CONTEXT",
+            metadata={"source": "custom"},
+            dedupe_ids=["custom-1"],
+        )
+        runtime.enqueue_injection(
+            "CALLER DEFINED CONTEXT",
+            metadata={"source": "custom"},
+            dedupe_ids=["custom-1"],
+        )
+        return "ok"
+
+    client = RecordingClient(
+        [_tool_done(_call("t1", "EchoInjection", {})), _done("finished")]
+    )
+    runtime = _runtime_with_tool(tmp_path, client, handler, monkeypatch)
+    holder["runtime"] = runtime
+
+    asyncio.run(runtime.run_turn("start"))
+
+    injected = [
+        message
+        for message in client.requests[1]
+        if message.get("source") == "custom"
+    ]
+    assert len(injected) == 1
+    assert injected[0]["role"] == "user"
+    assert injected[0]["content"] == "CALLER DEFINED CONTEXT"
+    assert injected[0]["delivery_ids"] == ["custom-1"]
+
+
+def test_injection_queue_drops_oldest_when_full(tmp_path, caplog):
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+    )
+    runtime._pending_injections = asyncio.Queue(maxsize=2)
+    for index in range(3):
+        runtime.enqueue_notification(
+            _notification(_todo_item(), notification_id=f"ntf_{index}")
+        )
+
+    records = runtime._drain_injections()
+    assert len(records) == 2
+    contents = [record.render(set())[0] for record in records]
+    assert all('id="ntf_0"' not in content for content in contents)
+    assert any("消息注入队列已满" in record.message for record in caplog.records)
+
+
+def test_notification_queued_after_turn_is_injected_next_turn(tmp_path):
+    client = RecordingClient([_done("first"), _done("second")])
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        llm_client_factory=lambda **kwargs: client,
+    )
+
+    asyncio.run(runtime.run_turn("one"))
+    runtime.enqueue_notification(_notification(_decision_item()))
+    asyncio.run(runtime.run_turn("two"))
+
+    assert _injected_messages(client.requests[0]) == []
+    injected = _injected_messages(client.requests[1])
+    assert len(injected) == 1
+    assert "完整的决策答复正文。" in injected[0]["content"]

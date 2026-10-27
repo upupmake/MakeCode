@@ -124,6 +124,9 @@ class StreamJsonInputLoop:
                 if payload == "interrupt":
                     cancel_current_response()
                 continue
+            if kind == "notification":
+                self._notify(payload)
+                continue
             if kind == "error":
                 self._emit_error(payload)
                 continue
@@ -135,6 +138,15 @@ class StreamJsonInputLoop:
             return
         with contextlib.suppress(RuntimeError):
             loop.call_soon_threadsafe(self._queue.put_nowait, item)
+
+    def _notify(self, notification: dict[str, Any]) -> None:
+        loop = self._loop
+        if loop is None:
+            return
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(
+                self.runtime.enqueue_notification, notification
+            )
 
     @staticmethod
     def _parse_line(line: str) -> tuple[str, Any]:
@@ -149,6 +161,11 @@ class StreamJsonInputLoop:
             action = payload.get("action")
             if action == "interrupt":
                 return "control", "interrupt"
+            if action == "notification":
+                notification = payload.get("notification")
+                if not isinstance(notification, dict):
+                    return "error", "control/notification 缺少有效的 notification 对象。"
+                return "notification", notification
             return "error", f"未知 control action: {action}"
         if message_type not in (None, "user"):
             return "error", f"未知消息类型: {message_type}"

@@ -952,7 +952,7 @@ Input and output formats are independent:
 | `text` | one user message per stdin line |
 | `json` (alias `stream-json`) | one JSON object per stdin line |
 
-`--output-format` accepts `text`, `json`, and `stream-json`, and any input format may be combined with any output format. `--replay-user-messages` and `--include-partial-messages` require `stream-json` output. JSON input supports `{"type":"control","action":"interrupt"}`.
+`--output-format` accepts `text`, `json`, and `stream-json`, and any input format may be combined with any output format. `--replay-user-messages` and `--include-partial-messages` require `stream-json` output. JSON input supports `{"type":"control","action":"interrupt"}` and `{"type":"control","action":"notification",...}` for in-turn notification injection (see "Runtime notification injection" below).
 
 Plain-text persistent mode is also available: explicitly passing `--input-format text` without `-p` treats every stdin line as one turn.
 
@@ -977,7 +977,8 @@ After a successful headless startup (single-turn `-p` or persistent mode, regard
   },
   "capabilities": {
     "configurable_paths": true,
-    "skills_dirs_override": true
+    "skills_dirs_override": true,
+    "notification_channel": "stream-json-notification-v1"
   }
 }
 ```
@@ -1018,6 +1019,60 @@ When enabled:
 
 If `--input-format stream-json` is combined with `--output-format text/json`, the question is rendered to stderr; `control_response` is parsed first, but a plain number or text answer is also accepted.
 
+Runtime notification injection (`notification channel`):
+
+MakeCode exposes a generic "inject context before the next model request" capability; the interactive `Ctrl+G` temporary instruction uses the same kind of injection point. In headless mode, an external client may send a control message on stdin with `--input-format stream-json` to inject a message into the current turn as controlled context:
+
+```json
+{
+  "type": "control",
+  "action": "notification",
+  "notification": {
+    "id": "ntf_7f3a9c1e",
+    "version": 1,
+    "count": 2,
+    "decisions": 1,
+    "items": [
+      {
+        "delivery_id": "dlv_123",
+        "message_id": "msg_456",
+        "intent": "decision",
+        "from": "user",
+        "created_at": "2026-10-27T12:34:56Z",
+        "text": "The complete decision reply, rendered verbatim and never truncated."
+      },
+      {
+        "delivery_id": "dlv_124",
+        "message_id": "msg_457",
+        "intent": "todo",
+        "from": "agent:agt_789",
+        "created_at": "2026-10-27T12:35:00Z",
+        "preview": "Short summary of the todo message."
+      }
+    ]
+  }
+}
+```
+
+- Capability detection: `system/init.capabilities.notification_channel` is `stream-json-notification-v1` when this control message is supported; clients can use it to decide whether to send notifications.
+- Injection timing: `AgentRuntime._agent_loop` drains the queue immediately before each `client.generate_stream` call. A running tool is never interrupted, and the model request after tool results sees the notification. No new turn starts and no extra `result` event is emitted.
+- `intent=decision` requires `text`, which is injected in full without truncation or summarization. `todo`/`fyi` inject only `preview`; the agent fetches full content through tools when needed. MakeCode recomputes `count`/`decisions` from the items it actually injects.
+- All text is XML-escaped and placed in a controlled `<notification>` context, appended as a single `role: "user"` message with `notification`, `notification_id`, and `delivery_ids` metadata. It never modifies the system prompt or tool definitions.
+- The same `delivery_id` is injected at most once per turn; multiple notifications are merged into one model message. A notification arriving after the final model response stays queued for the next turn.
+- The queue is bounded; when full, the oldest pending injection is dropped with a warning. Invalid notifications are logged and ignored without failing the current turn.
+- In-process callers can inject arbitrary controlled context through the generic API `AgentRuntime.enqueue_injection(content, metadata=..., dedupe_ids=...)`; `enqueue_notification()` is the adapter for the structured notification payload above.
+
+Minimal integration example (a decision notification arrives inside the same turn; the next model request sees the full `<notification>` and the turn is not interrupted):
+
+```bash
+printf '%s\n' \
+  '{"type":"user","content":"Inspect the repository and fix the build"}' \
+  '{"type":"control","action":"notification","notification":{"id":"ntf_1","version":1,"count":1,"decisions":1,"items":[{"delivery_id":"dlv_1","message_id":"msg_1","intent":"decision","from":"user","created_at":"2026-10-27T12:34:56Z","text":"Use option B and keep the existing tests."}]}}' \
+  | makecode --input-format stream-json --output-format stream-json
+```
+
+Notifications are enqueued through the event loop (`loop.call_soon_threadsafe`) and cannot race the stdin reader thread or `AskUser` `control_response` handling. While `AskUser` is pending, a notification control message is not consumed as an answer.
+
 `--allowedTools` / `--disallowedTools` narrow the tool set; both concrete tool names (such as `FileEdit`) and namespace names (such as `File` or `Terminal`) are accepted, and `--disallowedTools` wins.
 
 For Claude Code compatibility the prompt may also be passed positionally: `MakeCode -p --output-format json "question"`, and `-p` may be combined with `--input-format stream-json`. `--permission-mode` additionally accepts `manual` and `dontAsk` (both equivalent to `default`), and tool lists accept comma-separated values.
@@ -1044,6 +1099,7 @@ Current limitations:
 - Headless mode bypasses the TUI slash-command layer, so commands such as `/skill` are not expanded.
 - `DelegateTasks` (sub-agent spawning) is completely disabled in headless mode: it is neither registered nor callable. `AskUser` is registered automatically when an interaction channel exists and omitted otherwise. Work is executed directly by the Orchestrator.
 - `--input-format stream-json` currently accepts text content blocks only.
+- Runtime notification injection is available only with `--input-format stream-json`; interactive mode keeps using the `Ctrl+G` temporary instruction.
 
 ### 6.5 Built-in Slash Commands
 

@@ -249,6 +249,12 @@ def test_stream_loop_routes_control_response_to_pending_ask(monkeypatch):
     answers = {}
 
     class Runtime:
+        def __init__(self):
+            self.notifications = []
+
+        def enqueue_notification(self, notification):
+            self.notifications.append(notification)
+
         async def run_turn(self, prompt):
             answers["answer"] = await asyncio.to_thread(
                 channel.ask,
@@ -257,8 +263,19 @@ def test_stream_loop_routes_control_response_to_pending_ask(monkeypatch):
             )
             return TurnResult(text="done", session_id="conv_test", messages=[])
 
+    notification = {
+        "id": "ntf_test",
+        "version": 1,
+        "count": 1,
+        "decisions": 1,
+        "items": [
+            {"delivery_id": "dlv_1", "intent": "decision", "text": "go"}
+        ],
+    }
+
     async def main():
-        loop = StreamJsonInputLoop(Runtime(), writer, ask_channel=channel)
+        runtime = Runtime()
+        loop = StreamJsonInputLoop(runtime, writer, ask_channel=channel)
         task = asyncio.create_task(loop.run())
         stdin.push('{"type":"user","message":{"role":"user","content":"hi"}}\n')
         for _ in range(200):
@@ -266,6 +283,16 @@ def test_stream_loop_routes_control_response_to_pending_ask(monkeypatch):
             if "control_request" in stream.getvalue():
                 break
         request = json.loads(stream.getvalue().splitlines()[-1])
+        stdin.push(
+            json.dumps(
+                {
+                    "type": "control",
+                    "action": "notification",
+                    "notification": notification,
+                }
+            )
+            + "\n"
+        )
         stdin.push(
             json.dumps(
                 {
@@ -277,10 +304,12 @@ def test_stream_loop_routes_control_response_to_pending_ask(monkeypatch):
             + "\n"
         )
         stdin.push(None)
-        return await asyncio.wait_for(task, timeout=2)
+        return await asyncio.wait_for(task, timeout=2), runtime
 
-    assert asyncio.run(main()) == 0
+    exit_code, runtime = asyncio.run(main())
+    assert exit_code == 0
     assert answers["answer"] == {"choice": "Second"}
+    assert runtime.notifications == [notification]
 
 
 def test_text_loop_routes_answer_line_to_pending_ask(monkeypatch):
