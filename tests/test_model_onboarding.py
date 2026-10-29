@@ -17,7 +17,12 @@ from system.commands import CommandHandler
 from system.models import ModelConfig, ModelManager, get_provider_preset
 from system.simple_render import SimpleRenderer
 from system.tui_app import MakeCodeTuiApp
-from system.tui_modals import AddModelModal, EditModelModal, ModelManagerModal
+from system.tui_modals import (
+    AddModelModal,
+    EditModelModal,
+    ModelManagerModal,
+    StartupWorkdirModal,
+)
 from utils import llm_client
 
 
@@ -394,7 +399,11 @@ async def test_startup_models_handler_waits_for_workdir_modal(tmp_path):
     )
 
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.pause()
+        for _ in range(20):
+            await pilot.pause()
+            if isinstance(app.screen, StartupWorkdirModal):
+                break
+        assert isinstance(app.screen, StartupWorkdirModal)
         assert order == []
 
         app.screen.dismiss("abort")

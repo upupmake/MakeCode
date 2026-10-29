@@ -1,8 +1,28 @@
 import json
+import queue
 
 import pytest
 
 from utils import memory
+
+
+@pytest.fixture(autouse=True)
+def isolate_tui_events():
+    """丢弃跨用例残留的 TUI 事件（未绑定 App 时 post_tui 会入队，下一个 App 绑定时回放）。"""
+    from system.tui_app import TUI_BRIDGE
+
+    def _discard_pending_events() -> None:
+        while True:
+            try:
+                TUI_BRIDGE._pending.get_nowait()
+            except queue.Empty:
+                break
+        with TUI_BRIDGE._event_queue_lock:
+            TUI_BRIDGE._event_queue.clear()
+
+    _discard_pending_events()
+    yield
+    _discard_pending_events()
 
 
 @pytest.fixture(autouse=True)
