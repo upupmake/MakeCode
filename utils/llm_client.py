@@ -7,9 +7,11 @@ import inspect
 import itertools
 import json
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1715,7 +1717,7 @@ class AnthropicMessagesClient(AsyncBaseLLMClient):
         }
 
 
-from system.models import get_current_model_config, get_model_manager
+from system.models import ModelConfig, get_current_model_config, get_model_manager
 from tools.extra_tools import get_understand_image_model
 
 
@@ -1733,14 +1735,20 @@ def _normalize_anthropic_base_url(base_url: str) -> str:
     return base_url
 
 
-def _create_async_chat_client(model_config, conversation_root: Path | None = None):
+def _create_async_chat_client(
+    model_config,
+    conversation_root: Path | None = None,
+    *,
+    max_retries: int | None = None,
+):
+    retries = _LLM_MAX_RETRIES if max_retries is None else max_retries
     client: _TrackedAsyncAnthropic | _TrackedAsyncOpenAI
     if model_config.message_format == "anthropic":
         client = _TrackedAsyncAnthropic(
             base_url=_normalize_anthropic_base_url(model_config.base_url),
             api_key=model_config.api_key,
             timeout=cast(Any, _LLM_TIMEOUT),
-            max_retries=_LLM_MAX_RETRIES,
+            max_retries=retries,
             default_headers={"User-Agent": "MakeCode Agent"},
         )
         return AnthropicMessagesClient(
@@ -1755,7 +1763,7 @@ def _create_async_chat_client(model_config, conversation_root: Path | None = Non
         base_url=normalized_base_url,
         api_key=model_config.api_key,
         timeout=cast(Any, _LLM_TIMEOUT),
-        max_retries=_LLM_MAX_RETRIES,
+        max_retries=retries,
         default_headers={"User-Agent": "MakeCode Agent"},
     )
     adapter_cls = (
@@ -1825,3 +1833,66 @@ def create_image_understanding_llm_client(conversation_root: Path | None = None)
             return None
         return _create_async_chat_client(current_model, conversation_root=conversation_root)
     return _create_async_chat_client(vision_model, conversation_root=conversation_root)
+
+
+_CONNECTION_STATUS_HINTS = {
+    401: "API Key 无效或已过期",
+    403: "API Key 没有访问该模型的权限",
+    404: "Base URL 或 Model ID 不存在",
+    429: "请求被限流或额度不足",
+}
+
+
+def _describe_connection_error(exc: Exception) -> str:
+    detail = " ".join(str(exc).split())[:200] or type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        hint = _CONNECTION_STATUS_HINTS.get(status, "服务拒绝了请求")
+        return f"{hint}（HTTP {status}）：{detail}"
+    return f"请求失败（{type(exc).__name__}）：{detail}"
+
+
+async def check_model_connection(
+    model_config: ModelConfig,
+    *,
+    timeout: float = 30.0,
+) -> tuple[bool, str]:
+    """用与正式对话相同的适配器发一次最小流式请求，返回 (是否连通, 说明)。
+
+    收到首个流事件即视为连通，随后关闭流以免产生多余用量；不重试，失败立即返回。
+    """
+    started = time.monotonic()
+    client = None
+    stream = None
+    try:
+        client = _create_async_chat_client(model_config, max_retries=0)
+        stream = client.generate_stream([{"role": "user", "content": "ping"}], None)
+        async with asyncio.timeout(timeout):
+            async for _event in stream:
+                break
+    except TimeoutError:
+        return False, f"连接超时（{timeout:.0f}s 内无响应）"
+    except Exception as exc:
+        return False, _describe_connection_error(exc)
+    finally:
+        close_stream = getattr(stream, "aclose", None)
+        if close_stream is not None:
+            with suppress(Exception):
+                await close_stream()
+        if client is not None:
+            with suppress(Exception):
+                await close_async_llm_client(client)
+    return True, f"连接成功（{time.monotonic() - started:.1f}s）"
+
+
+def check_model_connection_sync(
+    model_config: ModelConfig,
+    *,
+    timeout: float = 30.0,
+) -> tuple[bool, str]:
+    """同步入口：在独立线程的事件循环里检测，调用方是否已处于事件循环中都可使用。"""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            asyncio.run,
+            check_model_connection(model_config, timeout=timeout),
+        ).result()

@@ -36,7 +36,14 @@ from textual.widgets.text_area import Selection
 
 from system.clipboard import copy_to_system_clipboard
 from system.image_input import ImageAwareTextArea
-from system.models import MESSAGE_FORMATS, REASONING_EFFORTS, ModelKey
+from system.models import (
+    MESSAGE_FORMATS,
+    PROVIDER_PRESETS,
+    REASONING_EFFORTS,
+    ModelConfig,
+    ModelKey,
+    get_provider_preset,
+)
 from system.tool_render import format_tool_value
 from system.tui_types import (
     LAYOUT_DEFAULT_RATIOS,
@@ -4032,9 +4039,10 @@ class ModelManagerModal(ClosableModalScreen[str]):
 
     BINDINGS: ClassVar[list[Binding]] = []
 
-    def __init__(self, model_manager: Any) -> None:
+    def __init__(self, model_manager: Any, auto_add: bool = False) -> None:
         super().__init__()
         self._model_manager = model_manager
+        self._auto_add = auto_add
         self._model_keys: list[ModelKey | None] = []
         self._pending_delete_key: ModelKey | None = None
         self._pending_delete_index: int | None = None
@@ -4074,6 +4082,14 @@ class ModelManagerModal(ClosableModalScreen[str]):
 
     def on_mount(self) -> None:
         self._reload_rows()
+        if self._auto_add:
+            self.call_after_refresh(self._start_guided_add)
+
+    def _start_guided_add(self) -> None:
+        if self._model_manager.models or self._model_manager.load_error is not None:
+            self._auto_add = False
+            return
+        self.action_add()
 
     def _selected_index(self) -> int:
         choice_list = self.query_one("#model-manager-list", ListView)
@@ -4469,6 +4485,8 @@ class ModelManagerModal(ClosableModalScreen[str]):
         current_model = self._model_manager.get_current_model()
         if current_model and current_model.runtime_key != previous_runtime_key:
             self.app.refresh_status()
+        if self._auto_add:
+            self.dismiss("exit")
 
     def _target_index(self, model_key: ModelKey) -> int | None:
         return next(
@@ -5280,7 +5298,46 @@ class ModelPasswordInput(Horizontal):
         event.button.tooltip = "隐藏 API Key" if revealed else "显示 API Key"
 
 
-class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
+class ModelFormModal(ClosableModalScreen[dict[str, str] | None]):
+    """添加/修改模型表单的共同基类：不阻塞界面地测试一次连接，结果显示在 #model-form-hint。"""
+
+    def start_connection_test(
+        self,
+        base_url: str,
+        api_key: str,
+        model_id: str,
+        message_format: Any,
+    ) -> None:
+        hint = self.query_one("#model-form-hint", Label)
+        if not (base_url and api_key and model_id and message_format in MESSAGE_FORMATS):
+            hint.update(Text("测试连接前请先填写 Base URL、API Key 和 Model ID。"))
+            return
+        self.query_one("#model-test", Button).disabled = True
+        hint.update(Text("⏳ 正在测试连接…"))
+        model_config = ModelConfig(
+            base_url=base_url,
+            api_key=api_key,
+            model_id=model_id,
+            message_format=message_format,
+        )
+        self.run_worker(
+            self._run_connection_test(model_config),
+            exclusive=True,
+            group="model-connection-test",
+        )
+
+    async def _run_connection_test(self, model_config: ModelConfig) -> None:
+        from utils.llm_client import check_model_connection
+
+        try:
+            ok, message = await check_model_connection(model_config)
+        except Exception as exc:  # worker 内未处理的异常会让整个应用退出
+            ok, message = False, f"测试失败：{exc}"
+        self.query_one("#model-form-hint", Label).update(Text(f"{'✅' if ok else '❌'} {message}"))
+        self.query_one("#model-test", Button).disabled = False
+
+
+class EditModelModal(ModelFormModal):
     CSS = ChoiceModal.CSS
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -5332,6 +5389,7 @@ class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
             yield Label("确认后立即写入模型配置。按 Enter 保存，按 q 取消。", id="model-form-hint")
             with Horizontal(id="custom-actions"):
                 yield Button("保存", id="model-confirm", variant="success")
+                yield Button("测试连接", id="model-test", variant="primary")
                 yield Button("取消", id="custom-cancel", variant="warning")
 
     def on_mount(self) -> None:
@@ -5356,6 +5414,13 @@ class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "model-confirm":
             self.action_submit()
+        if event.button.id == "model-test":
+            self.start_connection_test(
+                self.query_one("#edit-model-base-url", Input).value.strip(),
+                self.query_one("#edit-model-api-key", Input).value.strip(),
+                self.query_one("#edit-model-id", Input).value.strip(),
+                self.query_one("#edit-model-message-format", Select).value,
+            )
         if event.button.id == "custom-cancel":
             self.action_cancel()
 
@@ -5379,7 +5444,7 @@ class EditModelModal(ClosableModalScreen[dict[str, str] | None]):
         self.dismiss(None)
 
 
-class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
+class AddModelModal(ModelFormModal):
     CSS = ChoiceModal.CSS
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -5394,6 +5459,14 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
         source = self._source_model
         with VerticalScroll(id="model-form-dialog"):
             yield ModalHeader("➕ 添加模型", title_id="choice-title")
+            yield Label("服务商预设（可选，自动填入消息格式与 Base URL）", classes="model-form-label")
+            yield Select(
+                [("自定义", "custom"), *[(preset.label, preset.key) for preset in PROVIDER_PRESETS]],
+                value="custom",
+                allow_blank=False,
+                id="model-preset",
+                classes="model-form-input",
+            )
             yield Label("消息格式", classes="model-form-label")
             yield Select(
                 [(message_format, message_format) for message_format in MESSAGE_FORMATS],
@@ -5432,10 +5505,11 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
             yield Label("提示：填写完成后点击“确定”，也可以按 Enter 提交。", id="model-form-hint")
             with Horizontal(id="custom-actions"):
                 yield Button("确定", id="model-confirm", variant="success")
+                yield Button("测试连接", id="model-test", variant="primary")
                 yield Button("取消", id="custom-cancel", variant="warning")
 
     def on_mount(self) -> None:
-        self.query_one("#model-message-format", Select).focus()
+        self.query_one("#model-preset", Select).focus()
 
     def _on_key(self, event: Key) -> None:
         if event.key == "enter" and isinstance(self.focused, Select):
@@ -5454,9 +5528,36 @@ class AddModelModal(ClosableModalScreen[dict[str, str] | None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.action_submit()
 
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "model-preset":
+            return
+        preset = get_provider_preset(event.value)
+        if preset is None:
+            return
+        self.query_one("#model-message-format", Select).value = preset.message_format
+        self.query_one("#model-base-url", Input).value = preset.base_url
+        api_key = self.query_one("#model-api-key", Input)
+        hint = self.query_one("#model-form-hint", Label)
+        if api_key.value.strip():
+            return
+        env_key = preset.api_key_from_env()
+        if env_key:
+            api_key.value = env_key
+            hint.update(Text(f"已从环境变量 {preset.api_key_env} 读取 API Key，确认后将保存到模型配置。"))
+        else:
+            hint.update(Text(f"未检测到环境变量 {preset.api_key_env}，请手动填写 API Key。"))
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "model-confirm":
             self.action_submit()
+        if event.button.id == "model-test":
+            model_input = self.query_one("#model-ids", Input).value.replace("，", ",")
+            self.start_connection_test(
+                self.query_one("#model-base-url", Input).value.strip(),
+                self.query_one("#model-api-key", Input).value.strip(),
+                next((item.strip() for item in model_input.split(",") if item.strip()), ""),
+                self.query_one("#model-message-format", Select).value,
+            )
         if event.button.id == "custom-cancel":
             self.action_cancel()
 

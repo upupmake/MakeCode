@@ -103,6 +103,30 @@ class ModelConfig:
         )
 
 
+@dataclass(frozen=True)
+class ProviderPreset:
+    """常用服务商的默认接入参数；api_key_env 是该服务商官方 SDK 约定的密钥环境变量。"""
+
+    key: str
+    label: str
+    base_url: str
+    message_format: str
+    api_key_env: str
+
+    def api_key_from_env(self) -> str:
+        return os.environ.get(self.api_key_env, "").strip()
+
+
+PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
+    ProviderPreset("openai", "OpenAI", "https://api.openai.com/v1", "openai_chat", "OPENAI_API_KEY"),
+    ProviderPreset("anthropic", "Anthropic", "https://api.anthropic.com", "anthropic", "ANTHROPIC_API_KEY"),
+)
+
+
+def get_provider_preset(key: object) -> ProviderPreset | None:
+    return next((preset for preset in PROVIDER_PRESETS if preset.key == key), None)
+
+
 class ModelManager:
     """模型管理器"""
 

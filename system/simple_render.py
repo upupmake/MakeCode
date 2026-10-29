@@ -680,6 +680,9 @@ class SimpleRenderer:
     def manage_models(self, model_manager: Any) -> str:
         return simple_management.manage_models(self, model_manager)
 
+    def guide_first_model(self, model_manager: Any) -> str:
+        return simple_management.guide_first_model(self, model_manager)
+
     def manage_skills(self, skill_loader: Any) -> str | dict[str, Any]:
         return simple_management.manage_skills(self, skill_loader)
 

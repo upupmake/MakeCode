@@ -64,6 +64,7 @@ from system.console_render import (
     render_tool_call_block,
     render_tool_result_block,
 )
+from system.models import get_model_manager
 from system.stream_render import StreamRenderer
 from system.tool_render import tool_result_status
 from system.ts_validator import init_ts_cache
@@ -1139,6 +1140,12 @@ def _toggle_plan_mode_message() -> str:
     return "✅ Plan Mode 已退出，所有工具已恢复"
 
 
+def _model_setup_needed() -> bool:
+    """启动时尚未配置任何模型，需要引导用户添加。"""
+    model_manager = get_model_manager()
+    return model_manager is not None and not model_manager.is_configured()
+
+
 def _run_simple_main(
         history: list,
         command_handler: CommandHandler,
@@ -1202,6 +1209,9 @@ def _run_simple_main(
             history[:] = loaded_history
         scroll_all_panes_to_bottom()
         _update_terminal_title()
+
+    if _model_setup_needed():
+        command_handler.handle_models(guided=True)
 
     history_inputs: list[str] = []
     while True:
@@ -1305,6 +1315,9 @@ def _run_textual_main(
         post_tui(TuiRegion.BACKGROUND, f"[bold green]📂 Workspace switched to: {selected_workdir}[/bold green]")
         render_current_workdir("当前工作目录已切换")
 
+    def startup_models_handler() -> None:
+        command_handler.handle_models(guided=True)
+
     def runtime_info_provider() -> str:
         return format_runtime_info()
 
@@ -1353,6 +1366,7 @@ def _run_textual_main(
         startup_workdir_provider=startup_workdir_provider if prompt_for_workdir else None,
         startup_workdir_handler=startup_workdir_handler if prompt_for_workdir else None,
         startup_load_handler=startup_load_handler if cli_module.STARTUP_LOAD_REQUESTED else None,
+        startup_models_handler=startup_models_handler if _model_setup_needed() else None,
         image_placeholder_handler=_parse_input_images,
         image_clipboard_handler=_paste_image_from_system_clipboard,
     )

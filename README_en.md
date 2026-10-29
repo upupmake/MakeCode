@@ -83,7 +83,7 @@ Provides the following execution primitives:
 - `FilePatch`: apply a patch affecting one or more files, starting directly with `*** Update File: path`, `*** Add File: path`, or `*** Delete File: path`. The patch ends at the end of the `patch` string, with no outer wrapper. Update hunks follow standard unified diff syntax: every unchanged context line after `@@` starts with exactly one space, removed lines start with `-`, and added lines start with `+`; pure insertions use a zero-old-line header such as `@@ -0,0 +1,1 @@` (a bare `@@` is also allowed for an empty file); `Add File` content uses one `+` prefix per line. Each actual file may appear only once in a patch, including paths that differ only by case but resolve to the same inode. Each file is parsed, validated, matched, and committed independently; one file failing does not block the others, while any hunk failure leaves that file untouched. Existing files preserve their original line endings, BOM, and mode during per-file atomic replacement. Paths resolve `.`, `..`, and symlinks first; paths outside the workspace trigger one approval for the whole patch.
 - `ContentSearch`: a fallback for terminal content searches (`grep`/`rg`/`findstr`/`Select-String`); recursively search text file contents under `root_dir` with `content_regex`, optionally filtering files by absolute path with `path_regex`; supports `context_size` to include that many lines before and after each match (default: 1); regex uses Python syntax. Output is grouped by file with one `File: path` header per file, then follows the same `grep -n` convention: matched lines as `<line number>:<verbatim line>`, context lines as `<line number>-<verbatim line>`, both without a separator space, and non-adjacent ranges separated by `@@ a-b skipped @@`. Automatically excludes common build/dependency directories (`build`, `dist`, `__pycache__`, `node_modules`, `target`, `venv`, `site-packages`, `htmlcov`) and hidden directories (starting with `.`) to reduce irrelevant matches.
 - `FileSearch`: recursively search files and directories under `root_dir`, matching `path_regex` against absolute paths; supports type filtering (`file`/`dir`/`all`). Directories use `[DIR] path/`, while file results are deduplicated and sorted. Automatically excludes hidden and build/dependency directories and returns up to 500 items. Use as a fallback to terminal search (`find`/`rg --files`).
-- `RunTerminalCommand`: run a non-interactive terminal command
+- `RunTerminalCommand`: run a non-interactive terminal command. In the packaged Linux build, commands do not inherit the `LD_LIBRARY_PATH` injected by PyInstaller (it is restored to its pre-launch value, or removed if there was none), so system tools never load the older bundled libraries.
 
 #### 📋 Tree-sitter Syntax Validation (`system/ts_validator.py`)
 
@@ -148,7 +148,7 @@ Key characteristics:
 - DAG validation for active tasks rolls back the entire dependency batch when an update creates a cycle
 - A task is runnable when it is `pending` and all dependencies are completed
 - The active task plan is written to `task_plan.json` inside the active conversation directory and bound by `conversation_id`
-- `/tasks` retains the full task-table view and lets users select a task, press `d`, then confirm or cancel with `y`/`n`; deleting a task also removes references to it from other tasks' dependency lists.
+- `/tasks` provides the full task-table view for reading only (press `q` to close); tasks are maintained by the orchestrator through the TaskManager tools, and the panel does not support direct add/edit/delete.
 - `DeleteAllTasks` provides a one-click topology reset capability, making it easy to start a fresh plan on complex
   failures.
 
@@ -157,7 +157,7 @@ Key characteristics:
 The Team module supports:
 
 - accepting only tasks from the latest `GetRunnableTasks` frontier
-- running multiple sub-agents concurrently with a thread pool
+- running multiple sub-agents concurrently with `asyncio.gather`
 - having the orchestrator sync final task statuses through `UpdateTasksStatus`
 - writing a dedicated JSONL trace per sub-agent
 - aggregating reports from one delegation batch into a combined report
@@ -351,6 +351,9 @@ MakeCode provides a visual model configuration management interface with multi-m
 - **Favorite Management**: Supports marking favorite models with priority sorting
 - **Reasoning Effort Configuration**: Each model can independently set `reasoning_effort` (`low` / `medium` / `high` / `xhigh` / `max`, default `medium`); use the left and right arrow keys in the model panel to adjust it, and the model display text shows the current value
 - **Smart Display**: Automatically extracts domain prefix, displaying in `model_id (domain)` format
+- **First-Run Guide**: When no model is configured at startup, MakeCode goes straight into the add-model flow (a dialog in the TUI; step-by-step prompts plus an automatic connection test in `--simple`), so you can start chatting right after adding one. If `model_config.json` cannot be read, the flow is skipped so the file is never overwritten.
+- **Provider Presets & Environment Variables**: When adding a model you can pick the `OpenAI` (`https://api.openai.com/v1`, `openai_chat`) or `Anthropic` (`https://api.anthropic.com`, `anthropic`) preset to fill in the message format and Base URL. If the API Key is empty, the matching `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` is used (filled in when the preset is picked in the TUI; just press Enter in `--simple`), and the key is written to `model_config.json` once you confirm. In `--simple`, use `a openai` / `a anthropic`.
+- **Connection Test**: The “测试连接” (Test connection) button in the add/edit model form (`t <index>` in `--simple`) sends one minimal streaming request with the current settings and reports whether it connected, which checks the Base URL, API Key, model ID, and message format. It does not retry, times out after 30 seconds, and never saves the configuration.
 
 #### ModelConfig Data Structure
 
@@ -382,7 +385,7 @@ Orchestrator output is semantically dispatched to the following independent pane
 - **Tools**: tool-call intents, execution results, and status command feedback (output from `/models`, `/memory-config`, `/layout`, MCP commands, `/load`, etc. is all routed here).
 - **Task**: dedicated task-board pane showing TaskManager state, the runnable frontier, and execution progress in real time.
 - **Background**: background activity pane for long-term memory recall/write, background checks, and other events that should not interrupt the main conversation.
-- **Sub-Agent**: sub-agent console output, disabled by default and toggled via `/sub-agent-console`.
+- **Sub-Agent**: sub-agent console output, enabled by default and toggled via `/sub-agent-console`.
 - **Status / RuntimeInfo**: top status bar showing the current mode (Plan/Act), model, token usage, and other runtime indicators; it shows `Client: REQUESTING · xx s` while any LLM request is active, appends `RETRY n/5` and resets the elapsed time for that attempt when an SDK retry actually occurs, and clears the elapsed time with the state after all requests finish. `Agent: RUNNING` is no longer rendered; agent activity still controls input visibility and other interaction behavior.
 
 Pane ratios can be customized via the `/layout` command and persisted to `.makecode/layout_config.json` under the installation directory. For backward compatibility, the old `reasoning` key is still read; new configurations use the unified `task` key.
@@ -670,9 +673,17 @@ Agent/
 │  ├─ window_attention.py   # Windows taskbar attention notifier (used by AskUser and similar prompts)
 │  └─ ts_validator.py       # Tree-sitter syntax validation module
 ├─ skills/
-│  ├─ pdf/
+│  ├─ claude-api/
 │  │  └─ SKILL.md
-│  └─ code-review/
+│  ├─ coding-guidelines/
+│  │  └─ SKILL.md
+│  ├─ openai-docs/
+│  │  └─ SKILL.md
+│  ├─ release-process/
+│  │  └─ SKILL.md
+│  ├─ skill-creator/
+│  │  └─ SKILL.md
+│  └─ verification-before-completion/
 │     └─ SKILL.md
 └─ build/                   # build artifacts / packaging files if present
 ```
@@ -871,7 +882,7 @@ After startup, you will enter a wizard flow:
 
 1. **Select the model message format**: In `/models`, choose `openai_chat`, `openai_responses`, or `anthropic`; MakeCode uses the corresponding official async SDK and message adapter.
 2. **Enter the interactive terminal**: Begin your conversation with the main agent; you can switch to another workspace at any time via `/cd <path>`.
-3. **Configure the model**: Use the `/models` command to add and manage model configurations.
+3. **Configure the model**: When no model is configured at first launch, the add-model guide opens automatically; afterwards, use the `/models` command at any time to add and manage model configurations.
 
 ### 6.4 External Command-Line Options
 
@@ -1108,7 +1119,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | Command              | Description                                                                                                                                      |
 |----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
 | `/cmds`              | List all available commands and their descriptions                                                                                               |
-| `/models`            | Manage model configurations (add, edit, delete, switch, favorite)                                                                                  |
+| `/models`            | Manage model configurations (add, edit, delete, switch, favorite; provider presets and connection test when adding)                               |
 | `/extra-tools`       | Open the extra-tools panel to enable/disable UnderstandImage and choose its processing model                                                     |
 | `/mcp-view`          | View the MCP status overview and the currently loaded MCP tool list                                                                              |
 | `/mcp-restart`       | Restart the MCP background manager and reload configuration                                                                                      |
@@ -1120,7 +1131,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/skills-switch`     | Toggle skills catalog injection status (On/Off)                                                                                                  |
 | `/skills-list`       | Open the project-level Skills panel with search, status filtering, and confirm-to-apply enable/disable drafts                                  |
 | `/compact [prompt]`  | Compact the current conversation context; prompt is optional                                                                                     |
-| `/tasks`             | View the full task table and delete a selected task with confirmation                                                                             |
+| `/tasks`             | View the full task table (read-only)                                                                                                              |
 | `/copy`              | Open a read-only conversation panel with text selection and copy support                                                                          |
 | `/plan`              | Enter/exit Plan Mode — only read-only and planning tools are allowed in the planning phase                                                       |
 | `/help`              | Show all available commands and descriptions                                                                                                      |
@@ -1135,7 +1146,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/memory-config`     | Open memory configuration to edit global context length, memory size, retained tool calls, recall window, and memory management model                       |
 | `/memory-update [prompt]` | Proactively add, refine, or remove long-term memories; prompt is optional                                                                  |
 | `/hitl`               | Toggle Human-in-the-Loop interception status (On/Off)                                                                                            |
-| `/sub-agent-console`  | Toggle Sub-Agent console output status, disabled by default                                                                                      |
+| `/sub-agent-console`  | Toggle Sub-Agent console output status, enabled by default                                                                                       |
 | `/quit` / `/exit`    | Exit the program                                                                                                                                 |
 | `/update`             | Check for and install the latest version update                                                                                                  |
 

@@ -1,4 +1,6 @@
+import os
 import subprocess
+import types
 from unittest.mock import patch
 
 import pytest
@@ -65,6 +67,56 @@ def test_terminal_process_does_not_inherit_tui_stdin():
         common.run_terminal_command("pytest -q")
 
     assert popen.call_args.kwargs["stdin"] is common.subprocess.DEVNULL
+
+
+def _spawn_kwargs(*, frozen, platform="linux"):
+    fake_sys = types.SimpleNamespace(platform=platform)
+    if frozen:
+        fake_sys.frozen = True
+
+    with patch.object(common, "sys", fake_sys), \
+            patch.object(common, "_resolve_startup_terminal_type", return_value="bash"), \
+            patch.object(common, "_workdir"), \
+            patch.object(common, "check_permission", return_value=(True, "")), \
+            patch.object(common.subprocess, "Popen", return_value=FakeProcess(0, stdout=b"ok")) as popen, \
+            patch("system.stream_cancel.start_terminal_command"), \
+            patch("system.stream_cancel.stop_terminal_command"), \
+            patch("system.stream_cancel.is_terminal_cancelled", return_value=False):
+        common.run_terminal_command("echo ok")
+
+    return popen.call_args.kwargs
+
+
+def test_frozen_linux_terminal_restores_original_library_path(monkeypatch):
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/app/_internal")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/local/lib")
+    monkeypatch.setenv("MAKECODE_TEST_MARKER", "kept")
+
+    env = _spawn_kwargs(frozen=True)["env"]
+
+    assert env["LD_LIBRARY_PATH"] == "/usr/local/lib"
+    assert env["MAKECODE_TEST_MARKER"] == "kept"
+    assert os.environ["LD_LIBRARY_PATH"] == "/opt/app/_internal"
+
+
+def test_frozen_linux_terminal_drops_library_path_without_original(monkeypatch):
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/app/_internal")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+
+    env = _spawn_kwargs(frozen=True)["env"]
+
+    assert "LD_LIBRARY_PATH" not in env
+    assert os.environ["LD_LIBRARY_PATH"] == "/opt/app/_internal"
+
+
+@pytest.mark.parametrize(
+    ("frozen", "platform"),
+    [(False, "linux"), (True, "win32"), (True, "darwin")],
+)
+def test_terminal_inherits_environment_outside_frozen_linux(monkeypatch, frozen, platform):
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/app/_internal")
+
+    assert "env" not in _spawn_kwargs(frozen=frozen, platform=platform)
 
 
 def test_terminal_result_reports_nonzero_exit_as_failure_even_without_output():

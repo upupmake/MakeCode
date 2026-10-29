@@ -7,7 +7,13 @@ from typing import Any
 from rich.text import Text
 
 from system.clipboard import copy_to_system_clipboard
-from system.models import MESSAGE_FORMATS, REASONING_EFFORTS
+from system.models import (
+    MESSAGE_FORMATS,
+    PROVIDER_PRESETS,
+    REASONING_EFFORTS,
+    ProviderPreset,
+    get_provider_preset,
+)
 from system.tool_render import format_tool_value
 from system.tui_types import (
     LAYOUT_RIGHT_KEYS,
@@ -49,6 +55,10 @@ def _confirm(renderer: Any, label: str, *, default: bool = False) -> bool:
 # 模型管理
 # ============================================================================
 
+def _preset_names() -> str:
+    return "/".join(preset.key for preset in PROVIDER_PRESETS)
+
+
 def manage_models(renderer: Any, model_manager: Any) -> str:
     if model_manager is None:
         renderer.notice("模型管理器未初始化。")
@@ -79,8 +89,8 @@ def manage_models(renderer: Any, model_manager: Any) -> str:
             )
 
         command = renderer.prompt(
-            "操作：序号=选择，a=添加，c 序号=复制添加，e 序号=编辑，"
-            "d 序号=删除，f 序号=收藏，r 序号 档位，q=退出"
+            f"操作：序号=选择，a [{_preset_names()}]=添加，c 序号=复制添加，e 序号=编辑，"
+            "t 序号=测试连接，d 序号=删除，f 序号=收藏，r 序号 档位，q=退出"
         )
         if command is None or command.strip().lower() in {"q", "quit", "exit"}:
             return "exit"
@@ -106,10 +116,15 @@ def manage_models(renderer: Any, model_manager: Any) -> str:
             continue
 
         if operation == "a":
-            _add_model(renderer, model_manager)
+            preset_name = parts[1].lower() if len(parts) > 1 else ""
+            preset = get_provider_preset(preset_name)
+            if preset_name and preset_name != "custom" and preset is None:
+                renderer.notice(f"未知预设：{parts[1]}（可用：{_preset_names()}）")
+                continue
+            _add_model(renderer, model_manager, preset=preset)
             continue
 
-        if operation in {"e", "d", "f", "r", "c"}:
+        if operation in {"e", "d", "f", "r", "c", "t"}:
             if len(parts) < 2:
                 renderer.notice(f"用法：{operation} <序号>")
                 continue
@@ -122,6 +137,8 @@ def manage_models(renderer: Any, model_manager: Any) -> str:
                 _add_model(renderer, model_manager, source=model)
             elif operation == "e":
                 _edit_model(renderer, model_manager, model)
+            elif operation == "t":
+                _test_model(renderer, model)
             elif operation == "d":
                 _delete_model(renderer, model_manager, model)
             elif operation == "f":
@@ -137,8 +154,16 @@ def manage_models(renderer: Any, model_manager: Any) -> str:
         renderer.notice("未知操作。")
 
 
-def _prompt_model_fields(renderer: Any, source: Any = None) -> dict[str, str] | None:
-    default_format = source.message_format if source else "openai_chat"
+def _prompt_model_fields(
+        renderer: Any,
+        source: Any = None,
+        preset: ProviderPreset | None = None,
+) -> dict[str, str] | None:
+    default_format = (
+        source.message_format if source
+        else preset.message_format if preset
+        else "openai_chat"
+    )
     message_format = renderer.prompt(
         f"消息格式 ({'/'.join(MESSAGE_FORMATS)})",
         default=default_format,
@@ -150,22 +175,32 @@ def _prompt_model_fields(renderer: Any, source: Any = None) -> dict[str, str] | 
         renderer.notice(f"无效消息格式：{message_format}")
         return None
 
-    base_url = renderer.prompt("Base URL", default=source.base_url if source else None)
+    base_url = renderer.prompt(
+        "Base URL",
+        default=source.base_url if source else preset.base_url if preset else None,
+    )
     if base_url is None:
         return None
     if not base_url.strip():
         renderer.notice("Base URL 不能为空。")
         return None
 
+    env_key = ""
     if source is not None:
         api_key = renderer.prompt("API Key（直接回车保留当前值）", secret=True)
+    elif preset is not None and (env_key := preset.api_key_from_env()):
+        api_key = renderer.prompt(f"API Key（直接回车使用环境变量 {preset.api_key_env}）", secret=True)
     else:
+        if preset is not None:
+            renderer.notice(f"未检测到环境变量 {preset.api_key_env}，请手动输入 API Key。")
         api_key = renderer.prompt("API Key", secret=True)
     if api_key is None:
         return None
     if not api_key.strip():
         if source is not None:
             api_key = source.api_key
+        elif env_key:
+            api_key = env_key
         else:
             renderer.notice("API Key 不能为空。")
             return None
@@ -200,10 +235,11 @@ def _apply_add_model(
         renderer: Any,
         model_manager: Any,
         source: Any = None,
-) -> None:
-    fields = _prompt_model_fields(renderer, source=source)
+        preset: ProviderPreset | None = None,
+) -> list[Any]:
+    fields = _prompt_model_fields(renderer, source=source, preset=preset)
     if fields is None:
-        return
+        return []
     model_ids = _split_list(fields["model_input"])
     aliases = _split_list(fields["alias_input"])
     if len(model_ids) == 1:
@@ -217,13 +253,53 @@ def _apply_add_model(
     )
     if not new_models:
         renderer.notice("添加未保存：配置可能与已有模型重复，或配置文件写入失败。")
-        return
+        return []
     added = "、".join(model.get_display_text() for model in new_models)
     renderer.notice(f"已添加：{added}")
+    return new_models
 
 
-def _add_model(renderer: Any, model_manager: Any, source: Any = None) -> None:
-    _apply_add_model(renderer, model_manager, source)
+def _add_model(
+        renderer: Any,
+        model_manager: Any,
+        source: Any = None,
+        preset: ProviderPreset | None = None,
+) -> None:
+    _apply_add_model(renderer, model_manager, source, preset)
+
+
+def _test_model(renderer: Any, model: Any) -> None:
+    from utils.llm_client import check_model_connection_sync
+
+    renderer.notice(f"正在测试连接：{model.get_display_text()} …")
+    ok, message = check_model_connection_sync(model)
+    renderer.notice(f"{'✅' if ok else '❌'} {message}")
+
+
+def guide_first_model(renderer: Any, model_manager: Any) -> str:
+    """首次启动且尚未配置模型：引导添加第一个模型并测试连接。"""
+    if model_manager is None:
+        return "<cancelled>"
+    if not model_manager._reload_from_disk():
+        renderer.notice(model_manager.get_load_error_display() or "模型配置读取失败。")
+        return "<cancelled>"
+
+    renderer.notice("尚未配置模型，先添加一个。")
+    preset_name = renderer.prompt(f"服务商预设 ({_preset_names()}/custom)", default="custom")
+    if preset_name is None:
+        return "<cancelled>"
+    preset_name = preset_name.strip().lower()
+    preset = get_provider_preset(preset_name)
+    if preset_name not in {"", "custom"} and preset is None:
+        renderer.notice(f"未知预设：{preset_name}（可用：{_preset_names()}）。可稍后用 /models 添加。")
+        return "<cancelled>"
+
+    new_models = _apply_add_model(renderer, model_manager, preset=preset)
+    if not new_models:
+        renderer.notice("未添加模型，可稍后用 /models 添加。")
+        return "<cancelled>"
+    _test_model(renderer, new_models[0])
+    return "exit"
 
 
 def _edit_model(renderer: Any, model_manager: Any, model: Any) -> None:

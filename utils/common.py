@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -194,6 +195,26 @@ def _build_terminal_argv(terminal_type: str, command: str) -> list[str]:
     raise ValueError(f"Unsupported terminal type: {terminal_type}")
 
 
+def _terminal_child_env() -> dict[str, str] | None:
+    """Environment for user terminal commands, or None to inherit as-is.
+
+    The frozen Linux build starts with LD_LIBRARY_PATH pointing at its bundled
+    libraries. Commands run on the user's behalf must not inherit that, or
+    system tools (sqlite3, python3, ...) load the older bundled copies and fail
+    with undefined symbols. PyInstaller keeps the original value in
+    LD_LIBRARY_PATH_ORIG, and sets it only when the variable existed.
+    """
+    if not (getattr(sys, "frozen", False) and sys.platform.startswith("linux")):
+        return None
+    env = os.environ.copy()
+    original = env.get("LD_LIBRARY_PATH_ORIG")
+    if original is None:
+        env.pop("LD_LIBRARY_PATH", None)
+    else:
+        env["LD_LIBRARY_PATH"] = original
+    return env
+
+
 _TERMINAL_COMMAND_TIMEOUT = 120
 _TERMINAL_POLL_INTERVAL = 0.1
 _TERMINAL_OUTPUT_GRACE = 0.2
@@ -323,6 +344,9 @@ def run_terminal_command(command: str) -> str:
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             popen_kwargs["start_new_session"] = True
+        child_env = _terminal_child_env()
+        if child_env is not None:
+            popen_kwargs["env"] = child_env
 
         from system.stream_cancel import (
             is_terminal_cancelled,

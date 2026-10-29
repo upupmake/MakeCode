@@ -321,16 +321,16 @@ class TuiBridge:
             app.call_from_thread(app.open_copy_content_modal, messages, future)
         return future.result()
 
-    def manage_models(self, model_manager: Any) -> str:
+    def manage_models(self, model_manager: Any, auto_add: bool = False) -> str:
         with self._app_lock:
             app = self._app
         if app is None:
             return "<cancelled>"
         future: Future[str] = Future()
         if self._is_app_thread():
-            app.open_model_manager_modal(model_manager, future)
+            app.open_model_manager_modal(model_manager, future, auto_add)
         else:
-            app.call_from_thread(app.open_model_manager_modal, model_manager, future)
+            app.call_from_thread(app.open_model_manager_modal, model_manager, future, auto_add)
         return future.result()
 
     def manage_skills(self, skill_loader: Any) -> str | dict[str, Any]:
@@ -1423,6 +1423,7 @@ class MakeCodeTuiApp(App[None]):
         startup_workdir_provider: Callable[[], Any] | None = None,
         startup_workdir_handler: Callable[[str], None] | None = None,
         startup_load_handler: Callable[[], None] | None = None,
+        startup_models_handler: Callable[[], None] | None = None,
         image_placeholder_handler: Callable[[str], tuple[str, list[dict[str, str]]]] | None = None,
         image_clipboard_handler: Callable[[str | None], str | None] | None = None,
         token_usage_provider: Callable[[], tuple[dict[str, int], int]] | None = None,
@@ -1450,6 +1451,7 @@ class MakeCodeTuiApp(App[None]):
         self._startup_workdir_provider = startup_workdir_provider
         self._startup_workdir_handler = startup_workdir_handler
         self._startup_load_handler = startup_load_handler
+        self._startup_models_handler = startup_models_handler
         self._image_placeholder_handler = image_placeholder_handler
         self._image_clipboard_handler = image_clipboard_handler
         self._token_usage_provider = token_usage_provider
@@ -1597,7 +1599,7 @@ class MakeCodeTuiApp(App[None]):
         elif self._startup_load_handler is not None:
             self.call_after_refresh(self._run_startup_load)
         else:
-            self.query_one("#input-box", MakeCodeInput).focus()
+            self._finish_startup()
 
     def _run_startup_load(self) -> None:
         if self._startup_load_handler is None:
@@ -1614,6 +1616,26 @@ class MakeCodeTuiApp(App[None]):
 
     def _finish_startup_load(self) -> None:
         self._modal_active = False
+        self._finish_startup()
+
+    def _finish_startup(self) -> None:
+        """启动期的工作目录选择/会话加载结束后：聚焦输入框，并在尚未配置模型时进入添加模型引导。"""
+        self.query_one("#input-box", MakeCodeInput).focus()
+        handler, self._startup_models_handler = self._startup_models_handler, None
+        if handler is None:
+            return
+
+        def _guide() -> None:
+            try:
+                handler()
+            finally:
+                self.call_from_thread(self._finish_startup_models)
+
+        self._modal_active = True
+        self.run_worker(_guide, exclusive=True, thread=True)
+
+    def _finish_startup_models(self) -> None:
+        self._modal_active = False
         self.query_one("#input-box", MakeCodeInput).focus()
 
     def _open_startup_workdir_modal(self) -> None:
@@ -1623,7 +1645,7 @@ class MakeCodeTuiApp(App[None]):
         def _done(value: str | None) -> None:
             self._modal_active = False
             self._startup_workdir_handler(value or "abort")
-            self.query_one("#input-box", MakeCodeInput).focus()
+            self._finish_startup()
 
         self._push_workdir_modal(_done)
 
@@ -2322,14 +2344,19 @@ class MakeCodeTuiApp(App[None]):
         self._modal_active = True
         self.push_screen(CopyContentModal(messages), _done)
 
-    def open_model_manager_modal(self, model_manager: Any, future: Future[str]) -> None:
+    def open_model_manager_modal(
+        self,
+        model_manager: Any,
+        future: Future[str],
+        auto_add: bool = False,
+    ) -> None:
         def _done(value: str | None) -> None:
             self._modal_active = False
             if not future.done():
                 future.set_result(value or "<cancelled>")
 
         self._modal_active = True
-        self.push_screen(ModelManagerModal(model_manager), _done)
+        self.push_screen(ModelManagerModal(model_manager, auto_add=auto_add), _done)
 
     def open_skills_config_modal(
         self,
@@ -3395,6 +3422,12 @@ def manage_models_tui(model_manager: Any) -> str:
     if _SIMPLE_BACKEND is not None:
         return _SIMPLE_BACKEND.manage_models(model_manager)
     return TUI_BRIDGE.manage_models(model_manager)
+
+
+def guide_first_model_tui(model_manager: Any) -> str:
+    if _SIMPLE_BACKEND is not None:
+        return _SIMPLE_BACKEND.guide_first_model(model_manager)
+    return TUI_BRIDGE.manage_models(model_manager, auto_add=True)
 
 
 def manage_skills_tui(skill_loader: Any) -> str | dict[str, Any]:

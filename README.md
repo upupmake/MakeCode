@@ -82,7 +82,7 @@ MakeCode 采用严格的工作区（Workspace）隔离机制。所有路径和�
 - `FilePatch`：用于应用单文件或多文件补丁，直接以 `*** Update File: path`、`*** Add File: path` 或 `*** Delete File: path` 开头，以 `patch` 字符串结尾作为补丁结束，不使用外层包裹标记。Update hunk 遵循标准 unified diff：`@@` 之后的未修改上下文行必须以一个空格开头，删除行以 `-` 开头，新增行以 `+` 开头；纯新增使用零旧行范围（如 `@@ -0,0 +1,1 @@`），空文件也允许使用裸 `@@`；Add File 的内容每行以一个 `+` 开头。每个实际文件在一个补丁中只能出现一次（包括大小写不同但指向同一 inode 的路径）。每个文件会独立解析、校验、匹配和提交；单个文件失败不会阻塞其他文件，同一文件内任意 hunk 失败则该文件不写入。已有文件通过临时文件替换，保留原始行尾、BOM 与权限位。路径会先解析 `.`、`..` 和符号链接，解析结果超出 workspace 时对本次补丁统一请求批准。
 - `ContentSearch`：作为终端内容搜索（`grep`/`rg`/`findstr`/`Select-String`）的后备，通过 `content_regex` 在 `root_dir` 下递归搜索文本文件内容，并可用 `path_regex` 按文件绝对路径正则过滤；支持 `context_size` 指定每个匹配行前后包含的上下文行数（默认为 1）；正则使用 Python 语法。输出按文件分组，每个文件只显示一次 `File: path` 标题；命中行 `行号:原文`、上下文行 `行号-原文`，均无分隔空格，不连续区间之间插入 `@@ a-b skipped @@`。自动排除常见构建/依赖目录（`build`、`dist`、`__pycache__`、`node_modules`、`target`、`venv`、`site-packages`、`htmlcov`）和 `.` 开头的隐藏目录，减少无关匹配。
 - `FileSearch`：在 `root_dir` 下递归搜索文件和目录，通过 `path_regex` 按绝对路径正则匹配，支持类型过滤（`file`/`dir`/`all`）。目录使用 `[DIR] path/` 标记，文件结果去重并排序；自动排除隐藏目录和构建/依赖目录，最多返回 500 条结果。作为终端搜索（`find`/`rg --files`）的后备使用。
-- `RunTerminalCommand`：执行非交互式终端命令。
+- `RunTerminalCommand`：执行非交互式终端命令。Linux 打包版中，命令不继承 PyInstaller 注入的 `LD_LIBRARY_PATH`（还原为启动前的值，没有则移除），避免系统工具加载打包内的旧库。
 
 #### 📋 Tree-sitter 语法验证（`system/ts_validator.py`）
 
@@ -134,7 +134,7 @@ TaskManager 提供：
 - 活跃任务执行 DAG 校验，批量依赖更新产生环时回滚整个批次。
 - 可执行任务定义为：状态为 `pending` 且所有依赖均已完成。
 - 当前任务计划写入活动会话目录中的 `task_plan.json`，并通过 `conversation_id` 与对话绑定。
-- `/tasks` 保留完整任务表格视图，并支持选中任务后按 `d` 发起删除、再按 `y`/`n` 确认或取消；删除任务时会同步移除其他任务对该任务的依赖引用。
+- `/tasks` 提供完整任务表格视图，仅供查看（按 `q` 关闭）；任务由编排器通过 TaskManager 工具维护，界面中不支持直接增删改。
 - `DeleteAllTasks` 提供了一键清空重置任务拓扑的能力，方便在复杂场景下推翻重来。
 
 ### 2.7 并发子智能体（`utils/teams.py`）
@@ -142,7 +142,7 @@ TaskManager 提供：
 Team 模块支持：
 
 - 仅接受来自最新 `GetRunnableTasks` 的任务进行委派。
-- 用线程池并发运行多个子智能体。
+- 用 `asyncio.gather` 并发运行多个子智能体。
 - 执行完成后由编排器通过 `UpdateTasksStatus` 回写任务状态。
 - 为每个子智能体保存独立 JSONL trace。
 - 汇总本轮所有子智能体报告，返回统一报告文本。
@@ -329,6 +329,9 @@ MakeCode 提供可视化的模型配置管理功能，支持多模型切换和�
 - **收藏管理**：支持标记收藏模型，优先排序显示
 - **推理强度配置**：每个模型可独立设置 `reasoning_effort`（`low` / `medium` / `high` / `xhigh` / `max`，默认 `medium`）；模型面板使用左右方向键调整，模型显示文本同步展示当前值
 - **智能显示**：自动提取域名前缀，在面板中显示为 `model_id (域名)` 格式
+- **首次使用引导**：启动时尚未配置任何模型会直接进入添加模型流程（TUI 弹出添加对话框，`--simple` 逐项提示并在添加后自动测试连接），添加成功后即可开始对话；模型配置文件读取失败时不会自动进入添加流程，以免覆盖原文件。
+- **服务商预设与环境变量**：添加模型时可选择 `OpenAI`（`https://api.openai.com/v1`，`openai_chat`）或 `Anthropic`（`https://api.anthropic.com`，`anthropic`）预设，自动填入消息格式与 Base URL；API Key 为空时读取对应的环境变量 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`（TUI 在选择预设时自动填入，`--simple` 下直接回车采用），确认保存后写入 `model_config.json`。`--simple` 下使用 `a openai` / `a anthropic` 选择预设。
+- **测试连接**：添加/修改模型表单中的“测试连接”按钮（`--simple` 下为 `t 序号`）会按当前配置发送一次最小流式请求并报告是否连通，用于检查 Base URL、API Key、模型 ID 与消息格式；不重试、30 秒超时，测试本身不会保存配置。
 
 #### ModelConfig 数据结构
 
@@ -360,7 +363,7 @@ MakeCode 采用 **Textual** 构建的多面板 TUI，将智能体输出路由到
 - **Tools**：工具调用意图与执行结果、各类状态命令反馈（`/models`、`/memory-config`、`/layout`、MCP 系列、`/load` 等命令的输出均路由到该区）。
 - **Task**：任务看板专用面板，实时展示 TaskManager 状态、Runnable Frontier 与执行进度。
 - **Background**：后台活动区，用于展示长期记忆召回/写入、后台检查等不需打断主对话的事件。
-- **Sub-Agent**：子智能体控制台输出，默认关闭，可通过 `/sub-agent-console` 切换。
+- **Sub-Agent**：子智能体控制台输出，默认开启，可通过 `/sub-agent-console` 切换。
 - **Status / RuntimeInfo**：顶部状态栏，展示当前模式（Plan/Act）、模型、Token 使用量等运行时指标；任一 LLM 请求进行中时显示 `Client: REQUESTING · xx s`，实际发生 SDK 重试时追加 `RETRY n/5` 并将耗时重置为当前这次请求，全部请求结束后自动清除耗时与标识。运行栏不再显示 `Agent: RUNNING`，智能体活动状态仍用于输入区显隐等交互控制。
 
 面板布局比例可通过 `/layout` 命令定制，配置保存到安装目录下的 `.makecode/layout_config.json`。为延续旧配置设计上保留 `reasoning` 键名的兼容读取，迁移后统一使用 `task` 键。
@@ -647,9 +650,17 @@ Agent/
 │  ├─ window_attention.py   # Windows 任务栏闪烁提醒（AskUser 等场景）
 │  └─ ts_validator.py       # Tree-sitter 语法验证模块
 ├─ skills/
-│  ├─ pdf/
+│  ├─ claude-api/
 │  │  └─ SKILL.md
-│  └─ code-review/
+│  ├─ coding-guidelines/
+│  │  └─ SKILL.md
+│  ├─ openai-docs/
+│  │  └─ SKILL.md
+│  ├─ release-process/
+│  │  └─ SKILL.md
+│  ├─ skill-creator/
+│  │  └─ SKILL.md
+│  └─ verification-before-completion/
 │     └─ SKILL.md
 └─ build/                   # 打包产物/构建相关文件（若存在）
 ```
@@ -844,7 +855,7 @@ python main.py
 
 1. **选择模型消息格式**：在 `/models` 中为模型选择 `openai_chat`、`openai_responses` 或 `anthropic`；系统使用对应的官方异步 SDK 和消息适配器。
 2. **进入交互式终端**：开始与主代理对话，运行期可随时使用 `/cd <path>` 切换到另一个工作区。
-3. **配置模型**：使用 `/models` 命令添加和管理你的模型配置。
+3. **配置模型**：首次启动尚未配置模型时会自动进入添加引导；之后可随时使用 `/models` 命令添加和管理你的模型配置。
 
 ### 6.4 外部命令行参数
 
@@ -1081,7 +1092,7 @@ headless 每轮请求前会执行与 TUI 相同的两层上下文压缩，并通
 | 命令                   | 描述                                                             |
 |----------------------|----------------------------------------------------------------|
 | `/cmds`              | 列出所有的可用命令和功能描述                                                 |
-| `/models`            | 管理模型配置（添加、编辑、删除、切换、收藏）                                       |
+| `/models`            | 管理模型配置（添加、编辑、删除、切换、收藏；添加时可选服务商预设并测试连接）               |
 | `/extra-tools`       | 打开额外工具面板，开关 UnderstandImage 并指定处理模型                             |
 | `/mcp-view`          | 查看 MCP 状态总览，以及当前已加载的 MCP 工具列表                                  |
 | `/mcp-restart`       | 重新启动 MCP 后台管理器并重新加载配置                                          |
@@ -1093,7 +1104,7 @@ headless 每轮请求前会执行与 TUI 相同的两层上下文压缩，并通
 | `/skills-switch`     | 切换 skills 目录摘要注入状态 (开启/关闭)                                     |
 | `/skills-list`       | 打开项目级 Skills 配置面板，支持搜索、状态过滤和确认后批量应用启用/禁用草稿                 |
 | `/compact [prompt]`  | 压缩当前对话上下文，prompt 可选                                            |
-| `/tasks`             | 查看完整任务表格，并支持经二次确认删除选中任务                                  |
+| `/tasks`             | 查看完整任务表格（只读）                                                      |
 | `/copy`              | 打开只读对话内容面板，支持选择并复制文本                                         |
 | `/plan`              | 进入/退出 Plan Mode — 规划阶段只允许只读和任务规划工具                             |
 | `/help`              | 显示使用帮助和全部可用命令                                                      |
@@ -1108,7 +1119,7 @@ headless 每轮请求前会执行与 TUI 相同的两层上下文压缩，并通
 | `/memory-config`     | 打开记忆配置面板，修改全局上下文长度、记忆大小、保留工具调用数、召回窗口和记忆管理模型          |
 | `/memory-update [prompt]` | 主动新增/修正/清理长期记忆，prompt 可选                              |
 | `/hitl`               | 切换 Human-in-the-Loop 拦截状态 (开启/关闭)                               |
-| `/sub-agent-console`  | 切换 Sub-Agent 的控制台输出状态，默认关闭                                      |
+| `/sub-agent-console`  | 切换 Sub-Agent 的控制台输出状态，默认开启                                      |
 | `/quit` / `/exit`    | 退出程序                                                           |
 | `/update`             | 检查并安装最新版本更新                                                  |
 

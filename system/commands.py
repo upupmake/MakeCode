@@ -39,6 +39,7 @@ from system.tui_app import (
     choose_tui,
     end_tui_batch_render,
     flush_tui_screen,
+    guide_first_model_tui,
     is_simple_mode,
     manage_extra_tools_tui,
     manage_layout_tui,
@@ -1132,14 +1133,14 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             self.console.print(Markdown(f"### 当前已启用技能列表\n\n{self.skill_loader.get_descriptions()}"))
         return None
 
-    def handle_models(self) -> bool:
-        """处理 /models 命令"""
+    def handle_models(self, guided: bool = False) -> bool:
+        """处理 /models 命令；guided=True 用于首次启动尚未配置模型时，直接进入添加模型引导。"""
         model_manager = get_model_manager()
         if model_manager is None:
             self.console.print("\n[bold red]❌ 模型管理器未初始化。[/bold red]", tui_region=TuiRegion.BACKGROUND)
             return True
 
-        result = manage_models_tui(model_manager)
+        result = guide_first_model_tui(model_manager) if guided else manage_models_tui(model_manager)
         if result.startswith("selected:"):
             selected_text = result.removeprefix("selected:")
             self.console.print(f"\n[bold green]✅ 当前模型已切换为: {selected_text}[/bold green]", tui_region=TuiRegion.BACKGROUND)
