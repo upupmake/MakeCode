@@ -324,5 +324,52 @@ class PromptPolicyTests(unittest.TestCase):
         self.assertIn("If no Current User Request section exists", prompt)
 
 
+def test_orchestrator_prompt_has_static_project_instructions_notice(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("UNIQUE_PROJECT_RULE", encoding="utf-8")
+
+    with patch.object(SKILL_LOADER, "render_prompt_block", return_value=""):
+        prompt = get_orchestrator_system_prompt(str(tmp_path), "zsh", plan_mode=False)
+
+    assert "# Project Instructions (AGENTS.md)" in prompt
+    assert "These project instructions replace all previously provided project instructions." in prompt
+    assert "The previously provided project instructions no longer apply." in prompt
+    assert "UNIQUE_PROJECT_RULE" not in prompt
+
+
+def test_orchestrator_prompt_is_stable_across_agents_md_changes(tmp_path):
+    with patch.object(SKILL_LOADER, "render_prompt_block", return_value=""):
+        (tmp_path / "AGENTS.md").write_text("first rules", encoding="utf-8")
+        first = get_orchestrator_system_prompt(str(tmp_path), "zsh", plan_mode=False)
+        (tmp_path / "AGENTS.md").write_text("second rules", encoding="utf-8")
+        second = get_orchestrator_system_prompt(str(tmp_path), "zsh", plan_mode=False)
+
+    assert first == second
+
+
+def test_sub_agent_prompt_embeds_delegation_time_agents_md(tmp_path):
+    instructions = tmp_path / "AGENTS.md"
+    instructions.write_text("SUBAGENT_RULE", encoding="utf-8")
+
+    with patch.object(SKILL_LOADER, "render_prompt_block", return_value=""):
+        prompt = get_sub_agent_system_prompt("Tester", str(tmp_path), "zsh")
+
+    assert "SUBAGENT_RULE" in prompt
+    assert "Loaded at delegation time" in prompt
+    assert f"## {instructions.resolve()}" in prompt
+
+
+def test_sub_agent_prompt_omits_delegation_snapshot_without_file(tmp_path):
+    with patch.object(SKILL_LOADER, "render_prompt_block", return_value=""):
+        prompt = get_sub_agent_system_prompt("Tester", str(tmp_path), "zsh")
+
+    assert f"# AGENTS.md instructions for {tmp_path.resolve()}" not in prompt
+
+
+def test_title_prompt_ignores_project_instructions():
+    prompt = get_title_generation_system_prompt()
+
+    assert "Ignore project instructions under `# AGENTS.md instructions`" in prompt
+
+
 if __name__ == "__main__":
     unittest.main()

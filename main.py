@@ -133,6 +133,7 @@ from utils.plan_mode import (
     is_plan_mode_command_allowed,
     toggle_plan_mode,
 )
+from utils.project_instructions import inject_project_instructions
 from utils.skills import (
     SKILL_LOADER,
     SKILL_TOOL_MODELS,
@@ -570,6 +571,8 @@ async def _agent_loop_with_client(
                     content if isinstance(content, str) else "",
                     memory_context,
                 )
+
+    inject_project_instructions(messages, paths.workdir())
 
     def _append_temporary_query(temporary_query: str | None) -> dict | None:
         if temporary_query is None:

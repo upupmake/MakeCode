@@ -56,6 +56,7 @@ from utils.plan_mode import (
     is_plan_mode,
     is_plan_mode_command_allowed,
 )
+from utils.project_instructions import inject_project_instructions
 from utils.skills import SKILL_LOADER
 from utils.tool_aliases import resolve_tool_name
 from utils.tool_validation import (
@@ -875,6 +876,7 @@ class AgentRuntime:
             if any(message.get("role") == "user" for message in self.messages):
                 await self._compact(definitions)
             await self._recall(query)
+            inject_project_instructions(self.messages, paths.workdir())
             text, cancelled = await self._agent_loop(client, definitions)
             self._save()
             usage = {

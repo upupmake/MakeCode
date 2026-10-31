@@ -804,3 +804,45 @@ def test_notification_queued_after_turn_is_injected_next_turn(tmp_path):
     injected = _injected_messages(client.requests[1])
     assert len(injected) == 1
     assert "完整的决策答复正文。" in injected[0]["content"]
+
+
+def test_run_turn_injects_project_instructions_once(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("RUNTIME_RULE", encoding="utf-8")
+    responses = [[_done("one")], [_done("two")], [_done("three")]]
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        llm_client_factory=lambda **kwargs: _fake_client(*responses.pop(0)),
+    )
+
+    first = asyncio.run(runtime.run_turn("first"))
+    assert "RUNTIME_RULE" not in first.text
+    users = [message for message in first.messages if message.get("role") == "user"]
+    assert "RUNTIME_RULE" in users[-1]["content"]
+    state = users[-1]["message_metadata"]["project_instructions"]
+    assert state["kind"] == "initial"
+    assert users[-1]["message_metadata"]["display_content"] == "first"
+
+    second = asyncio.run(runtime.run_turn("second"))
+    users = [message for message in second.messages if message.get("role") == "user"]
+    assert users[-1] == {"role": "user", "content": "second"}
+    assert "RUNTIME_RULE" in users[0]["content"]
+
+    (tmp_path / "AGENTS.md").write_text("RUNTIME_RULE_V2", encoding="utf-8")
+    third = asyncio.run(runtime.run_turn("third"))
+    users = [message for message in third.messages if message.get("role") == "user"]
+    assert "RUNTIME_RULE_V2" in users[-1]["content"]
+    assert "replace all previously provided project instructions" in users[-1]["content"]
+    state = users[-1]["message_metadata"]["project_instructions"]
+    assert state["kind"] == "replacement"
+
+
+def test_system_prompt_does_not_embed_project_instructions(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("SYSTEM_PROMPT_SECRET", encoding="utf-8")
+    runtime = AgentRuntime(
+        store=ConversationStore(tmp_path / "conversations"),
+        registry=ToolRegistry(include_ask_user=False),
+        headless=True,
+    )
+
+    assert "SYSTEM_PROMPT_SECRET" not in runtime._system_prompt()
