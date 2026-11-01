@@ -46,3 +46,12 @@ def isolate_memory_config(tmp_path, monkeypatch):
     memory._reset_memory_config_cache()
     yield
     memory._reset_memory_config_cache()
+
+
+@pytest.fixture(autouse=True)
+def isolate_project_instructions(monkeypatch):
+    """避免仓库根 AGENTS.md 污染测试中的消息历史断言。"""
+    import main as main_module
+
+    monkeypatch.setattr(main_module, "inject_project_instructions", lambda *args, **kwargs: None)
+    yield
