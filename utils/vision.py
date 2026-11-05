@@ -120,7 +120,15 @@ def resolve_image_attachment(conversation_root: Path, block: dict[str, Any]) -> 
 
 
 def image_placeholder_text(block: dict[str, Any]) -> str:
-    return f"[图片：{block.get('filename') or block.get('attachment_id') or '未命名'}]"
+    name = str(block.get("filename") or block.get("attachment_id") or "未命名")
+    # 占位符会在输入框中被反复解析；方括号和换行会截断占位符边界。
+    name = (
+        name.replace("\r", " ")
+        .replace("\n", " ")
+        .replace("[", "［")
+        .replace("]", "］")
+    )
+    return f"[图片：{name}]"
 
 
 def remove_image_placeholders(text: str) -> str:

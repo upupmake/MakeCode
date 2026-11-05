@@ -77,45 +77,87 @@ def _build_key_bindings(
 ) -> KeyBindings:
     bindings = KeyBindings()
 
-    def placeholder_before_cursor() -> int:
-        line = get_app().current_buffer.document.current_line_before_cursor
-        for match in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(line):
-            if match.end() == len(line):
-                return len(match.group(0))
-        return 0
+    def placeholder_before_cursor() -> tuple[int, str, int] | None:
+        text = get_app().current_buffer.document.text_before_cursor
+        matches = list(_IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(text))
+        if not matches or matches[-1].end() != len(text):
+            return None
+        placeholder = matches[-1].group(0)
+        occurrence = sum(
+            1 for match in matches if match.group(0) == placeholder
+        ) - 1
+        return len(placeholder), placeholder, occurrence
 
-    def placeholder_after_cursor() -> int:
-        line = get_app().current_buffer.document.current_line_after_cursor
-        match = _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.match(line)
-        return len(match.group(0)) if match else 0
+    def placeholder_after_cursor() -> tuple[int, str, int] | None:
+        document = get_app().current_buffer.document
+        match = _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.match(
+            document.text_after_cursor
+        )
+        if match is None:
+            return None
+        placeholder = match.group(0)
+        occurrence = sum(
+            1
+            for item in _IMAGE_DISPLAY_PLACEHOLDER_PATTERN.finditer(
+                document.text_before_cursor
+            )
+            if item.group(0) == placeholder
+        )
+        return len(placeholder), placeholder, occurrence
+
+    def forget_image_entry(placeholder: str, occurrence: int) -> None:
+        seen = 0
+        for index, (entry_placeholder, _) in enumerate(image_entries):
+            if entry_placeholder != placeholder:
+                continue
+            if seen == occurrence:
+                del image_entries[index]
+                return
+            seen += 1
 
     @bindings.add(
         "backspace",
-        filter=Condition(lambda: placeholder_before_cursor() > 0),
+        filter=Condition(lambda: placeholder_before_cursor() is not None),
     )
     def _delete_placeholder_before(event) -> None:
-        event.current_buffer.delete_before_cursor(placeholder_before_cursor())
+        match = placeholder_before_cursor()
+        if match is None:
+            return
+        length, placeholder, occurrence = match
+        event.current_buffer.delete_before_cursor(length)
+        forget_image_entry(placeholder, occurrence)
 
     @bindings.add(
         "delete",
-        filter=Condition(lambda: placeholder_after_cursor() > 0),
+        filter=Condition(lambda: placeholder_after_cursor() is not None),
     )
     def _delete_placeholder_after(event) -> None:
-        event.current_buffer.delete(placeholder_after_cursor())
+        match = placeholder_after_cursor()
+        if match is None:
+            return
+        length, placeholder, occurrence = match
+        event.current_buffer.delete(length)
+        forget_image_entry(placeholder, occurrence)
 
     @bindings.add(
         "left",
-        filter=Condition(lambda: placeholder_before_cursor() > 0),
+        filter=Condition(lambda: placeholder_before_cursor() is not None),
     )
     def _skip_placeholder_left(event) -> None:
-        event.current_buffer.cursor_position -= placeholder_before_cursor()
+        match = placeholder_before_cursor()
+        if match is None:
+            return
+        event.current_buffer.cursor_position -= match[0]
 
     @bindings.add(
         "right",
-        filter=Condition(lambda: placeholder_after_cursor() > 0),
+        filter=Condition(lambda: placeholder_after_cursor() is not None),
     )
     def _skip_placeholder_right(event) -> None:
-        event.current_buffer.cursor_position += placeholder_after_cursor()
+        match = placeholder_after_cursor()
+        if match is None:
+            return
+        event.current_buffer.cursor_position += match[0]
 
     @bindings.add("enter", filter=~has_completions)
     def _submit(event) -> None:

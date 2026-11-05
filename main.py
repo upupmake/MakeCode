@@ -1415,7 +1415,11 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     if cli_module.SIMPLE_MODE:
-        enable_simple_mode()
+        enable_simple_mode(
+            image_handler=_paste_image_from_system_clipboard,
+            image_display_handler=_display_input_images,
+            paste_handler=_paste_image_from_paste_text,
+        )
 
     startup_workdir = resolve_startup_workdir()
     _apply_workdir(startup_workdir)

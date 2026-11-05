@@ -218,6 +218,41 @@ def test_enable_simple_mode_creates_backend(monkeypatch):
         hitl.toggle_hitl(enabled=True)
 
 
+def test_enable_simple_mode_passes_image_handlers(monkeypatch):
+    from system.output_bus import OUTPUT_BUS
+    from utils import hitl
+
+    monkeypatch.setattr(tui_app, "_SIMPLE_BACKEND", None)
+    original_sink = OUTPUT_BUS.get_sink()
+    hitl.toggle_hitl(enabled=True)
+
+    def image_handler() -> str | None:
+        return None
+
+    def image_display_handler(
+            text: str,
+    ) -> tuple[str, list[tuple[str, str]]]:
+        return text, []
+
+    def paste_handler(text: str) -> str | None:
+        return None
+
+    try:
+        tui_app.enable_simple_mode(
+            image_handler=image_handler,
+            image_display_handler=image_display_handler,
+            paste_handler=paste_handler,
+        )
+
+        backend = tui_app._SIMPLE_BACKEND
+        assert backend._image_handler is image_handler
+        assert backend._image_display_handler is image_display_handler
+        assert backend._paste_handler is paste_handler
+    finally:
+        OUTPUT_BUS.set_sink(original_sink)
+        hitl.toggle_hitl(enabled=True)
+
+
 def test_stream_renderer_outputs_completed_blocks_through_simple_backend(monkeypatch):
     renderer, output = _make_renderer()
     monkeypatch.setattr(tui_app, "_SIMPLE_BACKEND", renderer)
@@ -558,6 +593,52 @@ def test_deleted_image_placeholder_is_not_serialized():
     )
 
 
+def test_image_placeholder_with_bracketed_filename_is_serialized():
+    from utils.vision import image_placeholder_text
+
+    placeholder = image_placeholder_text({"filename": "截图[1].png"})
+
+    assert placeholder == "[图片：截图［1］.png]"
+    assert simple_input._serialize_input(
+        f"看图 {placeholder}",
+        [(placeholder, "[[image:id=aaa]]")],
+    ) == "看图 [[image:id=aaa]]"
+
+
+def test_ctrl_v_repeated_images_serialize_in_order():
+    markers = iter(["[[image:id=aaa]]", "[[image:id=bbb]]"])
+
+    def image_handler():
+        return next(markers)
+
+    def image_display_handler(marker: str):
+        placeholder = "[图片：clipboard.png]"
+        return placeholder, [(placeholder, marker)]
+
+    assert _run_prompt_with_timed_keys(
+        ["\x16", "\x16", "\r"],
+        image_handler=image_handler,
+        image_display_handler=image_display_handler,
+    ) == "[[image:id=aaa]][[image:id=bbb]]"
+
+
+def test_deleting_first_repeated_image_keeps_second_attachment():
+    markers = iter(["[[image:id=aaa]]", "[[image:id=bbb]]"])
+
+    def image_handler():
+        return next(markers)
+
+    def image_display_handler(marker: str):
+        placeholder = "[图片：clipboard.png]"
+        return placeholder, [(placeholder, marker)]
+
+    assert _run_prompt_with_timed_keys(
+        ["\x16", "\x16", "\x1b[D", "\x1b[D", "\x1b[3~", "\r"],
+        image_handler=image_handler,
+        image_display_handler=image_display_handler,
+    ) == "[[image:id=bbb]]"
+
+
 def test_slash_completer_suggests_commands():
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document
@@ -601,6 +682,8 @@ def _run_prompt_with_timed_keys(
     *,
     history: list[str] | None = None,
     complete_while_typing: bool = False,
+    image_handler=None,
+    image_display_handler=None,
 ) -> str:
     import threading
     import time
@@ -609,15 +692,16 @@ def _run_prompt_with_timed_keys(
     from prompt_toolkit.history import InMemoryHistory
 
     result: list[str] = []
+    image_entries: list[tuple[str, str]] = []
     with create_pipe_input() as pipe:
         bindings = simple_prompt._build_key_bindings(
             multiline=True,
-            image_handler=None,
-            image_display_handler=None,
+            image_handler=image_handler,
+            image_display_handler=image_display_handler,
             paste_handler=None,
             ctrl_p_handler=None,
             cancel_on_escape=False,
-            image_entries=[],
+            image_entries=image_entries,
         )
         session = PromptSession(
             message="You> ",
@@ -648,7 +732,7 @@ def _run_prompt_with_timed_keys(
         prompt_thread.join(timeout=5)
         assert not prompt_thread.is_alive()
 
-    return result[0]
+    return simple_input._serialize_input(result[0], image_entries)
 
 
 @pytest.mark.parametrize(
@@ -1002,6 +1086,53 @@ def test_simple_temporary_query_restore_fallback():
     renderer.restore_temporary_query_to_input("fallback")
 
     assert renderer.take_restored_input() == "fallback"
+
+
+def test_temporary_query_prompt_forwards_image_handlers(monkeypatch):
+    output = StringIO()
+    console = Console(
+        file=output,
+        force_terminal=False,
+        color_system=None,
+        width=100,
+    )
+
+    def image_handler() -> str | None:
+        return "[图片：clipboard.png]"
+
+    def image_display_handler(
+            text: str,
+    ) -> tuple[str, list[tuple[str, str]]]:
+        return text, []
+
+    def paste_handler(text: str) -> str | None:
+        return None
+
+    renderer = SimpleRenderer(
+        console=console,
+        image_handler=image_handler,
+        image_display_handler=image_display_handler,
+        paste_handler=paste_handler,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_read_prompt(prompt: str, **kwargs):
+        captured["prompt"] = prompt
+        captured.update(kwargs)
+        return "看看这张图 [图片：clipboard.png]"
+
+    monkeypatch.setattr(simple_prompt, "read_prompt", fake_read_prompt)
+    renderer._temporary_query_enabled = True
+
+    renderer._temporary_query_prompt()
+
+    assert captured["image_handler"] is image_handler
+    assert captured["image_display_handler"] is image_display_handler
+    assert captured["paste_handler"] is paste_handler
+    assert (
+        renderer.consume_temporary_query()
+        == "看看这张图 [图片：clipboard.png]"
+    )
 
 
 def test_choose_add_model_collects_fields(monkeypatch):

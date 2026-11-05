@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from typing import Any
 
@@ -34,8 +35,20 @@ _SUPPRESSED_REGIONS = {
 class SimpleRenderer:
     """把 TuiEvent 顺序渲染到普通终端。"""
 
-    def __init__(self, console: Console | None = None) -> None:
+    def __init__(
+            self,
+            console: Console | None = None,
+            *,
+            image_handler: Callable[[], str | None] | None = None,
+            image_display_handler: Callable[
+                [str], tuple[str, list[tuple[str, str]]]
+            ] | None = None,
+            paste_handler: Callable[[str], str | None] | None = None,
+    ) -> None:
         self.console = console or simple_terminal.make_console()
+        self._image_handler = image_handler
+        self._image_display_handler = image_display_handler
+        self._paste_handler = paste_handler
         self._lock = threading.RLock()
         self._last_region: TuiRegion | None = None
         self._history: list[str] = []
@@ -293,7 +306,8 @@ class SimpleRenderer:
             with self._lock:
                 self.console.print(
                     Text(
-                        "临时指令：Enter 提交 · Ctrl+N 换行 · Esc 取消",
+                        "临时指令：Enter 提交 · Ctrl+N 换行 · "
+                        "Ctrl+V/Ctrl+O 附加剪贴板图片 · Esc 取消",
                         style="dim",
                     )
                 )
@@ -307,6 +321,9 @@ class SimpleRenderer:
                     continuation_prompt="...> ",
                     cancel_on_escape=True,
                     on_session_ready=ready,
+                    image_handler=self._image_handler,
+                    image_display_handler=self._image_display_handler,
+                    paste_handler=self._paste_handler,
                 )
         except (EOFError, KeyboardInterrupt):
             query = None

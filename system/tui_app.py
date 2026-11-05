@@ -717,13 +717,24 @@ if OUTPUT_BUS.get_sink() is None:
 _SIMPLE_BACKEND: Any = None
 
 
-def enable_simple_mode() -> None:
+def enable_simple_mode(
+        *,
+        image_handler: Callable[[], str | None] | None = None,
+        image_display_handler: Callable[
+            [str], tuple[str, list[tuple[str, str]]]
+        ] | None = None,
+        paste_handler: Callable[[str], str | None] | None = None,
+) -> None:
     global _SIMPLE_BACKEND
     if _SIMPLE_BACKEND is None:
         from system.simple_render import SimpleRenderer
         from utils import hitl
 
-        _SIMPLE_BACKEND = SimpleRenderer()
+        _SIMPLE_BACKEND = SimpleRenderer(
+            image_handler=image_handler,
+            image_display_handler=image_display_handler,
+            paste_handler=paste_handler,
+        )
         OUTPUT_BUS.set_sink(SimpleSink(_SIMPLE_BACKEND))
         hitl.toggle_hitl(enabled=False)
 

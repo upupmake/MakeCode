@@ -7,6 +7,7 @@ from utils.llm_client import (
     sanitize_openai_messages,
 )
 from utils.vision import (
+    image_placeholder_text,
     image_reference_marker,
     parse_image_placeholders,
     remove_image_placeholders,
@@ -71,6 +72,27 @@ def test_existing_attachment_placeholder_can_be_restored(tmp_path):
 
     assert display == "[图片：sample.png]"
     assert restored[0]["attachment_id"] == block["attachment_id"]
+
+
+def test_image_placeholder_name_keeps_placeholder_boundaries(tmp_path):
+    conversation_root = tmp_path / "conv"
+    block = store_image_bytes_attachment(
+        conversation_root,
+        b"png-bytes",
+        "截图[1].png",
+        "image/png",
+    )
+
+    display, restored = parse_image_placeholders(
+        image_reference_marker(block),
+        conversation_root,
+    )
+
+    assert display == "[图片：截图［1］.png]"
+    assert restored[0]["filename"] == "截图[1].png"
+    assert image_placeholder_text({"filename": "a\nb.png"}) == (
+        "[图片：a b.png]"
+    )
 
 
 def test_text_only_projection_removes_images_without_mutating_history():
